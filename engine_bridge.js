@@ -67,6 +67,92 @@ const {
 const { WorkerPool } = require('./engine/workerPool');
 const { recordActivity } = require('./engine/activityStore');
 const { getStats } = require('./engine/usageStats');
+const { parseCookieText } = require('./engine/cookieParser');
+const crypto = require('crypto');
+
+// ---------------------------------------------------------------------------
+// v2.22.1: duplicate-cookie guard + live "Checking…" account line.
+//
+// (a) The engine's cookie import creates a brand-new account on EVERY
+// import, so importing the same cookies twice piled up duplicate lines.
+// The bridge now fingerprints the identity cookies of each import; a
+// repeat import re-checks the EXISTING account instead of adding a copy.
+// (b) The engine creates the account row first and then streams check
+// phases — the bridge forwards those phases as account-updated events so
+// the sidebar line appears immediately with a CHECKING chip and flips to
+// its real Live/Fail result in the same line (the old app's behaviour).
+// ---------------------------------------------------------------------------
+const fingerprintFile = () => path.join(process.env.FLOW_LITE_DATA_DIR || __dirname, 'cookie-fingerprints.json');
+
+function loadFingerprints() {
+  try {
+    return JSON.parse(fs.readFileSync(fingerprintFile(), 'utf8')) || {};
+  } catch (e) {
+    return {};
+  }
+}
+
+function saveFingerprints(map) {
+  try {
+    fs.writeFileSync(fingerprintFile(), JSON.stringify(map, null, 2));
+  } catch (e) {}
+}
+
+function cookieFingerprint(text) {
+  try {
+    const parsed = parseCookieText(text);
+    const identityNames = new Set(['SID', 'SSID', 'SAPISID', 'HSID', '__Secure-1PSID', '__Secure-3PSID', '__Secure-1PAPISID', '__Secure-3PAPISID']);
+    const parts = (parsed.cookies || [])
+      .filter(c => identityNames.has(c.name) && String(c.value || '').length > 8)
+      .map(c => `${c.name}=${c.value}`)
+      .sort();
+    if (parts.length === 0) return null;
+    return crypto.createHash('sha256').update(parts.join('|')).digest('hex').slice(0, 32);
+  } catch (e) {
+    return null;
+  }
+}
+
+function makePhaseBroadcaster() {
+  return (phase) => {
+    broadcastEvent('cookie-phase', phase);
+    try {
+      if (phase && phase.accountId) {
+        const acc = dbService.getAccount(phase.accountId);
+        if (acc) {
+          const shown = phase.phase === 'checking' ? { ...acc, status: 'Checking…' } : acc;
+          broadcastEvent('account-updated', { account: shown });
+        }
+      }
+    } catch (e) {}
+  };
+}
+
+// If a freshly checked account turns out to be the SAME Google account as
+// an older line (same email), remove the older duplicate and keep the new
+// one (its cookies were just verified live).
+function mergeDuplicateByEmail(newAccount) {
+  try {
+    if (!newAccount || !newAccount.email) return;
+    const email = String(newAccount.email).trim().toLowerCase();
+    if (!email) return;
+    const others = dbService.getAccounts().filter(a =>
+      a.id !== newAccount.id && a.email && String(a.email).trim().toLowerCase() === email);
+    for (const dup of others) {
+      deleteAccount(dup.id);
+      const map = loadFingerprints();
+      let changed = false;
+      for (const [fp, accId] of Object.entries(map)) {
+        if (accId === dup.id) { map[fp] = newAccount.id; changed = true; }
+      }
+      if (changed) saveFingerprints(map);
+      broadcastEvent('automation-log', {
+        message: `Duplicate removed: "${dup.name}" was the same Google account as "${newAccount.name}".`,
+        level: 'warning',
+      });
+    }
+  } catch (e) {}
+}
 
 const PORT = 48190;
 let activeWorkerPool = null;
@@ -139,7 +225,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.22.0', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.22.1', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -280,11 +366,38 @@ async function startBridge() {
       // 8. Cookie Import (File & Text)
       if (pathname === '/api/cookies/import-file' && req.method === 'POST') {
         const body = await readBody();
+        const onPhase = makePhaseBroadcaster();
+
+        // v2.22.1 duplicate guard: same cookies again → re-check the
+        // existing account, never add a second copy of it.
+        let fp = null;
+        try { fp = cookieFingerprint(fs.readFileSync(body.filePath, 'utf8')); } catch (e) {}
+        if (fp) {
+          const existingId = loadFingerprints()[fp];
+          if (existingId && dbService.getAccount(existingId)) {
+            const re = await recheckAccountCookies(existingId, onPhase);
+            if (re && re.account) {
+              broadcastEvent('account-updated', { account: re.account });
+              broadcastEvent('automation-log', { message: 'These cookies were already imported — the existing account was re-checked instead of adding a duplicate.', level: 'info' });
+              return sendJson(200, { ok: true, account: re.account, duplicate: true, message: 'These cookies were already imported — the existing account was re-checked instead of adding a duplicate.' });
+            }
+            // Recheck not possible → fall through to a fresh import.
+          }
+        }
+
         const res = await importAccountFromCookieFile({
           filePath: body.filePath,
           label: body.label,
-          onPhase: (phase) => broadcastEvent('cookie-phase', phase),
+          onPhase,
         });
+        if (res.account) {
+          if (fp) {
+            const map = loadFingerprints();
+            map[fp] = res.account.id;
+            saveFingerprints(map);
+          }
+          mergeDuplicateByEmail(res.account);
+        }
         if (res.success && res.account) {
           broadcastEvent('account-updated', { account: res.account });
           broadcastEvent('automation-log', { message: `Imported Account from cookie file: ${res.account.name}`, level: 'success' });
@@ -297,11 +410,35 @@ async function startBridge() {
 
       if (pathname === '/api/cookies/import-text' && req.method === 'POST') {
         const body = await readBody();
+        const onPhase = makePhaseBroadcaster();
+
+        // v2.22.1 duplicate guard (same as the file path above).
+        const fp = typeof body.text === 'string' ? cookieFingerprint(body.text) : null;
+        if (fp) {
+          const existingId = loadFingerprints()[fp];
+          if (existingId && dbService.getAccount(existingId)) {
+            const re = await recheckAccountCookies(existingId, onPhase);
+            if (re && re.account) {
+              broadcastEvent('account-updated', { account: re.account });
+              broadcastEvent('automation-log', { message: 'These cookies were already imported — the existing account was re-checked instead of adding a duplicate.', level: 'info' });
+              return sendJson(200, { ok: true, account: re.account, duplicate: true, message: 'These cookies were already imported — the existing account was re-checked instead of adding a duplicate.' });
+            }
+          }
+        }
+
         const res = await importAccountFromCookieText({
           text: body.text,
           label: body.label || 'Cookie Account',
-          onPhase: (phase) => broadcastEvent('cookie-phase', phase),
+          onPhase,
         });
+        if (res.account) {
+          if (fp) {
+            const map = loadFingerprints();
+            map[fp] = res.account.id;
+            saveFingerprints(map);
+          }
+          mergeDuplicateByEmail(res.account);
+        }
         if (res.success && res.account) {
           broadcastEvent('account-updated', { account: res.account });
           broadcastEvent('automation-log', { message: `Imported Account from cookies: ${res.account.name}`, level: 'success' });

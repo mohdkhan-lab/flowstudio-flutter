@@ -914,7 +914,7 @@ class FlowAutomationEngine {
           searchInput.value = '';
           searchInput.blur();
         }
-        const editor = document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror');
+        const editor = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
         if (editor) {
           editor.focus();
         }
@@ -932,7 +932,7 @@ class FlowAutomationEngine {
     }
 
     const execSuccess = await this.page.evaluate((str) => {
-      const editor = document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror');
+      const editor = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
       if (editor) {
         editor.focus();
         return document.execCommand('insertText', false, str);
@@ -1279,7 +1279,10 @@ class FlowAutomationEngine {
 
     let tbFound = false;
     try {
-      await this.page.waitForSelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror', { timeout: 15000 });
+      await this.page.waitForFunction(() => {
+        const els = Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
+        return els.some(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); });
+      }, { timeout: 15000 });
       tbFound = true;
     } catch (tbErr) {
       tbFound = false;
@@ -1302,8 +1305,9 @@ class FlowAutomationEngine {
     });
 
     const tbCoords = await this.page.evaluate(() => {
-      const el = document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror');
+      const el = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
       if (el) {
+        try { el.scrollIntoView({ block: 'center' }); } catch (e) {}
         el.focus();
         const r = el.getBoundingClientRect();
         return { x: r.x + Math.min(25, r.width / 4), y: r.y + r.height / 2 };
@@ -1340,7 +1344,7 @@ class FlowAutomationEngine {
 
     // Verify the prompt actually landed in the editor DOM (multi-layer fallback)
     let domPromptText = await this.page.evaluate(() => {
-      const el = document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror');
+      const el = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
       return el ? (el.innerText || el.textContent || '').trim() : '';
     });
 
@@ -1354,7 +1358,7 @@ class FlowAutomationEngine {
       }
       await sleep(250);
       domPromptText = await this.page.evaluate(() => {
-        const el = document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror');
+        const el = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
         return el ? (el.innerText || el.textContent || '').trim() : '';
       });
     }
@@ -1362,7 +1366,7 @@ class FlowAutomationEngine {
     if (!domPromptText || domPromptText.length === 0) {
       this.log('The second method also did not work — trying the third method…', 'warn');
       await this.page.evaluate((text) => {
-        const el = document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror');
+        const el = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
         if (el) {
           el.focus();
           document.execCommand('insertText', false, text);
@@ -1372,7 +1376,36 @@ class FlowAutomationEngine {
       }, promptText);
       await sleep(250);
       domPromptText = await this.page.evaluate(() => {
-        const el = document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror');
+        const el = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
+        return el ? (el.innerText || el.textContent || '').trim() : '';
+      });
+    }
+
+    if (!domPromptText || domPromptText.length === 0) {
+      // v2.22.1 hardening: after a mode switch Flow can swap in a fresh
+      // editor instance, so the node the first attempts focused may be
+      // stale. Settle, re-find the VISIBLE editor, click it again and
+      // retry the native write once before giving up.
+      this.log('The prompt still did not land — retrying once with a fresh focus on the visible editor…', 'warn');
+      await sleep(1000);
+      const retryCoords = await this.page.evaluate(() => {
+        const el = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
+        if (el) {
+          try { el.scrollIntoView({ block: 'center' }); } catch (e) {}
+          el.focus();
+          const r = el.getBoundingClientRect();
+          return { x: r.x + Math.min(25, r.width / 4), y: r.y + r.height / 2 };
+        }
+        return null;
+      });
+      if (retryCoords) {
+        await this.page.mouse.click(retryCoords.x, retryCoords.y);
+        await sleep(200);
+      }
+      await this.insertNativeText(promptText);
+      await sleep(300);
+      domPromptText = await this.page.evaluate(() => {
+        const el = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
         return el ? (el.innerText || el.textContent || '').trim() : '';
       });
     }
@@ -1446,7 +1479,7 @@ class FlowAutomationEngine {
       if (submitBtnCoords.disabled) {
         this.log('The send button is still off (disabled) — trying to enable it…', 'warn');
         await this.page.evaluate(() => {
-          const el = document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror');
+          const el = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
           if (el) {
             el.dispatchEvent(new Event('input', { bubbles: true }));
             el.dispatchEvent(new Event('change', { bubbles: true }));
@@ -1543,7 +1576,7 @@ class FlowAutomationEngine {
         await this.page.evaluate(() => {
           const clearBtn = document.querySelector('button.clear-button, button[aria-label="Clear prompt"]');
           if (clearBtn) { try { clearBtn.click(); } catch (e) {} }
-          const el = document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror');
+          const el = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
           if (el) {
             el.textContent = '';
           }
@@ -3527,7 +3560,7 @@ class FlowAutomationEngine {
             await this.page.evaluate(() => {
               const clearBtn = document.querySelector('button.clear-button, button[aria-label="Clear prompt"]');
               if (clearBtn) { try { clearBtn.click(); } catch (e) {} }
-              const el = document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror');
+              const el = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
               if (el) { el.textContent = ''; }
             });
           } catch (e) {}
@@ -3807,7 +3840,7 @@ class FlowAutomationEngine {
                     return t.includes('got it') || t.includes('dismiss') || t.includes('close') || t.includes('ok');
                   });
                   if (dismiss) dismiss.click();
-                  const el = document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror');
+                  const el = (Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror')).find(c => { const r = c.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (c.checkVisibility ? c.checkVisibility() : true); }) || document.querySelector('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror'));
                   if (el) { el.textContent = ''; }
                 });
               } catch (e) {}

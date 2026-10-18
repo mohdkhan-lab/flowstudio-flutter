@@ -314,7 +314,7 @@ class AutomationBridge {
       );
       final data = json.decode(res.body);
       if (res.statusCode == 200 && data['ok'] == true) {
-        return {'ok': true, 'account': data['account'], 'message': data['message']};
+        return {'ok': true, 'account': data['account'], 'message': data['message'], 'duplicate': data['duplicate'] == true};
       }
       return {'ok': false, 'error': data['error'] ?? 'Cookie import failed'};
     } catch (e) {
@@ -333,7 +333,7 @@ class AutomationBridge {
       );
       final data = json.decode(res.body);
       if (res.statusCode == 200 && data['ok'] == true) {
-        return {'ok': true, 'account': data['account'], 'message': data['message']};
+        return {'ok': true, 'account': data['account'], 'message': data['message'], 'duplicate': data['duplicate'] == true};
       }
       return {'ok': false, 'error': data['error'] ?? 'Cookie import failed'};
     } catch (e) {

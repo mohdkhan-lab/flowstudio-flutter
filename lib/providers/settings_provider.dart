@@ -217,7 +217,7 @@ class SettingsProvider with ChangeNotifier {
       final res = await http
           .get(
             Uri.parse(
-              'https://api.github.com/repos/mohdkhan837218-spec/flowstudio-flutter/releases/latest',
+              'https://api.github.com/repos/mohdkhan-lab/flowstudio-flutter/releases/latest',
             ),
             headers: {
               'Accept': 'application/vnd.github+json',

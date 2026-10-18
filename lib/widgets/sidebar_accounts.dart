@@ -535,6 +535,7 @@ Future<void> pickAndImportCookieFiles(BuildContext context) async {
 
     final accountsProv = context.read<AccountsProvider>();
     int successCount = 0;
+    int duplicateCount = 0;
     String lastError = '';
 
     for (final f in result) {
@@ -543,6 +544,7 @@ Future<void> pickAndImportCookieFiles(BuildContext context) async {
         final res = await accountsProv.importCookiesFromFile(f.path!, label: fileName);
         if (res['ok'] == true) {
           successCount++;
+          if (res['duplicate'] == true) duplicateCount++;
         } else {
           lastError = res['error']?.toString() ?? 'Cookie check failed';
         }
@@ -555,9 +557,11 @@ Future<void> pickAndImportCookieFiles(BuildContext context) async {
         ScaffoldMessenger.of(context).showSnackBar(
           SnackBar(
             content: Text(
-              successCount == 1
-                  ? 'Account added from cookies successfully!'
-                  : '$successCount accounts added from cookies!',
+              duplicateCount == successCount
+                  ? 'Those cookies were already added — the existing account was re-checked, no duplicate made.'
+                  : successCount == 1
+                      ? 'Account added from cookies successfully!'
+                      : '$successCount accounts added from cookies!',
             ),
             backgroundColor: AppTheme.green,
             duration: const Duration(seconds: 4),

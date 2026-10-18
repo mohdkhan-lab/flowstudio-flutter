@@ -1,0 +1,57 @@
+name: Release Windows
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.47.7'
+          channel: stable
+
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+
+      - name: Install engine dependencies
+        run: npm install --omit=dev
+
+      - name: Flutter pub get
+        run: flutter pub get
+
+      - name: Analyze (must be error-free)
+        run: flutter analyze --no-fatal-infos --no-fatal-warnings
+
+      - name: Build Windows release
+        run: flutter build windows --release
+
+      - name: Stage node.exe for the installer
+        shell: pwsh
+        run: Copy-Item (Get-Command node).Source .\node.exe -Force
+
+      - name: Install Inno Setup
+        run: choco install innosetup -y --no-progress
+
+      - name: Build installer
+        shell: pwsh
+        run: '& "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss'
+
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*.exe
+          generate_release_notes: true

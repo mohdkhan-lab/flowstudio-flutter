@@ -1281,6 +1281,12 @@ class FlowAutomationEngine {
 
     // 2. Focus the ProseMirror prompt box and type the prompt
     this.currentStage = 'Prompt Input';
+    // v2.23.1: the failure screenshot (owner's PC, 2026-10-19) shows a
+    // perfectly normal Flow page - no overlay, no popover, prompt bar
+    // ready - yet no input landed. A background/off-screen window can
+    // starve the renderer of real focus, so bring the page to the
+    // front before any typing happens.
+    try { await this.page.bringToFront(); } catch (e) {}
     this.log('Focusing Flow\'s prompt box…', 'info');
 
     let tbFound = false;
@@ -1381,6 +1387,30 @@ class FlowAutomationEngine {
         }
       }, promptText);
       await sleep(250);
+      domPromptText = await this.page.evaluate(() => {
+        const el = ((() => { const all = Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror, [contenteditable="true"][role="textbox"]')); const ed = all.filter(e => e.isContentEditable || e.getAttribute('contenteditable') === 'true'); const pool = ed.length ? ed : all; const vis = pool.filter(e => { const r = e.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (e.checkVisibility ? e.checkVisibility() : true); }); const list = vis.length ? vis : pool; if (!list.length) return null; const named = list.find(e => /what do you want to create/i.test(e.getAttribute('aria-label') || e.getAttribute('data-placeholder') || '')); if (named) return named; return list.slice().sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0]; })());
+        return el ? (el.innerText || el.textContent || '').trim() : '';
+      });
+    }
+
+    if (!domPromptText || domPromptText.length === 0) {
+      // v2.23.1: ElementHandle click + type. Puppeteer's own element
+      // click scrolls the editor into view, waits for it to be stable,
+      // and clicks its centre through the element's own box model -
+      // a different input path from raw coordinate mouse events, and
+      // the one most likely to satisfy Flow's new prompt bar.
+      this.log('Trying direct element click and typing on the editor...', 'warn');
+      try { await this.page.bringToFront(); } catch (e) {}
+      try {
+        const handle = await this.page.evaluateHandle(() => ((() => { const all = Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror, [contenteditable="true"][role="textbox"]')); const ed = all.filter(e => e.isContentEditable || e.getAttribute('contenteditable') === 'true'); const pool = ed.length ? ed : all; const vis = pool.filter(e => { const r = e.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (e.checkVisibility ? e.checkVisibility() : true); }); const list = vis.length ? vis : pool; if (!list.length) return null; const named = list.find(e => /what do you want to create/i.test(e.getAttribute('aria-label') || e.getAttribute('data-placeholder') || '')); if (named) return named; return list.slice().sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0]; })()));
+        const elHandle = handle && handle.asElement ? handle.asElement() : null;
+        if (elHandle) {
+          await elHandle.click();
+          await sleep(250);
+          await elHandle.type(promptText, { delay: 20 });
+        }
+      } catch (e) {}
+      await sleep(300);
       domPromptText = await this.page.evaluate(() => {
         const el = ((() => { const all = Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror, [contenteditable="true"][role="textbox"]')); const ed = all.filter(e => e.isContentEditable || e.getAttribute('contenteditable') === 'true'); const pool = ed.length ? ed : all; const vis = pool.filter(e => { const r = e.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (e.checkVisibility ? e.checkVisibility() : true); }); const list = vis.length ? vis : pool; if (!list.length) return null; const named = list.find(e => /what do you want to create/i.test(e.getAttribute('aria-label') || e.getAttribute('data-placeholder') || '')); if (named) return named; return list.slice().sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0]; })());
         return el ? (el.innerText || el.textContent || '').trim() : '';

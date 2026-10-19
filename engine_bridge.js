@@ -225,7 +225,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.22.2', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.23.0', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -486,6 +486,16 @@ async function startBridge() {
           message: `Generation started: ${config.prompts ? config.prompts.length : 0} prompt(s) • ${config.parallelBrowsers || 1} worker(s) in parallel`,
           level: 'info'
         });
+
+        // v2.23.0 diagnostic: record the exact character count of every
+        // prompt AS RECEIVED by the bridge, so a prompt that arrives
+        // empty is visible in the Activity log itself (the engine's own
+        // log line only shows the first 50 characters, which made an
+        // empty prompt indistinguishable from a masked one).
+        try {
+          const counts = (config.prompts || []).map(p => typeof p === 'string' ? p.length : ((p && (p.text || p.prompt) || '').length));
+          broadcastEvent('automation-log', { message: `Prompts received by the engine: ${counts.length} prompt(s), characters: [${counts.join(', ')}]`, level: 'info' });
+        } catch (e) {}
 
         // Format prompt items for runQueue
         const formattedPrompts = (config.prompts || []).map((p, idx) => {

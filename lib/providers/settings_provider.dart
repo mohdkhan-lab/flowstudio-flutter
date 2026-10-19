@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import '../models/app_settings.dart';
@@ -12,12 +13,30 @@ class SettingsProvider with ChangeNotifier {
   int _totalVideosSaved = 0;
   int _totalAccounts = 0;
 
+  // v2.23.0: in-app updater — the app downloads the new Setup itself and
+  // runs it; the user never has to visit GitHub or download by hand.
+  bool _updateAvailable = false;
+  String _latestVersion = '';
+  String _updateDownloadUrl = '';
+  int _updateSizeBytes = 0;
+  bool _isDownloadingUpdate = false;
+  double _updateDownloadProgress = 0;
+  String _downloadedSetupPath = '';
+
   String get currentView => _currentView;
   AppSettings get settings => _settings;
   bool get isCheckingUpdates => _isCheckingUpdates;
   String get updateStatusMessage => _updateStatusMessage;
   int get totalVideosSaved => _totalVideosSaved;
   int get totalAccounts => _totalAccounts;
+  bool get updateAvailable => _updateAvailable;
+  String get latestVersion => _latestVersion;
+  bool get isDownloadingUpdate => _isDownloadingUpdate;
+  double get updateDownloadProgress => _updateDownloadProgress;
+  String get downloadedSetupPath => _downloadedSetupPath;
+  String get updateSizeLabel => _updateSizeBytes > 0
+      ? '${(_updateSizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB'
+      : '';
 
   SettingsProvider() {
     loadSettingsFromEngine();
@@ -205,12 +224,29 @@ class SettingsProvider with ChangeNotifier {
     AutomationBridge.instance.saveSetting('custom_tags', json.encode(listToSave));
   }
 
+  bool _isNewerVersion(String latest, String current) {
+    List<int> parts(String v) => v
+        .replaceFirst('v', '')
+        .split('.')
+        .map((p) => int.tryParse(p.replaceAll(RegExp(r'[^0-9]'), '')) ?? 0)
+        .toList();
+    final a = parts(latest);
+    final b = parts(current);
+    for (int i = 0; i < a.length || i < b.length; i++) {
+      final av = i < a.length ? a[i] : 0;
+      final bv = i < b.length ? b[i] : 0;
+      if (av != bv) return av > bv;
+    }
+    return false;
+  }
+
   Future<void> checkForUpdates() async {
     // v2.22.0 fix: REAL update check against the GitHub releases of the
-    // Flutter app. The old code waited 2 seconds and always claimed
-    // "You are on the latest version" without checking anything.
+    // Flutter app. v2.23.0: the check now also captures the Setup's
+    // direct download URL, so the app itself can download and install
+    // the update — no manual trip to GitHub.
     _isCheckingUpdates = true;
-    _updateStatusMessage = 'Checking the official GitHub release page...';
+    _updateStatusMessage = 'Checking for the latest version...';
     notifyListeners();
 
     try {
@@ -227,12 +263,29 @@ class SettingsProvider with ChangeNotifier {
           .timeout(const Duration(seconds: 10));
       if (res.statusCode == 200) {
         final data = json.decode(res.body) as Map<String, dynamic>;
-        final tag = (data['tag_name']?.toString() ?? '').replaceFirst('v', '');
-        final current = _settings.currentVersion.replaceFirst('v', '');
-        if (tag.isNotEmpty && tag != current) {
-          _updateStatusMessage =
-              'Update available: v$tag — download the new Setup from the GitHub releases page.';
+        final tag = (data['tag_name']?.toString() ?? '');
+        if (tag.isNotEmpty && _isNewerVersion(tag, _settings.currentVersion)) {
+          _updateAvailable = true;
+          _latestVersion = tag;
+          _downloadedSetupPath = '';
+          _updateDownloadUrl = '';
+          _updateSizeBytes = 0;
+          final assets = data['assets'];
+          if (assets is List) {
+            for (final a in assets) {
+              final name = a['name']?.toString() ?? '';
+              if (name.toLowerCase().endsWith('.exe')) {
+                _updateDownloadUrl = a['browser_download_url']?.toString() ?? '';
+                _updateSizeBytes = (a['size'] as num?)?.toInt() ?? 0;
+                break;
+              }
+            }
+          }
+          _updateStatusMessage = _updateDownloadUrl.isNotEmpty
+              ? 'New version available: $tag. Press "Download update" — the app will download and install it here itself.'
+              : 'New version available: $tag — but no Setup file was attached to it.';
         } else {
+          _updateAvailable = false;
           _updateStatusMessage =
               'You are on the latest version (${_settings.currentVersion}).';
         }
@@ -247,6 +300,89 @@ class SettingsProvider with ChangeNotifier {
 
     _isCheckingUpdates = false;
     notifyListeners();
+  }
+
+  /// v2.23.0: download the new Setup inside the app, with progress.
+  Future<void> downloadUpdate() async {
+    if (_updateDownloadUrl.isEmpty || _isDownloadingUpdate) return;
+    _isDownloadingUpdate = true;
+    _updateDownloadProgress = 0;
+    _updateStatusMessage = 'Downloading $_latestVersion...';
+    notifyListeners();
+
+    HttpClient? client;
+    try {
+      final dir = await Directory.systemTemp.createTemp('fslite_update');
+      final fileName = 'FlowStudio_Lite_${_latestVersion}_Setup.exe';
+      final file = File('${dir.path}${Platform.pathSeparator}$fileName');
+
+      client = HttpClient();
+      client.userAgent = 'FlowStudioLite';
+      final request = await client.getUrl(Uri.parse(_updateDownloadUrl));
+      final response = await request.close();
+      if (response.statusCode != 200) {
+        throw 'GitHub download answered ${response.statusCode}';
+      }
+      final total = response.contentLength > 0 ? response.contentLength : _updateSizeBytes;
+      int received = 0;
+      final sink = file.openWrite();
+      await for (final chunk in response) {
+        sink.add(chunk);
+        received += chunk.length;
+        if (total > 0) {
+          _updateDownloadProgress = received / total;
+          notifyListeners();
+        }
+      }
+      await sink.flush();
+      await sink.close();
+
+      if (received < 1024 * 1024) {
+        throw 'The downloaded file looks incomplete';
+      }
+      _downloadedSetupPath = file.path;
+      _updateStatusMessage =
+          'Download complete ($_latestVersion, ${updateSizeLabel.isNotEmpty ? updateSizeLabel : '${(received / (1024 * 1024)).toStringAsFixed(1)} MB'}). Press "Install update" — the app will close and the new version will install itself.';
+    } catch (e) {
+      _updateStatusMessage =
+          'Download failed — check your internet connection and try again.';
+    } finally {
+      client?.close();
+      _isDownloadingUpdate = false;
+      notifyListeners();
+    }
+  }
+
+  /// v2.23.0: run the downloaded Setup silently and close this app so
+  /// the installer can replace its files. Accounts and settings live in
+  /// %APPDATA% and are not touched by the installer.
+  Future<void> installDownloadedUpdate() async {
+    if (_downloadedSetupPath.isEmpty) return;
+    _updateStatusMessage = 'Installing $_latestVersion — the app will close now...';
+    notifyListeners();
+    try {
+      await Process.start(
+        _downloadedSetupPath,
+        ['/SILENT'],
+        mode: ProcessStartMode.detached,
+      );
+    } catch (_) {
+      try {
+        await Process.start(
+          _downloadedSetupPath,
+          [],
+          mode: ProcessStartMode.detached,
+          runInShell: true,
+        );
+      } catch (_) {
+        _updateStatusMessage =
+            'The installer could not be started. The Setup file is at: $_downloadedSetupPath';
+        notifyListeners();
+        return;
+      }
+    }
+    await Future.delayed(const Duration(milliseconds: 1500));
+    exit(0);
   }
 
   Future<void> openSocial(String network) async {

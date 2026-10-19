@@ -350,6 +350,63 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
                 const SizedBox(height: 8),
                 Text(prov.updateStatusMessage, style: const TextStyle(fontSize: 10.5, color: AppTheme.textDim)),
+                // v2.23.0: in-app updater controls — download + install
+                // happen right here; no manual GitHub trip.
+                if (prov.updateAvailable && prov.downloadedSetupPath.isEmpty) ...[
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      ElevatedButton.icon(
+                        onPressed: prov.isDownloadingUpdate ? null : () => prov.downloadUpdate(),
+                        style: ElevatedButton.styleFrom(
+                          backgroundColor: AppTheme.accentGold,
+                          foregroundColor: Colors.black,
+                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                          visualDensity: VisualDensity.compact,
+                        ),
+                        icon: const Icon(Icons.download, size: 14),
+                        label: Text(
+                          prov.isDownloadingUpdate
+                              ? 'Downloading...'
+                              : 'Download update${prov.updateSizeLabel.isNotEmpty ? ' (${prov.updateSizeLabel})' : ''}',
+                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                        ),
+                      ),
+                      if (prov.isDownloadingUpdate) ...[
+                        const SizedBox(width: 10),
+                        Expanded(
+                          child: LinearProgressIndicator(
+                            value: prov.updateDownloadProgress > 0 ? prov.updateDownloadProgress : null,
+                            color: AppTheme.accentGold,
+                            backgroundColor: AppTheme.borderSoft,
+                            minHeight: 5,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          '${(prov.updateDownloadProgress * 100).toStringAsFixed(0)}%',
+                          style: const TextStyle(fontSize: 11, color: AppTheme.textDim),
+                        ),
+                      ],
+                    ],
+                  ),
+                ],
+                if (prov.downloadedSetupPath.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  ElevatedButton.icon(
+                    onPressed: () => prov.installDownloadedUpdate(),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppTheme.accentGold,
+                      foregroundColor: Colors.black,
+                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    icon: const Icon(Icons.system_update, size: 14),
+                    label: const Text('Install update — the app will close & update itself', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                  ),
+                ],
                 const SizedBox(height: 8),
                 _buildToggleRow(
                   title: 'Check automatically',

@@ -1226,6 +1226,12 @@ class FlowAutomationEngine {
     this.captureArmed = true;
 
     promptText = (promptText || '').replace(/[\r\n]+/g, ' ').trim();
+    // v2.23.0 guard: an empty prompt must fail HERE with its real reason
+    // instead of travelling to Flow and surfacing as a misleading
+    // "editor did not accept input" error after four write attempts.
+    if (!promptText) {
+      throw new Error('The prompt text was EMPTY when it reached the engine — there was nothing to write into Flow. Check the Prompts box content for this task.');
+    }
     const videoId = `vid_${Date.now()}_${promptIndex + 1}`;
     this.log(`[Prompt ${promptIndex + 1}/${totalPrompts}] Sending to Flow: "${promptText.substring(0, 50)}..."`, 'info');
 

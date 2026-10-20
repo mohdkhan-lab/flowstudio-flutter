@@ -1,6 +1,6 @@
 ; Script generated for FlowStudio Lite Inno Setup Installer
 #define MyAppName "FlowStudio Lite"
-#define MyAppVersion "2.23.1"
+#define MyAppVersion "2.23.2"
 #define MyAppPublisher "MK"
 ; v2.22.0 fix: the Flutter Windows build produces "flutter_flow.exe"
 ; (BINARY_NAME in windows/CMakeLists.txt). The old script pointed the

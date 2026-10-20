@@ -13,7 +13,7 @@ class ActivityProvider with ChangeNotifier {
     // — whether or not the engine had actually connected. Only the plain
     // start line is honest; engine state is logged by the accounts
     // provider after a real health check.
-    addLog('FlowStudio Lite v2.23.1 started');
+    addLog('FlowStudio Lite v2.23.2 started');
 
     AutomationBridge.instance.onLog = (msg, level) {
       addLog(msg, level: level);

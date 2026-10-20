@@ -33,7 +33,7 @@ class AppSettings {
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.currentVersion = 'v2.23.1',
+    this.currentVersion = 'v2.23.2',
     this.whatsAppLink = 'https://wa.me/',
     this.chatLink = 'https://flowstudio.chat/',
     this.supportLink = 'https://flowstudio.support/',

@@ -357,7 +357,15 @@ const dbService = {
       // `index` preserves the ORIGINAL prompt position — a retried
       // missing scene keeps its number, it is never renumbered.
       const item = (p && typeof p === 'object')
-        ? { text: String(p.text || ''), tag: String(p.tag || ''), index: p.index }
+        ? {
+            // v2.23.2: tolerate the bridge-style field names too
+            // (prompt_text / prompt_tag / prompt_index, 1-based) so a
+            // caller-side rename can never silently save empty prompts
+            // again — the exact failure the Flutter bridge shipped with.
+            text: String(p.text || p.prompt_text || ''),
+            tag: String(p.tag || p.prompt_tag || ''),
+            index: (p.index !== undefined ? p.index : (Number.isInteger(p.prompt_index) ? p.prompt_index - 1 : undefined))
+          }
         : { text: String(p || ''), tag: '', index: undefined };
       const promptIndex = Number.isInteger(item.index) ? item.index : idx;
       run(`

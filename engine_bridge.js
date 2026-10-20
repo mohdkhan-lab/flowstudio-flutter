@@ -225,7 +225,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.23.1', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.23.2', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -497,15 +497,24 @@ async function startBridge() {
           broadcastEvent('automation-log', { message: `Prompts received by the engine: ${counts.length} prompt(s), characters: [${counts.join(', ')}]`, level: 'info' });
         } catch (e) {}
 
-        // Format prompt items for runQueue
+        // Format prompt items for runQueue.
+        // v2.23.2 FIX: the engine's dbService.createBatchTasks reads the
+        // item shape { text, tag, index } (index 0-based) — the SAME shape
+        // the original Electron main.js passes. The bridge used to emit
+        // { prompt_text, prompt_index, prompt_tag }, which createBatchTasks
+        // does not read, so every task row was saved with an EMPTY
+        // prompt_text and the worker always received an empty prompt
+        // (proven live 2026-10-20: bridge logged characters: [6] while the
+        // worker failed with "prompt text was EMPTY"). Emit the engine's
+        // native shape here.
         const formattedPrompts = (config.prompts || []).map((p, idx) => {
           if (typeof p === 'string') {
-            return { prompt_text: p, prompt_index: idx + 1, prompt_tag: config.tag || '' };
+            return { text: p, index: idx, tag: config.tag || '' };
           }
           return {
-            prompt_text: p.text || '',
-            prompt_index: p.index || (idx + 1),
-            prompt_tag: p.tag || config.tag || ''
+            text: p.text || p.prompt || '',
+            index: Number.isInteger(p.index) ? p.index : idx,
+            tag: p.tag || config.tag || ''
           };
         });
 

@@ -182,7 +182,7 @@ class TopStrip extends StatelessWidget {
           Column(
             crossAxisAlignment: CrossAxisAlignment.end,
             mainAxisSize: MainAxisSize.min,
-            children: const [
+            children: [
               Text(
                 'TOTAL CREDITS',
                 style: TextStyle(

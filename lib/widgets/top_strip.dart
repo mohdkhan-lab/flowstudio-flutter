@@ -32,7 +32,7 @@ class TopStrip extends StatelessWidget {
           Container(
             padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
             decoration: BoxDecoration(
-              color: const Color(0x08FFFFFF),
+              color: AppTheme.overlay08,
               borderRadius: BorderRadius.circular(11),
               border: Border.all(color: AppTheme.borderSoft),
             ),
@@ -61,11 +61,11 @@ class TopStrip extends StatelessWidget {
                       width: 32,
                       height: 32,
                       fit: BoxFit.contain,
-                      errorBuilder: (_, __, ___) => const Center(
+                      errorBuilder: (_, __, ___) => Center(
                         child: Icon(
                           Icons.play_arrow_rounded,
                           size: 22,
-                          color: Color(0xFF1A1405),
+                          color: AppTheme.onAccent,
                         ),
                       ),
                     ),
@@ -77,7 +77,7 @@ class TopStrip extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     RichText(
-                      text: const TextSpan(
+                      text: TextSpan(
                         style: TextStyle(
                           fontSize: 14,
                           fontWeight: FontWeight.bold,
@@ -95,7 +95,7 @@ class TopStrip extends StatelessWidget {
                         ],
                       ),
                     ),
-                    const Text(
+                    Text(
                       'Multi-Account Flow Studio',
                       style: TextStyle(
                         fontSize: 9.5,
@@ -110,12 +110,12 @@ class TopStrip extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
-                    color: const Color(0x1AEAB308),
+                    color: const Color(0x1A0A84FF),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                   ),
-                  child: const Text(
-                    'v2.23.2',
+                  child: Text(
+                    'v2.24.0',
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
@@ -131,7 +131,7 @@ class TopStrip extends StatelessWidget {
 
           // Created by MK
           RichText(
-            text: const TextSpan(
+            text: TextSpan(
               style: TextStyle(fontSize: 13, color: AppTheme.textDim),
               children: [
                 TextSpan(text: 'Created by '),
@@ -197,7 +197,7 @@ class TopStrip extends StatelessWidget {
           const SizedBox(width: 8),
           Text(
             '${accounts.totalCredits}',
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 26,
               fontWeight: FontWeight.w900,
               color: AppTheme.accentGold,
@@ -210,12 +210,12 @@ class TopStrip extends StatelessWidget {
             onPressed: () => context.read<AccountsProvider>().syncAll(),
             style: OutlinedButton.styleFrom(
               foregroundColor: AppTheme.accentText,
-              side: const BorderSide(color: Color(0x8CEAB308)),
+              side: const BorderSide(color: Color(0x8C0A84FF)),
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
               shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
               visualDensity: VisualDensity.compact,
             ),
-            icon: const Icon(Icons.sync, size: 14, color: AppTheme.accentText),
+            icon: Icon(Icons.sync, size: 14, color: AppTheme.accentText),
             label: const Text(
               'Sync',
               style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
@@ -241,7 +241,7 @@ class TopStrip extends StatelessWidget {
           width: 28,
           height: 28,
           decoration: BoxDecoration(
-            color: const Color(0x10FFFFFF),
+            color: AppTheme.overlay10,
             shape: BoxShape.circle,
             border: Border.all(color: AppTheme.borderSoft),
           ),

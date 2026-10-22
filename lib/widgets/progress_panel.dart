@@ -26,7 +26,7 @@ class ProgressPanel extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           // Header
-          const Text(
+          Text(
             'Progress',
             style: TextStyle(
               fontSize: 13.5,
@@ -89,8 +89,8 @@ class ProgressPanel extends StatelessWidget {
                               const SizedBox(height: 6),
                               LinearProgressIndicator(
                                 value: item.progress,
-                                backgroundColor: const Color(0x20FFFFFF),
-                                valueColor: const AlwaysStoppedAnimation(AppTheme.accentGold),
+                                backgroundColor: AppTheme.overlay20,
+                                valueColor: AlwaysStoppedAnimation(AppTheme.accentGold),
                                 minHeight: 3,
                               ),
                             ],

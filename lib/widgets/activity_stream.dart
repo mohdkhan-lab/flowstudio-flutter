@@ -60,7 +60,7 @@ class _ActivityStreamState extends State<ActivityStream> {
           // Header Row: Activity | Generation started... | Ready | Previous videos
           Row(
             children: [
-              const Text(
+              Text(
                 'Activity',
                 style: TextStyle(
                   fontSize: 14,
@@ -76,7 +76,7 @@ class _ActivityStreamState extends State<ActivityStream> {
                       : 'Ready for generation',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 11,
                     color: AppTheme.textDim,
                   ),
@@ -91,7 +91,7 @@ class _ActivityStreamState extends State<ActivityStream> {
                   color: AppTheme.greenBg,
                   borderRadius: BorderRadius.circular(12),
                 ),
-                child: const Text(
+                child: Text(
                   'Ready',
                   style: TextStyle(
                     fontSize: 10,
@@ -107,7 +107,7 @@ class _ActivityStreamState extends State<ActivityStream> {
                 onPressed: () {},
                 style: OutlinedButton.styleFrom(
                   foregroundColor: AppTheme.accentText,
-                  side: const BorderSide(color: Color(0x60EAB308)),
+                  side: const BorderSide(color: Color(0x600A84FF)),
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   visualDensity: VisualDensity.compact,
@@ -127,7 +127,7 @@ class _ActivityStreamState extends State<ActivityStream> {
             children: [
               Text(
                 'All-time: ${generator.completedCount} videos saved • 0 today',
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 10.5,
                   color: AppTheme.textFaint,
                 ),
@@ -138,7 +138,7 @@ class _ActivityStreamState extends State<ActivityStream> {
               Container(
                 height: 24,
                 decoration: BoxDecoration(
-                  color: const Color(0x10FFFFFF),
+                  color: AppTheme.overlay10,
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppTheme.borderSoft),
                 ),
@@ -164,7 +164,7 @@ class _ActivityStreamState extends State<ActivityStream> {
               Container(
                 height: 24,
                 decoration: BoxDecoration(
-                  color: const Color(0x10FFFFFF),
+                  color: AppTheme.overlay10,
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppTheme.borderSoft),
                 ),
@@ -236,7 +236,7 @@ class _ActivityStreamState extends State<ActivityStream> {
                       // Timestamp (Right aligned e.g. 07:16 pm)
                       Text(
                         timeFormatter.format(log.timestamp).toLowerCase(),
-                        style: const TextStyle(
+                        style: TextStyle(
                           fontSize: 10.5,
                           color: AppTheme.textFaint,
                         ),
@@ -271,7 +271,7 @@ class _ActivityStreamState extends State<ActivityStream> {
           style: TextStyle(
             fontSize: 10,
             fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
-            color: isSelected ? const Color(0xFF1A1405) : AppTheme.textDim,
+            color: isSelected ? AppTheme.onAccent : AppTheme.textDim,
           ),
         ),
       ),
@@ -289,7 +289,7 @@ class _ActivityStreamState extends State<ActivityStream> {
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
         child: Text(
           label,
-          style: const TextStyle(
+          style: TextStyle(
             fontSize: 10,
             fontWeight: FontWeight.w600,
             color: AppTheme.textDim,

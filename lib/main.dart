@@ -30,11 +30,26 @@ class FlowStudioApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => ActivityProvider()),
         ChangeNotifierProvider(create: (_) => GeneratorProvider()),
       ],
-      child: MaterialApp(
-        title: 'FlowStudio Lite',
-        debugShowCheckedModeBanner: false,
-        theme: AppTheme.darkTheme,
-        home: const MainStudioScreen(),
+      child: Consumer<SettingsProvider>(
+        builder: (context, settingsProv, _) {
+          // v2.24.0: real appearance switching — 'dark' = Soft Charcoal,
+          // 'white' = Creamy light, 'system' follows Windows.
+          final appearance = settingsProv.settings.appearance;
+          final platformDark =
+              WidgetsBinding.instance.platformDispatcher.platformBrightness ==
+                  Brightness.dark;
+          final useDark =
+              appearance == 'dark' || (appearance == 'system' && platformDark);
+          AppTheme.dark = useDark;
+          return MaterialApp(
+            title: 'FlowStudio Lite',
+            debugShowCheckedModeBanner: false,
+            theme: AppTheme.lightTheme,
+            darkTheme: AppTheme.darkTheme,
+            themeMode: useDark ? ThemeMode.dark : ThemeMode.light,
+            home: const MainStudioScreen(),
+          );
+        },
       ),
     );
   }

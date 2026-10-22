@@ -1,45 +1,66 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+/// FlowStudio v2.24.0 — FINAL design (locked by Aslam, 2026-10-22):
+/// macOS style. Light = Creamy Gradient, Dark = Soft Charcoal.
+/// System-blue accent in both modes; green toggles/status stay mac green.
+///
+/// Every token is a getter backed by [dark], so the whole app recolors
+/// when the appearance changes without touching widget call sites.
 class AppTheme {
-  // FlowStudio Lite v2.21 Exact Design Tokens
-  static const Color bgBody = Color(0xFF0F0E0B);
-  static const Color surface = Color(0xFF1A1915);
-  static const Color surfaceElevated = Color(0xFF22211A);
-  static const Color inputBg = Color(0xFF171611);
-  static const Color border = Color(0xFF35332A);
-  static const Color borderSoft = Color(0xFF2E2B21);
-  
-  // Accents
-  static const Color accentGold = Color(0xFFEAB308);
-  static const Color accentAmber = Color(0xFFF59E0B);
-  static const Color accentText = Color(0xFFFDE047);
-  static const Color onAccent = Color(0xFF1A1405);
-  
-  // Status Colors
-  static const Color green = Color(0xFF4ADE80);
-  static const Color greenBg = Color(0x1F4ADE80);
-  static const Color red = Color(0xFFF87171);
-  static const Color redBg = Color(0x1FF87171);
-  static const Color blue = Color(0xFF7DD3FC);
+  /// True when the dark (Soft Charcoal) palette is active.
+  static bool dark = true;
+
+  // Surfaces
+  static Color get bgBody => dark ? const Color(0xFF232325) : const Color(0xFFF7ECD7);
+  static Color get surface => dark ? const Color(0xFF2C2C2E) : const Color(0xFFFFFDF8);
+  static Color get surfaceElevated => dark ? const Color(0xFF3A3A3C) : const Color(0xFFFFFFFF);
+  static Color get inputBg => dark ? const Color(0xFF1C1C1E) : const Color(0xFFFFFDF8);
+  static Color get border => dark ? const Color(0xFF5A5A5E) : const Color(0xFFE3D5BA);
+  static Color get borderSoft => dark ? const Color(0xFF3D3D40) : const Color(0xFFF1E8D5);
+
+  // Accents — macOS system blue in both modes
+  static Color get accentGold => const Color(0xFF0A84FF);
+  static Color get accentAmber => dark ? const Color(0xFF409CFF) : const Color(0xFF1A94FF);
+  static Color get accentText => dark ? const Color(0xFF409CFF) : const Color(0xFF0066CC);
+  static Color get onAccent => const Color(0xFFFFFFFF);
+
+  // Status colors — mac greens/reds
+  static Color get green => dark ? const Color(0xFF30D158) : const Color(0xFF34C759);
+  static Color get greenBg => dark ? const Color(0x1F30D158) : const Color(0x1F34C759);
+  static Color get red => dark ? const Color(0xFFFF453A) : const Color(0xFFFF3B30);
+  static Color get redBg => dark ? const Color(0x1FFF453A) : const Color(0x1FFF3B30);
+  static Color get blue => dark ? const Color(0xFF64D2FF) : const Color(0xFF0071E3);
   static const Color whatsApp = Color(0xFF25D366);
-  
-  // Text Colors
-  static const Color textMain = Color(0xFFF5F2E9);
-  static const Color textDim = Color(0xFFB5B09C);
-  static const Color textFaint = Color(0xFFA8A28E);
 
-  static const LinearGradient accentGrad = LinearGradient(
-    colors: [Color(0xFFFACC15), Color(0xFFF59E0B)],
-    begin: Alignment.topLeft,
-    end: Alignment.bottomRight,
-  );
+  // Text colors
+  static Color get textMain => dark ? const Color(0xFFFFFFFF) : const Color(0xFF1D1D1F);
+  static Color get textDim => dark ? const Color(0xFFD1D1D6) : const Color(0xFF6E6E73);
+  static Color get textFaint => dark ? const Color(0xFFA1A1A6) : const Color(0xFF86868B);
 
-  static const LinearGradient panelGrad = LinearGradient(
-    colors: [Color(0xFF22211A), Color(0xFF1A1915)],
-    begin: Alignment.topCenter,
-    end: Alignment.bottomCenter,
-  );
+  // Subtle inner overlays (replaces fixed white-alpha fills, which only
+  // worked on the old dark theme)
+  static Color get overlay08 => dark ? const Color(0x08FFFFFF) : const Color(0x0A000000);
+  static Color get overlay10 => dark ? const Color(0x10FFFFFF) : const Color(0x12000000);
+  static Color get overlay20 => dark ? const Color(0x20FFFFFF) : const Color(0x1F000000);
+
+  static LinearGradient get accentGrad => const LinearGradient(
+        colors: [Color(0xFF1A94FF), Color(0xFF0066D6)],
+        begin: Alignment.topLeft,
+        end: Alignment.bottomRight,
+      );
+
+  static LinearGradient get panelGrad => dark
+      ? const LinearGradient(
+          colors: [Color(0xFF3A3A3C), Color(0xFF2C2C2E)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        )
+      : const LinearGradient(
+          colors: [Color(0xFFFFFFFF), Color(0xFFFFFAF0)],
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+        );
 
   static ThemeData get darkTheme {
     return ThemeData(
@@ -50,13 +71,13 @@ class AppTheme {
       cardColor: surfaceElevated,
       primaryColor: accentGold,
       dividerColor: borderSoft,
-      colorScheme: const ColorScheme.dark(
+      colorScheme: ColorScheme.dark(
         primary: accentGold,
         secondary: accentAmber,
         surface: surface,
         error: red,
       ),
-      appBarTheme: const AppBarTheme(
+      appBarTheme: AppBarTheme(
         backgroundColor: surface,
         elevation: 0,
       ),
@@ -66,7 +87,37 @@ class AppTheme {
           borderRadius: BorderRadius.circular(6),
           border: Border.all(color: border),
         ),
-        textStyle: const TextStyle(fontSize: 11, color: textMain),
+        textStyle: TextStyle(fontSize: 11, color: textMain),
+      ),
+    );
+  }
+
+  static ThemeData get lightTheme {
+    return ThemeData(
+      brightness: Brightness.light,
+      fontFamily: GoogleFonts.inter().fontFamily,
+      scaffoldBackgroundColor: bgBody,
+      canvasColor: surface,
+      cardColor: surfaceElevated,
+      primaryColor: accentGold,
+      dividerColor: borderSoft,
+      colorScheme: ColorScheme.light(
+        primary: accentGold,
+        secondary: accentAmber,
+        surface: surface,
+        error: red,
+      ),
+      appBarTheme: AppBarTheme(
+        backgroundColor: surface,
+        elevation: 0,
+      ),
+      tooltipTheme: TooltipThemeData(
+        decoration: BoxDecoration(
+          color: surfaceElevated,
+          borderRadius: BorderRadius.circular(6),
+          border: Border.all(color: border),
+        ),
+        textStyle: TextStyle(fontSize: 11, color: textMain),
       ),
     );
   }

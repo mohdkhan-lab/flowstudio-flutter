@@ -34,7 +34,7 @@ class VideoSettingsBar extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // Header: VIDEO SETTINGS
-          const Text(
+          Text(
             'VIDEO SETTINGS',
             style: TextStyle(
               fontSize: 10,
@@ -123,7 +123,7 @@ class VideoSettingsBar extends StatelessWidget {
                   height: 30,
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   decoration: BoxDecoration(
-                    color: const Color(0x10FFFFFF),
+                    color: AppTheme.overlay10,
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(color: AppTheme.borderSoft),
                   ),
@@ -141,7 +141,7 @@ class VideoSettingsBar extends StatelessWidget {
                       const SizedBox(width: 6),
                       Text(
                         isPaused ? 'Resume' : 'Pause',
-                        style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),
+                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),
                       ),
                     ],
                   ),
@@ -158,7 +158,7 @@ class VideoSettingsBar extends StatelessWidget {
                   height: 30,
                   padding: const EdgeInsets.symmetric(horizontal: 10),
                   decoration: BoxDecoration(
-                    color: const Color(0x10FFFFFF),
+                    color: AppTheme.overlay10,
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(color: AppTheme.borderSoft),
                   ),
@@ -174,7 +174,7 @@ class VideoSettingsBar extends StatelessWidget {
                         ),
                       ),
                       const SizedBox(width: 6),
-                      const Text(
+                      Text(
                         'Stop',
                         style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),
                       ),
@@ -208,17 +208,17 @@ class VideoSettingsBar extends StatelessWidget {
                       ),
                     ],
                   ),
-                  child: const Row(
+                  child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.play_arrow, size: 14, color: Color(0xFF1A1405)),
+                      Icon(Icons.play_arrow, size: 14, color: AppTheme.onAccent),
                       SizedBox(width: 4),
                       Text(
                         'Generate',
                         style: TextStyle(
                           fontSize: 11.5,
                           fontWeight: FontWeight.w800,
-                          color: Color(0xFF1A1405),
+                          color: AppTheme.onAccent,
                         ),
                       ),
                     ],
@@ -228,7 +228,7 @@ class VideoSettingsBar extends StatelessWidget {
 
               const SizedBox(width: 12),
               if (isRunning) ...[
-                const Text(
+                Text(
                   'Running...',
                   style: TextStyle(
                     fontSize: 11,
@@ -262,7 +262,7 @@ class VideoSettingsBar extends StatelessWidget {
         children: [
           Text(
             label,
-            style: const TextStyle(
+            style: TextStyle(
               fontSize: 11,
               fontWeight: FontWeight.bold,
               color: AppTheme.textDim,
@@ -275,12 +275,12 @@ class VideoSettingsBar extends StatelessWidget {
                 value: items.contains(value) ? value : items.first,
                 dropdownColor: AppTheme.surfaceElevated,
                 isDense: true,
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 11.5,
                   fontWeight: FontWeight.bold,
                   color: AppTheme.textMain,
                 ),
-                icon: const Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
+                icon: Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
                 items: items.map((String item) {
                   return DropdownMenuItem<String>(
                     value: item,

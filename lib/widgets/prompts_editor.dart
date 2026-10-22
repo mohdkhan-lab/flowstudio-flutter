@@ -87,7 +87,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
           // Header Row: Prompts | TAG None ▾ | + Add Tag
           Row(
             children: [
-              const Text(
+              Text(
                 'Prompts',
                 style: TextStyle(
                   fontSize: 13.5,
@@ -96,7 +96,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
                 ),
               ),
               const Spacer(),
-              const Text(
+              Text(
                 'TAG',
                 style: TextStyle(
                   fontSize: 10.5,
@@ -123,8 +123,8 @@ class _PromptsEditorState extends State<PromptsEditor> {
                       child: DropdownButton<String>(
                         value: currentVal,
                         dropdownColor: AppTheme.surfaceElevated,
-                        style: const TextStyle(fontSize: 11, color: AppTheme.textMain),
-                        icon: const Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
+                        style: TextStyle(fontSize: 11, color: AppTheme.textMain),
+                        icon: Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
                         items: tags.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
                         onChanged: (val) {
                           if (val != null) setState(() => _selectedTag = val);
@@ -143,11 +143,11 @@ class _PromptsEditorState extends State<PromptsEditor> {
                   padding: const EdgeInsets.symmetric(horizontal: 8),
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: const Color(0x1AEAB308),
+                    color: const Color(0x1A0A84FF),
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                   ),
-                  child: const Text(
+                  child: Text(
                     '+ Add Tag',
                     style: TextStyle(
                       fontSize: 10.5,
@@ -173,7 +173,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     gradient: _isBulkPrompt ? AppTheme.accentGrad : null,
-                    color: _isBulkPrompt ? null : const Color(0x0AFFFFFF),
+                    color: _isBulkPrompt ? null : AppTheme.overlay08,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
@@ -181,7 +181,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
                     style: TextStyle(
                       fontSize: 10.5,
                       fontWeight: FontWeight.bold,
-                      color: _isBulkPrompt ? const Color(0xFF1A1405) : AppTheme.textDim,
+                      color: _isBulkPrompt ? AppTheme.onAccent : AppTheme.textDim,
                     ),
                   ),
                 ),
@@ -195,7 +195,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
                     gradient: !_isBulkPrompt ? AppTheme.accentGrad : null,
-                    color: !_isBulkPrompt ? null : const Color(0x0AFFFFFF),
+                    color: !_isBulkPrompt ? null : AppTheme.overlay08,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
@@ -203,7 +203,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
                     style: TextStyle(
                       fontSize: 10.5,
                       fontWeight: FontWeight.bold,
-                      color: !_isBulkPrompt ? const Color(0xFF1A1405) : AppTheme.textDim,
+                      color: !_isBulkPrompt ? AppTheme.onAccent : AppTheme.textDim,
                     ),
                   ),
                 ),
@@ -213,13 +213,13 @@ class _PromptsEditorState extends State<PromptsEditor> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: const Color(0x12EAB308),
+                  color: const Color(0x120A84FF),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                 ),
                 child: Text(
                   'Prompts: ${generator.totalPrompts}',
-                  style: const TextStyle(
+                  style: TextStyle(
                     fontSize: 10.5,
                     fontWeight: FontWeight.bold,
                     color: AppTheme.accentText,
@@ -246,17 +246,17 @@ class _PromptsEditorState extends State<PromptsEditor> {
                     controller: _controller,
                     maxLines: null,
                     expands: true,
-                    style: const TextStyle(
+                    style: TextStyle(
                       fontSize: 11.5,
                       height: 1.5,
                       color: AppTheme.textMain,
                       fontFamily: 'Consolas',
                     ),
                     onChanged: (text) => context.read<GeneratorProvider>().setRawText(text),
-                    decoration: const InputDecoration(
+                    decoration: InputDecoration(
                       hintText: '#00-01 A cinematic shot of a lighthouse during a storm, waves crashing...\n#00-02 A drone flyover of a green valley at sunrise, mist lifting...',
                       hintStyle: TextStyle(
-                        color: Color(0xFF6E6758),
+                        color: AppTheme.textFaint,
                         fontSize: 11,
                         fontStyle: FontStyle.italic,
                       ),
@@ -276,11 +276,11 @@ class _PromptsEditorState extends State<PromptsEditor> {
                     child: Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
-                        color: const Color(0xFF222019),
+                        color: AppTheme.inputBg,
                         borderRadius: BorderRadius.circular(6),
                         border: Border.all(color: AppTheme.borderSoft),
                       ),
-                      child: const Text(
+                      child: Text(
                         'txt/srt',
                         style: TextStyle(
                           fontSize: 10,
@@ -306,12 +306,12 @@ class _PromptsEditorState extends State<PromptsEditor> {
       builder: (ctx) => AlertDialog(
         backgroundColor: AppTheme.surfaceElevated,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        title: const Text('+ Add Tag', style: TextStyle(fontSize: 14, color: AppTheme.textMain)),
+        title: Text('+ Add Tag', style: TextStyle(fontSize: 14, color: AppTheme.textMain)),
         content: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            const Text(
+            Text(
               'Write the tag name. Videos saved with this tag carry its name (e.g. Scene1.mp4).',
               style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
             ),
@@ -319,8 +319,8 @@ class _PromptsEditorState extends State<PromptsEditor> {
             TextField(
               controller: tagCtrl,
               autofocus: true,
-              style: const TextStyle(fontSize: 12, color: AppTheme.textMain),
-              decoration: const InputDecoration(
+              style: TextStyle(fontSize: 12, color: AppTheme.textMain),
+              decoration: InputDecoration(
                 hintText: 'e.g. Scene1',
                 hintStyle: TextStyle(fontSize: 11, color: AppTheme.textFaint),
               ),
@@ -330,7 +330,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel', style: TextStyle(color: AppTheme.textDim)),
+            child: Text('Cancel', style: TextStyle(color: AppTheme.textDim)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(

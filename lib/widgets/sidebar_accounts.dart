@@ -64,7 +64,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                   child: Container(
                     height: 32,
                     decoration: BoxDecoration(
-                      color: isGenerate ? const Color(0x15EAB308) : const Color(0x0AFFFFFF),
+                      color: isGenerate ? const Color(0x150A84FF) : AppTheme.overlay08,
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
                         color: isGenerate ? AppTheme.accentGold.withValues(alpha: 0.6) : AppTheme.borderSoft,
@@ -91,7 +91,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                   child: Container(
                     height: 32,
                     decoration: BoxDecoration(
-                      color: !isGenerate ? const Color(0x15EAB308) : const Color(0x0AFFFFFF),
+                      color: !isGenerate ? const Color(0x150A84FF) : AppTheme.overlay08,
                       borderRadius: BorderRadius.circular(8),
                       border: Border.all(
                         color: !isGenerate ? AppTheme.accentGold.withValues(alpha: 0.6) : AppTheme.borderSoft,
@@ -120,7 +120,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             alignment: Alignment.centerRight,
             child: InkWell(
               onTap: () => accountsProv.selectAll(),
-              child: const Text(
+              child: Text(
                 'Select all',
                 style: TextStyle(
                   fontSize: 11,
@@ -141,7 +141,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                   onPressed: () => _showAddAccountDialog(context),
                   style: ElevatedButton.styleFrom(
                     backgroundColor: AppTheme.accentGold,
-                    foregroundColor: const Color(0xFF1A1405),
+                    foregroundColor: AppTheme.onAccent,
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     elevation: 0,
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
@@ -159,13 +159,13 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                   onPressed: () => pickAndImportCookieFiles(context),
                   style: OutlinedButton.styleFrom(
                     foregroundColor: AppTheme.textMain,
-                    backgroundColor: const Color(0x10FFFFFF),
-                    side: const BorderSide(color: AppTheme.borderSoft),
+                    backgroundColor: AppTheme.overlay10,
+                    side: BorderSide(color: AppTheme.borderSoft),
                     padding: const EdgeInsets.symmetric(vertical: 8),
                     shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
                     visualDensity: VisualDensity.compact,
                   ),
-                  child: const Row(
+                  child: Row(
                     mainAxisAlignment: MainAxisAlignment.center,
                     children: [
                       Icon(Icons.cookie_outlined, size: 12, color: AppTheme.accentGold),
@@ -203,7 +203,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             child: Container(
               padding: const EdgeInsets.all(6),
               decoration: BoxDecoration(
-                color: const Color(0x0AFFFFFF),
+                color: AppTheme.overlay08,
                 borderRadius: BorderRadius.circular(9),
                 border: Border.all(color: AppTheme.borderSoft),
               ),
@@ -214,7 +214,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                             ? 'No accounts yet — press "+ Add Account" to sign in, or "Add Cookies".'
                             : 'No accounts in this state.',
                         textAlign: TextAlign.center,
-                        style: const TextStyle(fontSize: 11, color: AppTheme.textFaint),
+                        style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
                       ),
                     )
                   : ListView.separated(
@@ -227,7 +227,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                         return Container(
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
                           decoration: BoxDecoration(
-                            color: const Color(0x08FFFFFF),
+                            color: AppTheme.overlay08,
                             borderRadius: BorderRadius.circular(8),
                             border: Border.all(color: AppTheme.borderSoft),
                           ),
@@ -255,7 +255,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       acc.name,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                         fontSize: 11.5,
                                         fontWeight: FontWeight.bold,
                                         color: AppTheme.textMain,
@@ -263,7 +263,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                     ),
                                     Text(
                                       '${acc.credits} credits',
-                                      style: const TextStyle(
+                                      style: TextStyle(
                                         fontSize: 10,
                                         color: AppTheme.textFaint,
                                       ),
@@ -298,9 +298,9 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                   height: 22,
                                   decoration: const BoxDecoration(
                                     shape: BoxShape.circle,
-                                    color: Color(0x1AEAB308),
+                                    color: Color(0x1A0A84FF),
                                   ),
-                                  child: const Icon(
+                                  child: Icon(
                                     Icons.arrow_outward,
                                     size: 12,
                                     color: AppTheme.accentGold,
@@ -369,7 +369,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
           Center(
             child: Text(
               '$selectedCount of ${allAccounts.length} selected • ${accountsProv.activeAccountsCount} live ready • 0 not confirmed',
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 9.5,
                 color: AppTheme.textFaint,
               ),
@@ -377,14 +377,14 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
           ),
 
           const SizedBox(height: 6),
-          const Divider(color: AppTheme.borderSoft, height: 1),
+          Divider(color: AppTheme.borderSoft, height: 1),
           const SizedBox(height: 6),
 
           // Only run live accounts toggle
           Row(
             mainAxisAlignment: MainAxisAlignment.spaceBetween,
             children: [
-              const Text(
+              Text(
                 'Only run live accounts',
                 style: TextStyle(
                   fontSize: 11,
@@ -397,7 +397,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                 child: Switch(
                   value: _onlyRunLive,
                   activeThumbColor: AppTheme.accentGold,
-                  activeTrackColor: const Color(0x40EAB308),
+                  activeTrackColor: const Color(0x400A84FF),
                   inactiveTrackColor: AppTheme.borderSoft,
                   onChanged: (val) {
                     setState(() => _onlyRunLive = val);
@@ -422,7 +422,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
           alignment: Alignment.center,
           decoration: BoxDecoration(
             gradient: isActive ? AppTheme.accentGrad : null,
-            color: isActive ? null : const Color(0x08FFFFFF),
+            color: isActive ? null : AppTheme.overlay08,
             borderRadius: BorderRadius.circular(6),
             border: Border.all(
               color: isActive ? Colors.transparent : AppTheme.borderSoft,
@@ -435,7 +435,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
               style: TextStyle(
                 fontSize: 9.5,
                 fontWeight: isActive ? FontWeight.w800 : FontWeight.w600,
-                color: isActive ? const Color(0xFF1A1405) : AppTheme.textDim,
+                color: isActive ? AppTheme.onAccent : AppTheme.textDim,
               ),
             ),
           ),
@@ -452,7 +452,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
         height: 30,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: const Color(0x0AFFFFFF),
+          color: AppTheme.overlay08,
           borderRadius: BorderRadius.circular(6),
           border: Border.all(color: AppTheme.borderSoft),
         ),
@@ -476,12 +476,12 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
       builder: (ctx) => AlertDialog(
         backgroundColor: AppTheme.surfaceElevated,
         shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(10)),
-        title: const Text('Delete Selected Accounts', style: TextStyle(fontSize: 14, color: AppTheme.textMain)),
-        content: const Text('Are you sure you want to delete all selected accounts from FlowStudio?', style: TextStyle(fontSize: 12, color: AppTheme.textDim)),
+        title: Text('Delete Selected Accounts', style: TextStyle(fontSize: 14, color: AppTheme.textMain)),
+        content: Text('Are you sure you want to delete all selected accounts from FlowStudio?', style: TextStyle(fontSize: 12, color: AppTheme.textDim)),
         actions: [
           TextButton(
             onPressed: () => Navigator.pop(ctx),
-            child: const Text('Cancel', style: TextStyle(color: AppTheme.textDim)),
+            child: Text('Cancel', style: TextStyle(color: AppTheme.textDim)),
           ),
           ElevatedButton(
             style: ElevatedButton.styleFrom(backgroundColor: AppTheme.red, foregroundColor: Colors.white),
@@ -635,7 +635,7 @@ class _AddAccountDialogState extends State<_AddAccountDialog> with SingleTickerP
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       title: Column(
         children: [
-          const Text('Add Google Flow Account', style: TextStyle(fontSize: 15, color: AppTheme.textMain)),
+          Text('Add Google Flow Account', style: TextStyle(fontSize: 15, color: AppTheme.textMain)),
           const SizedBox(height: 8),
           TabBar(
             controller: _tabController,
@@ -658,9 +658,9 @@ class _AddAccountDialogState extends State<_AddAccountDialog> with SingleTickerP
           children: [
             // Tab 1: Chrome Profiles
             _loadingProfiles
-                ? const Center(child: CircularProgressIndicator(color: AppTheme.accentGold))
+                ? Center(child: CircularProgressIndicator(color: AppTheme.accentGold))
                 : _profiles.isEmpty
-                    ? const Center(
+                    ? Center(
                         child: Text(
                           'No Chrome profiles found.\nUse "Add Cookies" to import from file.',
                           textAlign: TextAlign.center,
@@ -685,7 +685,7 @@ class _AddAccountDialogState extends State<_AddAccountDialog> with SingleTickerP
                             ),
                             child: Row(
                               children: [
-                                const Icon(Icons.account_circle, size: 24, color: AppTheme.accentGold),
+                                Icon(Icons.account_circle, size: 24, color: AppTheme.accentGold),
                                 const SizedBox(width: 8),
                                 Expanded(
                                   child: Column(
@@ -693,11 +693,11 @@ class _AddAccountDialogState extends State<_AddAccountDialog> with SingleTickerP
                                     children: [
                                       Text(
                                         name,
-                                        style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textMain),
+                                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textMain),
                                       ),
                                       Text(
                                         email.isNotEmpty ? email : dir,
-                                        style: const TextStyle(fontSize: 10, color: AppTheme.textFaint),
+                                        style: TextStyle(fontSize: 10, color: AppTheme.textFaint),
                                       ),
                                     ],
                                   ),
@@ -734,15 +734,15 @@ class _AddAccountDialogState extends State<_AddAccountDialog> with SingleTickerP
                       color: AppTheme.accentGold.withValues(alpha: 0.12),
                       shape: BoxShape.circle,
                     ),
-                    child: const Icon(Icons.cookie_outlined, size: 32, color: AppTheme.accentGold),
+                    child: Icon(Icons.cookie_outlined, size: 32, color: AppTheme.accentGold),
                   ),
                   const SizedBox(height: 14),
-                  const Text(
+                  Text(
                     'Import Cookies File from PC',
                     style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.textMain),
                   ),
                   const SizedBox(height: 6),
-                  const Text(
+                  Text(
                     'Select a Netscape cookies.txt or JSON cookie file exported from your browser.',
                     textAlign: TextAlign.center,
                     style: TextStyle(fontSize: 11, color: AppTheme.textDim, height: 1.4),
@@ -808,7 +808,7 @@ class _AddAccountDialogState extends State<_AddAccountDialog> with SingleTickerP
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Close', style: TextStyle(color: AppTheme.textDim)),
+          child: Text('Close', style: TextStyle(color: AppTheme.textDim)),
         ),
       ],
     );
@@ -891,7 +891,7 @@ class _AddCookiesDialogState extends State<_AddCookiesDialog> {
     return AlertDialog(
       backgroundColor: AppTheme.surfaceElevated,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      title: const Text('Add Account from Cookies', style: TextStyle(fontSize: 15, color: AppTheme.textMain)),
+      title: Text('Add Account from Cookies', style: TextStyle(fontSize: 15, color: AppTheme.textMain)),
       content: SizedBox(
         width: 380,
         child: Column(
@@ -917,7 +917,7 @@ class _AddCookiesDialogState extends State<_AddCookiesDialog> {
               ),
             ),
             const SizedBox(height: 10),
-            const Text('Cookies Preview (JSON or Netscape format):', style: TextStyle(fontSize: 11, color: AppTheme.textDim)),
+            Text('Cookies Preview (JSON or Netscape format):', style: TextStyle(fontSize: 11, color: AppTheme.textDim)),
             const SizedBox(height: 4),
             Container(
               height: 100,
@@ -930,7 +930,7 @@ class _AddCookiesDialogState extends State<_AddCookiesDialog> {
               child: TextField(
                 controller: cookieCtrl,
                 maxLines: null,
-                style: const TextStyle(fontSize: 11, color: AppTheme.textMain),
+                style: TextStyle(fontSize: 11, color: AppTheme.textMain),
                 decoration: const InputDecoration(
                   hintText: 'Cookies file content or paste cookies here...',
                   border: InputBorder.none,
@@ -943,7 +943,7 @@ class _AddCookiesDialogState extends State<_AddCookiesDialog> {
       actions: [
         TextButton(
           onPressed: () => Navigator.pop(context),
-          child: const Text('Cancel', style: TextStyle(color: AppTheme.textDim)),
+          child: Text('Cancel', style: TextStyle(color: AppTheme.textDim)),
         ),
         ElevatedButton(
           onPressed: _importing ? null : _submit,

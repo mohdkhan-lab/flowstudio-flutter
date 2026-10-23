@@ -198,6 +198,14 @@ async function startBridge() {
       res.write('\n');
       sseClients.add(res);
 
+      // v2.25.0 (parked browser): a (re)connecting UI gets the CURRENT
+      // active-browser snapshot at once, so the sidebar's ACTIVE text
+      // is right even if it missed the change events while away.
+      try {
+        const snap = activeWorkerPool ? activeWorkerPool.getActiveBrowsers() : [];
+        res.write(`event: active-browsers\ndata: ${JSON.stringify({ accounts: snap })}\n\n`);
+      } catch (e) {}
+
       req.on('close', () => {
         sseClients.delete(res);
       });
@@ -225,7 +233,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.24.1', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.25.0', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -341,6 +349,34 @@ async function startBridge() {
         } catch (e) {
           return sendJson(500, { ok: false, error: e.message });
         }
+      }
+
+      // v2.25.0 (parked browser): Show/Hide toggle for a GENERATING
+      // account's working browser. Only the window's bounds move —
+      // generation is never interrupted. Accounts that are not
+      // generating keep using /api/accounts/open-chrome as before.
+      if (pathname === '/api/accounts/toggle-browser' && req.method === 'POST') {
+        const body = await readBody();
+        if (!activeWorkerPool) {
+          return sendJson(400, { ok: false, error: 'No generation is running right now.' });
+        }
+        try {
+          const result = await activeWorkerPool.toggleBrowserWindow(body.id);
+          if (!result.ok) {
+            return sendJson(400, { ok: false, error: result.error || 'The browser window could not be toggled.' });
+          }
+          return sendJson(200, { ok: true, windowShown: result.windowShown });
+        } catch (e) {
+          return sendJson(500, { ok: false, error: e.message });
+        }
+      }
+
+      // v2.25.0 (parked browser): the current [{ id, windowShown }]
+      // list of accounts with a live generation browser (the same
+      // payload the 'active-browsers' SSE event carries).
+      if (pathname === '/api/generation/active-browsers' && req.method === 'GET') {
+        const accounts = activeWorkerPool ? activeWorkerPool.getActiveBrowsers() : [];
+        return sendJson(200, { ok: true, accounts });
       }
 
       if (pathname === '/api/accounts/complete-login' && req.method === 'POST') {
@@ -479,6 +515,10 @@ async function startBridge() {
           onProgress: (data) => broadcastEvent('automation-progress', data),
           onVideoCompleted: (data) => broadcastEvent('video-completed', data),
           onAccountUpdated: (data) => broadcastEvent('account-updated', data),
+          // v2.25.0 (parked browser): the pool announces which accounts
+          // have a live generation browser (+ window shown/parked) —
+          // the sidebar renders ACTIVE + the Show/Hide toggle from it.
+          onActiveBrowsersChanged: (list) => broadcastEvent('active-browsers', { accounts: list }),
         });
 
         activeWorkerPool = pool;

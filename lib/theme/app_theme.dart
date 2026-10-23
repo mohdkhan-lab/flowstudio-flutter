@@ -25,6 +25,11 @@ class AppTheme {
   static Color get accentText => dark ? const Color(0xFF409CFF) : const Color(0xFF0066CC);
   static Color get onAccent => const Color(0xFFFFFFFF);
 
+  // v2.25.0 (parked browser): the gold of the "● ACTIVE" text and the
+  // active account row's border — deeper gold on the creamy light
+  // palette, brighter gold on Soft Charcoal so it stays readable.
+  static Color get activeGold => dark ? const Color(0xFFF5B301) : const Color(0xFFCF8A04);
+
   // Status colors — mac greens/reds
   static Color get green => dark ? const Color(0xFF30D158) : const Color(0xFF34C759);
   static Color get greenBg => dark ? const Color(0x1F30D158) : const Color(0x1F34C759);

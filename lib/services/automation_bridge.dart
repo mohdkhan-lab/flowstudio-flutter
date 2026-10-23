@@ -23,6 +23,9 @@ class AutomationBridge {
   Function(GoogleAccount account)? onAccountUpdated;
   Function(Map<String, dynamic> data)? onProgress;
   Function(Map<String, dynamic> data)? onVideoCompleted;
+  // v2.25.0 (parked browser): [{ 'id': ..., 'windowShown': bool }] for
+  // every account with a live generation browser right now.
+  Function(List<Map<String, dynamic>> accounts)? onActiveBrowsers;
 
   AutomationBridge._();
 
@@ -187,6 +190,19 @@ class AutomationBridge {
                     accountFromJson(
                       Map<String, dynamic>.from(data['account'] as Map),
                     ),
+                  );
+                }
+                break;
+              case 'active-browsers':
+                // v2.25.0 (parked browser): which accounts are
+                // generating right now, and whether each working
+                // browser is on screen or parked off-screen.
+                if (data['accounts'] is List) {
+                  onActiveBrowsers?.call(
+                    (data['accounts'] as List)
+                        .whereType<Map>()
+                        .map((a) => Map<String, dynamic>.from(a))
+                        .toList(),
                   );
                 }
                 break;
@@ -382,6 +398,48 @@ class AutomationBridge {
       debugPrint('[openChromeForAccount Error] $e');
       return false;
     }
+  }
+
+  /// v2.25.0 (parked browser): the accounts with a live generation
+  /// browser right now — [{ 'id': ..., 'windowShown': bool }].
+  Future<List<Map<String, dynamic>>> getActiveBrowsers() async {
+    try {
+      final res = await http.get(Uri.parse('$baseUrl/api/generation/active-browsers'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true && data['accounts'] is List) {
+          return (data['accounts'] as List)
+              .whereType<Map>()
+              .map((a) => Map<String, dynamic>.from(a))
+              .toList();
+        }
+      }
+    } catch (e) {
+      debugPrint('[getActiveBrowsers Error] $e');
+    }
+    return [];
+  }
+
+  /// v2.25.0 (parked browser): flip a GENERATING account's working
+  /// browser between the screen and its off-screen park. Returns the
+  /// new windowShown state, or null when the toggle did not happen
+  /// (e.g. the account is not generating). Generation is never
+  /// interrupted by this — only the window's position changes.
+  Future<bool?> toggleAccountBrowser(String id) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/accounts/toggle-browser'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'id': id}),
+      );
+      final data = json.decode(res.body);
+      if (res.statusCode == 200 && data['ok'] == true) {
+        return data['windowShown'] == true;
+      }
+    } catch (e) {
+      debugPrint('[toggleAccountBrowser Error] $e');
+    }
+    return null;
   }
 
   Future<Map<String, dynamic>?> loadSettings() async {

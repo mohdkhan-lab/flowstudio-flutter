@@ -71,6 +71,11 @@ class WorkerPool {
     this.onVideoCompleted = options.onVideoCompleted || (() => {});
     this.onAccountUpdated = options.onAccountUpdated || (() => {});
     this.onTaskUpdate = options.onTaskUpdate || (() => {});
+    // v2.25.0 (parked browser): fired whenever the set of accounts
+    // with a live generation browser changes — the bridge forwards it
+    // to the UI so the sidebar's ACTIVE text + Show/Hide toggle stay
+    // true without any polling.
+    this.onActiveBrowsersChanged = options.onActiveBrowsersChanged || (() => {});
     // v2.3.0: fired once per run with { batchId, taskIds, downloadFolder }
     // so main can build the SEQUENCE REPORT for exactly this run's tasks.
     this.onRunStart = options.onRunStart || (() => {});
@@ -79,6 +84,12 @@ class WorkerPool {
     this.isPaused = false;
     this.activeWorkers = new Map(); // workerId -> FlowAutomationEngine
     this.assignedAccounts = new Set(); // accountId currently bound to a worker
+    // v2.25.0 (parked browser): accountId -> FlowAutomationEngine for
+    // accounts whose GENERATION browser is live right now. An account
+    // is bound to at most one worker (assignedAccounts), so this stays
+    // 1:1. Reads self-validate against the engine's live browser, so a
+    // missed unregister can never leave a stale ACTIVE behind.
+    this.activeBrowsers = new Map();
     this.queuePromise = null;
     this.currentBatchId = null;
 
@@ -131,7 +142,77 @@ class WorkerPool {
     }
     this.activeWorkers.clear();
     this.assignedAccounts.clear();
+    // v2.25.0: no generation browser survives a stop.
+    if (this.activeBrowsers.size > 0) {
+      this.activeBrowsers.clear();
+      this._emitActiveBrowsers();
+    }
     this.log('The queue has been closed (STOPPED).', 'warn');
+  }
+
+  // ------------------------------------------------------------------
+  // v2.25.0 — PARKED BROWSER registry (owner-approved design).
+  //
+  // The sidebar shows a gold "● ACTIVE" text under the credits of the
+  // account that is generating, and that line's Chrome button toggles
+  // the WORKING browser between its off-screen park and the screen.
+  // The pool is the only place that knows account <-> engine bindings,
+  // so it owns the registry; the engine owns the window itself.
+  // ------------------------------------------------------------------
+
+  _registerActiveBrowser(accountId, engine) {
+    if (!accountId || !engine) return;
+    this.activeBrowsers.set(accountId, engine);
+    this._emitActiveBrowsers();
+  }
+
+  _unregisterActiveBrowser(accountId) {
+    if (accountId && this.activeBrowsers.delete(accountId)) {
+      this._emitActiveBrowsers();
+    }
+  }
+
+  _emitActiveBrowsers() {
+    try { this.onActiveBrowsersChanged(this.getActiveBrowsers()); } catch (e) {}
+  }
+
+  /**
+   * The live list for the UI: [{ id, windowShown }] — one entry per
+   * account whose generation browser exists right now. Entries whose
+   * engine no longer holds that account's live browser are dropped
+   * here, so the list can never claim an ACTIVE that has ended.
+   */
+  getActiveBrowsers() {
+    const out = [];
+    for (const [accountId, engine] of [...this.activeBrowsers]) {
+      const live = engine && engine.browser && engine.page && !engine.page.isClosed()
+        && engine.currentAccount && engine.currentAccount.id === accountId;
+      if (!live) {
+        this.activeBrowsers.delete(accountId);
+        continue;
+      }
+      out.push({ id: accountId, windowShown: engine.windowShown === true });
+    }
+    return out;
+  }
+
+  /**
+   * Flip one generating account's browser between screen and park.
+   * Only bounds move (engine.setBrowserWindowShown) — generation is
+   * never interrupted. Returns { ok, windowShown } or { ok:false,
+   * error } when the account is not generating right now.
+   */
+  async toggleBrowserWindow(accountId) {
+    const engine = this.activeBrowsers.get(accountId);
+    const live = engine && engine.browser && engine.page && !engine.page.isClosed()
+      && engine.currentAccount && engine.currentAccount.id === accountId;
+    if (!live) {
+      if (engine) this.activeBrowsers.delete(accountId);
+      return { ok: false, error: 'This account is not generating right now — its browser opens from the Chrome button as usual.' };
+    }
+    const done = await engine.setBrowserWindowShown(!(engine.windowShown === true));
+    this._emitActiveBrowsers();
+    return { ok: done, windowShown: engine.windowShown === true };
   }
 
   _creditPort() {
@@ -337,6 +418,8 @@ class WorkerPool {
       this.isPaused = false;
       this.activeWorkers.clear();
       this.assignedAccounts.clear();
+      // v2.25.0: a fresh run starts with no live generation browsers.
+      this.activeBrowsers.clear();
 
       // v1.8.0: a run is either FRESH prompts (task rows are created) or
       // a RESUME of existing pending rows (opts.existingTasks) — the
@@ -998,6 +1081,11 @@ class WorkerPool {
                       ? `[${workerAccount.name}]'s Chrome profile is busy — ${engine.lastBusyDetail || 'it is open in another Chrome window. Close that window and press Generate again.'}`
                       : `Chrome could not open for [${workerAccount.name}] — ${plainError.plainOf(engine.lastLaunchError || 'unknown error')}`;
                   } else {
+                    // v2.25.0 (parked browser): this account's
+                    // generation browser is live from this moment —
+                    // the sidebar shows its ACTIVE text and its
+                    // Chrome button becomes the Show/Hide toggle.
+                    this._registerActiveBrowser(workerAccount.id, engine);
                     studioStatus = await engine.openFlowStudio(settings);
                   }
                 } catch (openErr) {
@@ -1028,6 +1116,7 @@ class WorkerPool {
 
                   await engine.closeBrowser().catch(() => {});
                   this.assignedAccounts.delete(workerAccount.id);
+                  this._unregisterActiveBrowser(workerAccount.id);
                   workerAccount = null;
                   if (this.launchBackoffMs > 0) await sleep(this.launchBackoffMs);
                   continue;
@@ -1217,6 +1306,7 @@ class WorkerPool {
                   await engine.closeBrowser().catch(() => {});
                   if (workerAccount) {
                     this.assignedAccounts.delete(workerAccount.id);
+                    this._unregisterActiveBrowser(workerAccount.id);
                     workerAccount = null;
                   }
                 } else {
@@ -1257,6 +1347,7 @@ class WorkerPool {
                 await engine.closeBrowser().catch(() => {});
                 if (workerAccount) {
                   this.assignedAccounts.delete(workerAccount.id);
+                  this._unregisterActiveBrowser(workerAccount.id);
                   workerAccount = null;
                 }
                 continue;
@@ -1282,6 +1373,7 @@ class WorkerPool {
                 creditPort.cooldown(workerAccount.id);
                 await engine.closeBrowser().catch(() => {});
                 this.assignedAccounts.delete(workerAccount.id);
+                this._unregisterActiveBrowser(workerAccount.id);
                 workerAccount = null;
               }
             }
@@ -1295,6 +1387,7 @@ class WorkerPool {
               this.log(`Worker #${workerIndex + 1}: the wait for [${workerAccount.name}]'s generating videos is over (the ones that were made are downloaded; the ones that failed have their reasons in the log above). Now leaving this account and moving to another account…`, 'info');
               await engine.closeBrowser().catch(() => {});
               this.assignedAccounts.delete(workerAccount.id);
+              this._unregisterActiveBrowser(workerAccount.id);
               workerAccount = null;
               accountBlocked = false;
               continue;
@@ -1327,7 +1420,12 @@ class WorkerPool {
         } finally {
           // No orphaned browsers, no leaked account assignments — ever.
           await engine.closeBrowser().catch(() => {});
-          if (workerAccount) this.assignedAccounts.delete(workerAccount.id);
+          if (workerAccount) {
+            this.assignedAccounts.delete(workerAccount.id);
+            // v2.25.0: the worker is done with this account — its
+            // ACTIVE text goes away with the browser.
+            this._unregisterActiveBrowser(workerAccount.id);
+          }
           this.activeWorkers.delete(workerId);
           this.onWorkerUpdate({ workerId, workerIndex, status: 'Idle' });
         }

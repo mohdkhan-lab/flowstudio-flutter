@@ -229,7 +229,12 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                           decoration: BoxDecoration(
                             color: AppTheme.overlay08,
                             borderRadius: BorderRadius.circular(8),
-                            border: Border.all(color: AppTheme.borderSoft),
+                            // v2.25.0 (parked browser): the generating
+                            // account's row carries a gold border.
+                            border: Border.all(
+                              color: acc.isActive ? AppTheme.activeGold : AppTheme.borderSoft,
+                              width: acc.isActive ? 1.2 : 1.0,
+                            ),
                           ),
                           child: Row(
                             children: [
@@ -268,6 +273,23 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                         color: AppTheme.textFaint,
                                       ),
                                     ),
+                                    // v2.25.0 (parked browser): gold
+                                    // ACTIVE text under the credits —
+                                    // ONLY on the account that is
+                                    // generating right now.
+                                    if (acc.isActive)
+                                      Padding(
+                                        padding: const EdgeInsets.only(top: 1),
+                                        child: Text(
+                                          '● ACTIVE',
+                                          style: TextStyle(
+                                            fontSize: 10,
+                                            fontWeight: FontWeight.w800,
+                                            color: AppTheme.activeGold,
+                                            letterSpacing: 0.4,
+                                          ),
+                                        ),
+                                      ),
                                   ],
                                 ),
                               ),
@@ -289,21 +311,35 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                 ),
                               ),
                               const SizedBox(width: 6),
-                              // Chrome launch button
+                              // Chrome button. v2.25.0 (parked browser):
+                              // on a GENERATING account this is a
+                              // Show/Hide toggle for the working
+                              // browser itself — a filled blue circle
+                              // with a white eye while its window is on
+                              // screen. On any other account it keeps
+                              // opening the account's own Chrome.
                               InkWell(
-                                onTap: () => accountsProv.openChrome(acc.id),
+                                onTap: () => acc.isActive
+                                    ? accountsProv.toggleBrowser(acc.id)
+                                    : accountsProv.openChrome(acc.id),
                                 borderRadius: BorderRadius.circular(11),
                                 child: Container(
                                   width: 22,
                                   height: 22,
-                                  decoration: const BoxDecoration(
+                                  decoration: BoxDecoration(
                                     shape: BoxShape.circle,
-                                    color: Color(0x1A0A84FF),
+                                    color: (acc.isActive && acc.browserShown)
+                                        ? const Color(0xFF0A84FF)
+                                        : const Color(0x1A0A84FF),
                                   ),
                                   child: Icon(
-                                    Icons.arrow_outward,
+                                    (acc.isActive && acc.browserShown)
+                                        ? Icons.visibility
+                                        : Icons.arrow_outward,
                                     size: 12,
-                                    color: AppTheme.accentGold,
+                                    color: (acc.isActive && acc.browserShown)
+                                        ? Colors.white
+                                        : AppTheme.accentGold,
                                   ),
                                 ),
                               ),

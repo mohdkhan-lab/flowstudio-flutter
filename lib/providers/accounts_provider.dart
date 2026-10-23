@@ -9,8 +9,47 @@ class AccountsProvider with ChangeNotifier {
   // the engine was unreachable, inventing state that did not exist.
   List<GoogleAccount> _accounts = [];
 
+  // v2.25.0 (parked browser): accountId -> windowShown for every
+  // account with a live generation browser, as last reported by the
+  // engine. This map is the source of truth for the runtime isActive /
+  // browserShown flags, so wholesale account refreshes (sync, import,
+  // account-updated events) can re-apply them instead of wiping them.
+  final Map<String, bool> _activeShown = {};
+
   AccountsProvider() {
     _initEngine();
+  }
+
+  /// Push the runtime ACTIVE flags from [_activeShown] onto the
+  /// account objects. Returns true when anything actually changed.
+  bool _applyActiveFlags() {
+    var changed = false;
+    for (final acc in _accounts) {
+      final shown = _activeShown[acc.id];
+      final active = shown != null;
+      final shownFlag = shown ?? false;
+      if (acc.isActive != active || acc.browserShown != shownFlag) {
+        acc.isActive = active;
+        acc.browserShown = shownFlag;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /// One 'active-browsers' payload from the engine: the COMPLETE list
+  /// of accounts generating right now (absent = not generating).
+  void _onActiveBrowsers(List<Map<String, dynamic>> list) {
+    _activeShown.clear();
+    for (final entry in list) {
+      final id = entry['id']?.toString() ?? '';
+      if (id.isNotEmpty) {
+        _activeShown[id] = entry['windowShown'] == true;
+      }
+    }
+    if (_applyActiveFlags()) {
+      notifyListeners();
+    }
   }
 
   Future<void> _initEngine() async {
@@ -21,6 +60,10 @@ class AccountsProvider with ChangeNotifier {
       _accounts = remoteAccounts;
       notifyListeners();
     }
+
+    // v2.25.0 (parked browser): live ACTIVE state for the sidebar.
+    AutomationBridge.instance.onActiveBrowsers = _onActiveBrowsers;
+    _onActiveBrowsers(await AutomationBridge.instance.getActiveBrowsers());
     // Report the engine state truthfully in the Activity log (when the
     // activity provider has registered its callback yet).
     if (healthy) {
@@ -42,6 +85,9 @@ class AccountsProvider with ChangeNotifier {
       } else {
         _accounts.add(acc);
       }
+      // v2.25.0: a fresh account object arrives without the runtime
+      // ACTIVE flags — re-apply them from the engine-reported map.
+      _applyActiveFlags();
       notifyListeners();
     };
   }
@@ -88,6 +134,7 @@ class AccountsProvider with ChangeNotifier {
     final remote = await AutomationBridge.instance.getAccounts();
     if (remote.isNotEmpty) {
       _accounts = remote;
+      _applyActiveFlags();
       notifyListeners();
     }
   }
@@ -155,6 +202,7 @@ class AccountsProvider with ChangeNotifier {
     final remote = await AutomationBridge.instance.getAccounts();
     if (remote.isNotEmpty) {
       _accounts = remote;
+      _applyActiveFlags();
       notifyListeners();
     }
   }
@@ -163,12 +211,27 @@ class AccountsProvider with ChangeNotifier {
     await AutomationBridge.instance.openChromeForAccount(id);
   }
 
+  /// v2.25.0 (parked browser): for a GENERATING account, the line's
+  /// Chrome button shows/hides the working browser itself instead of
+  /// opening a separate window. The engine's answer carries the new
+  /// state; the 'active-browsers' event confirms it right after.
+  Future<void> toggleBrowser(String id) async {
+    final shown = await AutomationBridge.instance.toggleAccountBrowser(id);
+    if (shown != null && _activeShown.containsKey(id)) {
+      _activeShown[id] = shown;
+      if (_applyActiveFlags()) {
+        notifyListeners();
+      }
+    }
+  }
+
   Future<Map<String, dynamic>> importCookiesFromFile(String filePath, {String? label}) async {
     final res = await AutomationBridge.instance.importAccountFromCookieFile(filePath, label: label);
     if (res['ok'] == true) {
       final remote = await AutomationBridge.instance.getAccounts();
       if (remote.isNotEmpty) {
         _accounts = remote;
+        _applyActiveFlags();
         notifyListeners();
       }
     }
@@ -181,6 +244,7 @@ class AccountsProvider with ChangeNotifier {
       final remote = await AutomationBridge.instance.getAccounts();
       if (remote.isNotEmpty) {
         _accounts = remote;
+        _applyActiveFlags();
         notifyListeners();
       }
     }

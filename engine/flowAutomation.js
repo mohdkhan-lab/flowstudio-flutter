@@ -122,6 +122,12 @@ class FlowAutomationEngine {
     this.isStopping = false;
     this.isPaused = false;
     this.currentAccount = null;
+    // v2.25.0 (parked browser): is THIS engine's generation window
+    // currently on the owner's screen? A background launch starts
+    // parked off-screen (false); a visible launch starts on screen
+    // (true). Only the Show/Hide toggle (setBrowserWindowShown)
+    // changes it afterwards — generation never does.
+    this.windowShown = false;
     this.currentSettings = {};
     this.headless = !!options.headless;
     this.workerId = options.workerId || null;
@@ -403,6 +409,9 @@ class FlowAutomationEngine {
       } catch (e) {}
 
       this.currentAccount = account;
+      // v2.25.0: the launch plan decides where the window STARTS —
+      // background = parked off-screen, visible = on screen.
+      this.windowShown = !plan.background;
       this.log(`Chrome is ready — [${account.name}]'s profile is open.`, 'success');
       return true;
     } catch (err) {
@@ -434,6 +443,9 @@ class FlowAutomationEngine {
     // Audit fix #5: settings must be re-applied after every rotation / fresh
     // launch, so the configured flag never survives a browser close.
     this.hasConfiguredSettings = false;
+    // v2.25.0: no live window survives a close — the next launch
+    // re-decides shown/parked from its own plan.
+    this.windowShown = false;
     this.captureArmed = false;
     if (this.capturedVideoBuffers) {
       this.capturedVideoBuffers.clear();
@@ -443,6 +455,51 @@ class FlowAutomationEngine {
     if (this.claimedTileIndices) this.claimedTileIndices.clear();
     if (this.claimedTileFingerprints) this.claimedTileFingerprints.clear();
     if (this.consumedVideoUrls) this.consumedVideoUrls.clear();
+  }
+
+  /**
+   * v2.25.0 — PARKED BROWSER Show/Hide (owner-approved design).
+   *
+   * Moves THIS engine's live generation window between its off-screen
+   * park and the owner's screen via CDP Browser.setWindowBounds. Only
+   * the window's position/size changes: the browser, the page and any
+   * in-flight render are never touched, so showing or hiding can NOT
+   * interrupt generation. A throwaway CDP session is used (never
+   * this.cdpSession — the prompt-write chain owns that one and drops
+   * it when it dies). Returns true when the bounds were applied.
+   */
+  async setBrowserWindowShown(shown) {
+    if (!this.browser || !this.page || this.page.isClosed()) return false;
+    const target = !!shown;
+    let session = null;
+    try {
+      session = await this.page.target().createCDPSession();
+      const { windowId } = await session.send('Browser.getWindowForTarget');
+      await session.send('Browser.setWindowBounds', {
+        windowId,
+        bounds: browserMode.parkedWindowBounds(target)
+      });
+      if (target) {
+        // Make this window the focused one on screen; harmless for a
+        // parked window, and the page's focus emulation (background
+        // mode) keeps its timers honest either way.
+        try { await this.page.bringToFront(); } catch (e) {}
+      }
+      this.windowShown = target;
+      const name = this.currentAccount ? this.currentAccount.name : 'Account';
+      this.log(target
+        ? `[${name}]'s browser is now ON screen — generation continues.`
+        : `[${name}]'s browser is parked off-screen again — generation continues.`, 'info');
+      return true;
+    } catch (e) {
+      const t = plainError.translateError(e);
+      this.log(`The browser window could not be ${target ? 'shown' : 'hidden'} — ${t.plain}.`, 'warn', { rawError: t.raw });
+      return false;
+    } finally {
+      if (session) {
+        try { await session.detach(); } catch (e) {}
+      }
+    }
   }
 
   /**

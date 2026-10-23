@@ -103,6 +103,23 @@ function describeMode(backgroundEnabled) {
     : 'Visible (the browser will be visible on screen)';
 }
 
+// v2.25.0 — PARKED BROWSER (owner-approved design): while an account is
+// generating, its Chrome button becomes a Show/Hide toggle for the
+// WORKING browser itself. Showing moves the SAME window from its
+// off-screen park onto the owner's screen; hiding parks it back. The
+// window stays in the NORMAL state either way (never minimized — the
+// v2.6.0 throttling lesson), and the page/browser are never touched,
+// so generation cannot be interrupted by showing or hiding.
+// Pure function: shown -> on-screen bounds sized for the owner's
+// 1024x768 monitor; hidden -> the exact park position/size the
+// background launch plan uses.
+function parkedWindowBounds(shown) {
+  if (shown) {
+    return { left: 12, top: 12, width: 1000, height: 690, windowState: 'normal' };
+  }
+  return { left: -32000, top: -32000, width: 1366, height: 900, windowState: 'normal' };
+}
+
 module.exports = {
   SETTING_KEY,
   DEFAULT_BACKGROUND,
@@ -111,5 +128,6 @@ module.exports = {
   ANTI_THROTTLE_ARGS,
   resolveBackgroundEnabled,
   launchPlan,
-  describeMode
+  describeMode,
+  parkedWindowBounds
 };

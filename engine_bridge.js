@@ -225,7 +225,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.24.0', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.24.1', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints

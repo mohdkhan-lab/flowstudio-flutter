@@ -926,6 +926,11 @@ class FlowAutomationEngine {
         await this.cdpSession.send('Input.insertText', { text: cleanText });
         return;
       } catch (e) {
+        // v2.24.1: a failed send can mean the CDP session died with an
+        // earlier navigation/target change. Drop it so the next method
+        // recreates a live one instead of reusing a dead session and
+        // silently failing every later insertText in this submission.
+        this.cdpSession = null;
         const t = plainError.translateError(e);
         this.log(`A problem came up in the first method of writing the prompt — ${t.plain}. Trying the second method…`, 'warn', { rawError: t.raw });
       }
@@ -943,6 +948,82 @@ class FlowAutomationEngine {
     if (!execSuccess) {
       await this.page.keyboard.type(cleanText, { delay: 10 });
     }
+  }
+
+  // v2.24.1: REAL CLIPBOARD PASTE — the one input path the write chain
+  // never tried. Flow's ProseMirror editor is built around paste: a
+  // trusted Ctrl+V delivers a genuine paste event carrying clipboard
+  // data, which the editor accepts even when CDP insertText,
+  // execCommand and synthetic typing are silently dropped (the failure
+  // the owner hit on 2026-10-23: every setting applied, the browser
+  // reached the prompt step, and no write method landed). Returns true
+  // when the paste keys were sent; the caller verifies the DOM text.
+  async pastePromptViaClipboard(text) {
+    const cleanText = (text || '').replace(/[\r\n]+/g, ' ').trim();
+    if (!cleanText || !this.page || this.page.isClosed()) return false;
+    try { await this.page.bringToFront(); } catch (e) {}
+
+    // Clipboard permission for the Flow origins (browser-level CDP —
+    // without it navigator.clipboard.writeText rejects in Chrome).
+    try {
+      const browserSession = await this.page.browser().target().createCDPSession();
+      for (const origin of ['https://labs.google', 'https://flow.google.com']) {
+        try {
+          await browserSession.send('Browser.grantPermissions', {
+            origin,
+            permissions: ['clipboardReadWrite', 'clipboardSanitizedWrite']
+          });
+        } catch (e) {}
+      }
+      try { await browserSession.detach(); } catch (e) {}
+    } catch (e) {}
+
+    // Focus the ranked editor with a real mouse click first — the
+    // clipboard write needs a focused document, and the paste must
+    // land in the editor, not wherever focus happened to be.
+    const coords = await this.page.evaluate(() => {
+      const el = ((() => { const all = Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror, [contenteditable="true"][role="textbox"]')); const ed = all.filter(e => e.isContentEditable || e.getAttribute('contenteditable') === 'true'); const pool = ed.length ? ed : all; const vis = pool.filter(e => { const r = e.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (e.checkVisibility ? e.checkVisibility() : true); }); const list = vis.length ? vis : pool; if (!list.length) return null; const named = list.find(e => /what do you want to create/i.test(e.getAttribute('aria-label') || e.getAttribute('data-placeholder') || '')); if (named) return named; return list.slice().sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0]; })());
+      if (!el) return null;
+      try { el.scrollIntoView({ block: 'center' }); } catch (e) {}
+      const r = el.getBoundingClientRect();
+      return { x: r.x + Math.min(25, r.width / 4), y: r.y + r.height / 2 };
+    }).catch(() => null);
+    if (coords) {
+      await this.page.mouse.click(coords.x, coords.y);
+      await sleep(200);
+    }
+
+    const copied = await this.page.evaluate(async (t) => {
+      try {
+        await navigator.clipboard.writeText(t);
+        return true;
+      } catch (e) {
+        try {
+          const ta = document.createElement('textarea');
+          ta.value = t;
+          ta.style.position = 'fixed';
+          ta.style.opacity = '0';
+          document.body.appendChild(ta);
+          ta.select();
+          const ok = document.execCommand('copy');
+          ta.remove();
+          return !!ok;
+        } catch (e2) { return false; }
+      }
+    }, cleanText).catch(() => false);
+    if (!copied) {
+      this.log('Clipboard paste: the prompt could not be copied to the clipboard — moving to the next write method…', 'warn');
+      return false;
+    }
+
+    await this.page.keyboard.down('Control');
+    await this.page.keyboard.press('A');
+    await this.page.keyboard.up('Control');
+    await this.page.keyboard.down('Control');
+    await this.page.keyboard.press('V');
+    await this.page.keyboard.up('Control');
+    await sleep(300);
+    return true;
   }
 
   // CONFIGURE GENERATION SETTINGS (exact Google Flow UI synchronization)
@@ -1361,12 +1442,25 @@ class FlowAutomationEngine {
     });
 
     if (!domPromptText || domPromptText.length === 0) {
+      // v2.24.1: real clipboard paste (Ctrl+V) — a genuinely different
+      // input path from every insert/typing method, and the one
+      // ProseMirror is built to accept. Tried early on purpose.
+      this.log('Trying clipboard paste (Ctrl+V) into the editor...', 'warn');
+      try { await this.pastePromptViaClipboard(promptText); } catch (e) {}
+      await sleep(250);
+      domPromptText = await this.page.evaluate(() => {
+        const el = ((() => { const all = Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror, [contenteditable="true"][role="textbox"]')); const ed = all.filter(e => e.isContentEditable || e.getAttribute('contenteditable') === 'true'); const pool = ed.length ? ed : all; const vis = pool.filter(e => { const r = e.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (e.checkVisibility ? e.checkVisibility() : true); }); const list = vis.length ? vis : pool; if (!list.length) return null; const named = list.find(e => /what do you want to create/i.test(e.getAttribute('aria-label') || e.getAttribute('data-placeholder') || '')); if (named) return named; return list.slice().sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0]; })());
+        return el ? (el.innerText || el.textContent || '').trim() : '';
+      });
+    }
+
+    if (!domPromptText || domPromptText.length === 0) {
       this.log('The prompt could not be written with the first method — trying the second method (inserting the text directly)…', 'warn');
       if (!this.cdpSession && this.page) {
         try { this.cdpSession = await this.page.target().createCDPSession(); } catch (e) {}
       }
       if (this.cdpSession) {
-        try { await this.cdpSession.send('Input.insertText', { text: promptText }); } catch (cdpErr) {}
+        try { await this.cdpSession.send('Input.insertText', { text: promptText }); } catch (cdpErr) { this.cdpSession = null; }
       }
       await sleep(250);
       domPromptText = await this.page.evaluate(() => {

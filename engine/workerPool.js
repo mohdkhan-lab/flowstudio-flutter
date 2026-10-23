@@ -1191,6 +1191,21 @@ class WorkerPool {
                   const t = plainError.translateError(taskErr);
                   this.log(`Worker #${workerIndex + 1}: Prompt #${currentIdx + 1} bhejne me fail — ${t.plain}.`, 'error', { rawError: t.raw });
                 }
+                // v2.24.1: a THROWN submission must also count against
+                // the failover budgets. recordTry previously ran only
+                // on a clean SUBMITTED return, so a prompt-write throw
+                // left the tried-set empty forever: canFailover stayed
+                // "ok" with no spent budget, the same-account retry
+                // gate (hasTried) never opened, and with 2+ accounts
+                // the task ping-ponged between accounts endlessly —
+                // browser closing at the paste step and relaunching,
+                // the run stuck on the same prompt (owner's report,
+                // 2026-10-23). Recording the attempt is also the safe
+                // direction if the throw happened after Flow accepted
+                // the submission: it prevents a blind re-fire.
+                if (workerAccount) {
+                  try { failoverTracker.recordTry(nextTask.id, workerAccount.id); } catch (e) {}
+                }
                 const fo = failTaskOrFailover(nextTask, `Worker error: ${taskErr.message}`, workerAccount ? workerAccount.id : null, workerAccount ? workerAccount.name : '');
                 if (fo === 'failed') {
                   this.onTaskUpdate({ taskId: nextTask.id, promptIndex: currentIdx, promptText: nextTask.prompt_text, status: 'failed', reason: taskErr.message });
@@ -1397,9 +1412,24 @@ class WorkerPool {
         }
         this.log(`Queue already ended: ${reason}`, 'error');
         this.onProgress({ status: `Error: ${reason}` });
+      } else if (runStats.failed > 0 && runStats.done === 0) {
+        // v2.24.1: the queue drained because every prompt FAILED, not
+        // because the work succeeded — the old code still announced
+        // 'Completed' + "All work is complete!", so a run where the
+        // prompt could not be written at all showed as a completed
+        // queue with zero videos (owner's report, 2026-10-23). Say it
+        // plainly instead; the 'Error:' terminal form is already used
+        // for leftover prompts above and settles the UI the same way.
+        const reason = lastFailureReason || 'every prompt failed before it could be generated';
+        this.onProgress({ status: `Error: ${reason}` });
+        this.log(`The queue ended, but NOTHING was made: all ${runStats.failed} prompt(s) failed. Last reason: ${reason}`, 'error');
       } else {
         this.onProgress({ status: 'Completed' });
-        this.log(`All work is complete! A total of ${completedCount} videos were made in this run.`, 'success');
+        if (runStats.failed > 0) {
+          this.log(`Work finished: ${completedCount} videos were made in this run; ${runStats.failed} prompt(s) failed (their reasons are in the log above).`, 'warn');
+        } else {
+          this.log(`All work is complete! A total of ${completedCount} videos were made in this run.`, 'success');
+        }
       }
     } finally {
       if (queueResolver) queueResolver();

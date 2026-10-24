@@ -5,6 +5,7 @@ import '../theme/app_theme.dart';
 import '../models/activity_log.dart';
 import '../providers/activity_provider.dart';
 import '../providers/generator_provider.dart';
+import '../providers/settings_provider.dart';
 
 class ActivityStream extends StatefulWidget {
   const ActivityStream({super.key});
@@ -38,10 +39,24 @@ class _ActivityStreamState extends State<ActivityStream> {
   Widget build(BuildContext context) {
     final activity = context.watch<ActivityProvider>();
     final generator = context.watch<GeneratorProvider>();
+    final settingsProv = context.watch<SettingsProvider>();
     final logs = activity.visibleLogs;
     _scrollToBottom();
 
-    final timeFormatter = DateFormat('hh:mm a');
+    // v2.27.0 (design): log lines start with the time, "13:02".
+    final timeFormatter = DateFormat('HH:mm');
+
+    // v2.27.0 (design) stats: All-time / Today / Spent today. The
+    // engine's usage stats are the real record (one count per saved
+    // video); this session's real completions are the fallback while
+    // the engine stats are still empty.
+    final allTime = settingsProv.totalVideosSaved > 0
+        ? settingsProv.totalVideosSaved
+        : generator.completedCount;
+    final today = settingsProv.videosToday > 0
+        ? settingsProv.videosToday
+        : generator.completedTodayCount;
+    final spentToday = today * 7;
 
     return Container(
       height: 150,
@@ -102,9 +117,10 @@ class _ActivityStreamState extends State<ActivityStream> {
               ),
               const SizedBox(width: 8),
 
-              // Previous videos button
+              // Previous videos button — v2.27.0: opens the History
+              // view (it was an empty onPressed before).
               OutlinedButton(
-                onPressed: () {},
+                onPressed: () => context.read<SettingsProvider>().setNavView('history'),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: AppTheme.accentText,
                   side: const BorderSide(color: Color(0x600A84FF)),
@@ -122,11 +138,12 @@ class _ActivityStreamState extends State<ActivityStream> {
 
           const SizedBox(height: 8),
 
-          // Subheader Row: All-time: X videos saved • Y today | Simple/Details | Copy log/Clear log
+          // Subheader Row (design): All-time: N videos · Today: M videos
+          // · Spent today: C credits | Simple/Details | Copy log/Clear log
           Row(
             children: [
               Text(
-                'All-time: ${generator.completedCount} videos saved • 0 today',
+                'All-time: $allTime videos · Today: $today videos · Spent today: $spentToday credits',
                 style: TextStyle(
                   fontSize: 10.5,
                   color: AppTheme.textFaint,
@@ -210,6 +227,17 @@ class _ActivityStreamState extends State<ActivityStream> {
                   padding: const EdgeInsets.symmetric(vertical: 2.5),
                   child: Row(
                     children: [
+                      // v2.27.0 (design): the TIME starts each line
+                      // ("13:02 • message").
+                      Text(
+                        timeFormatter.format(log.timestamp),
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.textFaint,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
                       // Bullet dot
                       Container(
                         width: 5,
@@ -230,15 +258,6 @@ class _ActivityStreamState extends State<ActivityStream> {
                             fontSize: 11,
                             color: _getMessageColor(log.level),
                           ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      // Timestamp (Right aligned e.g. 07:16 pm)
-                      Text(
-                        timeFormatter.format(log.timestamp).toLowerCase(),
-                        style: TextStyle(
-                          fontSize: 10.5,
-                          color: AppTheme.textFaint,
                         ),
                       ),
                     ],

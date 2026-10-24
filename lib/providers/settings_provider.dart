@@ -6,12 +6,18 @@ import '../models/app_settings.dart';
 import '../services/automation_bridge.dart';
 
 class SettingsProvider with ChangeNotifier {
-  String _currentView = 'generate'; // 'generate' or 'settings'
+  String _currentView = 'generate'; // 'generate', 'settings' or 'history' (v2.27.0)
   final AppSettings _settings = AppSettings();
   bool _isCheckingUpdates = false;
   String _updateStatusMessage = 'Updates are checked on the official release page.';
   int _totalVideosSaved = 0;
+  int _videosToday = 0;
+  int _videosLast7Days = 0;
   int _totalAccounts = 0;
+  // v2.27.0 (History): file names the owner cleared from the History view.
+  // "Clear History (records only)" — the files themselves are never
+  // deleted, only hidden here. Persisted through the engine settings.
+  final Set<String> _historyCleared = {};
 
   // v2.23.0: in-app updater — the app downloads the new Setup itself and
   // runs it; the user never has to visit GitHub or download by hand.
@@ -28,7 +34,10 @@ class SettingsProvider with ChangeNotifier {
   bool get isCheckingUpdates => _isCheckingUpdates;
   String get updateStatusMessage => _updateStatusMessage;
   int get totalVideosSaved => _totalVideosSaved;
+  int get videosToday => _videosToday;
+  int get videosLast7Days => _videosLast7Days;
   int get totalAccounts => _totalAccounts;
+  Set<String> get historyCleared => Set.unmodifiable(_historyCleared);
   bool get updateAvailable => _updateAvailable;
   String get latestVersion => _latestVersion;
   bool get isDownloadingUpdate => _isDownloadingUpdate;
@@ -65,7 +74,23 @@ class SettingsProvider with ChangeNotifier {
         if (data['preview_autoplay'] != null) _settings.previewAutoplay = data['preview_autoplay'] != '0';
         if (data['auto_verify_start'] != null) _settings.autoVerifyOnStart = data['auto_verify_start'] == '1';
         if (data['auto_check_updates'] != null) _settings.autoCheckUpdates = data['auto_check_updates'] != '0';
-        
+        // v2.27.0: "Only run live accounts" moved from the sidebar into
+        // Settings → Automation; the engine reads the same key
+        // ('live_only_accounts') when a generation run starts.
+        if (data['live_only_accounts'] != null) {
+          _settings.onlyRunLiveAccounts = data['live_only_accounts'] == '1';
+        }
+        if (data['history_cleared'] != null) {
+          try {
+            final cleared = json.decode(data['history_cleared'].toString());
+            if (cleared is List) {
+              _historyCleared
+                ..clear()
+                ..addAll(cleared.map((e) => e.toString()));
+            }
+          } catch (_) {}
+        }
+
         if (data['custom_tags'] != null) {
           try {
             final tags = json.decode(data['custom_tags'].toString());
@@ -93,6 +118,8 @@ class SettingsProvider with ChangeNotifier {
       final statsData = await AutomationBridge.instance.getStats();
       if (statsData['stats'] != null && statsData['stats']['total'] != null) {
         _totalVideosSaved = int.tryParse(statsData['stats']['total'].toString()) ?? 0;
+        _videosToday = int.tryParse(statsData['stats']['today']?.toString() ?? '') ?? 0;
+        _videosLast7Days = int.tryParse(statsData['stats']['last7Days']?.toString() ?? '') ?? 0;
       }
       if (statsData['accountCount'] != null) {
         _totalAccounts = int.tryParse(statsData['accountCount'].toString()) ?? 0;
@@ -107,6 +134,24 @@ class SettingsProvider with ChangeNotifier {
     if (view == 'settings') {
       loadSettingsFromEngine();
     }
+    notifyListeners();
+  }
+
+  // v2.27.0: "Only run live accounts" toggle (Settings → Automation).
+  void toggleOnlyRunLiveAccounts(bool val) {
+    _settings.onlyRunLiveAccounts = val;
+    AutomationBridge.instance.saveSetting('live_only_accounts', val ? '1' : '0');
+    notifyListeners();
+  }
+
+  /// v2.27.0 (History): hide these file names from the History view
+  /// ("Clear History (records only)"). Files on disk are NOT touched.
+  void clearHistoryRecords(Iterable<String> names) {
+    _historyCleared.addAll(names);
+    AutomationBridge.instance.saveSetting(
+      'history_cleared',
+      json.encode(_historyCleared.toList()),
+    );
     notifyListeners();
   }
 

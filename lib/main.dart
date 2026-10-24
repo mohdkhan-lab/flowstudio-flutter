@@ -12,6 +12,7 @@ import 'widgets/video_settings_bar.dart';
 import 'widgets/progress_panel.dart';
 import 'widgets/activity_stream.dart';
 import 'widgets/settings_view.dart';
+import 'widgets/history_view.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
@@ -84,6 +85,10 @@ class MainStudioScreen extends StatelessWidget {
                       builder: (context, settingsProv, _) {
                         if (settingsProv.currentView == 'settings') {
                           return const SettingsView();
+                        }
+                        // v2.27.0: History view (Activity → Previous videos)
+                        if (settingsProv.currentView == 'history') {
+                          return const HistoryView();
                         }
                         return Padding(
                           padding: const EdgeInsets.fromLTRB(10, 12, 14, 12),

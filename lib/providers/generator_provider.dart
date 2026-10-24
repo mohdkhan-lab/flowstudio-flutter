@@ -17,6 +17,12 @@ class GeneratorProvider with ChangeNotifier {
   List<PromptItem> _items = [];
   GenerationState _state = GenerationState.idle;
   int _currentIndex = 0;
+  // v2.27.0: the TAG chosen in the Prompts header lives here so the
+  // Progress cards can name queued files like the design ("#<tag>-<nn>.mp4").
+  String _selectedTag = 'None';
+  // v2.27.0: real completion times of THIS session, for the Activity
+  // stats line ("Today: M videos · Spent today: C credits").
+  final List<DateTime> _completionTimes = [];
 
   GeneratorProvider() {
     // v2.22.0 fix: the engine's video-completed payload carries
@@ -32,6 +38,11 @@ class GeneratorProvider with ChangeNotifier {
       final failed = (err != null && err.isNotEmpty) ||
           statusStr.toLowerCase().startsWith('violation') ||
           statusStr.toLowerCase().contains('fail');
+      // v2.27.0: keep the real account + file name for the Progress cards.
+      final accName = data['accountName']?.toString();
+      if (accName != null && accName.isNotEmpty) item.accountName = accName;
+      final fileName = data['fileName']?.toString();
+      if (fileName != null && fileName.isNotEmpty) item.outputFileName = fileName;
       if (failed) {
         item.status = PromptStatus.failed;
         item.error = err ?? statusStr;
@@ -39,6 +50,7 @@ class GeneratorProvider with ChangeNotifier {
         item.status = PromptStatus.completed;
         item.progress = 1.0;
         item.localFilePath = data['filePath']?.toString();
+        _completionTimes.add(DateTime.now());
       }
       notifyListeners();
     };
@@ -86,6 +98,23 @@ class GeneratorProvider with ChangeNotifier {
 
   int get totalPrompts => _items.length;
   int get completedCount => _items.where((i) => i.status == PromptStatus.completed).length;
+
+  String get selectedTag => _selectedTag;
+
+  void setSelectedTag(String tag) {
+    if (_selectedTag == tag) return;
+    _selectedTag = tag;
+    notifyListeners();
+  }
+
+  /// Videos completed today in this session (real engine completions
+  /// only — see onVideoCompleted above).
+  int get completedTodayCount {
+    final now = DateTime.now();
+    return _completionTimes
+        .where((t) => t.year == now.year && t.month == now.month && t.day == now.day)
+        .length;
+  }
 
   void setRawText(String text) {
     _promptsRawText = text;

@@ -15,6 +15,11 @@ class PromptItem {
   String? videoUrl;
   String? localFilePath;
   String? assignedAccountId;
+  // v2.27.0: display name of the account that made this video (from the
+  // engine's video-completed event) + the real saved file name, so the
+  // Progress cards can show them like the approved design does.
+  String? accountName;
+  String? outputFileName;
   String? error;
 
   PromptItem({
@@ -25,6 +30,8 @@ class PromptItem {
     this.videoUrl,
     this.localFilePath,
     this.assignedAccountId,
+    this.accountName,
+    this.outputFileName,
     this.error,
   });
 
@@ -36,6 +43,8 @@ class PromptItem {
     String? videoUrl,
     String? localFilePath,
     String? assignedAccountId,
+    String? accountName,
+    String? outputFileName,
     String? error,
   }) {
     return PromptItem(
@@ -46,6 +55,8 @@ class PromptItem {
       videoUrl: videoUrl ?? this.videoUrl,
       localFilePath: localFilePath ?? this.localFilePath,
       assignedAccountId: assignedAccountId ?? this.assignedAccountId,
+      accountName: accountName ?? this.accountName,
+      outputFileName: outputFileName ?? this.outputFileName,
       error: error ?? this.error,
     );
   }

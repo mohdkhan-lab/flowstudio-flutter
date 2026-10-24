@@ -84,15 +84,16 @@ class _PromptsEditorState extends State<PromptsEditor> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Header Row: Prompts | TAG None ▾ | + Add Tag
+          // Header Row (design): PROMPTS | TAG ▾ | + Add Tag | "N prompts"
           Row(
             children: [
               Text(
-                'Prompts',
+                'PROMPTS',
                 style: TextStyle(
-                  fontSize: 13.5,
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.textMain,
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                  color: AppTheme.textFaint,
                 ),
               ),
               const Spacer(),
@@ -127,7 +128,12 @@ class _PromptsEditorState extends State<PromptsEditor> {
                         icon: Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
                         items: tags.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
                         onChanged: (val) {
-                          if (val != null) setState(() => _selectedTag = val);
+                          if (val != null) {
+                            setState(() => _selectedTag = val);
+                            // v2.27.0: Progress cards name queued
+                            // files from the selected tag.
+                            context.read<GeneratorProvider>().setSelectedTag(val);
+                          }
                         },
                       ),
                     );
@@ -157,12 +163,67 @@ class _PromptsEditorState extends State<PromptsEditor> {
                   ),
                 ),
               ),
+              const SizedBox(width: 6),
+              // Count pill (design: "6 prompts")
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0x120A84FF),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
+                ),
+                child: Text(
+                  '${generator.totalPrompts} prompts',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.accentText,
+                  ),
+                ),
+              ),
             ],
           ),
 
           const SizedBox(height: 10),
 
-          // Sub-Bar: Bulk Prompt | Agent Prompt | Prompts: X
+          // Textarea (design: the only flexible/scrolling part)
+          Expanded(
+            child: Container(
+              padding: const EdgeInsets.all(10),
+              decoration: BoxDecoration(
+                color: AppTheme.inputBg,
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(color: AppTheme.borderSoft),
+              ),
+              child: TextField(
+                controller: _controller,
+                maxLines: null,
+                expands: true,
+                style: TextStyle(
+                  fontSize: 11.5,
+                  height: 1.5,
+                  color: AppTheme.textMain,
+                  fontFamily: 'Consolas',
+                ),
+                onChanged: (text) => context.read<GeneratorProvider>().setRawText(text),
+                decoration: InputDecoration(
+                  hintText: '#00-01 A cinematic shot of a lighthouse during a storm, waves crashing...\n#00-02 A drone flyover of a green valley at sunrise, mist lifting...',
+                  hintStyle: TextStyle(
+                    color: AppTheme.textFaint,
+                    fontSize: 11,
+                    fontStyle: FontStyle.italic,
+                  ),
+                  border: InputBorder.none,
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 8),
+
+          // v2.27.0 (design): Bulk / Agent Prompt toggle at the
+          // BOTTOM-LEFT under the textarea; txt/srt at bottom-right.
           Row(
             children: [
               // Bulk Prompt Pill
@@ -209,90 +270,28 @@ class _PromptsEditorState extends State<PromptsEditor> {
                 ),
               ),
               const Spacer(),
-              // Prompts Counter Pill
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: const Color(0x120A84FF),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
-                ),
-                child: Text(
-                  'Prompts: ${generator.totalPrompts}',
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.accentText,
+              // txt/srt import button
+              InkWell(
+                onTap: () => _handleFileImport(context),
+                borderRadius: BorderRadius.circular(6),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                  decoration: BoxDecoration(
+                    color: AppTheme.inputBg,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: AppTheme.borderSoft),
+                  ),
+                  child: Text(
+                    'txt/srt',
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.w700,
+                      color: AppTheme.textMain,
+                    ),
                   ),
                 ),
               ),
             ],
-          ),
-
-          const SizedBox(height: 8),
-
-          // Textarea Container
-          Expanded(
-            child: Stack(
-              children: [
-                Container(
-                  padding: const EdgeInsets.all(10),
-                  decoration: BoxDecoration(
-                    color: AppTheme.inputBg,
-                    borderRadius: BorderRadius.circular(10),
-                    border: Border.all(color: AppTheme.borderSoft),
-                  ),
-                  child: TextField(
-                    controller: _controller,
-                    maxLines: null,
-                    expands: true,
-                    style: TextStyle(
-                      fontSize: 11.5,
-                      height: 1.5,
-                      color: AppTheme.textMain,
-                      fontFamily: 'Consolas',
-                    ),
-                    onChanged: (text) => context.read<GeneratorProvider>().setRawText(text),
-                    decoration: InputDecoration(
-                      hintText: '#00-01 A cinematic shot of a lighthouse during a storm, waves crashing...\n#00-02 A drone flyover of a green valley at sunrise, mist lifting...',
-                      hintStyle: TextStyle(
-                        color: AppTheme.textFaint,
-                        fontSize: 11,
-                        fontStyle: FontStyle.italic,
-                      ),
-                      border: InputBorder.none,
-                      contentPadding: EdgeInsets.zero,
-                    ),
-                  ),
-                ),
-
-                // txt/srt button on bottom right
-                Positioned(
-                  bottom: 8,
-                  right: 8,
-                  child: InkWell(
-                    onTap: () => _handleFileImport(context),
-                    borderRadius: BorderRadius.circular(6),
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: AppTheme.inputBg,
-                        borderRadius: BorderRadius.circular(6),
-                        border: Border.all(color: AppTheme.borderSoft),
-                      ),
-                      child: Text(
-                        'txt/srt',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.textMain,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
           ),
         ],
       ),
@@ -342,6 +341,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
               if (newTag.isNotEmpty) {
                 context.read<SettingsProvider>().addCustomTag(newTag);
                 setState(() => _selectedTag = newTag);
+                context.read<GeneratorProvider>().setSelectedTag(newTag);
                 Navigator.pop(ctx);
               }
             },
@@ -352,4 +352,3 @@ class _PromptsEditorState extends State<PromptsEditor> {
     );
   }
 }
-

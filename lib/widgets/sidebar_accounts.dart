@@ -17,13 +17,15 @@ class SidebarAccounts extends StatefulWidget {
 
 class _SidebarAccountsState extends State<SidebarAccounts> {
   String _selectedFilter = 'all'; // all, checking, live, fail
-  bool _onlyRunLive = true;
 
   @override
   Widget build(BuildContext context) {
     final accountsProv = context.watch<AccountsProvider>();
     final settingsProv = context.watch<SettingsProvider>();
-    final isGenerate = settingsProv.currentView == 'generate';
+    // v2.27.0: the History view belongs to the Generate side — its tab
+    // stays highlighted there (the design's History page shows the same
+    // sidebar with Generate active).
+    final isGenerate = settingsProv.currentView != 'settings';
     final allAccounts = accountsProv.accounts;
 
     final checkingCount = allAccounts.where((a) => a.status == AccountStatus.checking).length;
@@ -133,66 +135,42 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
 
           const SizedBox(height: 6),
 
-          // + Add Account & Add Cookies
-          Row(
-            children: [
-              Expanded(
-                child: ElevatedButton(
-                  onPressed: () => _showAddAccountDialog(context),
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.accentGold,
-                    foregroundColor: AppTheme.onAccent,
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  child: const Text(
-                    '+ Add Account',
-                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                  ),
+          // v2.27.0 (design): ONE full-width blue "+ Add Account" button.
+          // ("Add Cookies" moved to the bottom of the sidebar, above the
+          // action grid — exactly where the approved design puts it.)
+          InkWell(
+            onTap: () => _showAddAccountDialog(context),
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              height: 34,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF1A94FF), Color(0xFF0066D6)],
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
                 ),
+                borderRadius: BorderRadius.circular(8),
               ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: OutlinedButton(
-                  onPressed: () => pickAndImportCookieFiles(context),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppTheme.textMain,
-                    backgroundColor: AppTheme.overlay10,
-                    side: BorderSide(color: AppTheme.borderSoft),
-                    padding: const EdgeInsets.symmetric(vertical: 8),
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                  child: Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    children: [
-                      Icon(Icons.cookie_outlined, size: 12, color: AppTheme.accentGold),
-                      SizedBox(width: 4),
-                      Text(
-                        'Add Cookies',
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
-                      ),
-                    ],
-                  ),
-                ),
+              child: const Text(
+                '+ Add Account',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
               ),
-            ],
+            ),
           ),
 
           const SizedBox(height: 8),
 
-          // Filter Segmented Row
+          // v2.27.0 (design): filter boxes — label on top, big count below.
           Row(
             children: [
-              _buildFilterBtn('All (${allAccounts.length})', 'all'),
-              const SizedBox(width: 4),
-              _buildFilterBtn('Checking ($checkingCount)', 'checking'),
-              const SizedBox(width: 4),
-              _buildFilterBtn('Live ($liveCount)', 'live'),
-              const SizedBox(width: 4),
-              _buildFilterBtn('Fail ($failCount)', 'fail'),
+              _buildFilterBtn('All', allAccounts.length, 'all'),
+              const SizedBox(width: 5),
+              _buildFilterBtn('Checking', checkingCount, 'checking'),
+              const SizedBox(width: 5),
+              _buildFilterBtn('Live', liveCount, 'live'),
+              const SizedBox(width: 5),
+              _buildFilterBtn('Fail', failCount, 'fail'),
             ],
           ),
 
@@ -222,7 +200,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                       separatorBuilder: (_, _) => const SizedBox(height: 5),
                       itemBuilder: (context, index) {
                         final acc = visibleAccounts[index];
-                        final isLive = acc.credits > 0 && acc.status == AccountStatus.ready;
+                        final chip = _statusChip(acc);
 
                         return Container(
                           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
@@ -251,7 +229,27 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                   onChanged: (_) => accountsProv.toggleAccount(acc.id),
                                 ),
                               ),
-                              const SizedBox(width: 8),
+                              const SizedBox(width: 6),
+                              // v2.27.0 (design): avatar circle with the
+                              // account's initial, coloured per account.
+                              Container(
+                                width: 24,
+                                height: 24,
+                                decoration: BoxDecoration(
+                                  color: _avatarColor(acc),
+                                  shape: BoxShape.circle,
+                                ),
+                                alignment: Alignment.center,
+                                child: Text(
+                                  _initialOf(acc),
+                                  style: const TextStyle(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w800,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 7),
                               Expanded(
                                 child: Column(
                                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -267,7 +265,9 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       ),
                                     ),
                                     Text(
-                                      '${acc.credits} credits',
+                                      _subLineOf(acc),
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
                                         fontSize: 10,
                                         color: AppTheme.textFaint,
@@ -293,19 +293,21 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                   ],
                                 ),
                               ),
-                              // READY / STATUS chip
+                              // v2.27.0 (design): status chip — LIVE
+                              // (green) / CHECKING (amber) / FAIL (red).
                               Container(
                                 padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
                                 decoration: BoxDecoration(
-                                  color: isLive ? AppTheme.greenBg : AppTheme.redBg,
+                                  color: chip.$2.withValues(alpha: 0.15),
                                   borderRadius: BorderRadius.circular(4),
+                                  border: Border.all(color: chip.$2.withValues(alpha: 0.4)),
                                 ),
                                 child: Text(
-                                  isLive ? 'READY' : acc.status.name.toUpperCase(),
+                                  chip.$1,
                                   style: TextStyle(
                                     fontSize: 9,
                                     fontWeight: FontWeight.w800,
-                                    color: isLive ? AppTheme.green : AppTheme.red,
+                                    color: chip.$2,
                                     letterSpacing: 0.5,
                                   ),
                                 ),
@@ -353,6 +355,28 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
 
           const SizedBox(height: 8),
 
+          // v2.27.0 (design): full-width "Add Cookies" button below the
+          // accounts list (it was the top row's second button before).
+          InkWell(
+            onTap: () => pickAndImportCookieFiles(context),
+            borderRadius: BorderRadius.circular(7),
+            child: Container(
+              height: 30,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: AppTheme.overlay08,
+                borderRadius: BorderRadius.circular(7),
+                border: Border.all(color: AppTheme.borderSoft),
+              ),
+              child: Text(
+                'Add Cookies',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textMain),
+              ),
+            ),
+          ),
+
+          const SizedBox(height: 6),
+
           // Action Grid: 2x2
           Column(
             children: [
@@ -360,7 +384,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                 children: [
                   Expanded(
                     child: _buildActionGridBtn(
-                      '✓ Sync Selected',
+                      'Sync Selected',
                       isDim: selectedCount == 0,
                       onTap: selectedCount > 0 ? () => accountsProv.syncSelected() : null,
                     ),
@@ -368,7 +392,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: _buildActionGridBtn(
-                      '🗑 Delete Selected',
+                      'Delete Selected',
                       isDim: selectedCount == 0,
                       isRed: true,
                       onTap: selectedCount > 0 ? () => _confirmDeleteSelected(context) : null,
@@ -381,7 +405,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                 children: [
                   Expanded(
                     child: _buildActionGridBtn(
-                      '✓ Verify All',
+                      'Verify All',
                       isDim: false,
                       onTap: () => accountsProv.syncAll(),
                     ),
@@ -401,83 +425,120 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
 
           const SizedBox(height: 6),
 
-          // Status hint
+          // v2.27.0 (design): status line from the REAL counts. (The
+          // "Only run live accounts" toggle that used to sit under this
+          // line moved to Settings → Automation.)
           Center(
             child: Text(
-              '$selectedCount of ${allAccounts.length} selected • ${accountsProv.activeAccountsCount} live ready • 0 not confirmed',
+              allAccounts.isEmpty
+                  ? 'No accounts yet'
+                  : '$liveCount Live · $checkingCount Checking · $failCount Fail — ready to generate',
               style: TextStyle(
                 fontSize: 9.5,
                 color: AppTheme.textFaint,
               ),
             ),
           ),
-
-          const SizedBox(height: 6),
-          Divider(color: AppTheme.borderSoft, height: 1),
-          const SizedBox(height: 6),
-
-          // Only run live accounts toggle
-          Row(
-            mainAxisAlignment: MainAxisAlignment.spaceBetween,
-            children: [
-              Text(
-                'Only run live accounts',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.textMain,
-                ),
-              ),
-              Transform.scale(
-                scale: 0.7,
-                child: Switch(
-                  value: _onlyRunLive,
-                  activeThumbColor: AppTheme.accentGold,
-                  activeTrackColor: const Color(0x400A84FF),
-                  inactiveTrackColor: AppTheme.borderSoft,
-                  onChanged: (val) {
-                    setState(() => _onlyRunLive = val);
-                    AutomationBridge.instance.saveSetting('live_only_accounts', val ? '1' : '0');
-                  },
-                ),
-              ),
-            ],
-          ),
         ],
       ),
     );
   }
 
-  Widget _buildFilterBtn(String label, String key) {
+  // v2.27.0 (design): filter box — small label on top, big count below;
+  // the selected box carries the accent border + a tinted background.
+  Widget _buildFilterBtn(String label, int count, String key) {
     final isActive = _selectedFilter == key;
     return Expanded(
       child: InkWell(
         onTap: () => setState(() => _selectedFilter = key),
+        borderRadius: BorderRadius.circular(8),
         child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 4),
+          padding: const EdgeInsets.symmetric(vertical: 5),
           alignment: Alignment.center,
           decoration: BoxDecoration(
-            gradient: isActive ? AppTheme.accentGrad : null,
-            color: isActive ? null : AppTheme.overlay08,
-            borderRadius: BorderRadius.circular(6),
+            color: isActive
+                ? AppTheme.accentGold.withValues(alpha: 0.12)
+                : AppTheme.overlay08,
+            borderRadius: BorderRadius.circular(8),
             border: Border.all(
-              color: isActive ? Colors.transparent : AppTheme.borderSoft,
+              color: isActive ? AppTheme.accentGold : AppTheme.borderSoft,
+              width: isActive ? 1.2 : 1.0,
             ),
           ),
-          child: FittedBox(
-            fit: BoxFit.scaleDown,
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 9.5,
-                fontWeight: isActive ? FontWeight.w800 : FontWeight.w600,
-                color: isActive ? AppTheme.onAccent : AppTheme.textDim,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700,
+                  color: isActive ? AppTheme.accentText : AppTheme.textDim,
+                ),
               ),
-            ),
+              const SizedBox(height: 1),
+              Text(
+                '$count',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: isActive ? AppTheme.textMain : AppTheme.textDim,
+                ),
+              ),
+            ],
           ),
         ),
       ),
     );
+  }
+
+  // v2.27.0 (design): the sidebar status chip — (text, colour). Status
+  // colours stay fixed in every theme: LIVE green, CHECKING amber,
+  // FAIL red.
+  (String, Color) _statusChip(GoogleAccount acc) {
+    if (acc.status == AccountStatus.checking) {
+      return ('CHECKING', const Color(0xFFF5B301));
+    }
+    final isLive = acc.status == AccountStatus.running ||
+        (acc.status == AccountStatus.ready && acc.credits > 0);
+    if (isLive) return ('LIVE', AppTheme.green);
+    return ('FAIL', AppTheme.red);
+  }
+
+  // v2.27.0 (design): the line under the account name — "Checking…"
+  // while checking, the failure reason when failed, else the credits.
+  String _subLineOf(GoogleAccount acc) {
+    if (acc.status == AccountStatus.checking) return 'Checking…';
+    final chip = _statusChip(acc);
+    if (chip.$1 == 'FAIL' && acc.reason != null && acc.reason!.trim().isNotEmpty) {
+      return acc.reason!.trim();
+    }
+    return '${acc.credits} credits';
+  }
+
+  static const List<Color> _avatarPalette = [
+    Color(0xFF0A84FF), // blue
+    Color(0xFF30D158), // green
+    Color(0xFFF5B301), // amber
+    Color(0xFFBF5AF2), // purple
+    Color(0xFFFF6961), // red
+    Color(0xFF2DD4BF), // teal
+    Color(0xFFFF8A3D), // orange
+    Color(0xFF64D2FF), // sky
+  ];
+
+  Color _avatarColor(GoogleAccount acc) {
+    final seed = (acc.email.isNotEmpty ? acc.email : acc.name).toLowerCase();
+    var h = 0;
+    for (final c in seed.codeUnits) {
+      h = (h * 31 + c) & 0x7fffffff;
+    }
+    return _avatarPalette[h % _avatarPalette.length];
+  }
+
+  String _initialOf(GoogleAccount acc) {
+    final src = acc.name.trim().isNotEmpty ? acc.name.trim() : acc.email.trim();
+    return src.isEmpty ? '?' : src[0].toUpperCase();
   }
 
   Widget _buildActionGridBtn(String label, {bool isDim = false, bool isRed = false, VoidCallback? onTap}) {
@@ -632,17 +693,37 @@ class _AddAccountDialog extends StatefulWidget {
   State<_AddAccountDialog> createState() => _AddAccountDialogState();
 }
 
-class _AddAccountDialogState extends State<_AddAccountDialog> with SingleTickerProviderStateMixin {
-  late TabController _tabController;
+// v2.27.0 (design): the Add Account popup matches the approved sample —
+// title "Add Account", a segmented routes row on top (Gmail Login ·
+// Add Cookies · Chrome Profiles, Chrome Profiles selected by default)
+// and, on the Profiles route, a simple CARD GRID: a dashed
+// "+ Add Account" card first, then one card per installed Chrome
+// profile. A profile whose email already has an account shows
+// ALREADY IMPORTED + credits + Sync; any other shows
+// "Import this profile". No search box / filter chips (owner: simple).
+class _AddAccountDialogState extends State<_AddAccountDialog> {
+  // 0 = Gmail Login, 1 = Add Cookies, 2 = Chrome Profiles (design default)
+  int _route = 2;
   final nameCtrl = TextEditingController();
   final creditsCtrl = TextEditingController(text: '50');
   List<Map<String, dynamic>> _profiles = [];
   bool _loadingProfiles = true;
 
+  static const Color _blue = Color(0xFF0A84FF);
+  static const List<Color> _cardPalette = [
+    Color(0xFF0A84FF),
+    Color(0xFF30D158),
+    Color(0xFFF5B301),
+    Color(0xFFBF5AF2),
+    Color(0xFFFF6961),
+    Color(0xFF2DD4BF),
+    Color(0xFFFF8A3D),
+    Color(0xFF64D2FF),
+  ];
+
   @override
   void initState() {
     super.initState();
-    _tabController = TabController(length: 3, vsync: this);
     _loadProfiles();
   }
 
@@ -658,10 +739,17 @@ class _AddAccountDialogState extends State<_AddAccountDialog> with SingleTickerP
 
   @override
   void dispose() {
-    _tabController.dispose();
     nameCtrl.dispose();
     creditsCtrl.dispose();
     super.dispose();
+  }
+
+  Color _colorFor(String seed) {
+    var h = 0;
+    for (final c in seed.toLowerCase().codeUnits) {
+      h = (h * 31 + c) & 0x7fffffff;
+    }
+    return _cardPalette[h % _cardPalette.length];
   }
 
   @override
@@ -669,186 +757,384 @@ class _AddAccountDialogState extends State<_AddAccountDialog> with SingleTickerP
     return AlertDialog(
       backgroundColor: AppTheme.surfaceElevated,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-      title: Column(
+      title: Row(
         children: [
-          Text('Add Google Flow Account', style: TextStyle(fontSize: 15, color: AppTheme.textMain)),
-          const SizedBox(height: 8),
-          TabBar(
-            controller: _tabController,
-            indicatorColor: AppTheme.accentGold,
-            labelColor: AppTheme.accentText,
-            unselectedLabelColor: AppTheme.textDim,
-            tabs: const [
-              Tab(text: 'Chrome Profiles'),
-              Tab(text: 'Add Cookies'),
-              Tab(text: 'Manual Add'),
-            ],
+          Text('Add Account', style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: AppTheme.textMain)),
+          const Spacer(),
+          InkWell(
+            onTap: () => Navigator.pop(context),
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              width: 24,
+              height: 24,
+              decoration: BoxDecoration(
+                color: AppTheme.overlay10,
+                shape: BoxShape.circle,
+                border: Border.all(color: AppTheme.borderSoft),
+              ),
+              child: Icon(Icons.close, size: 13, color: AppTheme.textDim),
+            ),
           ),
         ],
       ),
       content: SizedBox(
-        width: 380,
-        height: 290,
-        child: TabBarView(
-          controller: _tabController,
+        width: 540,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Tab 1: Chrome Profiles
-            _loadingProfiles
-                ? Center(child: CircularProgressIndicator(color: AppTheme.accentGold))
-                : _profiles.isEmpty
-                    ? Center(
-                        child: Text(
-                          'No Chrome profiles found.\nUse "Add Cookies" to import from file.',
-                          textAlign: TextAlign.center,
-                          style: TextStyle(fontSize: 12, color: AppTheme.textDim),
-                        ),
-                      )
-                    : ListView.separated(
-                        itemCount: _profiles.length,
-                        separatorBuilder: (_, _) => const SizedBox(height: 6),
-                        itemBuilder: (context, idx) {
-                          final p = _profiles[idx];
-                          final dir = p['dirName'] ?? '';
-                          final email = p['email'] ?? '';
-                          final name = p['name'] ?? dir;
-
-                          return Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                            decoration: BoxDecoration(
-                              color: AppTheme.inputBg,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(color: AppTheme.borderSoft),
-                            ),
-                            child: Row(
-                              children: [
-                                Icon(Icons.account_circle, size: 24, color: AppTheme.accentGold),
-                                const SizedBox(width: 8),
-                                Expanded(
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    children: [
-                                      Text(
-                                        name,
-                                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-                                      ),
-                                      Text(
-                                        email.isNotEmpty ? email : dir,
-                                        style: TextStyle(fontSize: 10, color: AppTheme.textFaint),
-                                      ),
-                                    ],
-                                  ),
-                                ),
-                                ElevatedButton(
-                                  onPressed: () async {
-                                    await context.read<AccountsProvider>().importChromeProfile(dir);
-                                    if (context.mounted) Navigator.pop(context);
-                                  },
-                                  style: ElevatedButton.styleFrom(
-                                    backgroundColor: AppTheme.accentGold,
-                                    foregroundColor: Colors.black,
-                                    padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                                    visualDensity: VisualDensity.compact,
-                                  ),
-                                  child: const Text('Import', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                                ),
-                              ],
-                            ),
-                          );
-                        },
-                      ),
-
-            // Tab 2: Add Cookies File (Directly opens PC files)
-            Padding(
-              padding: const EdgeInsets.all(16),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.center,
+            // Segmented routes row (design)
+            Container(
+              padding: const EdgeInsets.all(3),
+              decoration: BoxDecoration(
+                color: AppTheme.overlay08,
+                borderRadius: BorderRadius.circular(9),
+                border: Border.all(color: AppTheme.borderSoft),
+              ),
+              child: Row(
                 children: [
-                  Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      color: AppTheme.accentGold.withValues(alpha: 0.12),
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(Icons.cookie_outlined, size: 32, color: AppTheme.accentGold),
-                  ),
-                  const SizedBox(height: 14),
-                  Text(
-                    'Import Cookies File from PC',
-                    style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-                  ),
-                  const SizedBox(height: 6),
-                  Text(
-                    'Select a Netscape cookies.txt or JSON cookie file exported from your browser.',
-                    textAlign: TextAlign.center,
-                    style: TextStyle(fontSize: 11, color: AppTheme.textDim, height: 1.4),
-                  ),
-                  const SizedBox(height: 20),
-                  ElevatedButton.icon(
-                    onPressed: () async {
-                      Navigator.pop(context);
-                      await pickAndImportCookieFiles(context);
-                    },
-                    icon: const Icon(Icons.folder_open, size: 16),
-                    label: const Text('Select Cookie File from PC', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.accentGold,
-                      foregroundColor: Colors.black,
-                      padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-                    ),
-                  ),
+                  _routeTab('Gmail Login', 0),
+                  _routeTab('Add Cookies', 1),
+                  _routeTab('Chrome Profiles', 2),
                 ],
               ),
             ),
-
-            // Tab 3: Manual Add
-            Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                TextField(
-                  controller: nameCtrl,
-                  decoration: const InputDecoration(labelText: 'Name (e.g. M. Aslam)'),
-                ),
-                const SizedBox(height: 10),
-                TextField(
-                  controller: creditsCtrl,
-                  keyboardType: TextInputType.number,
-                  decoration: const InputDecoration(labelText: 'Credits (e.g. 50)'),
-                ),
-                const Spacer(),
-                ElevatedButton(
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppTheme.accentGold,
-                    foregroundColor: Colors.black,
-                    minimumSize: const Size.fromHeight(36),
-                  ),
-                  onPressed: () {
-                    if (nameCtrl.text.isNotEmpty) {
-                      final credits = int.tryParse(creditsCtrl.text) ?? 50;
-                      context.read<AccountsProvider>().addAccount(
-                            name: nameCtrl.text,
-                            email: '${nameCtrl.text.toLowerCase().replaceAll(' ', '')}@gmail.com',
-                            credits: credits,
-                          );
-                      Navigator.pop(context);
-                    }
-                  },
-                  child: const Text('Add Account', style: TextStyle(fontWeight: FontWeight.bold)),
-                ),
-              ],
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 300,
+              child: switch (_route) {
+                0 => _buildGmailLoginTab(context),
+                1 => _buildCookiesTab(context),
+                _ => _buildProfilesTab(context),
+              },
             ),
           ],
         ),
       ),
-      actions: [
-        TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: Text('Close', style: TextStyle(color: AppTheme.textDim)),
-        ),
-      ],
     );
   }
+
+  Widget _routeTab(String label, int route) {
+    final selected = _route == route;
+    return Expanded(
+      child: InkWell(
+        onTap: () => setState(() => _route = route),
+        borderRadius: BorderRadius.circular(7),
+        child: Container(
+          padding: const EdgeInsets.symmetric(vertical: 7),
+          alignment: Alignment.center,
+          decoration: BoxDecoration(
+            color: selected ? AppTheme.surfaceElevated : Colors.transparent,
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(color: selected ? AppTheme.borderSoft : Colors.transparent),
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: selected ? FontWeight.bold : FontWeight.w600,
+              color: selected ? AppTheme.textMain : AppTheme.textDim,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  // Route: Chrome Profiles — the design's card grid.
+  Widget _buildProfilesTab(BuildContext context) {
+    if (_loadingProfiles) {
+      return const Center(child: CircularProgressIndicator(color: _blue));
+    }
+    final accounts = context.watch<AccountsProvider>().accounts;
+
+    GoogleAccount? importedFor(String email) {
+      if (email.trim().isEmpty) return null;
+      for (final a in accounts) {
+        if (a.email.trim().toLowerCase() == email.trim().toLowerCase()) return a;
+      }
+      return null;
+    }
+
+    return GridView.builder(
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 2,
+        mainAxisSpacing: 10,
+        crossAxisSpacing: 10,
+        childAspectRatio: 1.9,
+      ),
+      itemCount: _profiles.length + 1,
+      itemBuilder: (context, idx) {
+        if (idx == 0) return _buildAddCard();
+        final p = _profiles[idx - 1];
+        final dir = p['dirName']?.toString() ?? '';
+        final email = p['email']?.toString() ?? '';
+        final gaia = p['gaiaName']?.toString() ?? '';
+        final name = gaia.isNotEmpty ? gaia : (p['name']?.toString() ?? dir);
+        final imported = importedFor(email);
+        return _buildProfileCard(
+          context,
+          name: name,
+          email: email.isNotEmpty ? email : dir,
+          dir: dir,
+          imported: imported,
+        );
+      },
+    );
+  }
+
+  // First grid cell: dashed "+ Add Account" card → Gmail Login route.
+  Widget _buildAddCard() {
+    return InkWell(
+      onTap: () => setState(() => _route = 0),
+      borderRadius: BorderRadius.circular(10),
+      child: CustomPaint(
+        painter: _DashedBorderPainter(color: _blue.withValues(alpha: 0.7)),
+        child: Container(
+          decoration: BoxDecoration(
+            color: _blue.withValues(alpha: 0.07),
+            borderRadius: BorderRadius.circular(10),
+          ),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(Icons.add, size: 22, color: _blue),
+              const SizedBox(height: 4),
+              Text('Add Account', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: AppTheme.textMain)),
+              const SizedBox(height: 2),
+              Text('Login directly with any Gmail ID', style: TextStyle(fontSize: 10, color: AppTheme.textFaint)),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildProfileCard(
+    BuildContext context, {
+    required String name,
+    required String email,
+    required String dir,
+    required GoogleAccount? imported,
+  }) {
+    final initial = name.trim().isEmpty ? '?' : name.trim()[0].toUpperCase();
+    return Container(
+      padding: const EdgeInsets.all(10),
+      decoration: BoxDecoration(
+        color: AppTheme.inputBg,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderSoft),
+      ),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(color: _colorFor(email.isNotEmpty ? email : name), shape: BoxShape.circle),
+            alignment: Alignment.center,
+            child: Text(initial, style: const TextStyle(fontSize: 13, fontWeight: FontWeight.w800, color: Colors.white)),
+          ),
+          const SizedBox(height: 5),
+          Text(
+            name,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textMain),
+          ),
+          Text(
+            email,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: TextStyle(fontSize: 10, color: AppTheme.textFaint),
+          ),
+          const SizedBox(height: 6),
+          if (imported != null) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+              decoration: BoxDecoration(
+                color: AppTheme.green.withValues(alpha: 0.15),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.green.withValues(alpha: 0.4)),
+              ),
+              child: Text(
+                'ALREADY IMPORTED',
+                style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w800, color: AppTheme.green, letterSpacing: 0.4),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text('${imported.credits} credits', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppTheme.textDim)),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: () => context.read<AccountsProvider>().syncAccountById(imported.id),
+                  icon: const Icon(Icons.sync, size: 12),
+                  label: const Text('Sync', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
+                  style: OutlinedButton.styleFrom(
+                    foregroundColor: AppTheme.textMain,
+                    side: BorderSide(color: AppTheme.borderSoft),
+                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
+                    visualDensity: VisualDensity.compact,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
+                  ),
+                ),
+              ],
+            ),
+          ] else
+            ElevatedButton(
+              onPressed: () async {
+                await context.read<AccountsProvider>().importChromeProfile(dir);
+                if (context.mounted) Navigator.pop(context);
+              },
+              style: ElevatedButton.styleFrom(
+                backgroundColor: _blue,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
+                visualDensity: VisualDensity.compact,
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
+              ),
+              child: const Text('Import this profile', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+            ),
+        ],
+      ),
+    );
+  }
+
+  // Route: Add Cookies — the existing cookie-file import, styled to
+  // this dialog (same engine flow as before).
+  Widget _buildCookiesTab(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          Container(
+            width: 56,
+            height: 56,
+            decoration: BoxDecoration(
+              color: _blue.withValues(alpha: 0.12),
+              shape: BoxShape.circle,
+            ),
+            child: const Icon(Icons.cookie_outlined, size: 32, color: _blue),
+          ),
+          const SizedBox(height: 14),
+          Text(
+            'Import Cookies File from PC',
+            style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.textMain),
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Select a Netscape cookies.txt or JSON cookie file exported from your browser.',
+            textAlign: TextAlign.center,
+            style: TextStyle(fontSize: 11, color: AppTheme.textDim, height: 1.4),
+          ),
+          const SizedBox(height: 20),
+          ElevatedButton.icon(
+            onPressed: () async {
+              Navigator.pop(context);
+              await pickAndImportCookieFiles(context);
+            },
+            icon: const Icon(Icons.folder_open, size: 16),
+            label: const Text('Select Cookie File from PC', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _blue,
+              foregroundColor: Colors.white,
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Route: Gmail Login. NOTE: the app has no separate Gmail sign-in API
+  // — the existing route is this direct-add form (the engine creates
+  // the account as "Need Login"), after which the account's own Chrome
+  // button in the sidebar opens the real Google sign-in window
+  // (engine openLoginWindow). The form is labelled honestly as such.
+  Widget _buildGmailLoginTab(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'Add the account here — then press its Chrome button in the sidebar to finish the Google sign-in in Chrome.',
+            style: TextStyle(fontSize: 11, color: AppTheme.textDim, height: 1.4),
+          ),
+          const SizedBox(height: 14),
+          TextField(
+            controller: nameCtrl,
+            style: TextStyle(fontSize: 12.5, color: AppTheme.textMain),
+            decoration: const InputDecoration(labelText: 'Name (e.g. M. Aslam)'),
+          ),
+          const SizedBox(height: 10),
+          TextField(
+            controller: creditsCtrl,
+            keyboardType: TextInputType.number,
+            style: TextStyle(fontSize: 12.5, color: AppTheme.textMain),
+            decoration: const InputDecoration(labelText: 'Credits (e.g. 50)'),
+          ),
+          const Spacer(),
+          ElevatedButton(
+            style: ElevatedButton.styleFrom(
+              backgroundColor: _blue,
+              foregroundColor: Colors.white,
+              minimumSize: const Size.fromHeight(38),
+              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+            ),
+            onPressed: () {
+              if (nameCtrl.text.isNotEmpty) {
+                final credits = int.tryParse(creditsCtrl.text) ?? 50;
+                context.read<AccountsProvider>().addAccount(
+                      name: nameCtrl.text,
+                      email: '${nameCtrl.text.toLowerCase().replaceAll(' ', '')}@gmail.com',
+                      credits: credits,
+                    );
+                Navigator.pop(context);
+              }
+            },
+            child: const Text('Add Account', style: TextStyle(fontWeight: FontWeight.bold)),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Dashed border for the popup's "+ Add Account" card (design).
+class _DashedBorderPainter extends CustomPainter {
+  final Color color;
+  const _DashedBorderPainter({required this.color});
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final paint = Paint()
+      ..color = color
+      ..strokeWidth = 1.2
+      ..style = PaintingStyle.stroke;
+    final rect = RRect.fromRectAndRadius(
+      Offset.zero & size,
+      const Radius.circular(10),
+    );
+    final path = Path()..addRRect(rect);
+    const dash = 6.0;
+    const gap = 4.0;
+    for (final metric in path.computeMetrics()) {
+      var dist = 0.0;
+      while (dist < metric.length) {
+        final end = (dist + dash).clamp(0.0, metric.length);
+        canvas.drawPath(metric.extractPath(dist, end), paint);
+        dist += dash + gap;
+      }
+    }
+  }
+
+  @override
+  bool shouldRepaint(covariant _DashedBorderPainter oldDelegate) => oldDelegate.color != color;
 }
 
 class _AddCookiesDialog extends StatefulWidget {

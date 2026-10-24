@@ -67,13 +67,11 @@ class _SettingsViewState extends State<SettingsView> {
     final prov = context.watch<SettingsProvider>();
     final s = prov.settings;
 
-    return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          // 1. Appearance Panel
-          _buildPanel(
+    // v2.27.0 (design): TWO-COLUMN settings layout — Appearance +
+    // Defaults on the left, Updates + Automation on the right, then
+    // the full-width About strip and the Created By panel. Every
+    // existing control is kept, only redistributed.
+    final appearancePanel = _buildPanel(
             title: '🎨 Appearance',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -122,20 +120,19 @@ class _SettingsViewState extends State<SettingsView> {
                 _buildThemeGrid(prov, s),
               ],
             ),
-          ),
+          );
 
-          const SizedBox(height: 12),
-
-          // 2. Defaults Panel
-          _buildPanel(
+    final defaultsPanel = _buildPanel(
             title: '⚙ Defaults',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 // 4 Dropdowns
-                Row(
+                Column(
                   children: [
-                    Expanded(
+                    Row(
+                      children: [
+                        Expanded(
                       child: _buildDropdown(
                         label: 'Default Model',
                         value: s.model,
@@ -143,8 +140,8 @@ class _SettingsViewState extends State<SettingsView> {
                         onChanged: (v) => prov.updateModel(v!),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
+                        const SizedBox(width: 8),
+                        Expanded(
                       child: _buildDropdown(
                         label: 'Default Duration',
                         value: s.duration,
@@ -152,8 +149,12 @@ class _SettingsViewState extends State<SettingsView> {
                         onChanged: (v) => prov.updateDuration(v!),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
                       child: _buildDropdown(
                         label: 'Default Aspect',
                         value: s.aspectRatio,
@@ -161,8 +162,8 @@ class _SettingsViewState extends State<SettingsView> {
                         onChanged: (v) => prov.updateAspectRatio(v!),
                       ),
                     ),
-                    const SizedBox(width: 8),
-                    Expanded(
+                        const SizedBox(width: 8),
+                        Expanded(
                       child: _buildDropdown(
                         label: 'Default File Name',
                         value: s.namingPattern,
@@ -170,6 +171,8 @@ class _SettingsViewState extends State<SettingsView> {
                         labels: {'tag': 'By tag name (00-01.mp4)', 'scene': 'Old way (scene001.mp4)'},
                         onChanged: (v) => prov.updateNamingPattern(v!),
                       ),
+                    ),
+                      ],
                     ),
                   ],
                 ),
@@ -287,12 +290,9 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
               ],
             ),
-          ),
+          );
 
-          const SizedBox(height: 12),
-
-          // 3. Automation Panel
-          _buildPanel(
+    final automationPanel = _buildPanel(
             title: '🤖 Automation',
             child: Column(
               children: [
@@ -316,14 +316,19 @@ class _SettingsViewState extends State<SettingsView> {
                   value: s.autoVerifyOnStart,
                   onChanged: (v) => prov.toggleAutoVerify(v),
                 ),
+                Divider(color: AppTheme.borderSoft, height: 16),
+                // v2.27.0: moved here from the sidebar (design).
+                _buildToggleRow(
+                  title: 'Only run live accounts',
+                  subtitle: 'Only Live accounts take part in generation; other accounts are skipped.',
+                  value: s.onlyRunLiveAccounts,
+                  onChanged: (v) => prov.toggleOnlyRunLiveAccounts(v),
+                ),
               ],
             ),
-          ),
+          );
 
-          const SizedBox(height: 12),
-
-          // 4. Updates Panel
-          _buildPanel(
+    final updatesPanel = _buildPanel(
             title: '🔔 Updates',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -343,8 +348,11 @@ class _SettingsViewState extends State<SettingsView> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    Text('— current version', style: TextStyle(fontSize: 11, color: AppTheme.textFaint)),
-                    const Spacer(),
+                    // v2.27.0: Flexible instead of Spacer so this row
+                    // also fits the narrower two-column panel.
+                    Expanded(
+                      child: Text('— current version', overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: AppTheme.textFaint)),
+                    ),
                     ElevatedButton.icon(
                       onPressed: prov.isCheckingUpdates ? null : () => prov.checkForUpdates(),
                       style: ElevatedButton.styleFrom(
@@ -407,7 +415,12 @@ class _SettingsViewState extends State<SettingsView> {
                 ],
                 if (prov.downloadedSetupPath.isNotEmpty) ...[
                   const SizedBox(height: 8),
-                  ElevatedButton.icon(
+                  // v2.27.0: FittedBox so the long install label also
+                  // fits the narrower two-column Updates panel.
+                  FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: ElevatedButton.icon(
                     onPressed: () => prov.installDownloadedUpdate(),
                     style: ElevatedButton.styleFrom(
                       backgroundColor: AppTheme.accentGold,
@@ -418,6 +431,7 @@ class _SettingsViewState extends State<SettingsView> {
                     ),
                     icon: const Icon(Icons.system_update, size: 14),
                     label: const Text('Install update — the app will close & update itself', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                    ),
                   ),
                 ],
                 const SizedBox(height: 8),
@@ -429,12 +443,9 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
               ],
             ),
-          ),
+          );
 
-          const SizedBox(height: 12),
-
-          // 5. About Panel (Replicated 1:1 from original FlowStudio Lite source)
-          _buildPanel(
+    final aboutPanel = _buildPanel(
             title: '📋 About',
             child: Container(
               padding: const EdgeInsets.all(10),
@@ -456,12 +467,9 @@ class _SettingsViewState extends State<SettingsView> {
                 ],
               ),
             ),
-          ),
+          );
 
-          const SizedBox(height: 12),
-
-          // 6. Created By & Links (Replicated 1:1 from original source)
-          _buildPanel(
+    final createdByPanel = _buildPanel(
             title: 'CREATED BY',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -517,7 +525,43 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
               ],
             ),
+          );
+
+    return SingleChildScrollView(
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    appearancePanel,
+                    const SizedBox(height: 12),
+                    defaultsPanel,
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    updatesPanel,
+                    const SizedBox(height: 12),
+                    automationPanel,
+                  ],
+                ),
+              ),
+            ],
           ),
+          const SizedBox(height: 12),
+          aboutPanel,
+          const SizedBox(height: 12),
+          createdByPanel,
           const SizedBox(height: 20),
         ],
       ),
@@ -565,19 +609,28 @@ class _SettingsViewState extends State<SettingsView> {
   // palette for the CURRENTLY APPLIED mode (AppTheme.dark), so flipping
   // Dark/Light re-renders every card in that mode's colours.
   Widget _buildThemeGrid(SettingsProvider prov, AppSettings s) {
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 5,
-        mainAxisSpacing: 8,
-        crossAxisSpacing: 8,
-        childAspectRatio: 1.05,
-      ),
-      itemCount: AppTheme.themeIds.length,
-      itemBuilder: (context, i) {
-        final id = AppTheme.themeIds[i];
-        return _buildThemeCard(prov, s, id);
+    // v2.27.0: the Settings page is two-column now, so the Appearance
+    // panel is narrower — the theme grid adapts its column count to
+    // the width it actually gets (5 across when wide, 3 in the
+    // two-column layout) so cards never overflow at 1024×768.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final crossAxisCount = constraints.maxWidth > 520 ? 5 : 3;
+        return GridView.builder(
+          shrinkWrap: true,
+          physics: const NeverScrollableScrollPhysics(),
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: crossAxisCount,
+            mainAxisSpacing: 8,
+            crossAxisSpacing: 8,
+            childAspectRatio: 1.05,
+          ),
+          itemCount: AppTheme.themeIds.length,
+          itemBuilder: (context, i) {
+            final id = AppTheme.themeIds[i];
+            return _buildThemeCard(prov, s, id);
+          },
+        );
       },
     );
   }

@@ -194,6 +194,20 @@ class AccountsProvider with ChangeNotifier {
     await AutomationBridge.instance.deleteSelectedAccounts(selectedIds);
   }
 
+  /// v2.27.0: sync ONE account (the Add Account popup's per-card Sync
+  /// button). Uses the same engine route as sync-selected, then
+  /// refreshes the list exactly like syncSelected() does.
+  Future<void> syncAccountById(String id) async {
+    if (id.isEmpty) return;
+    await AutomationBridge.instance.syncSelectedAccounts([id]);
+    final remote = await AutomationBridge.instance.getAccounts();
+    if (remote.isNotEmpty) {
+      _accounts = remote;
+      _applyActiveFlags();
+      notifyListeners();
+    }
+  }
+
   Future<void> syncSelected() async {
     final selectedIds = _accounts.where((a) => a.isChecked).map((a) => a.id).toList();
     if (selectedIds.isEmpty) return;

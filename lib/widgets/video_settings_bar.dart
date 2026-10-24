@@ -1,13 +1,25 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
+import '../models/account.dart';
 import '../providers/settings_provider.dart';
 import '../providers/generator_provider.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/activity_provider.dart';
 
+// v2.27.0 (design): ONE row of four labelled dropdowns
+// (MODEL / DURATION / ASPECT / BROWSERS, labels above), then a row
+// with Stop + Pause on the left, the estimate text and the big blue
+// Generate button on the right. The engine values behind the dropdowns
+// are unchanged — only their display labels match the design.
 class VideoSettingsBar extends StatelessWidget {
   const VideoSettingsBar({super.key});
+
+  static const LinearGradient _blueGrad = LinearGradient(
+    colors: [Color(0xFF1A94FF), Color(0xFF0066D6)],
+    begin: Alignment.topCenter,
+    end: Alignment.bottomCenter,
+  );
 
   @override
   Widget build(BuildContext context) {
@@ -19,6 +31,11 @@ class VideoSettingsBar extends StatelessWidget {
 
     final isRunning = generator.isRunning;
     final isPaused = generator.isPaused;
+
+    final liveCount = accounts.accounts
+        .where((a) => a.credits > 0 && a.status == AccountStatus.ready)
+        .length;
+    final promptCount = generator.totalPrompts;
 
     return Container(
       padding: const EdgeInsets.all(12),
@@ -33,67 +50,65 @@ class VideoSettingsBar extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // Header: VIDEO SETTINGS
-          Text(
-            'VIDEO SETTINGS',
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 0.8,
-              color: AppTheme.textFaint,
-            ),
-          ),
-          const SizedBox(height: 8),
-
-          // 2x2 Grid of Dropdowns
+          // One row of 4 labelled dropdowns (design)
           Row(
             children: [
-              // Model
               Expanded(
                 child: _buildSettingField(
-                  label: 'Model',
+                  label: 'MODEL',
                   value: settings.model,
-                  items: ['Omni Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'],
+                  items: const ['Omni Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'],
+                  display: const {'Omni Flash': 'Omni 1.1 Flash'},
                   onChanged: (val) {
                     if (val != null) settingsProv.updateModel(val);
                   },
                 ),
               ),
               const SizedBox(width: 8),
-              // Duration
               Expanded(
                 child: _buildSettingField(
-                  label: 'Duration',
+                  label: 'DURATION',
                   value: settings.duration,
-                  items: ['4s', '6s', '8s', '10s'],
+                  items: const ['4s', '6s', '8s', '10s'],
+                  display: const {
+                    '4s': '4 seconds',
+                    '6s': '6 seconds',
+                    '8s': '8 seconds',
+                    '10s': '10 seconds',
+                  },
                   onChanged: (val) {
                     if (val != null) settingsProv.updateDuration(val);
                   },
                 ),
               ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Row(
-            children: [
-              // Aspect
+              const SizedBox(width: 8),
               Expanded(
                 child: _buildSettingField(
-                  label: 'Aspect',
+                  label: 'ASPECT',
                   value: settings.aspectRatio,
-                  items: ['9:16', '16:9', '1:1'],
+                  items: const ['9:16', '16:9', '1:1'],
+                  display: const {
+                    '9:16': '9:16 Vertical',
+                    '16:9': '16:9 Landscape',
+                    '1:1': '1:1 Square',
+                  },
                   onChanged: (val) {
                     if (val != null) settingsProv.updateAspectRatio(val);
                   },
                 ),
               ),
               const SizedBox(width: 8),
-              // Browsers
               Expanded(
                 child: _buildSettingField(
-                  label: 'Browsers',
+                  label: 'BROWSERS',
                   value: '${settings.parallelBrowsers}',
-                  items: ['1', '2', '3', '4'],
+                  items: const ['1', '2', '3', '4'],
+                  display: const {
+                    '1': '1 parallel',
+                    '2': '2 parallel',
+                    '3': '3 parallel',
+                    '4': '4 parallel',
+                  },
                   onChanged: (val) {
                     if (val != null) settingsProv.updateParallelBrowsers(int.tryParse(val) ?? 1);
                   },
@@ -104,11 +119,21 @@ class VideoSettingsBar extends StatelessWidget {
 
           const SizedBox(height: 12),
 
-          // Actions Row: Pause/Resume | Stop | Generate | Running...
+          // Actions Row (design): Stop | Pause ... estimate | Generate
           Row(
             children: [
+              // Stop Button
+              _actionButton(
+                icon: Icons.stop,
+                label: 'Stop',
+                onTap: (isRunning || isPaused) ? () => generator.stopGeneration(activity) : null,
+              ),
+              const SizedBox(width: 8),
+
               // Pause / Resume Button
-              InkWell(
+              _actionButton(
+                icon: isPaused ? Icons.play_arrow : Icons.pause,
+                label: isPaused ? 'Resume' : 'Pause',
                 onTap: isRunning
                     ? () => generator.pauseGeneration(activity)
                     : isPaused
@@ -118,73 +143,18 @@ class VideoSettingsBar extends StatelessWidget {
                               settings: settingsProv,
                             )
                         : null,
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  height: 30,
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  decoration: BoxDecoration(
-                    color: AppTheme.overlay10,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: AppTheme.borderSoft),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: isPaused ? AppTheme.accentGold : AppTheme.blue,
-                          borderRadius: BorderRadius.circular(1.5),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        isPaused ? 'Resume' : 'Pause',
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-                      ),
-                    ],
-                  ),
-                ),
               ),
-              const SizedBox(width: 8),
 
-              // Stop Button
-              InkWell(
-                onTap: (isRunning || isPaused) ? () => generator.stopGeneration(activity) : null,
+              const Spacer(),
 
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  height: 30,
-                  padding: const EdgeInsets.symmetric(horizontal: 10),
-                  decoration: BoxDecoration(
-                    color: AppTheme.overlay10,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: AppTheme.borderSoft),
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Container(
-                        width: 8,
-                        height: 8,
-                        decoration: BoxDecoration(
-                          color: AppTheme.blue,
-                          borderRadius: BorderRadius.circular(1.5),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        'Stop',
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-                      ),
-                    ],
-                  ),
-                ),
+              // Estimate (design): "N prompts · est. X credits · Y Live accounts"
+              Text(
+                '$promptCount prompts · est. ${promptCount * 7} credits · $liveCount Live accounts',
+                style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
 
-              // Generate Button (Gold Gradient)
+              // Generate Button — big BLUE gradient (design)
               InkWell(
                 onTap: !isRunning
                     ? () => generator.startGeneration(
@@ -193,13 +163,13 @@ class VideoSettingsBar extends StatelessWidget {
                           settings: settingsProv,
                         )
                     : null,
-                borderRadius: BorderRadius.circular(6),
+                borderRadius: BorderRadius.circular(8),
                 child: Container(
-                  height: 30,
-                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  height: 38,
+                  padding: const EdgeInsets.symmetric(horizontal: 20),
                   decoration: BoxDecoration(
-                    gradient: AppTheme.accentGrad,
-                    borderRadius: BorderRadius.circular(6),
+                    gradient: _blueGrad,
+                    borderRadius: BorderRadius.circular(8),
                     boxShadow: const [
                       BoxShadow(
                         color: Colors.black38,
@@ -211,35 +181,54 @@ class VideoSettingsBar extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(Icons.play_arrow, size: 14, color: AppTheme.onAccent),
-                      SizedBox(width: 4),
+                      const Icon(Icons.play_arrow, size: 15, color: Colors.white),
+                      const SizedBox(width: 4),
                       Text(
-                        'Generate',
-                        style: TextStyle(
-                          fontSize: 11.5,
+                        isRunning ? 'Running...' : 'Generate',
+                        style: const TextStyle(
+                          fontSize: 12.5,
                           fontWeight: FontWeight.w800,
-                          color: AppTheme.onAccent,
+                          color: Colors.white,
                         ),
                       ),
                     ],
                   ),
                 ),
               ),
-
-              const SizedBox(width: 12),
-              if (isRunning) ...[
-                Text(
-                  'Running...',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontStyle: FontStyle.italic,
-                    color: AppTheme.accentText,
-                  ),
-                ),
-              ],
             ],
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _actionButton({
+    required IconData icon,
+    required String label,
+    required VoidCallback? onTap,
+  }) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(7),
+      child: Container(
+        height: 32,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: AppTheme.overlay10,
+          borderRadius: BorderRadius.circular(7),
+          border: Border.all(color: AppTheme.borderSoft),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 13, color: AppTheme.textMain),
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -248,51 +237,53 @@ class VideoSettingsBar extends StatelessWidget {
     required String label,
     required String value,
     required List<String> items,
+    Map<String, String> display = const {},
     required ValueChanged<String?> onChanged,
   }) {
-    return Container(
-      height: 34,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      decoration: BoxDecoration(
-        color: AppTheme.inputBg,
-        borderRadius: BorderRadius.circular(7),
-        border: Border.all(color: AppTheme.borderSoft),
-      ),
-      child: Row(
-        children: [
-          Text(
-            label,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.bold,
-              color: AppTheme.textDim,
-            ),
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w800,
+            letterSpacing: 0.8,
+            color: AppTheme.textFaint,
           ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: DropdownButtonHideUnderline(
-              child: DropdownButton<String>(
-                value: items.contains(value) ? value : items.first,
-                dropdownColor: AppTheme.surfaceElevated,
-                isDense: true,
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: FontWeight.bold,
-                  color: AppTheme.textMain,
-                ),
-                icon: Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
-                items: items.map((String item) {
-                  return DropdownMenuItem<String>(
-                    value: item,
-                    child: Text(item),
-                  );
-                }).toList(),
-                onChanged: onChanged,
+        ),
+        const SizedBox(height: 5),
+        Container(
+          height: 34,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: AppTheme.inputBg,
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(color: AppTheme.borderSoft),
+          ),
+          child: DropdownButtonHideUnderline(
+            child: DropdownButton<String>(
+              value: items.contains(value) ? value : items.first,
+              dropdownColor: AppTheme.surfaceElevated,
+              isDense: true,
+              isExpanded: true,
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.textMain,
               ),
+              icon: Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
+              items: items.map((String item) {
+                return DropdownMenuItem<String>(
+                  value: item,
+                  child: Text(display[item] ?? item),
+                );
+              }).toList(),
+              onChanged: onChanged,
             ),
           ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }

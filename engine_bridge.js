@@ -233,7 +233,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.26.0', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.27.0', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -242,7 +242,7 @@ async function startBridge() {
           'appearance', 'theme', 'default_model', 'default_duration', 'default_aspect',
           'default_naming', 'default_quality', 'custom_tags', 'download_folder', 'chrome_path',
           'browser_background', 'show_browsers', 'preview_autoplay', 'auto_verify_start', 'auto_check_updates',
-          'social_links', 'live_only_accounts'
+          'social_links', 'live_only_accounts', 'history_cleared'
         ];
         const settings = {};
         for (const k of keys) {
@@ -483,6 +483,58 @@ async function startBridge() {
           broadcastEvent('automation-log', { message: `Cookie Import failed: ${res.error || 'Failed to verify cookies'}`, level: 'error' });
           return sendJson(400, { ok: false, error: res.error || 'Cookie verification failed' });
         }
+      }
+
+      // 8b. v2.27.0 (History view): list / open the real video files in
+      // the configured output folder. The folder is the SAME
+      // 'download_folder' setting the generation run saves into.
+      const outputDir = () => dbService.getSetting('download_folder', path.join(process.env.FLOW_LITE_DATA_DIR, 'downloads'));
+      const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm']);
+
+      if (pathname === '/api/output-files' && req.method === 'GET') {
+        const dir = outputDir();
+        let files = [];
+        try {
+          if (fs.existsSync(dir)) {
+            files = fs.readdirSync(dir)
+              .filter(name => VIDEO_EXTS.has(path.extname(name).toLowerCase()))
+              .map(name => {
+                try {
+                  const st = fs.statSync(path.join(dir, name));
+                  if (!st.isFile()) return null;
+                  return { name, size: st.size, mtime: st.mtimeMs };
+                } catch (e) { return null; }
+              })
+              .filter(Boolean)
+              .sort((a, b) => b.mtime - a.mtime);
+          }
+        } catch (e) {}
+        return sendJson(200, { ok: true, files, folder: dir });
+      }
+
+      if (pathname === '/api/open-file' && req.method === 'POST') {
+        const body = await readBody();
+        // Path-confined: only a bare file NAME inside the output
+        // folder can be opened — no separators, no traversal.
+        const name = path.basename(String(body.name || ''));
+        if (!name || !VIDEO_EXTS.has(path.extname(name).toLowerCase())) {
+          return sendJson(400, { ok: false, error: 'Invalid file name.' });
+        }
+        const full = path.join(outputDir(), name);
+        if (!fs.existsSync(full)) {
+          return sendJson(404, { ok: false, error: 'File not found in the output folder.' });
+        }
+        exec(`start "" "${full.replace(/"/g, '')}"`);
+        return sendJson(200, { ok: true });
+      }
+
+      if (pathname === '/api/open-output-folder' && req.method === 'POST') {
+        const dir = outputDir();
+        try {
+          if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        } catch (e) {}
+        exec(`start "" "${String(dir).replace(/"/g, '')}"`);
+        return sendJson(200, { ok: true });
       }
 
       // 9. Generation Controls

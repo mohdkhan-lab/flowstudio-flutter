@@ -11,6 +11,7 @@ class AppSettings {
   String outputDirectory;
   String chromePath;
   bool showBrowsers; // Show Puppeteer browsers on screen
+  bool onlyRunLiveAccounts; // v2.27.0: moved here from the sidebar (Settings → Automation)
   bool previewAutoplay;
   bool autoVerifyOnStart;
   bool autoCheckUpdates;
@@ -32,10 +33,11 @@ class AppSettings {
     this.outputDirectory = 'C:\\FlowStudio\\Videos',
     this.chromePath = '',
     this.showBrowsers = false,
+    this.onlyRunLiveAccounts = false,
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.currentVersion = 'v2.26.0',
+    this.currentVersion = 'v2.27.0',
     this.whatsAppLink = 'https://wa.me/',
     this.chatLink = 'https://flowstudio.chat/',
     this.supportLink = 'https://flowstudio.support/',
@@ -54,6 +56,7 @@ class AppSettings {
     String? outputDirectory,
     String? chromePath,
     bool? showBrowsers,
+    bool? onlyRunLiveAccounts,
     bool? previewAutoplay,
     bool? autoVerifyOnStart,
     bool? autoCheckUpdates,
@@ -75,6 +78,7 @@ class AppSettings {
       outputDirectory: outputDirectory ?? this.outputDirectory,
       chromePath: chromePath ?? this.chromePath,
       showBrowsers: showBrowsers ?? this.showBrowsers,
+      onlyRunLiveAccounts: onlyRunLiveAccounts ?? this.onlyRunLiveAccounts,
       previewAutoplay: previewAutoplay ?? this.previewAutoplay,
       autoVerifyOnStart: autoVerifyOnStart ?? this.autoVerifyOnStart,
       autoCheckUpdates: autoCheckUpdates ?? this.autoCheckUpdates,

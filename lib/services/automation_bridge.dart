@@ -550,6 +550,53 @@ class AutomationBridge {
     } catch (_) {}
   }
 
+  /// v2.27.0 (History view): the real video files in the engine's
+  /// configured output folder — [{name, size, mtime}] newest first.
+  Future<List<Map<String, dynamic>>> getOutputFiles() async {
+    try {
+      final res = await http.get(Uri.parse('$baseUrl/api/output-files'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true && data['files'] is List) {
+          return (data['files'] as List)
+              .whereType<Map>()
+              .map((f) => Map<String, dynamic>.from(f))
+              .toList();
+        }
+      }
+    } catch (e) {
+      debugPrint('[getOutputFiles Error] $e');
+    }
+    return [];
+  }
+
+  /// v2.27.0 (History view): open one output file with the OS default
+  /// player. The engine confines this to the output folder by name.
+  Future<bool> openOutputFile(String name) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/open-file'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'name': name}),
+      );
+      return res.statusCode == 200;
+    } catch (e) {
+      debugPrint('[openOutputFile Error] $e');
+      return false;
+    }
+  }
+
+  /// v2.27.0: open the configured output folder in Explorer.
+  Future<bool> openOutputFolder() async {
+    try {
+      final res = await http.post(Uri.parse('$baseUrl/api/open-output-folder'));
+      return res.statusCode == 200;
+    } catch (e) {
+      debugPrint('[openOutputFolder Error] $e');
+      return false;
+    }
+  }
+
   void dispose() {
     _sseSubscription?.cancel();
     _nodeProcess?.kill();

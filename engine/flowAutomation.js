@@ -16,6 +16,7 @@ const failureEvidence = require('./failureEvidence');
 const { FFmpegService } = require('./ffmpegService');
 const { sanitizeFilePart } = require('./pathSecurity');
 const tagNaming = require('./tagNaming');
+const downloadGuard = require('./downloadGuard');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -2417,7 +2418,10 @@ class FlowAutomationEngine {
       : -1;
     if (!savedBuffer && targetUrl.startsWith('blob:') && blobTileIndex >= 0 && this.page && !this.page.isClosed()) {
       try {
-        const base64 = await this.page.evaluate(async ({ idx }) => {
+        // v2.30.0: page.evaluate has NO built-in timeout — on a busy
+        // renderer this await never came back and the download (and
+        // the whole run behind it) stalled. Hard deadline now.
+        const base64 = await downloadGuard.withTimeout(this.page.evaluate(async ({ idx }) => {
           const containers = Array.from(document.querySelectorAll('flow-grid-tile-container'));
           const target = containers[idx];
           if (!target) return null;
@@ -2436,7 +2440,7 @@ class FlowAutomationEngine {
           } catch (e) {
             return null;
           }
-        }, { idx: blobTileIndex });
+        }, { idx: blobTileIndex }), 45000, 'video data read');
         if (base64 && base64.includes('base64,')) {
           savedBuffer = Buffer.from(base64.split('base64,')[1], 'base64');
         }
@@ -2465,14 +2469,26 @@ class FlowAutomationEngine {
           } catch (e) {}
         }
         const cookieHeader = [...jar.values()].map(c => `${c.name}=${c.value}`).join('; ');
-        const resp = await fetch(targetUrl, {
-          headers: {
-            'Cookie': cookieHeader,
-            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-            'Referer': 'https://flow.google.com/'
-          },
-          redirect: 'follow'
-        });
+        // v2.30.0: this fetch used to carry NO AbortSignal — a
+        // stalled connection could hold the download step (and the
+        // render monitor behind it) indefinitely. 60s abort now;
+        // the orchestrator-level guard bounds the whole step too.
+        const fetchAbort = new AbortController();
+        const fetchTimer = setTimeout(() => { try { fetchAbort.abort(); } catch (e) {} }, 60000);
+        let resp;
+        try {
+          resp = await fetch(targetUrl, {
+            headers: {
+              'Cookie': cookieHeader,
+              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
+              'Referer': 'https://flow.google.com/'
+            },
+            redirect: 'follow',
+            signal: fetchAbort.signal
+          });
+        } finally {
+          clearTimeout(fetchTimer);
+        }
 
         if (resp.ok) {
           const buf = Buffer.from(await resp.arrayBuffer());
@@ -2496,7 +2512,11 @@ class FlowAutomationEngine {
       // — jo cheez Node wale haath ke fetch me kabhi pakki nahi mil
       // sakti. Blob wale raste ka hi usool, http link ke liye.
       try {
-        const got = await this.page.evaluate(async (url) => {
+        // v2.30.0: same unbounded-evaluate hazard as the blob read
+        // above — this one pulls the whole video inside the page,
+        // so it gets a 90s deadline (the orchestrator guard bounds
+        // the total step regardless).
+        const got = await downloadGuard.withTimeout(this.page.evaluate(async (url) => {
           try {
             const r = await fetch(url, { credentials: 'include' });
             if (!r.ok) return { err: `HTTP ${r.status}` };
@@ -2512,7 +2532,7 @@ class FlowAutomationEngine {
           } catch (e) {
             return { err: String(e && e.message || e) };
           }
-        }, targetUrl);
+        }, targetUrl), 90000, 'in-browser fetch');
         if (got && got.b64) {
           const buf = Buffer.from(got.b64, 'base64');
           if (buf.length >= minSizeDl) {
@@ -3199,7 +3219,12 @@ class FlowAutomationEngine {
     const n = (task.promptIndex || 0) + 1;
     if (task.mediaSaved) return true;
     if (task._backendFetchPromise) {
-      const ok = await task._backendFetchPromise;
+      // v2.30.0: never re-await a possibly-hung fetch promise
+      // forever — bound it, and on timeout drop the reference so
+      // the fresh fetch below can start (the stuck one is
+      // discarded, its late result ignored).
+      let ok = false;
+      try { ok = await downloadGuard.withTimeout(task._backendFetchPromise, 120000, 'immediate backend fetch'); } catch (e) { ok = false; }
       attempts.push({ strategy: 'backend-fetch', ok: !!ok, note: ok ? 'as soon as the backend link was found, the file was saved by an immediate fetch' : 'the backend link was found, but the immediate fetch could not save the file' });
       if (ok || task.mediaSaved) return true;
       // Turant fetch fail hua — ek baar phir, taze bandhan ke saath.
@@ -3272,7 +3297,27 @@ class FlowAutomationEngine {
   async downloadTaskMedia(task, downloadFolder, settings, tileIndexHint) {
     task._downloadInProgress = true;
     try {
-      return await this._downloadTaskMediaInner(task, downloadFolder, settings, tileIndexHint);
+      // v2.30.0 (2nd-video stall fix): the whole strategy chain now
+      // runs under downloadGuard — a hard per-attempt deadline
+      // (240s) plus ONE download-only retry. Before, nothing here
+      // (or in the caller) had any timeout: one stuck await inside
+      // a strategy (an un-signalled fetch, a page.evaluate on a
+      // busy renderer) froze the render monitor on that video
+      // forever and every later video stalled behind it. The retry
+      // re-runs ONLY this download orchestrator — it cannot submit
+      // the prompt again, so no credits can be re-spent.
+      return await downloadGuard.attemptDownload(
+        () => this._downloadTaskMediaInner(task, downloadFolder, settings, tileIndexHint),
+        {
+          timeoutMs: 240000,
+          retries: 1,
+          retryDelayMs: 2000,
+          label: `prompt #${(task.promptIndex || 0) + 1} download`,
+          onTimeout: () => {
+            this.log(`[Prompt #${(task.promptIndex || 0) + 1}] The download step took too long and was cut off — only the download will be tried once more (the prompt will NOT be submitted again).`, 'warn');
+          }
+        }
+      );
     } finally {
       task._downloadInProgress = false;
     }
@@ -4136,7 +4181,12 @@ class FlowAutomationEngine {
               // use settle hone do; file aa gayi ho to download ki
               // baaki ranneetiyan chalti hi nahi.
               if (task._backendFetchPromise && !task.mediaSaved) {
-                try { await task._backendFetchPromise; } catch (e) {}
+                // v2.30.0: this await used to be unbounded — the
+                // immediate backend fetch funnels into the same
+                // leaf awaits hardened above, but the monitor must
+                // never wait on it forever; after 120s the normal
+                // download orchestrator below takes over.
+                try { await downloadGuard.withTimeout(task._backendFetchPromise, 120000, 'immediate backend fetch'); } catch (e) {}
               }
               if (task.mediaSaved) {
                 this.log(`[Prompt #${task.promptIndex + 1}] The video has already been downloaded from the backend — no need for the remaining download attempts.`, 'success');

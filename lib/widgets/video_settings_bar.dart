@@ -47,7 +47,14 @@ class VideoSettingsBar extends StatelessWidget {
           BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
         ],
       ),
-      child: Column(
+      child: LayoutBuilder(
+        builder: (context, constraints) {
+          // v2.30.0: compact mode for the narrow right column (the
+          // bar sits in a ~390px pane at 950px windows) — button
+          // paddings/gaps tighten so Stop/Pause/Generate always fit
+          // inside the bar, in every state (incl. "Running...").
+          final compact = constraints.maxWidth < 430;
+          return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
           // One row of 4 labelled dropdowns (design)
@@ -126,14 +133,16 @@ class VideoSettingsBar extends StatelessWidget {
               _actionButton(
                 icon: Icons.stop,
                 label: 'Stop',
+                compact: compact,
                 onTap: (isRunning || isPaused) ? () => generator.stopGeneration(activity) : null,
               ),
-              const SizedBox(width: 8),
+              SizedBox(width: compact ? 6 : 8),
 
               // Pause / Resume Button
               _actionButton(
                 icon: isPaused ? Icons.play_arrow : Icons.pause,
                 label: isPaused ? 'Resume' : 'Pause',
+                compact: compact,
                 onTap: isRunning
                     ? () => generator.pauseGeneration(activity)
                     : isPaused
@@ -145,7 +154,7 @@ class VideoSettingsBar extends StatelessWidget {
                         : null,
               ),
 
-              const SizedBox(width: 8),
+              SizedBox(width: compact ? 6 : 8),
 
               // Estimate (design): "N prompts · est. X credits · Y Live accounts"
               // v2.28.0: the estimate flexes + ellipsizes — Stop/Pause
@@ -161,7 +170,7 @@ class VideoSettingsBar extends StatelessWidget {
                   style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
                 ),
               ),
-              const SizedBox(width: 8),
+              SizedBox(width: compact ? 6 : 8),
 
               // Generate Button — big BLUE gradient (design)
               InkWell(
@@ -175,7 +184,7 @@ class VideoSettingsBar extends StatelessWidget {
                 borderRadius: BorderRadius.circular(8),
                 child: Container(
                   height: 38,
-                  padding: const EdgeInsets.symmetric(horizontal: 20),
+                  padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 20),
                   decoration: BoxDecoration(
                     gradient: _blueGrad,
                     borderRadius: BorderRadius.circular(8),
@@ -207,6 +216,8 @@ class VideoSettingsBar extends StatelessWidget {
             ],
           ),
         ],
+          );
+        },
       ),
     );
   }
@@ -215,13 +226,14 @@ class VideoSettingsBar extends StatelessWidget {
     required IconData icon,
     required String label,
     required VoidCallback? onTap,
+    bool compact = false,
   }) {
     return InkWell(
       onTap: onTap,
       borderRadius: BorderRadius.circular(7),
       child: Container(
         height: 32,
-        padding: const EdgeInsets.symmetric(horizontal: 12),
+        padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
         decoration: BoxDecoration(
           color: AppTheme.overlay10,
           borderRadius: BorderRadius.circular(7),
@@ -231,7 +243,7 @@ class VideoSettingsBar extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             Icon(icon, size: 13, color: AppTheme.textMain),
-            const SizedBox(width: 6),
+            SizedBox(width: compact ? 4 : 6),
             Text(
               label,
               style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),

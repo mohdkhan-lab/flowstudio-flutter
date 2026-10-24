@@ -28,15 +28,22 @@ function dayKey(d = new Date()) {
 function loadStats(store) {
   try {
     const raw = store.getSetting(SETTING_KEY, null);
-    if (!raw) return { total: 0, days: {} };
+    if (!raw) return { total: 0, days: {}, creditsDays: {} };
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return { total: 0, days: {} };
+    if (!parsed || typeof parsed !== 'object') return { total: 0, days: {}, creditsDays: {} };
     return {
       total: Number(parsed.total) || 0,
-      days: (parsed.days && typeof parsed.days === 'object') ? parsed.days : {}
+      days: (parsed.days && typeof parsed.days === 'object') ? parsed.days : {},
+      // v2.30.0 fix: creditsDays MUST round-trip through loadStats.
+      // Before, loadStats returned only { total, days } — so
+      // getStats() always read creditsDays as undefined and
+      // "TODAY'S SPEND (CREDITS)" showed 0 forever, and every
+      // recordSaved() rewrote the map from an empty base, wiping
+      // earlier days' spend.
+      creditsDays: (parsed.creditsDays && typeof parsed.creditsDays === 'object') ? parsed.creditsDays : {}
     };
   } catch (e) {
-    return { total: 0, days: {} };
+    return { total: 0, days: {}, creditsDays: {} };
   }
 }
 

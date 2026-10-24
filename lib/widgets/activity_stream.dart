@@ -127,18 +127,26 @@ class _ActivityStreamState extends State<ActivityStream> {
               // Amber GENERATING (or PAUSED) while a run is active,
               // green Ready when idle — the approved v3 Activity
               // sample's GENERATING chip.
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: pillBg,
-                  borderRadius: BorderRadius.circular(12),
-                ),
-                child: Text(
-                  pillLabel,
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w800,
-                    color: pillFg,
+              // v2.30.0: FIXED-WIDTH slot (92px, sized for the longest
+              // label "GENERATING") — the pill no longer changes
+              // width when the state flips, so nothing else in the
+              // header row shifts sideways.
+              SizedBox(
+                width: 92,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: pillBg,
+                    borderRadius: BorderRadius.circular(12),
+                  ),
+                  child: Text(
+                    pillLabel,
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w800,
+                      color: pillFg,
+                    ),
                   ),
                 ),
               ),

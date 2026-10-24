@@ -79,7 +79,20 @@ class SettingsProvider with ChangeNotifier {
         if (data['default_duration'] != null) _settings.duration = data['default_duration'].toString();
         if (data['default_aspect'] != null) _settings.aspectRatio = data['default_aspect'].toString();
         if (data['default_naming'] != null) _settings.namingPattern = data['default_naming'].toString();
-        if (data['download_folder'] != null) _settings.outputDirectory = data['download_folder'].toString();
+        if (data['download_folder'] != null) {
+          _settings.outputDirectory = data['download_folder'].toString();
+        } else {
+          // v2.30.0 (single source of truth): the engine has no
+          // download_folder recorded yet, but generation will save
+          // into THIS app's outputDirectory (it is sent as
+          // downloadFolder on every run) — record it in the engine
+          // now, so the engine's /api/output-files (History) lists
+          // the folder generations actually save into instead of
+          // its empty fallback folder. (Generation start also
+          // persists the folder it used; this closes the gap for
+          // installs that have not generated yet.)
+          AutomationBridge.instance.saveSetting('download_folder', _settings.outputDirectory);
+        }
         if (data['chrome_path'] != null) _settings.chromePath = data['chrome_path'].toString();
         // v2.22.0 fix: browser visibility is the engine's
         // 'browser_background' setting ('1' = background/hidden,
@@ -171,6 +184,17 @@ class SettingsProvider with ChangeNotifier {
       'history_cleared',
       json.encode(_historyCleared.toList()),
     );
+    notifyListeners();
+  }
+
+  /// v2.30.0 (History): undo a "Clear History (records only)" —
+  /// un-hide every hidden file name. The files themselves were
+  /// never deleted; only this app's record list was hidden. The
+  /// History view offers this whenever hidden files exist, instead
+  /// of showing an unexplained empty page.
+  void restoreHistoryRecords() {
+    _historyCleared.clear();
+    AutomationBridge.instance.saveSetting('history_cleared', '[]');
     notifyListeners();
   }
 

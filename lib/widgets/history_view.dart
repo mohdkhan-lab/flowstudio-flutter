@@ -101,6 +101,12 @@ class _HistoryViewState extends State<HistoryView> {
       return name.toLowerCase().contains(_query.toLowerCase());
     }).toList();
 
+    // v2.30.0: files an earlier "Clear History (records only)" hid.
+    // They still exist in the output folder — the page must SAY so
+    // (with a way back), never just look empty.
+    final hiddenCount =
+        _files.where((f) => cleared.contains(f['name']?.toString() ?? '')).length;
+
     // Stat cards derive from the real (uncleared) file list.
     final allFiles = _files.where((f) => !cleared.contains(f['name']?.toString() ?? '')).toList();
     // v2.29.1: "TOTAL VIDEOS (ALL TIME)" is the engine's real
@@ -160,6 +166,8 @@ class _HistoryViewState extends State<HistoryView> {
                     border: Border.all(color: AppTheme.borderSoft),
                   ),
                   child: TextField(
+                    // v2.30.0: text vertically centred in its box.
+                    textAlignVertical: TextAlignVertical.center,
                     style: TextStyle(fontSize: 11.5, color: AppTheme.textMain),
                     decoration: InputDecoration(
                       // v2.29.0: the search only ever matched file
@@ -168,6 +176,7 @@ class _HistoryViewState extends State<HistoryView> {
                       hintText: 'Search by video name...',
                       hintStyle: TextStyle(fontSize: 11, color: AppTheme.textFaint),
                       border: InputBorder.none,
+                      isDense: true,
                       contentPadding: EdgeInsets.zero,
                     ),
                     onChanged: (v) => setState(() => _query = v),
@@ -260,6 +269,43 @@ class _HistoryViewState extends State<HistoryView> {
 
           const SizedBox(height: 10),
 
+          // v2.30.0: hidden-by-Clear-History notice + recovery.
+          if (hiddenCount > 0) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              decoration: BoxDecoration(
+                color: const Color(0x14FFB340),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: const Color(0x66FFB340)),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '$hiddenCount video${hiddenCount == 1 ? '' : 's'} hidden — an earlier "Clear History" hid the records. The files are still in the output folder.',
+                      style: TextStyle(fontSize: 11, color: AppTheme.textDim),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () =>
+                        context.read<SettingsProvider>().restoreHistoryRecords(),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppTheme.accentText,
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    child: const Text(
+                      'Show them',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+
           // The list
           Expanded(
             child: _loading
@@ -267,7 +313,15 @@ class _HistoryViewState extends State<HistoryView> {
                 : visible.isEmpty
                     ? Center(
                         child: Text(
-                          'No videos yet — generated videos will appear here.',
+                          // v2.30.0: an empty page must say WHY —
+                          // truly no files, everything hidden by a
+                          // past Clear, or just no search match.
+                          _files.isEmpty
+                              ? 'No videos yet — generated videos will appear here.'
+                              : (hiddenCount == _files.length && _query.isEmpty)
+                                  ? 'All videos are hidden by an earlier Clear History — tap "Show them" above to bring them back.'
+                                  : 'No videos match your search.',
+                          textAlign: TextAlign.center,
                           style: TextStyle(fontSize: 12, color: AppTheme.textFaint),
                         ),
                       )

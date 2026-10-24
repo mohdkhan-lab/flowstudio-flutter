@@ -81,30 +81,38 @@ class _SettingsViewState extends State<SettingsView> {
                   style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
                 ),
                 const SizedBox(height: 10),
-                Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    _buildAppearanceBtn(
-                      '🌙 Dark',
-                      'dark',
-                      s.appearance == 'dark',
-                      () => prov.updateAppearance('dark'),
-                    ),
-                    const SizedBox(width: 8),
-                    _buildAppearanceBtn(
-                      '☀️ Light',
-                      'white',
-                      s.appearance == 'white',
-                      () => prov.updateAppearance('white'),
-                    ),
-                    const SizedBox(width: 8),
-                    _buildAppearanceBtn(
-                      '💻 System',
-                      'system',
-                      s.appearance == 'system',
-                      () => prov.updateAppearance('system'),
-                    ),
-                  ],
+                // v2.30.0: scale-down fitted so the three mode cards
+                // can never poke outside the Appearance panel at
+                // narrow widths (the panel is ~half the window in
+                // the two-column layout).
+                FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _buildAppearanceBtn(
+                        '🌙 Dark',
+                        'dark',
+                        s.appearance == 'dark',
+                        () => prov.updateAppearance('dark'),
+                      ),
+                      const SizedBox(width: 8),
+                      _buildAppearanceBtn(
+                        '☀️ Light',
+                        'white',
+                        s.appearance == 'white',
+                        () => prov.updateAppearance('white'),
+                      ),
+                      const SizedBox(width: 8),
+                      _buildAppearanceBtn(
+                        '💻 System',
+                        'system',
+                        s.appearance == 'system',
+                        () => prov.updateAppearance('system'),
+                      ),
+                    ],
+                  ),
                 ),
                 const SizedBox(height: 14),
                 Text(
@@ -227,11 +235,13 @@ class _SettingsViewState extends State<SettingsView> {
                         ),
                         child: TextField(
                           controller: _customTagController,
+                          textAlignVertical: TextAlignVertical.center,
                           style: TextStyle(fontSize: 11.5, color: AppTheme.textMain),
                           decoration: InputDecoration(
                             hintText: 'Type a new tag name...',
                             hintStyle: TextStyle(fontSize: 11, color: AppTheme.textFaint),
                             border: InputBorder.none,
+                            isDense: true,
                             contentPadding: EdgeInsets.zero,
                           ),
                           onSubmitted: (val) {
@@ -643,7 +653,11 @@ class _SettingsViewState extends State<SettingsView> {
             crossAxisCount: crossAxisCount,
             mainAxisSpacing: 8,
             crossAxisSpacing: 8,
-            childAspectRatio: 1.05,
+            // v2.30.0: 0.92 (was 1.05) — with the two-line theme-name
+            // slot the cards need more height; at the tightest
+            // geometry (5-across in the two-column layout) the
+            // preview column was short by ~0.9px and overflowed.
+            childAspectRatio: 0.92,
           ),
           itemCount: AppTheme.themeIds.length,
           itemBuilder: (context, i) {
@@ -674,37 +688,50 @@ class _SettingsViewState extends State<SettingsView> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(child: _buildThemePreview(pal, selected)),
-            const SizedBox(height: 5),
-            Row(
-              children: [
-                Expanded(
-                  child: Text(
-                    AppTheme.themeNames[id] ?? id,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      fontWeight: selected ? FontWeight.bold : FontWeight.w600,
-                      color: selected ? AppTheme.textMain : AppTheme.textDim,
+            Expanded(
+              child: Stack(
+                children: [
+                  Positioned.fill(child: _buildThemePreview(pal, selected)),
+                  // v2.30.0: the "Best" badge moved OFF the name row
+                  // (it was squeezing "macOS Classic" into a mid-word
+                  // clip) and onto the preview's corner.
+                  if (id == 'macos')
+                    Positioned(
+                      top: 3,
+                      left: 3,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                        decoration: BoxDecoration(
+                          color: AppTheme.activeGold,
+                          borderRadius: BorderRadius.circular(6),
+                        ),
+                        child: const Text(
+                          'Best',
+                          style: TextStyle(fontSize: 8, fontWeight: FontWeight.w900, color: Color(0xFF231A00)),
+                        ),
+                      ),
                     ),
-                  ),
-                ),
-                if (id == 'macos') ...[
-                  const SizedBox(width: 4),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                    decoration: BoxDecoration(
-                      color: AppTheme.activeGold,
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: const Text(
-                      'Best',
-                      style: TextStyle(fontSize: 8, fontWeight: FontWeight.w900, color: Color(0xFF231A00)),
-                    ),
-                  ),
                 ],
-              ],
+              ),
+            ),
+            const SizedBox(height: 5),
+            // v2.30.0 (owner's photo: theme names clipped mid-word —
+            // "macC…", "Graphite + Wh…"): the name gets a FIXED
+            // two-line slot and NO ellipsis, so "Midnight Blue",
+            // "Graphite + White", "Gold Premium" and "macOS Classic"
+            // always show in full and every card's name block aligns.
+            SizedBox(
+              height: 24,
+              child: Text(
+                AppTheme.themeNames[id] ?? id,
+                maxLines: 2,
+                style: TextStyle(
+                  fontSize: 10,
+                  height: 1.15,
+                  fontWeight: selected ? FontWeight.bold : FontWeight.w600,
+                  color: selected ? AppTheme.textMain : AppTheme.textDim,
+                ),
+              ),
             ),
           ],
         ),
@@ -761,14 +788,14 @@ class _SettingsViewState extends State<SettingsView> {
                       crossAxisAlignment: CrossAxisAlignment.stretch,
                       children: [
                         Container(
-                          height: 15,
+                          height: 13,
                           decoration: BoxDecoration(
                             color: pal.inputBg,
                             borderRadius: BorderRadius.circular(4),
                             border: Border.all(color: pal.borderSoft),
                           ),
                         ),
-                        const SizedBox(height: 5),
+                        const SizedBox(height: 4),
                         Row(
                           children: [
                             Expanded(
@@ -792,7 +819,7 @@ class _SettingsViewState extends State<SettingsView> {
                             ),
                           ],
                         ),
-                        const SizedBox(height: 5),
+                        const SizedBox(height: 4),
                         Row(
                           children: [
                             Container(width: 6, height: 6, decoration: BoxDecoration(color: pal.green, shape: BoxShape.circle)),
@@ -844,6 +871,8 @@ class _SettingsViewState extends State<SettingsView> {
         ),
         child: Text(
           label,
+          maxLines: 1,
+          softWrap: false,
           style: TextStyle(
             fontSize: 11,
             fontWeight: isActive ? FontWeight.bold : FontWeight.w600,
@@ -879,12 +908,22 @@ class _SettingsViewState extends State<SettingsView> {
               value: items.contains(value) ? value : items.first,
               dropdownColor: AppTheme.surfaceElevated,
               isExpanded: true,
+              // v2.30.0: dense + left-aligned so the value sits on
+              // the box's vertical centre (it rode high in its 32px
+              // box before), and long values clip with an ellipsis
+              // INSIDE the box instead of pushing out of it.
+              isDense: true,
+              alignment: Alignment.centerLeft,
               style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),
               icon: Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
               items: items.map((item) {
                 return DropdownMenuItem(
                   value: item,
-                  child: Text(labels != null && labels.containsKey(item) ? labels[item]! : item),
+                  child: Text(
+                    labels != null && labels.containsKey(item) ? labels[item]! : item,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
                 );
               }).toList(),
               onChanged: onChanged,
@@ -921,11 +960,16 @@ class _SettingsViewState extends State<SettingsView> {
                 child: TextField(
                   controller: controller,
                   readOnly: true,
+                  // v2.30.0: centre the text in its 32px box (it
+                  // sat high before — "upar-nicha" in the owner's
+                  // words).
+                  textAlignVertical: TextAlignVertical.center,
                   style: TextStyle(fontSize: 11, color: AppTheme.textMain),
                   decoration: InputDecoration(
                     hintText: placeholder,
                     hintStyle: TextStyle(fontSize: 11, color: AppTheme.textFaint),
                     border: InputBorder.none,
+                    isDense: true,
                     contentPadding: EdgeInsets.zero,
                   ),
                 ),
@@ -956,12 +1000,19 @@ class _SettingsViewState extends State<SettingsView> {
     required bool value,
     required ValueChanged<bool> onChanged,
   }) {
+    // v2.30.0 (owner: "text upar-nicha ho raha hai"): the row is
+    // CENTER-aligned now — the title/subtitle block and the switch
+    // share one vertical centre instead of the text starting at the
+    // top while the switch floated lower. The switch also gets
+    // shrinkWrap tap targets so its layout height matches its
+    // visible size.
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
+      crossAxisAlignment: CrossAxisAlignment.center,
       children: [
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
               Text(title, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain)),
               const SizedBox(height: 2),
@@ -976,6 +1027,7 @@ class _SettingsViewState extends State<SettingsView> {
             activeThumbColor: AppTheme.accentGold,
             activeTrackColor: const Color(0x400A84FF),
             inactiveTrackColor: AppTheme.borderSoft,
+            materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             onChanged: onChanged,
           ),
         ),
@@ -1001,8 +1053,9 @@ class _SettingsViewState extends State<SettingsView> {
             ),
             child: TextField(
               controller: controller,
+              textAlignVertical: TextAlignVertical.center,
               style: TextStyle(fontSize: 10.5, color: AppTheme.textMain),
-              decoration: const InputDecoration(border: InputBorder.none, contentPadding: EdgeInsets.zero),
+              decoration: const InputDecoration(border: InputBorder.none, isDense: true, contentPadding: EdgeInsets.zero),
               onChanged: onChanged,
             ),
           ),

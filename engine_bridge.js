@@ -233,7 +233,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.29.1', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.30.0', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -525,8 +525,17 @@ async function startBridge() {
       }
 
       // 8b. v2.27.0 (History view): list / open the real video files in
-      // the configured output folder. The folder is the SAME
-      // 'download_folder' setting the generation run saves into.
+      // the configured output folder.
+      // v2.30.0 (SINGLE SOURCE OF TRUTH): the one resolver every
+      // reader uses. The bug this fixes: a generation run saves into
+      // the folder the APP sends (config.downloadFolder — the app's
+      // own default, e.g. C:\FlowStudio\Videos), while this endpoint
+      // read ONLY the engine 'download_folder' setting, which nothing
+      // had ever written — so History listed the fallback
+      // <data dir>\downloads (empty) while the real videos sat in
+      // the app's folder. Generation start now PERSISTS the folder
+      // it actually saves into (see /api/generation/start), so this
+      // resolver always names the folder the last run used.
       const outputDir = () => dbService.getSetting('download_folder', path.join(process.env.FLOW_LITE_DATA_DIR, 'downloads'));
       const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm']);
 
@@ -604,6 +613,12 @@ async function startBridge() {
         try {
           if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
         } catch (e) {}
+        // v2.30.0 (single source of truth): record the folder this
+        // run is ACTUALLY saving into, so /api/output-files,
+        // /api/open-file, /api/output-file-path and
+        // /api/open-output-folder enumerate exactly that folder —
+        // never a stale setting or the empty fallback again.
+        try { dbService.setSetting('download_folder', downloadDir); } catch (e) {}
 
         // v2.22.0 fix: browser visibility comes from the engine's own
         // 'browser_background' setting — the SAME key the original

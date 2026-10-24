@@ -53,7 +53,9 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     return Container(
       width: widget.width,
       margin: const EdgeInsets.fromLTRB(14, 12, 0, 12),
-      padding: const EdgeInsets.all(10),
+      // v2.30.0: 8 (was 10) — two of the pixels the account row's
+      // name column needed at the compact 215px width.
+      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: AppTheme.surface,
         borderRadius: BorderRadius.circular(13),
@@ -141,7 +143,9 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
           // Accounts List
           Expanded(
             child: Container(
-              padding: const EdgeInsets.all(6),
+              // v2.30.0: 4 (was 6) — more of the row's width budget
+              // goes to the account name column (see the row below).
+              padding: const EdgeInsets.all(4),
               decoration: BoxDecoration(
                 color: AppTheme.overlay08,
                 borderRadius: BorderRadius.circular(9),
@@ -165,7 +169,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                         final chip = _statusChip(acc);
 
                         return Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 7),
                           decoration: BoxDecoration(
                             color: AppTheme.overlay08,
                             borderRadius: BorderRadius.circular(8),
@@ -188,15 +192,19 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                   checkColor: Colors.black,
                                   side: const BorderSide(color: Colors.white70, width: 1.5),
                                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(2)),
+                                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                   onChanged: (_) => accountsProv.toggleAccount(acc.id),
                                 ),
                               ),
-                              const SizedBox(width: 6),
+                              const SizedBox(width: 3),
                               // v2.27.0 (design): avatar circle with the
                               // account's initial, coloured per account.
+                              // v2.30.0: 28px (was 24) — the row was
+                              // rebalanced so the name column gets the
+                              // room instead (see below).
                               Container(
-                                width: 24,
-                                height: 24,
+                                width: 28,
+                                height: 28,
                                 decoration: BoxDecoration(
                                   color: _avatarColor(acc),
                                   shape: BoxShape.circle,
@@ -205,17 +213,30 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                 child: Text(
                                   _initialOf(acc),
                                   style: const TextStyle(
-                                    fontSize: 11,
+                                    fontSize: 13,
                                     fontWeight: FontWeight.w800,
                                     color: Colors.white,
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 7),
+                              const SizedBox(width: 3),
                               Expanded(
-                                child: Column(
-                                  crossAxisAlignment: CrossAxisAlignment.start,
-                                  children: [
+                                // v2.30.0 (owner's photo: "Acco..." /
+                                // "26 cre..." at 1024×768): the alias
+                                // and the credits line must NEVER be
+                                // cut with an ellipsis. The column is
+                                // scale-down fitted (the same pattern
+                                // the top strip uses) — at the compact
+                                // 215px sidebar it shrinks a hair if it
+                                // must, but the full words always
+                                // render. No TextOverflow.ellipsis here.
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Column(
+                                    crossAxisAlignment: CrossAxisAlignment.start,
+                                    mainAxisSize: MainAxisSize.min,
+                                    children: [
                                     Text(
                                       // v2.29.0 (B): the row TITLE is
                                       // the source alias ("Cookie N" /
@@ -223,7 +244,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       // email stay in the popup cards.
                                       acc.alias.isNotEmpty ? acc.alias : acc.name,
                                       maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
+                                      softWrap: false,
                                       style: TextStyle(
                                         fontSize: 11.5,
                                         fontWeight: FontWeight.bold,
@@ -233,7 +254,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                     Text(
                                       _subLineOf(acc),
                                       maxLines: 1,
-                                      overflow: TextOverflow.ellipsis,
+                                      softWrap: false,
                                       style: TextStyle(
                                         fontSize: 10,
                                         color: AppTheme.textFaint,
@@ -256,13 +277,16 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                           ),
                                         ),
                                       ),
-                                  ],
+                                    ],
+                                  ),
                                 ),
                               ),
                               // v2.27.0 (design): status chip — LIVE
                               // (green) / CHECKING (amber) / FAIL (red).
+                              // v2.30.0: slightly tighter padding/letters
+                              // so the name column keeps its room.
                               Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
                                 decoration: BoxDecoration(
                                   color: chip.$2.withValues(alpha: 0.15),
                                   borderRadius: BorderRadius.circular(4),
@@ -271,14 +295,14 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                 child: Text(
                                   chip.$1,
                                   style: TextStyle(
-                                    fontSize: 9,
+                                    fontSize: 8.5,
                                     fontWeight: FontWeight.w800,
                                     color: chip.$2,
-                                    letterSpacing: 0.5,
+                                    letterSpacing: 0.2,
                                   ),
                                 ),
                               ),
-                              const SizedBox(width: 6),
+                              const SizedBox(width: 3),
                               // Chrome button. v2.25.0 (parked browser):
                               // on a GENERATING account this is a
                               // Show/Hide toggle for the working
@@ -290,10 +314,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                 onTap: () => acc.isActive
                                     ? accountsProv.toggleBrowser(acc.id)
                                     : accountsProv.openChrome(acc.id),
-                                borderRadius: BorderRadius.circular(11),
+                                borderRadius: BorderRadius.circular(14),
                                 child: Container(
-                                  width: 22,
-                                  height: 22,
+                                  width: 28,
+                                  height: 28,
                                   decoration: BoxDecoration(
                                     shape: BoxShape.circle,
                                     color: (acc.isActive && acc.browserShown)
@@ -304,7 +328,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                     (acc.isActive && acc.browserShown)
                                         ? Icons.visibility
                                         : Icons.arrow_outward,
-                                    size: 12,
+                                    size: 14,
                                     color: (acc.isActive && acc.browserShown)
                                         ? Colors.white
                                         : AppTheme.accentGold,

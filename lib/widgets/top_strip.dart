@@ -115,7 +115,7 @@ class TopStrip extends StatelessWidget {
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                   ),
                   child: Text(
-                    'v2.29.1',
+                    'v2.30.0',
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
@@ -214,23 +214,10 @@ class TopStrip extends StatelessWidget {
               height: 1,
             ),
           ),
-          const SizedBox(width: 12),
-          // Sync Button
-          OutlinedButton.icon(
-            onPressed: () => context.read<AccountsProvider>().syncAll(),
-            style: OutlinedButton.styleFrom(
-              foregroundColor: AppTheme.accentText,
-              side: const BorderSide(color: Color(0x8C0A84FF)),
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(16)),
-              visualDensity: VisualDensity.compact,
-            ),
-            icon: Icon(Icons.sync, size: 14, color: AppTheme.accentText),
-            label: const Text(
-              'Sync',
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-            ),
-          ),
+          // v2.30.0 (owner): the Sync button that sat next to TOTAL
+          // CREDITS is REMOVED — the top shows only the label and the
+          // number. Syncing lives in the sidebar (Sync Selected /
+          // Verify All), where it always also worked.
                 ],
               ),
             ),

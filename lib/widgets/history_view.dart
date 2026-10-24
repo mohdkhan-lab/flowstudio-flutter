@@ -103,7 +103,15 @@ class _HistoryViewState extends State<HistoryView> {
 
     // Stat cards derive from the real (uncleared) file list.
     final allFiles = _files.where((f) => !cleared.contains(f['name']?.toString() ?? '')).toList();
-    final total = allFiles.length;
+    // v2.29.1: "TOTAL VIDEOS (ALL TIME)" is the engine's real
+    // all-time usage total (the same figure Settings → About
+    // shows), not the output-folder file count — the folder count
+    // drops whenever old files are moved/deleted. The folder count
+    // stays as the fallback until the engine stats arrive. (Today /
+    // Last 7 Days below remain folder-based, by design.)
+    final total = settingsProv.totalVideosSaved > 0
+        ? settingsProv.totalVideosSaved
+        : allFiles.length;
     final todayCount = allFiles.where((f) => _isToday(_mtimeOf(f))).length;
     final weekAgo = DateTime.now().subtract(const Duration(days: 7));
     final last7 = allFiles.where((f) => _mtimeOf(f).isAfter(weekAgo)).length;

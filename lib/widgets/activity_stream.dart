@@ -63,6 +63,20 @@ class _ActivityStreamState extends State<ActivityStream> {
     final spentToday =
         generator.engineSpentToday ?? settingsProv.spentCreditsToday;
 
+    // v2.29.1: live status-pill values (see the header's pill).
+    const amber = Color(0xFFF5B301);
+    final pillBg = (generator.isRunning || generator.isPaused)
+        ? amber.withValues(alpha: 0.15)
+        : AppTheme.greenBg;
+    final pillFg = (generator.isRunning || generator.isPaused)
+        ? amber
+        : AppTheme.green;
+    final pillLabel = generator.isRunning
+        ? 'GENERATING'
+        : generator.isPaused
+            ? 'PAUSED'
+            : 'Ready';
+
     return Container(
       height: 150,
       padding: const EdgeInsets.all(10),
@@ -91,9 +105,14 @@ class _ActivityStreamState extends State<ActivityStream> {
               const SizedBox(width: 10),
               Expanded(
                 child: Text(
+                  // v2.29.1: the REAL parallel value from settings
+                  // (it hardcoded "1 worker(s)") and the real run
+                  // state — running / paused / ready.
                   generator.isRunning
-                      ? 'Generation started: ${generator.totalPrompts} prompt(s) • 1 worker(s) in parallel'
-                      : 'Ready for generation',
+                      ? 'Generating: ${generator.totalPrompts} prompt(s) • ${settingsProv.settings.parallelBrowsers} worker(s) in parallel'
+                      : generator.isPaused
+                          ? 'Generation paused: ${generator.totalPrompts} prompt(s) • ${settingsProv.settings.parallelBrowsers} worker(s) in parallel'
+                          : 'Ready for generation',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(
@@ -104,19 +123,22 @@ class _ActivityStreamState extends State<ActivityStream> {
               ),
               const SizedBox(width: 8),
 
-              // Ready Pill
+              // Status Pill — v2.29.1: live, not a static "Ready".
+              // Amber GENERATING (or PAUSED) while a run is active,
+              // green Ready when idle — the approved v3 Activity
+              // sample's GENERATING chip.
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: AppTheme.greenBg,
+                  color: pillBg,
                   borderRadius: BorderRadius.circular(12),
                 ),
                 child: Text(
-                  'Ready',
+                  pillLabel,
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w800,
-                    color: AppTheme.green,
+                    color: pillFg,
                   ),
                 ),
               ),

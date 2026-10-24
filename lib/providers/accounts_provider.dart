@@ -188,9 +188,12 @@ class AccountsProvider with ChangeNotifier {
 
   List<GoogleAccount> get accounts => List.unmodifiable(_accounts);
 
-  int get totalCredits => _accounts
-      .where((a) => a.isChecked && a.status != AccountStatus.outOfCredits)
-      .fold(0, (sum, a) => sum + a.credits);
+  // v2.29.1: TOTAL CREDITS is the pool's real total — the sum of
+  // ALL accounts' credits, ticked or not. It used to count only
+  // ticked accounts, so it disagreed with the settings-bar estimate
+  // (which counts Live accounts) on the same screen.
+  int get totalCredits =>
+      _accounts.fold(0, (sum, a) => sum + a.credits);
 
   int get activeAccountsCount =>
       _accounts.where((a) => a.isChecked && a.status == AccountStatus.ready).length;

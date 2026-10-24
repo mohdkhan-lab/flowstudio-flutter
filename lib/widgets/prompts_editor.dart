@@ -107,24 +107,29 @@ class _PromptsEditorState extends State<PromptsEditor> {
                 ),
               ),
               const SizedBox(width: 6),
-              Container(
-                height: 26,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                decoration: BoxDecoration(
-                  color: AppTheme.inputBg,
-                  borderRadius: BorderRadius.circular(6),
-                  border: Border.all(color: AppTheme.borderSoft),
-                ),
-                child: Consumer<SettingsProvider>(
-                  builder: (context, settingsProv, _) {
-                    final tags = settingsProv.settings.customTags;
-                    final currentVal = tags.contains(_selectedTag) ? _selectedTag : (tags.isNotEmpty ? tags.first : 'None');
+              // Responsive pass: a long custom tag name can shrink
+              // (loose Flexible + expanded dropdown) instead of
+              // overflowing the header row.
+              Flexible(
+                child: Container(
+                  height: 26,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.inputBg,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: AppTheme.borderSoft),
+                  ),
+                  child: Consumer<SettingsProvider>(
+                    builder: (context, settingsProv, _) {
+                      final tags = settingsProv.settings.customTags;
+                      final currentVal = tags.contains(_selectedTag) ? _selectedTag : (tags.isNotEmpty ? tags.first : 'None');
 
-                    return DropdownButtonHideUnderline(
-                      child: DropdownButton<String>(
-                        value: currentVal,
-                        dropdownColor: AppTheme.surfaceElevated,
-                        style: TextStyle(fontSize: 11, color: AppTheme.textMain),
+                      return DropdownButtonHideUnderline(
+                        child: DropdownButton<String>(
+                          value: currentVal,
+                          isExpanded: true,
+                          dropdownColor: AppTheme.surfaceElevated,
+                          style: TextStyle(fontSize: 11, color: AppTheme.textMain),
                         icon: Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
                         items: tags.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
                         onChanged: (val) {
@@ -134,10 +139,11 @@ class _PromptsEditorState extends State<PromptsEditor> {
                             // files from the selected tag.
                             context.read<GeneratorProvider>().setSelectedTag(val);
                           }
-                        },
-                      ),
-                    );
-                  },
+                          },
+                        ),
+                      );
+                    },
+                  ),
                 ),
               ),
               const SizedBox(width: 6),

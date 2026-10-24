@@ -532,31 +532,46 @@ class _SettingsViewState extends State<SettingsView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: Column(
+          // Responsive pass: the two columns stack into ONE column
+          // when the content area is narrow (<700) so no panel is
+          // ever squeezed; the page scrolls, as it already could.
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final leftColumn = Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  appearancePanel,
+                  const SizedBox(height: 12),
+                  defaultsPanel,
+                ],
+              );
+              final rightColumn = Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  updatesPanel,
+                  const SizedBox(height: 12),
+                  automationPanel,
+                ],
+              );
+              if (constraints.maxWidth < 700) {
+                return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    appearancePanel,
+                    leftColumn,
                     const SizedBox(height: 12),
-                    defaultsPanel,
+                    rightColumn,
                   ],
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    updatesPanel,
-                    const SizedBox(height: 12),
-                    automationPanel,
-                  ],
-                ),
-              ),
-            ],
+                );
+              }
+              return Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(child: leftColumn),
+                  const SizedBox(width: 12),
+                  Expanded(child: rightColumn),
+                ],
+              );
+            },
           ),
           const SizedBox(height: 12),
           aboutPanel,
@@ -570,14 +585,19 @@ class _SettingsViewState extends State<SettingsView> {
 
   Widget _buildAboutRow(String label, String value) {
     return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
           '$label: ',
           style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),
         ),
-        Text(
-          value,
-          style: TextStyle(fontSize: 11, color: AppTheme.textDim),
+        // Responsive pass: long values (the "Design" line) wrap
+        // inside the row instead of overflowing it.
+        Expanded(
+          child: Text(
+            value,
+            style: TextStyle(fontSize: 11, color: AppTheme.textDim),
+          ),
         ),
       ],
     );

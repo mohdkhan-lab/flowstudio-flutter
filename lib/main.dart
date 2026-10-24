@@ -72,26 +72,41 @@ class MainStudioScreen extends StatelessWidget {
             const TopStrip(),
 
             // Main Body Content
+            // Responsive pass (post-v2.28.0): LayoutBuilder breakpoints
+            // on the WINDOW width — compact <1150 (sidebar 215, tighter
+            // centre padding), standard 1150–1500 (sidebar 250, the
+            // tuned 1024×768 fit lives here and is unchanged), wide
+            // >1500 (sidebar 280; the centre panels are all Expanded/
+            // flex so they simply get proportionally more room).
             Expanded(
-              child: Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  // Left Sidebar: Accounts & Filters
-                  const SidebarAccounts(),
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final winW = constraints.maxWidth;
+                  final compact = winW < 1150;
+                  final sidebarWidth = compact
+                      ? 215.0
+                      : (winW > 1500 ? 280.0 : 250.0);
+                  return Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      // Left Sidebar: Accounts & Filters
+                      SidebarAccounts(width: sidebarWidth),
 
-                  // Center & Right Area
-                  Expanded(
-                    child: Consumer<SettingsProvider>(
-                      builder: (context, settingsProv, _) {
-                        if (settingsProv.currentView == 'settings') {
-                          return const SettingsView();
-                        }
-                        // v2.27.0: History view (Activity → Previous videos)
-                        if (settingsProv.currentView == 'history') {
-                          return const HistoryView();
-                        }
-                        return Padding(
-                          padding: const EdgeInsets.fromLTRB(10, 12, 14, 12),
+                      // Center & Right Area
+                      Expanded(
+                        child: Consumer<SettingsProvider>(
+                          builder: (context, settingsProv, _) {
+                            if (settingsProv.currentView == 'settings') {
+                              return const SettingsView();
+                            }
+                            // v2.27.0: History view (Activity → Previous videos)
+                            if (settingsProv.currentView == 'history') {
+                              return const HistoryView();
+                            }
+                            return Padding(
+                              padding: compact
+                                  ? const EdgeInsets.fromLTRB(8, 10, 10, 10)
+                                  : const EdgeInsets.fromLTRB(10, 12, 14, 12),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
@@ -129,10 +144,12 @@ class MainStudioScreen extends StatelessWidget {
                             ],
                           ),
                         );
-                      },
-                    ),
-                  ),
-                ],
+                          },
+                        ),
+                      ),
+                    ],
+                  );
+                },
               ),
             ),
           ],

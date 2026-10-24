@@ -93,12 +93,25 @@ class ProgressPanel extends StatelessWidget {
                   color: AppTheme.textFaint,
                 ),
               ),
-              const Spacer(),
-              _countChip('$rendering Rendering', const Color(0xFFF5B301)),
-              const SizedBox(width: 5),
-              _countChip('$done Done', const Color(0xFF409CFF)),
-              const SizedBox(width: 5),
-              _countChip('$queued Queued', const Color(0xFF9A9AA0)),
+              // Responsive pass: the chips sit in a scale-down
+              // FittedBox — at narrow panel widths they shrink a
+              // touch instead of overflowing the header row.
+              Expanded(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      _countChip('$rendering Rendering', const Color(0xFFF5B301)),
+                      const SizedBox(width: 5),
+                      _countChip('$done Done', const Color(0xFF409CFF)),
+                      const SizedBox(width: 5),
+                      _countChip('$queued Queued', const Color(0xFF9A9AA0)),
+                    ],
+                  ),
+                ),
+              ),
             ],
           ),
           const SizedBox(height: 10),
@@ -192,12 +205,18 @@ class ProgressPanel extends StatelessWidget {
           // File name + account + status pill
           Row(
             children: [
-              Text(
-                fileName,
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.bold,
-                  color: isGenerating ? AppTheme.accentText : AppTheme.textMain,
+              // Responsive pass: a long saved file name ellipsizes
+              // instead of pushing the status pill off the card.
+              Flexible(
+                child: Text(
+                  fileName,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 11,
+                    fontWeight: FontWeight.bold,
+                    color: isGenerating ? AppTheme.accentText : AppTheme.textMain,
+                  ),
                 ),
               ),
               if (accountLabel.isNotEmpty) ...[

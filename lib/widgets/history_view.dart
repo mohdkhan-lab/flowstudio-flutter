@@ -184,10 +184,21 @@ class _HistoryViewState extends State<HistoryView> {
                   color: AppTheme.textFaint,
                 ),
               ),
-              const Spacer(),
-              // Folder filter — the app tracks one output folder, so
-              // this stays a single-option dropdown like the design.
-              Container(
+              const SizedBox(width: 8),
+              // Responsive pass: the folder dropdown + the two
+              // buttons form ONE scale-down cluster (same treatment
+              // as the top strip) — at narrow widths they shrink as a
+              // unit instead of overflowing the header row.
+              Flexible(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      // Folder filter — the app tracks one output folder, so
+                      // this stays a single-option dropdown like the design.
+                      Container(
                 height: 28,
                 padding: const EdgeInsets.symmetric(horizontal: 8),
                 decoration: BoxDecoration(
@@ -236,7 +247,11 @@ class _HistoryViewState extends State<HistoryView> {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
                   visualDensity: VisualDensity.compact,
                 ),
-                child: const Text('Open Output Folder', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                        child: const Text('Open Output Folder', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                      ),
+                    ],
+                  ),
+                ),
               ),
             ],
           ),
@@ -285,9 +300,18 @@ class _HistoryViewState extends State<HistoryView> {
               style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppTheme.textMain),
             ),
             const SizedBox(height: 2),
-            Text(
-              label,
-              style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, letterSpacing: 0.6, color: AppTheme.textFaint),
+            // Responsive pass: the longest label ("TODAY'S SPEND
+            // (ESTIMATED)") scales down to the card instead of
+            // wrapping at narrow widths.
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                label,
+                maxLines: 1,
+                softWrap: false,
+                style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, letterSpacing: 0.6, color: AppTheme.textFaint),
+              ),
             ),
           ],
         ),

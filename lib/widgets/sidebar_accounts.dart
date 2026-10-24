@@ -9,7 +9,11 @@ import '../models/account.dart';
 import '../services/automation_bridge.dart';
 
 class SidebarAccounts extends StatefulWidget {
-  const SidebarAccounts({super.key});
+  // Responsive pass: the main layout drives the width by breakpoint
+  // (215 compact / 250 standard / 280 wide); 250 stays the default.
+  final double width;
+
+  const SidebarAccounts({super.key, this.width = 250});
 
   @override
   State<SidebarAccounts> createState() => _SidebarAccountsState();
@@ -42,7 +46,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     final selectedCount = allAccounts.where((a) => a.isChecked).length;
 
     return Container(
-      width: 250,
+      width: widget.width,
       margin: const EdgeInsets.fromLTRB(14, 12, 0, 12),
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
@@ -429,13 +433,21 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
           // "Only run live accounts" toggle that used to sit under this
           // line moved to Settings → Automation.)
           Center(
-            child: Text(
-              allAccounts.isEmpty
-                  ? 'No accounts yet'
-                  : '$liveCount Live · $checkingCount Checking · $failCount Fail — ready to generate',
-              style: TextStyle(
-                fontSize: 9.5,
-                color: AppTheme.textFaint,
+            // Responsive pass: one line at every sidebar width — the
+            // full text scales down slightly in the compact sidebar
+            // instead of wrapping under the action grid.
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              child: Text(
+                allAccounts.isEmpty
+                    ? 'No accounts yet'
+                    : '$liveCount Live · $checkingCount Checking · $failCount Fail — ready to generate',
+                maxLines: 1,
+                softWrap: false,
+                style: TextStyle(
+                  fontSize: 9.5,
+                  color: AppTheme.textFaint,
+                ),
               ),
             ),
           ),
@@ -778,7 +790,10 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
         ],
       ),
       content: SizedBox(
-        width: 540,
+        // Responsive pass: the dialog widens on big windows (720,
+        // profiles grid goes 3-across there); 540 + 2-across stays
+        // the standard/compact form.
+        width: MediaQuery.of(context).size.width >= 1400 ? 720 : 540,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -856,13 +871,20 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
       return null;
     }
 
-    return GridView.builder(
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 2,
-        mainAxisSpacing: 10,
-        crossAxisSpacing: 10,
-        childAspectRatio: 1.9,
-      ),
+    // Responsive pass: 3 columns when the dialog is wide enough
+    // (the 720-wide form), 2 otherwise; the 3-across cells are
+    // shorter, so their aspect ratio steps down to keep the card
+    // content (avatar + name + email + pill/button) fully inside.
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final threeAcross = constraints.maxWidth >= 660;
+        return GridView.builder(
+          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+            crossAxisCount: threeAcross ? 3 : 2,
+            mainAxisSpacing: 10,
+            crossAxisSpacing: 10,
+            childAspectRatio: threeAcross ? 1.55 : 1.9,
+          ),
       itemCount: _profiles.length + 1,
       itemBuilder: (context, idx) {
         if (idx == 0) return _buildAddCard();
@@ -872,12 +894,14 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
         final gaia = p['gaiaName']?.toString() ?? '';
         final name = gaia.isNotEmpty ? gaia : (p['name']?.toString() ?? dir);
         final imported = importedFor(email);
-        return _buildProfileCard(
-          context,
-          name: name,
-          email: email.isNotEmpty ? email : dir,
-          dir: dir,
-          imported: imported,
+            return _buildProfileCard(
+              context,
+              name: name,
+              email: email.isNotEmpty ? email : dir,
+              dir: dir,
+              imported: imported,
+            );
+          },
         );
       },
     );

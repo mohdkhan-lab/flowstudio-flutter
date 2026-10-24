@@ -127,10 +127,20 @@ class TopStrip extends StatelessWidget {
             ),
           ),
 
-          const Spacer(),
-
-          // Created by MK
-          RichText(
+          // Responsive pass: everything right of the brand pill is
+          // ONE scale-down cluster — at narrow widths it shrinks as a
+          // unit instead of overflowing the strip (the old all-fixed
+          // row overflowed by a few px at 1024 and more below it).
+          const SizedBox(width: 10),
+          Expanded(
+            child: FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerRight,
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  // Created by MK
+                  RichText(
             text: TextSpan(
               style: TextStyle(fontSize: 13, color: AppTheme.textDim),
               children: [
@@ -219,6 +229,10 @@ class TopStrip extends StatelessWidget {
             label: const Text(
               'Sync',
               style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+            ),
+          ),
+                ],
+              ),
             ),
           ),
         ],

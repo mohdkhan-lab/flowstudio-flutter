@@ -142,14 +142,21 @@ class _ActivityStreamState extends State<ActivityStream> {
           // · Spent today: C credits | Simple/Details | Copy log/Clear log
           Row(
             children: [
-              Text(
-                'All-time: $allTime videos · Today: $today videos · Spent today: $spentToday credits',
-                style: TextStyle(
-                  fontSize: 10.5,
-                  color: AppTheme.textFaint,
+              // Responsive pass: the stats text flexes + ellipsizes —
+              // the two pill groups keep their full size at any width
+              // instead of being pushed off the panel.
+              Expanded(
+                child: Text(
+                  'All-time: $allTime videos · Today: $today videos · Spent today: $spentToday credits',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    color: AppTheme.textFaint,
+                  ),
                 ),
               ),
-              const Spacer(),
+              const SizedBox(width: 8),
 
               // Simple | Details Pill
               Container(

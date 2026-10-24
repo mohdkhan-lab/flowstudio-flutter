@@ -21,6 +21,11 @@ class PromptItem {
   String? accountName;
   String? outputFileName;
   String? error;
+  // v2.29.0: the REAL credit cost of this video, from the engine's
+  // video-completed payload (the card hardcoded "7 credits" before).
+  // Null when the engine did not report one — the card then shows no
+  // credit figure at all instead of an invented one.
+  int? creditsUsed;
 
   PromptItem({
     required this.index,
@@ -33,6 +38,7 @@ class PromptItem {
     this.accountName,
     this.outputFileName,
     this.error,
+    this.creditsUsed,
   });
 
   PromptItem copyWith({
@@ -46,6 +52,7 @@ class PromptItem {
     String? accountName,
     String? outputFileName,
     String? error,
+    int? creditsUsed,
   }) {
     return PromptItem(
       index: index ?? this.index,
@@ -58,6 +65,7 @@ class PromptItem {
       accountName: accountName ?? this.accountName,
       outputFileName: outputFileName ?? this.outputFileName,
       error: error ?? this.error,
+      creditsUsed: creditsUsed ?? this.creditsUsed,
     );
   }
 }

@@ -23,8 +23,18 @@ class GeneratorProvider with ChangeNotifier {
   // v2.27.0: real completion times of THIS session, for the Activity
   // stats line ("Today: M videos · Spent today: C credits").
   final List<DateTime> _completionTimes = [];
+  // v2.29.0: the engine's REAL credits-spent-today (usage stats),
+  // refreshed at start and on every completion. Null until the
+  // engine answers — the Activity line must not invent a figure.
+  int? _engineSpentToday;
+  // v2.29.0 (prompt modes): the Bulk/Agent Prompt toggle is REAL
+  // now. Bulk = prompts are BLOCKS separated by blank lines (lines
+  // inside a block belong to one prompt). Agent = the entire text
+  // is ONE prompt, no splitting.
+  bool _isBulkMode = true;
 
   GeneratorProvider() {
+    _refreshEngineStats();
     // v2.22.0 fix: the engine's video-completed payload carries
     // {id, prompt, accountName, status, filePath, error} — there is NO
     // promptIndex field. Match the finished video to its prompt item by
@@ -43,6 +53,11 @@ class GeneratorProvider with ChangeNotifier {
       if (accName != null && accName.isNotEmpty) item.accountName = accName;
       final fileName = data['fileName']?.toString();
       if (fileName != null && fileName.isNotEmpty) item.outputFileName = fileName;
+      // v2.29.0: the run's real per-video credit cost rides the
+      // completion payload (WorkerPool) — the Progress card shows
+      // this instead of the old hardcoded "7 credits".
+      final creditsRaw = data['creditsUsed'];
+      if (creditsRaw is num) item.creditsUsed = creditsRaw.toInt();
       if (failed) {
         item.status = PromptStatus.failed;
         item.error = err ?? statusStr;
@@ -51,6 +66,7 @@ class GeneratorProvider with ChangeNotifier {
         item.progress = 1.0;
         item.localFilePath = data['filePath']?.toString();
         _completionTimes.add(DateTime.now());
+        _refreshEngineStats();
       }
       notifyListeners();
     };
@@ -107,6 +123,36 @@ class GeneratorProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  /// v2.29.0: the engine's real credits-spent-today, or null while
+  /// unknown (the Activity line shows the engine figure only).
+  int? get engineSpentToday => _engineSpentToday;
+
+  Future<void> _refreshEngineStats() async {
+    try {
+      final data = await AutomationBridge.instance.getStats();
+      final stats = data['stats'];
+      if (stats is Map && stats['creditsToday'] != null) {
+        final v = int.tryParse(stats['creditsToday'].toString());
+        if (v != null && v != _engineSpentToday) {
+          _engineSpentToday = v;
+          notifyListeners();
+        }
+      }
+    } catch (_) {}
+  }
+
+  bool get isBulkMode => _isBulkMode;
+
+  /// v2.29.0: switch the prompt parsing mode (Bulk blocks / Agent
+  /// single) and re-count at once, so the count pill, the estimate
+  /// and the generate request always agree with the selected mode.
+  void setPromptMode(bool bulk) {
+    if (_isBulkMode == bulk) return;
+    _isBulkMode = bulk;
+    _reparseItems();
+    notifyListeners();
+  }
+
   /// Videos completed today in this session (real engine completions
   /// only — see onVideoCompleted above).
   int get completedTodayCount {
@@ -123,11 +169,15 @@ class GeneratorProvider with ChangeNotifier {
   }
 
   void appendPrompts(List<String> newPrompts) {
+    // v2.29.0: imported prompts join with a BLANK line between
+    // them — under the Bulk block rule each import stays its own
+    // prompt (they used to merge into one block). SRT cues keep
+    // their one-prompt-per-cue behaviour through the same path.
     final existing = _promptsRawText.trim();
     if (existing.isEmpty) {
-      _promptsRawText = newPrompts.join('\n');
+      _promptsRawText = newPrompts.join('\n\n');
     } else {
-      _promptsRawText = '$existing\n${newPrompts.join('\n')}';
+      _promptsRawText = '$existing\n\n${newPrompts.join('\n\n')}';
     }
     _reparseItems();
     notifyListeners();
@@ -141,18 +191,31 @@ class GeneratorProvider with ChangeNotifier {
   }
 
   void _reparseItems() {
-    final lines = _promptsRawText
-        .replaceAll('\r\n', '\n')
-        .split('\n')
-        .map((l) => l.trim())
-        .where((l) => l.isNotEmpty)
-        .toList();
+    // v2.29.0 (prompt splitting fix): the old parser made EVERY
+    // non-empty line its own prompt, so one multi-line episode
+    // prompt was counted and queued as several fragments.
+    // Bulk mode: prompts are BLOCKS separated by blank lines; the
+    // lines inside a block stay together as one prompt.
+    // Agent mode: the entire text is ONE prompt.
+    final normalized = _promptsRawText.replaceAll('\r\n', '\n').trim();
+    final List<String> blocks;
+    if (normalized.isEmpty) {
+      blocks = const [];
+    } else if (!_isBulkMode) {
+      blocks = [normalized];
+    } else {
+      blocks = normalized
+          .split(RegExp(r'\n[ \t]*\n'))
+          .map((b) => b.trim())
+          .where((b) => b.isNotEmpty)
+          .toList();
+    }
 
     _items = List.generate(
-      lines.length,
+      blocks.length,
       (i) => PromptItem(
         index: i + 1,
-        text: lines[i],
+        text: blocks[i],
         status: PromptStatus.pending,
       ),
     );
@@ -168,6 +231,21 @@ class GeneratorProvider with ChangeNotifier {
       return;
     }
 
+    // v2.29.0 (checkbox truth): generation runs ONLY on the
+    // sidebar's ticked accounts — the IDs ride this request to the
+    // engine, and the pool refuses every other account.
+    final tickedIds = accounts.accounts
+        .where((a) => a.isChecked)
+        .map((a) => a.id)
+        .toList();
+    if (tickedIds.isEmpty) {
+      activity.addLog(
+        'No account is ticked in the sidebar — generation uses only ticked accounts. Tick at least one account, then press Generate again.',
+        level: LogLevel.warning,
+      );
+      return;
+    }
+
     _state = GenerationState.running;
     notifyListeners();
 
@@ -176,7 +254,11 @@ class GeneratorProvider with ChangeNotifier {
       level: LogLevel.info,
     );
 
-    // Call real Node.js automation engine
+    // Call real Node.js automation engine.
+    // v2.29.0: the selected TAG, the model and the file-naming
+    // pattern finally ride along — they used to be dropped here,
+    // so saved files fell back to scene001-style names while the
+    // UI promised tag names.
     final success = await AutomationBridge.instance.startGeneration(
       prompts: _items.map((i) => i.text).toList(),
       downloadFolder: settings.settings.outputDirectory,
@@ -184,6 +266,10 @@ class GeneratorProvider with ChangeNotifier {
       duration: settings.settings.duration,
       aspectRatio: settings.settings.aspectRatio,
       quality: settings.settings.quality,
+      tag: _selectedTag == 'None' ? '' : _selectedTag,
+      accountIds: tickedIds,
+      model: settings.settings.model,
+      namingPattern: settings.settings.namingPattern,
     );
 
     if (!success) {

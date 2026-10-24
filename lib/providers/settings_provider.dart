@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'package:flutter/material.dart';
@@ -14,6 +15,14 @@ class SettingsProvider with ChangeNotifier {
   int _videosToday = 0;
   int _videosLast7Days = 0;
   int _totalAccounts = 0;
+  // v2.29.0: the engine's REAL credits-spent-today (usage stats) —
+  // the fallback for the Activity "Spent today" figure.
+  int _spentCreditsToday = 0;
+  // v2.29.0: startup actions (the two Automation/Updates toggles)
+  // run once per launch, and only from settings that actually came
+  // from the engine — never from in-code defaults.
+  bool _engineSettingsLoaded = false;
+  bool _startupActionsDone = false;
   // v2.27.0 (History): file names the owner cleared from the History view.
   // "Clear History (records only)" — the files themselves are never
   // deleted, only hidden here. Persisted through the engine settings.
@@ -37,6 +46,7 @@ class SettingsProvider with ChangeNotifier {
   int get videosToday => _videosToday;
   int get videosLast7Days => _videosLast7Days;
   int get totalAccounts => _totalAccounts;
+  int get spentCreditsToday => _spentCreditsToday;
   Set<String> get historyCleared => Set.unmodifiable(_historyCleared);
   bool get updateAvailable => _updateAvailable;
   String get latestVersion => _latestVersion;
@@ -55,7 +65,15 @@ class SettingsProvider with ChangeNotifier {
     try {
       final data = await AutomationBridge.instance.loadSettings();
       if (data != null) {
+        _engineSettingsLoaded = true;
         if (data['appearance'] != null) _settings.appearance = data['appearance'].toString();
+        // v2.29.0 (BROWSERS persistence): the parallel-browsers
+        // count is restored from the engine settings — selecting it
+        // used to reset to the default on every restart.
+        if (data['parallel_browsers'] != null) {
+          final pb = int.tryParse(data['parallel_browsers'].toString());
+          if (pb != null) _settings.parallelBrowsers = pb.clamp(1, 4);
+        }
         if (data['theme'] != null) _settings.theme = data['theme'].toString();
         if (data['default_model'] != null) _settings.model = data['default_model'].toString();
         if (data['default_duration'] != null) _settings.duration = data['default_duration'].toString();
@@ -120,6 +138,7 @@ class SettingsProvider with ChangeNotifier {
         _totalVideosSaved = int.tryParse(statsData['stats']['total'].toString()) ?? 0;
         _videosToday = int.tryParse(statsData['stats']['today']?.toString() ?? '') ?? 0;
         _videosLast7Days = int.tryParse(statsData['stats']['last7Days']?.toString() ?? '') ?? 0;
+        _spentCreditsToday = int.tryParse(statsData['stats']['creditsToday']?.toString() ?? '') ?? 0;
       }
       if (statsData['accountCount'] != null) {
         _totalAccounts = int.tryParse(statsData['accountCount'].toString()) ?? 0;
@@ -200,7 +219,32 @@ class SettingsProvider with ChangeNotifier {
 
   void updateParallelBrowsers(int count) {
     _settings.parallelBrowsers = count;
+    // v2.29.0: persist it (app + engine setting) — it used to live
+    // only in memory and reset to the default on every restart.
+    // The generate request reads this same value when it starts.
+    AutomationBridge.instance.saveSetting('parallel_browsers', '$count');
     notifyListeners();
+  }
+
+  /// v2.29.0 (dead toggles made real): the one-time startup actions
+  /// behind "Check automatically" (Updates) and "Run Verify All
+  /// when the app starts" (Automation). Called by the main screen
+  /// once the engine is up and the persisted settings are loaded;
+  /// [verifyAll] is the accounts provider's sync-all (which now
+  /// refreshes the sidebar itself). Does nothing when the settings
+  /// never arrived from the engine, so defaults can never trigger
+  /// surprise network calls.
+  Future<void> runStartupActions({
+    required Future<void> Function() verifyAll,
+  }) async {
+    if (_startupActionsDone || !_engineSettingsLoaded) return;
+    _startupActionsDone = true;
+    if (_settings.autoCheckUpdates) {
+      unawaited(checkForUpdates());
+    }
+    if (_settings.autoVerifyOnStart) {
+      await verifyAll();
+    }
   }
 
   void setOutputDirectory(String dir) {

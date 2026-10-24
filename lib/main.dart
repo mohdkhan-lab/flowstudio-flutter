@@ -1,10 +1,12 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
+import 'package:media_kit/media_kit.dart';
 import 'theme/app_theme.dart';
 import 'providers/accounts_provider.dart';
 import 'providers/activity_provider.dart';
 import 'providers/settings_provider.dart';
 import 'providers/generator_provider.dart';
+import 'services/automation_bridge.dart';
 import 'widgets/top_strip.dart';
 import 'widgets/sidebar_accounts.dart';
 import 'widgets/prompts_editor.dart';
@@ -16,6 +18,9 @@ import 'widgets/history_view.dart';
 
 void main() {
   WidgetsFlutterBinding.ensureInitialized();
+  // v2.29.0: the in-app video player (media_kit) needs its native
+  // libraries initialised before any Player is created.
+  MediaKit.ensureInitialized();
   runApp(const FlowStudioApp());
 }
 
@@ -58,8 +63,49 @@ class FlowStudioApp extends StatelessWidget {
   }
 }
 
-class MainStudioScreen extends StatelessWidget {
+class MainStudioScreen extends StatefulWidget {
   const MainStudioScreen({super.key});
+
+  @override
+  State<MainStudioScreen> createState() => _MainStudioScreenState();
+}
+
+class _MainStudioScreenState extends State<MainStudioScreen> {
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _runStartupActions();
+    });
+  }
+
+  // v2.29.0 (F4): the two startup Settings toggles, for real —
+  // "Check automatically" runs the update check once at startup
+  // and "Run Verify All when the app starts" triggers the bridge
+  // verify-all once the engine answers. Both were save-only
+  // toggles before. Everything is guarded: if the engine is not
+  // up yet, nothing happens (and nothing crashes).
+  Future<void> _runStartupActions() async {
+    try {
+      final bridge = AutomationBridge.instance;
+      var healthy = false;
+      for (var i = 0; i < 30 && !healthy; i++) {
+        healthy = await bridge.checkHealth();
+        if (!healthy) {
+          await Future.delayed(const Duration(milliseconds: 500));
+        }
+      }
+      if (!healthy || !mounted) return;
+      final settings = context.read<SettingsProvider>();
+      await settings.loadSettingsFromEngine();
+      if (!mounted) return;
+      await settings.runStartupActions(
+        verifyAll: () => context.read<AccountsProvider>().syncAll(),
+      );
+    } catch (_) {
+      // Startup actions are best-effort by design.
+    }
+  }
 
   @override
   Widget build(BuildContext context) {

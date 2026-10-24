@@ -56,7 +56,12 @@ class _ActivityStreamState extends State<ActivityStream> {
     final today = settingsProv.videosToday > 0
         ? settingsProv.videosToday
         : generator.completedTodayCount;
-    final spentToday = today * 7;
+    // v2.29.0: "Spent today" is the engine's REAL recorded credits
+    // for today (usage stats, fed by the pool's actual per-video
+    // cost) — it was `today × 7` here, a multiplication that
+    // invented the figure for every non-7-credit model.
+    final spentToday =
+        generator.engineSpentToday ?? settingsProv.spentCreditsToday;
 
     return Container(
       height: 150,
@@ -255,11 +260,13 @@ class _ActivityStreamState extends State<ActivityStream> {
                         ),
                       ),
                       const SizedBox(width: 8),
-                      // Message
+                      // Message — v2.29.0: up to TWO lines (long
+                      // engine lines used to be clipped at one and
+                      // were only fully readable via Copy Log).
                       Expanded(
                         child: Text(
                           log.message,
-                          maxLines: 1,
+                          maxLines: 2,
                           overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 11,

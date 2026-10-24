@@ -4,6 +4,7 @@ import 'package:intl/intl.dart';
 import '../theme/app_theme.dart';
 import '../providers/settings_provider.dart';
 import '../services/automation_bridge.dart';
+import 'video_player_dialog.dart';
 
 // v2.27.0: the History view from the approved design ("Previous
 // Videos"). DATA IS REAL: the engine's GET /api/output-files lists
@@ -39,6 +40,13 @@ class _HistoryViewState extends State<HistoryView> {
   void initState() {
     super.initState();
     _load();
+    // v2.29.0: refresh the engine usage stats so the spend card
+    // below shows the real credits figure, not a stale one.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) {
+        context.read<SettingsProvider>().loadSettingsFromEngine();
+      }
+    });
   }
 
   Future<void> _load() async {
@@ -99,7 +107,10 @@ class _HistoryViewState extends State<HistoryView> {
     final todayCount = allFiles.where((f) => _isToday(_mtimeOf(f))).length;
     final weekAgo = DateTime.now().subtract(const Duration(days: 7));
     final last7 = allFiles.where((f) => _mtimeOf(f).isAfter(weekAgo)).length;
-    final spendToday = todayCount * 7;
+    // v2.29.0: TODAY'S SPEND is the engine's REAL recorded credits
+    // for today (usage stats) — it was `todayCount × 7` before,
+    // which invented a figure whenever another model was used.
+    final spendToday = settingsProv.spentCreditsToday;
 
     return Padding(
       padding: const EdgeInsets.fromLTRB(10, 12, 14, 12),
@@ -143,7 +154,10 @@ class _HistoryViewState extends State<HistoryView> {
                   child: TextField(
                     style: TextStyle(fontSize: 11.5, color: AppTheme.textMain),
                     decoration: InputDecoration(
-                      hintText: 'Search by video name or prompt...',
+                      // v2.29.0: the search only ever matched file
+                      // NAMES (no per-file prompt is stored) — the
+                      // hint no longer promises prompt search.
+                      hintText: 'Search by video name...',
                       hintStyle: TextStyle(fontSize: 11, color: AppTheme.textFaint),
                       border: InputBorder.none,
                       contentPadding: EdgeInsets.zero,
@@ -166,7 +180,7 @@ class _HistoryViewState extends State<HistoryView> {
               const SizedBox(width: 10),
               _statCard('$last7', 'LAST 7 DAYS'),
               const SizedBox(width: 10),
-              _statCard('$spendToday', "TODAY'S SPEND (ESTIMATED)"),
+              _statCard('$spendToday', "TODAY'S SPEND (CREDITS)"),
             ],
           ),
 
@@ -185,10 +199,14 @@ class _HistoryViewState extends State<HistoryView> {
                 ),
               ),
               const SizedBox(width: 8),
-              // Responsive pass: the folder dropdown + the two
-              // buttons form ONE scale-down cluster (same treatment
-              // as the top strip) — at narrow widths they shrink as a
-              // unit instead of overflowing the header row.
+              // Responsive pass: the two buttons form ONE
+              // scale-down cluster (same treatment as the top
+              // strip) — at narrow widths they shrink as a unit
+              // instead of overflowing the header row.
+              // v2.29.0: the "All Folders" dropdown is GONE — it had
+              // a single option and a no-op onChanged (the app has
+              // exactly one output folder, so there was nothing to
+              // filter).
               Flexible(
                 child: FittedBox(
                   fit: BoxFit.scaleDown,
@@ -196,30 +214,6 @@ class _HistoryViewState extends State<HistoryView> {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      // Folder filter — the app tracks one output folder, so
-                      // this stays a single-option dropdown like the design.
-                      Container(
-                height: 28,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                decoration: BoxDecoration(
-                  color: AppTheme.inputBg,
-                  borderRadius: BorderRadius.circular(7),
-                  border: Border.all(color: AppTheme.borderSoft),
-                ),
-                child: DropdownButtonHideUnderline(
-                  child: DropdownButton<String>(
-                    value: 'All Folders',
-                    dropdownColor: AppTheme.surfaceElevated,
-                    style: TextStyle(fontSize: 11, color: AppTheme.textMain),
-                    icon: Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
-                    items: const [
-                      DropdownMenuItem(value: 'All Folders', child: Text('All Folders')),
-                    ],
-                    onChanged: (_) {},
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
               OutlinedButton(
                 onPressed: allFiles.isEmpty
                     ? null
@@ -374,7 +368,9 @@ class _HistoryViewState extends State<HistoryView> {
           _rowIconButton(
             icon: Icons.play_arrow,
             accent: true,
-            onTap: () => AutomationBridge.instance.openOutputFile(name),
+            // v2.29.0: Play opens the IN-APP player (it used to
+            // hand the file to the OS video player).
+            onTap: () => showInAppPlayer(context, title: name, fileName: name),
           ),
           const SizedBox(width: 6),
           _rowIconButton(

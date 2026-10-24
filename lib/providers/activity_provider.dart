@@ -13,10 +13,13 @@ class ActivityProvider with ChangeNotifier {
     // — whether or not the engine had actually connected. Only the plain
     // start line is honest; engine state is logged by the accounts
     // provider after a real health check.
-    addLog('FlowStudio Lite v2.28.0 started');
+    addLog('FlowStudio Lite v2.29.0 started');
 
-    AutomationBridge.instance.onLog = (msg, level) {
-      addLog(msg, level: level);
+    // v2.29.0: the bridge's DETAIL flag now flows end-to-end into
+    // addLog(isDetail:) — before this, no log was ever marked
+    // detail, so Simple and Details showed identical lines.
+    AutomationBridge.instance.onLog = (msg, level, isDetail) {
+      addLog(msg, level: level, isDetail: isDetail);
     };
   }
 
@@ -25,7 +28,14 @@ class ActivityProvider with ChangeNotifier {
 
   List<ActivityLog> get visibleLogs {
     if (_isDetailsMode) return _logs;
-    return _logs.where((l) => !l.isDetail).toList();
+    // Simple view: milestones only — but errors and warnings are
+    // ALWAYS visible, in both modes.
+    return _logs
+        .where((l) =>
+            !l.isDetail ||
+            l.level == LogLevel.error ||
+            l.level == LogLevel.warning)
+        .toList();
   }
 
   void setDetailsMode(bool value) {

@@ -19,7 +19,8 @@ class PromptsEditor extends StatefulWidget {
 class _PromptsEditorState extends State<PromptsEditor> {
   late TextEditingController _controller;
   String _selectedTag = 'None';
-  bool _isBulkPrompt = true;
+  // v2.29.0: the Bulk/Agent mode lives in GeneratorProvider now
+  // (it drives the real parsing) — this widget only renders it.
 
   @override
   void initState() {
@@ -230,17 +231,21 @@ class _PromptsEditorState extends State<PromptsEditor> {
 
           // v2.27.0 (design): Bulk / Agent Prompt toggle at the
           // BOTTOM-LEFT under the textarea; txt/srt at bottom-right.
+          // v2.29.0: the toggle is REAL — it switches the provider's
+          // parsing mode (Bulk = blank-line blocks; Agent = the
+          // whole text is one prompt) and the count/estimate update
+          // with it. It was a visual-only pill before.
           Row(
             children: [
               // Bulk Prompt Pill
               InkWell(
-                onTap: () => setState(() => _isBulkPrompt = true),
+                onTap: () => context.read<GeneratorProvider>().setPromptMode(true),
                 borderRadius: BorderRadius.circular(12),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    gradient: _isBulkPrompt ? AppTheme.accentGrad : null,
-                    color: _isBulkPrompt ? null : AppTheme.overlay08,
+                    gradient: generator.isBulkMode ? AppTheme.accentGrad : null,
+                    color: generator.isBulkMode ? null : AppTheme.overlay08,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
@@ -248,7 +253,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
                     style: TextStyle(
                       fontSize: 10.5,
                       fontWeight: FontWeight.bold,
-                      color: _isBulkPrompt ? AppTheme.onAccent : AppTheme.textDim,
+                      color: generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
                     ),
                   ),
                 ),
@@ -256,13 +261,13 @@ class _PromptsEditorState extends State<PromptsEditor> {
               const SizedBox(width: 6),
               // Agent Prompt Pill
               InkWell(
-                onTap: () => setState(() => _isBulkPrompt = false),
+                onTap: () => context.read<GeneratorProvider>().setPromptMode(false),
                 borderRadius: BorderRadius.circular(12),
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   decoration: BoxDecoration(
-                    gradient: !_isBulkPrompt ? AppTheme.accentGrad : null,
-                    color: !_isBulkPrompt ? null : AppTheme.overlay08,
+                    gradient: !generator.isBulkMode ? AppTheme.accentGrad : null,
+                    color: !generator.isBulkMode ? null : AppTheme.overlay08,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: Text(
@@ -270,7 +275,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
                     style: TextStyle(
                       fontSize: 10.5,
                       fontWeight: FontWeight.bold,
-                      color: !_isBulkPrompt ? AppTheme.onAccent : AppTheme.textDim,
+                      color: !generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
                     ),
                   ),
                 ),

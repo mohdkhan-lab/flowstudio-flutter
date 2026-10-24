@@ -4,6 +4,7 @@ import '../theme/app_theme.dart';
 import '../providers/generator_provider.dart';
 import '../models/prompt_item.dart';
 import '../services/automation_bridge.dart';
+import 'video_player_dialog.dart';
 
 // v2.27.0 (design): PROGRESS header with Rendering / Done / Queued
 // count chips, and task cards that always show the progress bar, the
@@ -165,7 +166,12 @@ class ProgressPanel extends StatelessWidget {
     final String percentText;
     final double? barValue;
     if (isDone) {
-      percentText = '100% · 7 credits';
+      // v2.29.0: the REAL cost from the completion payload — the
+      // hardcoded "7 credits" lied whenever another model/duration
+      // was used. No figure at all when the engine reported none.
+      percentText = item.creditsUsed != null
+          ? '100% · ${item.creditsUsed} credits'
+          : '100%';
       barValue = 1.0;
     } else if (isGenerating) {
       if (item.progress > 0) {
@@ -271,16 +277,19 @@ class ProgressPanel extends StatelessWidget {
                 icon: Icons.play_arrow,
                 enabled: isDone,
                 accent: true,
+                // v2.29.0: Play opens the IN-APP player (it used to
+                // hand the file to the OS video player).
                 onTap: isDone
-                    ? () {
-                        if (item.localFilePath != null && item.localFilePath!.isNotEmpty) {
-                          AutomationBridge.instance.openOutputFile(_baseName(item.localFilePath!));
-                        } else if (item.outputFileName != null && item.outputFileName!.isNotEmpty) {
-                          AutomationBridge.instance.openOutputFile(item.outputFileName!);
-                        } else {
-                          AutomationBridge.instance.openOutputFolder();
-                        }
-                      }
+                    ? () => showInAppPlayer(
+                          context,
+                          title: fileName,
+                          filePath: item.localFilePath,
+                          fileName: item.outputFileName ??
+                              (item.localFilePath != null &&
+                                      item.localFilePath!.isNotEmpty
+                                  ? _baseName(item.localFilePath!)
+                                  : null),
+                        )
                     : null,
               ),
               const SizedBox(width: 5),

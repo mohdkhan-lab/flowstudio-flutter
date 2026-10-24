@@ -34,12 +34,19 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
 
     final checkingCount = allAccounts.where((a) => a.status == AccountStatus.checking).length;
     final liveCount = allAccounts.where((a) => a.credits > 0 && a.status == AccountStatus.ready).length;
-    final failCount = allAccounts.where((a) => a.credits <= 0 || a.status == AccountStatus.outOfCredits || a.status == AccountStatus.error).length;
+    // v2.29.0: a "Need Login" account is NOT a failure — it is
+    // excluded from the Fail count/filter and gets its own amber
+    // LOGIN chip (it used to be lumped into FAIL by its 0 credits).
+    bool isFail(GoogleAccount a) =>
+        a.status == AccountStatus.outOfCredits ||
+        a.status == AccountStatus.error ||
+        (a.credits <= 0 && a.status != AccountStatus.loginRequired);
+    final failCount = allAccounts.where(isFail).length;
 
     final visibleAccounts = allAccounts.where((acc) {
       if (_selectedFilter == 'checking') return acc.status == AccountStatus.checking;
       if (_selectedFilter == 'live') return acc.credits > 0 && acc.status == AccountStatus.ready;
-      if (_selectedFilter == 'fail') return acc.credits <= 0 || acc.status == AccountStatus.outOfCredits || acc.status == AccountStatus.error;
+      if (_selectedFilter == 'fail') return isFail(acc);
       return true;
     }).toList();
 
@@ -60,105 +67,58 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // Nav Tabs: Generate | Settings
-          Row(
-            children: [
-              Expanded(
-                child: InkWell(
-                  onTap: () => context.read<SettingsProvider>().setNavView('generate'),
-                  borderRadius: BorderRadius.circular(8),
-                  child: Container(
-                    height: 32,
-                    decoration: BoxDecoration(
-                      color: isGenerate ? const Color(0x150A84FF) : AppTheme.overlay08,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: isGenerate ? AppTheme.accentGold.withValues(alpha: 0.6) : AppTheme.borderSoft,
-                      ),
-                    ),
-                    child: Center(
-                      child: Text(
-                        '🎬 Generate',
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: isGenerate ? FontWeight.bold : FontWeight.w600,
-                          color: isGenerate ? AppTheme.accentText : AppTheme.textDim,
-                        ),
-                      ),
-                    ),
-                  ),
+          // v2.29.0 (owner-approved v3 layout): the top tab row
+          // shows ONLY "Generate" — the Settings tab left the top;
+          // Settings now lives in the bottom bar (see
+          // _buildBottomBar). Tapping Generate from the Settings
+          // view is the way back.
+          InkWell(
+            onTap: () => context.read<SettingsProvider>().setNavView('generate'),
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              height: 32,
+              decoration: BoxDecoration(
+                color: isGenerate ? const Color(0x150A84FF) : AppTheme.overlay08,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: isGenerate ? AppTheme.accentGold.withValues(alpha: 0.6) : AppTheme.borderSoft,
                 ),
               ),
-              const SizedBox(width: 6),
-              Expanded(
-                child: InkWell(
-                  onTap: () => context.read<SettingsProvider>().setNavView('settings'),
-                  borderRadius: BorderRadius.circular(8),
-                  child: Container(
-                    height: 32,
-                    decoration: BoxDecoration(
-                      color: !isGenerate ? const Color(0x150A84FF) : AppTheme.overlay08,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(
-                        color: !isGenerate ? AppTheme.accentGold.withValues(alpha: 0.6) : AppTheme.borderSoft,
-                      ),
-                    ),
-                    child: Center(
-                      child: Text(
-                        '⚙ Settings',
-                        style: TextStyle(
-                          fontSize: 11.5,
-                          fontWeight: !isGenerate ? FontWeight.bold : FontWeight.w600,
-                          color: !isGenerate ? AppTheme.accentText : AppTheme.textDim,
-                        ),
-                      ),
-                    ),
+              child: Center(
+                child: Text(
+                  '🎬 Generate',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: isGenerate ? FontWeight.bold : FontWeight.w600,
+                    color: isGenerate ? AppTheme.accentText : AppTheme.textDim,
                   ),
-                ),
-              ),
-            ],
-          ),
-
-          const SizedBox(height: 8),
-
-          // Select All link
-          Align(
-            alignment: Alignment.centerRight,
-            child: InkWell(
-              onTap: () => accountsProv.selectAll(),
-              child: Text(
-                'Select all',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w700,
-                  color: AppTheme.accentText,
                 ),
               ),
             ),
           ),
 
-          const SizedBox(height: 6),
+          const SizedBox(height: 8),
 
-          // v2.27.0 (design): ONE full-width blue "+ Add Account" button.
-          // ("Add Cookies" moved to the bottom of the sidebar, above the
-          // action grid — exactly where the approved design puts it.)
+          // v2.29.0 (owner revision + final spec): the TOP of the
+          // sidebar has ONLY this one action — a full-width
+          // OUTLINE PILL "+ Add Cookies" (flat, big-platform
+          // style; the cookie import flow moved up here from
+          // below the account list). "+ Add Account" sits in the
+          // bottom bar instead.
           InkWell(
-            onTap: () => _showAddAccountDialog(context),
-            borderRadius: BorderRadius.circular(8),
+            onTap: () => accountsProv.pickAndImportCookieFiles(),
+            borderRadius: BorderRadius.circular(17),
             child: Container(
               height: 34,
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF1A94FF), Color(0xFF0066D6)],
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                ),
-                borderRadius: BorderRadius.circular(8),
+                color: Colors.transparent,
+                borderRadius: BorderRadius.circular(17),
+                border: Border.all(color: AppTheme.blue.withValues(alpha: 0.65), width: 1.2),
               ),
-              child: const Text(
-                '+ Add Account',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: Colors.white),
+              child: Text(
+                '+ Add Cookies',
+                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.accentText),
               ),
             ),
           ),
@@ -193,7 +153,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                   ? Center(
                       child: Text(
                         allAccounts.isEmpty
-                            ? 'No accounts yet — press "+ Add Account" to sign in, or "Add Cookies".'
+                            ? 'No accounts yet — press "+ Add Cookies" above, or "+ Add Account" below to sign in.'
                             : 'No accounts in this state.',
                         textAlign: TextAlign.center,
                         style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
@@ -259,7 +219,11 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                   crossAxisAlignment: CrossAxisAlignment.start,
                                   children: [
                                     Text(
-                                      acc.name,
+                                      // v2.29.0 (B): the row TITLE is
+                                      // the source alias ("Cookie N" /
+                                      // "Account N"); the real name /
+                                      // email stay in the popup cards.
+                                      acc.alias.isNotEmpty ? acc.alias : acc.name,
                                       maxLines: 1,
                                       overflow: TextOverflow.ellipsis,
                                       style: TextStyle(
@@ -359,27 +323,9 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
 
           const SizedBox(height: 8),
 
-          // v2.27.0 (design): full-width "Add Cookies" button below the
-          // accounts list (it was the top row's second button before).
-          InkWell(
-            onTap: () => pickAndImportCookieFiles(context),
-            borderRadius: BorderRadius.circular(7),
-            child: Container(
-              height: 30,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: AppTheme.overlay08,
-                borderRadius: BorderRadius.circular(7),
-                border: Border.all(color: AppTheme.borderSoft),
-              ),
-              child: Text(
-                'Add Cookies',
-                style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textMain),
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 6),
+          // (v2.29.0: the old "Add Cookies" button that sat below the
+          // accounts list is GONE — the cookie flow lives at the TOP
+          // of the sidebar now, per the owner's revision.)
 
           // Action Grid: 2x2
           Column(
@@ -451,8 +397,73 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
               ),
             ),
           ),
+
+          const SizedBox(height: 8),
+
+          // v2.29.0 (owner final): the sidebar BOTTOM BAR — one row
+          // of two equal-width buttons, "⚙ Settings" on the LEFT
+          // and the blue "+ Add Account" on the RIGHT.
+          _buildBottomBar(context, isGenerate: isGenerate),
         ],
       ),
+    );
+  }
+
+  // v2.29.0: the sidebar bottom bar as ONE isolated builder so its
+  // styling can be re-skinned in a single place. Owner-FINAL spec:
+  // ONE ROW on the sidebar's own Soft Charcoal surface (NO black
+  // anywhere); LEFT = "⚙ Settings" quiet/flat like a YouTube
+  // Studio menu item; RIGHT = blue PILL "+ Add Account"; equal
+  // widths.
+  Widget _buildBottomBar(BuildContext context, {required bool isGenerate}) {
+    return Row(
+      children: [
+        Expanded(
+          child: InkWell(
+            onTap: () => context.read<SettingsProvider>().setNavView('settings'),
+            borderRadius: BorderRadius.circular(8),
+            child: Container(
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                color: !isGenerate ? AppTheme.overlay10 : Colors.transparent,
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                '⚙ Settings',
+                style: TextStyle(
+                  fontSize: 11.5,
+                  fontWeight: !isGenerate ? FontWeight.bold : FontWeight.w600,
+                  color: !isGenerate ? AppTheme.textMain : AppTheme.textDim,
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(width: 6),
+        Expanded(
+          child: InkWell(
+            onTap: () => _showAddAccountDialog(context),
+            borderRadius: BorderRadius.circular(16),
+            child: Container(
+              height: 32,
+              alignment: Alignment.center,
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  colors: [Color(0xFF1A94FF), Color(0xFF0066D6)],
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                ),
+                borderRadius: BorderRadius.circular(16),
+              ),
+              child: const Text(
+                '+ Add Account',
+                style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.white),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 
@@ -511,6 +522,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     if (acc.status == AccountStatus.checking) {
       return ('CHECKING', const Color(0xFFF5B301));
     }
+    // v2.29.0: "Need Login" is an amber LOGIN chip, not red FAIL.
+    if (acc.status == AccountStatus.loginRequired) {
+      return ('LOGIN', const Color(0xFFF5B301));
+    }
     final isLive = acc.status == AccountStatus.running ||
         (acc.status == AccountStatus.ready && acc.credits > 0);
     if (isLive) return ('LIVE', AppTheme.green);
@@ -522,7 +537,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   String _subLineOf(GoogleAccount acc) {
     if (acc.status == AccountStatus.checking) return 'Checking…';
     final chip = _statusChip(acc);
-    if (chip.$1 == 'FAIL' && acc.reason != null && acc.reason!.trim().isNotEmpty) {
+    if ((chip.$1 == 'FAIL' || chip.$1 == 'LOGIN') && acc.reason != null && acc.reason!.trim().isNotEmpty) {
       return acc.reason!.trim();
     }
     return '${acc.credits} credits';
@@ -549,7 +564,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   }
 
   String _initialOf(GoogleAccount acc) {
-    final src = acc.name.trim().isNotEmpty ? acc.name.trim() : acc.email.trim();
+    // v2.29.0: the avatar initial follows the row title (the alias).
+    final src = acc.alias.trim().isNotEmpty
+        ? acc.alias.trim()
+        : (acc.name.trim().isNotEmpty ? acc.name.trim() : acc.email.trim());
     return src.isEmpty ? '?' : src[0].toUpperCase();
   }
 
@@ -613,91 +631,6 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   }
 }
 
-/// Directly opens Windows File Explorer to pick cookie files (.json or .txt) and import into FlowStudio Lite
-Future<void> pickAndImportCookieFiles(BuildContext context) async {
-  try {
-    final result = await FilePickerPlatform.instance.pickFiles(
-      dialogTitle: 'Select Cookie File (.json / .txt)',
-      type: FileType.custom,
-      allowedExtensions: ['json', 'txt'],
-    );
-
-    if (result.isEmpty) return;
-
-    if (!context.mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Row(
-          children: [
-            const SizedBox(
-              width: 14,
-              height: 14,
-              child: CircularProgressIndicator(strokeWidth: 2, color: Colors.white),
-            ),
-            const SizedBox(width: 10),
-            Text('Importing ${result.length} cookie file(s)...'),
-          ],
-        ),
-        duration: const Duration(seconds: 10),
-      ),
-    );
-
-    final accountsProv = context.read<AccountsProvider>();
-    int successCount = 0;
-    int duplicateCount = 0;
-    String lastError = '';
-
-    for (final f in result) {
-      if (f.path != null) {
-        final fileName = f.name.replaceAll(RegExp(r'\.[^.]+$'), '');
-        final res = await accountsProv.importCookiesFromFile(f.path!, label: fileName);
-        if (res['ok'] == true) {
-          successCount++;
-          if (res['duplicate'] == true) duplicateCount++;
-        } else {
-          lastError = res['error']?.toString() ?? 'Cookie check failed';
-        }
-      }
-    }
-
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).hideCurrentSnackBar();
-      if (successCount > 0) {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text(
-              duplicateCount == successCount
-                  ? 'Those cookies were already added — the existing account was re-checked, no duplicate made.'
-                  : successCount == 1
-                      ? 'Account added from cookies successfully!'
-                      : '$successCount accounts added from cookies!',
-            ),
-            backgroundColor: AppTheme.green,
-            duration: const Duration(seconds: 4),
-          ),
-        );
-      } else {
-        ScaffoldMessenger.of(context).showSnackBar(
-          SnackBar(
-            content: Text('Cookie import failed: $lastError'),
-            backgroundColor: AppTheme.red,
-            duration: const Duration(seconds: 5),
-          ),
-        );
-      }
-    }
-  } catch (e) {
-    if (context.mounted) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text('File error: $e'),
-          backgroundColor: AppTheme.red,
-        ),
-      );
-    }
-  }
-}
-
 class _AddAccountDialog extends StatefulWidget {
   const _AddAccountDialog();
 
@@ -705,19 +638,18 @@ class _AddAccountDialog extends StatefulWidget {
   State<_AddAccountDialog> createState() => _AddAccountDialogState();
 }
 
-// v2.27.0 (design): the Add Account popup matches the approved sample —
-// title "Add Account", a segmented routes row on top (Gmail Login ·
-// Add Cookies · Chrome Profiles, Chrome Profiles selected by default)
-// and, on the Profiles route, a simple CARD GRID: a dashed
-// "+ Add Account" card first, then one card per installed Chrome
-// profile. A profile whose email already has an account shows
-// ALREADY IMPORTED + credits + Sync; any other shows
-// "Import this profile". No search box / filter chips (owner: simple).
+// v2.29.0 (owner-approved v3 sample): the Add Account popup has
+// NO tab row anymore — it is ONLY the Chrome Profiles card grid:
+// a dashed "+ Add Account" card first (it starts the DIRECT Gmail
+// login flow — the real Google sign-in window, no form), then one
+// card per installed Chrome profile. A profile whose email already
+// has an account shows ALREADY IMPORTED + credits + Sync; any other
+// shows "Import this profile". Add Cookies is NOT here anymore —
+// it lives at the top of the sidebar. (The old Gmail-Login tab's
+// manual name/credits form is GONE: it created a local fake
+// "ghost" account with an invented email that showed LIVE and
+// vanished on restart.)
 class _AddAccountDialogState extends State<_AddAccountDialog> {
-  // 0 = Gmail Login, 1 = Add Cookies, 2 = Chrome Profiles (design default)
-  int _route = 2;
-  final nameCtrl = TextEditingController();
-  final creditsCtrl = TextEditingController(text: '50');
   List<Map<String, dynamic>> _profiles = [];
   bool _loadingProfiles = true;
 
@@ -747,13 +679,6 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
         _loadingProfiles = false;
       });
     }
-  }
-
-  @override
-  void dispose() {
-    nameCtrl.dispose();
-    creditsCtrl.dispose();
-    super.dispose();
   }
 
   Color _colorFor(String seed) {
@@ -794,63 +719,10 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
         // profiles grid goes 3-across there); 540 + 2-across stays
         // the standard/compact form.
         width: MediaQuery.of(context).size.width >= 1400 ? 720 : 540,
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Segmented routes row (design)
-            Container(
-              padding: const EdgeInsets.all(3),
-              decoration: BoxDecoration(
-                color: AppTheme.overlay08,
-                borderRadius: BorderRadius.circular(9),
-                border: Border.all(color: AppTheme.borderSoft),
-              ),
-              child: Row(
-                children: [
-                  _routeTab('Gmail Login', 0),
-                  _routeTab('Add Cookies', 1),
-                  _routeTab('Chrome Profiles', 2),
-                ],
-              ),
-            ),
-            const SizedBox(height: 12),
-            SizedBox(
-              height: 300,
-              child: switch (_route) {
-                0 => _buildGmailLoginTab(context),
-                1 => _buildCookiesTab(context),
-                _ => _buildProfilesTab(context),
-              },
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _routeTab(String label, int route) {
-    final selected = _route == route;
-    return Expanded(
-      child: InkWell(
-        onTap: () => setState(() => _route = route),
-        borderRadius: BorderRadius.circular(7),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 7),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: selected ? AppTheme.surfaceElevated : Colors.transparent,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(color: selected ? AppTheme.borderSoft : Colors.transparent),
-          ),
-          child: Text(
-            label,
-            style: TextStyle(
-              fontSize: 11.5,
-              fontWeight: selected ? FontWeight.bold : FontWeight.w600,
-              color: selected ? AppTheme.textMain : AppTheme.textDim,
-            ),
-          ),
+        // v2.29.0: profiles grid ONLY — no routes row.
+        child: SizedBox(
+          height: 300,
+          child: _buildProfilesTab(context),
         ),
       ),
     );
@@ -907,10 +779,25 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
     );
   }
 
-  // First grid cell: dashed "+ Add Account" card → Gmail Login route.
+  // First grid cell: dashed "+ Add Account" card → the DIRECT
+  // Gmail login flow (v2.29.0): the engine creates the account and
+  // immediately opens the real Google sign-in window; after the
+  // owner finishes the login there, the engine fills in the real
+  // name, email and credits. NO form anywhere.
   Widget _buildAddCard() {
     return InkWell(
-      onTap: () => setState(() => _route = 0),
+      onTap: () async {
+        final messenger = ScaffoldMessenger.of(context);
+        final prov = context.read<AccountsProvider>();
+        Navigator.pop(context);
+        await prov.startGmailLogin();
+        messenger.showSnackBar(
+          const SnackBar(
+            content: Text('Sign-in window opened — finish the Google login in Chrome; the account details fill in automatically.'),
+            duration: Duration(seconds: 6),
+          ),
+        );
+      },
       borderRadius: BorderRadius.circular(10),
       child: CustomPaint(
         painter: _DashedBorderPainter(color: _blue.withValues(alpha: 0.7)),
@@ -926,7 +813,7 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
               const SizedBox(height: 4),
               Text('Add Account', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: AppTheme.textMain)),
               const SizedBox(height: 2),
-              Text('Login directly with any Gmail ID', style: TextStyle(fontSize: 10, color: AppTheme.textFaint)),
+              Text('Opens the Gmail login page directly', style: TextStyle(fontSize: 10, color: AppTheme.textFaint)),
             ],
           ),
         ),
@@ -1026,107 +913,9 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
     );
   }
 
-  // Route: Add Cookies — the existing cookie-file import, styled to
-  // this dialog (same engine flow as before).
-  Widget _buildCookiesTab(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.all(16),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          Container(
-            width: 56,
-            height: 56,
-            decoration: BoxDecoration(
-              color: _blue.withValues(alpha: 0.12),
-              shape: BoxShape.circle,
-            ),
-            child: const Icon(Icons.cookie_outlined, size: 32, color: _blue),
-          ),
-          const SizedBox(height: 14),
-          Text(
-            'Import Cookies File from PC',
-            style: TextStyle(fontSize: 14, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            'Select a Netscape cookies.txt or JSON cookie file exported from your browser.',
-            textAlign: TextAlign.center,
-            style: TextStyle(fontSize: 11, color: AppTheme.textDim, height: 1.4),
-          ),
-          const SizedBox(height: 20),
-          ElevatedButton.icon(
-            onPressed: () async {
-              Navigator.pop(context);
-              await pickAndImportCookieFiles(context);
-            },
-            icon: const Icon(Icons.folder_open, size: 16),
-            label: const Text('Select Cookie File from PC', style: TextStyle(fontWeight: FontWeight.bold, fontSize: 12)),
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _blue,
-              foregroundColor: Colors.white,
-              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 12),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // Route: Gmail Login. NOTE: the app has no separate Gmail sign-in API
-  // — the existing route is this direct-add form (the engine creates
-  // the account as "Need Login"), after which the account's own Chrome
-  // button in the sidebar opens the real Google sign-in window
-  // (engine openLoginWindow). The form is labelled honestly as such.
-  Widget _buildGmailLoginTab(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Text(
-            'Add the account here — then press its Chrome button in the sidebar to finish the Google sign-in in Chrome.',
-            style: TextStyle(fontSize: 11, color: AppTheme.textDim, height: 1.4),
-          ),
-          const SizedBox(height: 14),
-          TextField(
-            controller: nameCtrl,
-            style: TextStyle(fontSize: 12.5, color: AppTheme.textMain),
-            decoration: const InputDecoration(labelText: 'Name (e.g. M. Aslam)'),
-          ),
-          const SizedBox(height: 10),
-          TextField(
-            controller: creditsCtrl,
-            keyboardType: TextInputType.number,
-            style: TextStyle(fontSize: 12.5, color: AppTheme.textMain),
-            decoration: const InputDecoration(labelText: 'Credits (e.g. 50)'),
-          ),
-          const Spacer(),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: _blue,
-              foregroundColor: Colors.white,
-              minimumSize: const Size.fromHeight(38),
-              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-            ),
-            onPressed: () {
-              if (nameCtrl.text.isNotEmpty) {
-                final credits = int.tryParse(creditsCtrl.text) ?? 50;
-                context.read<AccountsProvider>().addAccount(
-                      name: nameCtrl.text,
-                      email: '${nameCtrl.text.toLowerCase().replaceAll(' ', '')}@gmail.com',
-                      credits: credits,
-                    );
-                Navigator.pop(context);
-              }
-            },
-            child: const Text('Add Account', style: TextStyle(fontWeight: FontWeight.bold)),
-          ),
-        ],
-      ),
-    );
-  }
+  // v2.29.0: the old _buildCookiesTab and _buildGmailLoginTab are
+  // DELETED — cookies live on the sidebar, and the manual
+  // name/credits form (the ghost-account path) is gone entirely.
 }
 
 // Dashed border for the popup's "+ Add Account" card (design).

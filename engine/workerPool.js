@@ -63,6 +63,15 @@ class WorkerPool {
     // status is Ready / Low Credits ("live ready"); every other
     // account is invisible to the run. Default OFF = purana bartav.
     this.liveOnly = !!options.liveOnly;
+    // v2.29.0 (checkbox truth): the sidebar's ticked account IDs ride
+    // the generate request end-to-end (Flutter → bridge → here). When
+    // the list is present, ONLY those accounts may be used or charged
+    // by this run — an unticked account is invisible to selection,
+    // exactly like a Need-Login account. null = no restriction (old
+    // callers / engine-internal runs).
+    this.allowedAccountIds = Array.isArray(options.allowedAccountIds)
+      ? new Set(options.allowedAccountIds.map(String))
+      : null;
     this.onLog = options.onLog || (() => {});
     this.onProgress = options.onProgress || (() => {});
     this.onWorkerUpdate = options.onWorkerUpdate || (() => {});
@@ -278,6 +287,10 @@ class WorkerPool {
     for (let k = 0; k < pool.length; k++) {
       const candidate = pool[(start + k) % pool.length];
       if (unusableAccounts && unusableAccounts.has(candidate.id)) continue;
+      // v2.29.0 (checkbox truth): even if a caller hands this scan the
+      // FULL account list, an account the owner unticked in the
+      // sidebar can never be picked (or charged) by this run.
+      if (this.allowedAccountIds && !this.allowedAccountIds.has(String(candidate.id))) continue;
       const live = dbService.getAccount(candidate.id) || candidate;
       if (this.assignedAccounts.has(candidate.id)) continue;
       if (live.status === 'Exhausted' || live.status === 'Need Login' || live.status === 'Unconfirmed') continue;
@@ -466,6 +479,18 @@ class WorkerPool {
         : FlowAutomationEngine.prototype.getRequiredCredits(settings);
       const all = getAccounts();
       let pool = all.filter(a => a.status !== 'Need Login');
+      // v2.29.0 (checkbox truth): the run's pool is built from the
+      // sidebar's TICKED accounts only. An empty result stops the run
+      // with the real reason instead of silently using every account
+      // (the old behaviour charged unticked accounts).
+      if (this.allowedAccountIds) {
+        pool = pool.filter(a => this.allowedAccountIds.has(String(a.id)));
+        if (pool.length === 0) {
+          this.log('None of the ticked accounts can be used right now — either no account is ticked in the sidebar, or every ticked account still needs login. Tick at least one Live account, then press Generate again.', 'error');
+          this.onProgress({ status: 'NoAccounts' });
+          return;
+        }
+      }
       // v2.5.0: "Sirf live accounts chalao" ON ho to pool sirf Live /
       // Ready accounts ka banta hai; ek bhi na mile to wajah saaf
       // bol kar run yahin rukta hai (khamosh fail kabhi nahi).
@@ -870,14 +895,20 @@ class WorkerPool {
             this.onVideoProgress({ ...data, workerId });
           },
           onVideoCompleted: (data) => {
-            this.onVideoCompleted({ ...data, workerId, accountName: workerAccount ? workerAccount.name : '' });
+            // v2.29.0: carry the run's REAL per-video credit cost so
+            // the Progress card can show what this video actually
+            // cost (it hardcoded "7 credits" before). requiredCredits
+            // is the runQueue-scope cost for these settings.
+            this.onVideoCompleted({ ...data, workerId, accountName: workerAccount ? workerAccount.name : '', creditsUsed: requiredCredits });
           },
           onTaskCompleted: (task, result) => {
             try {
               dbService.completeTask(task.taskId, result);
             } catch (e) {}
             // v1.8.0: ZDola-style usage counting — counts only.
-            try { usageStats.recordSaved(dbService); } catch (e) {}
+            // v2.29.0: also record the REAL credits this video cost
+            // (feeds the Activity "Spent today" figure).
+            try { usageStats.recordSaved(dbService, requiredCredits); } catch (e) {}
             completedCount++;
             noteTaskSettled(task.taskId, 'done');
             recordActivity({

@@ -233,7 +233,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.28.0', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.29.0', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -242,7 +242,11 @@ async function startBridge() {
           'appearance', 'theme', 'default_model', 'default_duration', 'default_aspect',
           'default_naming', 'default_quality', 'custom_tags', 'download_folder', 'chrome_path',
           'browser_background', 'show_browsers', 'preview_autoplay', 'auto_verify_start', 'auto_check_updates',
-          'social_links', 'live_only_accounts', 'history_cleared'
+          'social_links', 'live_only_accounts', 'history_cleared',
+          // v2.29.0: the sidebar's source-numbering aliases
+          // (account id -> { alias, source }) and the persisted
+          // parallel-browsers count.
+          'account_aliases', 'parallel_browsers'
         ];
         const settings = {};
         for (const k of keys) {
@@ -320,6 +324,12 @@ async function startBridge() {
           broadcastEvent('automation-log', { message: update.message, level: 'info' });
         });
         const accounts = dbService.getAccounts();
+        // v2.29.0 (bulk sync refresh): push every account's FRESH
+        // state so the sidebar's credits/chips update in place — the
+        // app no longer needs a restart to show post-sync numbers.
+        for (const acc of accounts) {
+          broadcastEvent('account-updated', { account: acc });
+        }
         return sendJson(200, { ok: true, accounts, results });
       }
 
@@ -346,6 +356,35 @@ async function startBridge() {
           const resOpen = await openLoginWindow(body.id);
           broadcastEvent('automation-log', { message: `Chrome opened for account.`, level: 'info' });
           return sendJson(200, { ok: true, result: resOpen });
+        } catch (e) {
+          return sendJson(500, { ok: false, error: e.message });
+        }
+      }
+
+      // v2.29.0 (direct Gmail login): the popup's "+ Add Account"
+      // card creates the account through the engine's login route
+      // and IMMEDIATELY opens the real Google sign-in window — there
+      // is no name/email/credits form anywhere. openLoginWindow's own
+      // callback fires when the sign-in is detected and again when
+      // the window closes (after its live credit sync); both push the
+      // account's REAL name/email/credits to the UI.
+      if (pathname === '/api/accounts/start-login' && req.method === 'POST') {
+        try {
+          const created = addAccount('', '');
+          const acc = (created && created.account) ? created.account : created;
+          broadcastEvent('account-updated', { account: acc });
+          broadcastEvent('automation-log', { message: 'Sign-in window opened — finish the Google login in Chrome; the account details fill in automatically.', level: 'info' });
+          const resOpen = await openLoginWindow(acc.id, (result) => {
+            try {
+              const fresh = (result && result.account) || dbService.getAccount(acc.id);
+              if (fresh) broadcastEvent('account-updated', { account: fresh });
+            } catch (e) {}
+          });
+          if (resOpen && resOpen.success === false) {
+            broadcastEvent('automation-log', { message: `Sign-in window could not open: ${resOpen.error || 'unknown error'}`, level: 'error' });
+            return sendJson(200, { ok: true, account: acc, loginWindow: resOpen });
+          }
+          return sendJson(200, { ok: true, account: acc });
         } catch (e) {
           return sendJson(500, { ok: false, error: e.message });
         }
@@ -528,6 +567,23 @@ async function startBridge() {
         return sendJson(200, { ok: true });
       }
 
+      // v2.29.0 (in-app player): resolve one output file's absolute
+      // path so the app can play it INSIDE FlowStudio. Same strict
+      // confinement as /api/open-file — a bare file NAME inside the
+      // output folder only, never a path from the caller.
+      if (pathname === '/api/output-file-path' && req.method === 'POST') {
+        const body = await readBody();
+        const name = path.basename(String(body.name || ''));
+        if (!name || !VIDEO_EXTS.has(path.extname(name).toLowerCase())) {
+          return sendJson(400, { ok: false, error: 'Invalid file name.' });
+        }
+        const full = path.join(outputDir(), name);
+        if (!fs.existsSync(full)) {
+          return sendJson(404, { ok: false, error: 'File not found in the output folder.' });
+        }
+        return sendJson(200, { ok: true, path: full });
+      }
+
       if (pathname === '/api/open-output-folder' && req.method === 'POST') {
         const dir = outputDir();
         try {
@@ -563,16 +619,35 @@ async function startBridge() {
           concurrency: config.parallelBrowsers || 1,
           headless: headless,
           liveOnly: dbService.getSetting('live_only_accounts', '0') === '1',
+          // v2.29.0 (checkbox truth): the sidebar's ticked account
+          // IDs from the generate request — the pool may use ONLY
+          // these. Absent (old callers) = no restriction.
+          allowedAccountIds: Array.isArray(config.accountIds) ? config.accountIds : null,
           // v2.28.0: the engine's log() passes ONE OBJECT
           // ({ message, type, timestamp, ...extra }) — the old wiring
           // treated it as (msg, type) strings, so the whole object
           // became the SSE message (the app printed the raw dump and
           // the level was lost). Accept the object form, stay tolerant
           // of a plain string.
+          // v2.29.0 (Simple/Details split): pool lines are DETAIL by
+          // default — the Activity "Simple" view hides them. Only
+          // milestone lines stay simple: run completions, downloads /
+          // saves, sync completions, and every error or warning.
+          // Bridge-originated automation-log broadcasts carry no
+          // detail flag at all, which the app reads as simple.
           onLog: (entry) => {
             const m = (entry && typeof entry === 'object') ? (entry.message ?? String(entry)) : String(entry ?? '');
             const lvl = (entry && typeof entry === 'object' && entry.type) ? entry.type : 'info';
-            broadcastEvent('automation-log', { message: m, level: lvl });
+            const lowLevel = lvl === 'error' || lvl === 'warn' || lvl === 'warning';
+            const text = String(m).toLowerCase();
+            const milestone = lowLevel ||
+              text.includes('all work is complete') ||
+              text.includes('generation queue finished') ||
+              text.includes('download complete') ||
+              text.includes('downloaded') ||
+              text.includes('saved as') ||
+              text.includes('sync complete');
+            broadcastEvent('automation-log', { message: m, level: lvl, detail: !milestone });
           },
           onProgress: (data) => broadcastEvent('automation-progress', data),
           onVideoCompleted: (data) => broadcastEvent('video-completed', data),
@@ -611,7 +686,15 @@ async function startBridge() {
         // native shape here.
         const formattedPrompts = (config.prompts || []).map((p, idx) => {
           if (typeof p === 'string') {
-            return { text: p, index: idx, tag: config.tag || '' };
+            // v2.29.0 (naming truth): a prompt that OPENS with its
+            // own tag ("#11-01 …") carries THAT tag — it is what the
+            // tag-naming engine saves the file as, and what the
+            // Progress card already promises on screen. The run's
+            // selected tag is only the fallback for untagged prompts.
+            const lead = p.trimStart().startsWith('#')
+              ? p.trimStart().split(/\s+/)[0]
+              : '';
+            return { text: p, index: idx, tag: lead || config.tag || '' };
           }
           return {
             text: p.text || p.prompt || '',
@@ -620,12 +703,20 @@ async function startBridge() {
           };
         });
 
+        // v2.29.0 (naming truth): the engine's file naming reads
+        // settings.namingPattern — the bridge used to send only a
+        // 'naming' key the engine never reads, so every file fell
+        // back to scene001-style names while the UI promised tag
+        // names. The selected pattern + tag now reach the engine.
+        const namingPattern = config.namingPattern || dbService.getSetting('default_naming', 'tag');
         const settings = {
           model: config.model || dbService.getSetting('default_model', 'Omni Flash'),
           duration: config.duration || dbService.getSetting('default_duration', '4s'),
           aspectRatio: config.aspectRatio || dbService.getSetting('default_aspect', '9:16'),
           quality: config.quality || '720p',
-          naming: dbService.getSetting('default_naming', 'tag'),
+          naming: namingPattern,
+          namingPattern: namingPattern,
+          customNamingPrefix: config.tag || '',
         };
 
         // Start asynchronously via runQueue

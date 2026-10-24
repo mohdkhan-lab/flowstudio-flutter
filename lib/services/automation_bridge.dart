@@ -19,7 +19,9 @@ class AutomationBridge {
   StreamSubscription? _sseSubscription;
 
   // Callbacks
-  Function(String message, LogLevel level)? onLog;
+  // v2.29.0: log frames carry a DETAIL flag (Simple/Details split) —
+  // detail lines are hidden by the Activity "Simple" view.
+  Function(String message, LogLevel level, bool isDetail)? onLog;
   Function(GoogleAccount account)? onAccountUpdated;
   Function(Map<String, dynamic> data)? onProgress;
   Function(Map<String, dynamic> data)? onVideoCompleted;
@@ -145,6 +147,9 @@ class AutomationBridge {
       id: a['id']?.toString() ?? '',
       name: a['name']?.toString() ?? 'Google Account',
       email: a['email']?.toString() ?? '',
+      // v2.29.0: source hints for the alias store (see account.dart).
+      hasCookies: a['hasCookies'] == true,
+      chromeProfileDir: a['chromeProfileDir']?.toString() ?? '',
       credits: cr is num ? cr.toInt() : 0,
       status: status,
       isChecked: a['selected'] == true || a['selected'] == 1,
@@ -225,7 +230,10 @@ class AutomationBridge {
                       ? (rawMessage['message']?.toString() ??
                           rawMessage.toString())
                       : rawMessage.toString();
-                  onLog?.call(messageText, level);
+                  // v2.29.0: the bridge marks WorkerPool lines as
+                  // detail (milestones/errors stay simple); frames
+                  // without the flag are simple lines.
+                  onLog?.call(messageText, level, data['detail'] == true);
                 }
                 if (data['account'] is Map) {
                   onAccountUpdated?.call(
@@ -293,18 +301,30 @@ class AutomationBridge {
     }
   }
 
-  Future<bool> addAccount(String name, String email) async {
+  /// v2.29.0 (direct Gmail login): creates the account through the
+  /// engine's login route and immediately opens the real Google
+  /// sign-in window — no name/email/credits form anywhere. Returns
+  /// the created account (real details arrive later via
+  /// account-updated events, after the owner signs in).
+  /// The old addAccount(name, email) bridge call died with the
+  /// manual-add form it served.
+  Future<GoogleAccount?> startGmailLogin() async {
     try {
       final res = await http.post(
-        Uri.parse('$baseUrl/api/accounts/add'),
+        Uri.parse('$baseUrl/api/accounts/start-login'),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({'name': name, 'email': email}),
+        body: json.encode({}),
       );
-      return res.statusCode == 200;
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true && data['account'] is Map) {
+          return accountFromJson(Map<String, dynamic>.from(data['account'] as Map));
+        }
+      }
     } catch (e) {
-      debugPrint('[addAccount Error] $e');
-      return false;
+      debugPrint('[startGmailLogin Error] $e');
     }
+    return null;
   }
 
   Future<bool> deleteAccount(String id) async {
@@ -518,6 +538,12 @@ class AutomationBridge {
     required String aspectRatio,
     required String quality,
     String tag = '',
+    // v2.29.0: the sidebar's TICKED account IDs (checkbox truth), the
+    // selected model, and the file-naming pattern — all three used to
+    // be dropped here, so the engine never saw them.
+    List<String>? accountIds,
+    String? model,
+    String? namingPattern,
   }) async {
     try {
       final res = await http.post(
@@ -531,6 +557,9 @@ class AutomationBridge {
           'aspectRatio': aspectRatio,
           'quality': quality,
           'tag': tag,
+          'accountIds': accountIds,
+          'model': model,
+          'namingPattern': namingPattern,
         }),
       );
       return res.statusCode == 200;
@@ -592,6 +621,26 @@ class AutomationBridge {
       debugPrint('[openOutputFile Error] $e');
       return false;
     }
+  }
+
+  /// v2.29.0 (in-app player): resolve one output file's absolute
+  /// path (bridge-confined to the output folder, bare name only) so
+  /// the app can play it inside FlowStudio.
+  Future<String?> getOutputFilePath(String name) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/output-file-path'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'name': name}),
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true) return data['path']?.toString();
+      }
+    } catch (e) {
+      debugPrint('[getOutputFilePath Error] $e');
+    }
+    return null;
   }
 
   /// v2.27.0: open the configured output folder in Explorer.

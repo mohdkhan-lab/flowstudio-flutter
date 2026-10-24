@@ -47,6 +47,7 @@ class SettingsProvider with ChangeNotifier {
       final data = await AutomationBridge.instance.loadSettings();
       if (data != null) {
         if (data['appearance'] != null) _settings.appearance = data['appearance'].toString();
+        if (data['theme'] != null) _settings.theme = data['theme'].toString();
         if (data['default_model'] != null) _settings.model = data['default_model'].toString();
         if (data['default_duration'] != null) _settings.duration = data['default_duration'].toString();
         if (data['default_aspect'] != null) _settings.aspectRatio = data['default_aspect'].toString();
@@ -112,6 +113,13 @@ class SettingsProvider with ChangeNotifier {
   void updateAppearance(String val) {
     _settings.appearance = val;
     AutomationBridge.instance.saveSetting('appearance', val);
+    notifyListeners();
+  }
+
+  // v2.26.0: colour theme (independent of the Dark/Light mode above).
+  void setTheme(String id) {
+    _settings.theme = id;
+    AutomationBridge.instance.saveSetting('theme', id);
     notifyListeners();
   }
 

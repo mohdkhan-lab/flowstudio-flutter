@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import '../theme/app_theme.dart';
+import '../models/app_settings.dart';
 import '../providers/settings_provider.dart';
 
 class SettingsView extends StatefulWidget {
@@ -86,14 +87,14 @@ class _SettingsViewState extends State<SettingsView> {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     _buildAppearanceBtn(
-                      '🌙 Dark (Charcoal)',
+                      '🌙 Dark',
                       'dark',
                       s.appearance == 'dark',
                       () => prov.updateAppearance('dark'),
                     ),
                     const SizedBox(width: 8),
                     _buildAppearanceBtn(
-                      '☀️ Cream (Light)',
+                      '☀️ Light',
                       'white',
                       s.appearance == 'white',
                       () => prov.updateAppearance('white'),
@@ -107,6 +108,18 @@ class _SettingsViewState extends State<SettingsView> {
                     ),
                   ],
                 ),
+                const SizedBox(height: 14),
+                Text(
+                  'THEME',
+                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8, color: AppTheme.textFaint),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  'Every theme comes in Dark and Light — switching the mode keeps your theme.',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
+                ),
+                const SizedBox(height: 8),
+                _buildThemeGrid(prov, s),
               ],
             ),
           ),
@@ -545,6 +558,202 @@ class _SettingsViewState extends State<SettingsView> {
           child,
         ],
       ),
+    );
+  }
+
+  // v2.26.0: the 10-theme grid. Previews are drawn from each family's
+  // palette for the CURRENTLY APPLIED mode (AppTheme.dark), so flipping
+  // Dark/Light re-renders every card in that mode's colours.
+  Widget _buildThemeGrid(SettingsProvider prov, AppSettings s) {
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 5,
+        mainAxisSpacing: 8,
+        crossAxisSpacing: 8,
+        childAspectRatio: 1.05,
+      ),
+      itemCount: AppTheme.themeIds.length,
+      itemBuilder: (context, i) {
+        final id = AppTheme.themeIds[i];
+        return _buildThemeCard(prov, s, id);
+      },
+    );
+  }
+
+  Widget _buildThemeCard(SettingsProvider prov, AppSettings s, String id) {
+    final pal = AppTheme.paletteFor(id, AppTheme.dark);
+    final selected = s.theme == id;
+    return InkWell(
+      onTap: () => prov.setTheme(id),
+      borderRadius: BorderRadius.circular(9),
+      child: Container(
+        padding: const EdgeInsets.all(6),
+        decoration: BoxDecoration(
+          color: AppTheme.surfaceElevated,
+          borderRadius: BorderRadius.circular(9),
+          border: Border.all(
+            color: selected ? pal.accentGold : AppTheme.borderSoft,
+            width: selected ? 2 : 1,
+          ),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Expanded(child: _buildThemePreview(pal, selected)),
+            const SizedBox(height: 5),
+            Row(
+              children: [
+                Expanded(
+                  child: Text(
+                    AppTheme.themeNames[id] ?? id,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: selected ? FontWeight.bold : FontWeight.w600,
+                      color: selected ? AppTheme.textMain : AppTheme.textDim,
+                    ),
+                  ),
+                ),
+                if (id == 'macos') ...[
+                  const SizedBox(width: 4),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+                    decoration: BoxDecoration(
+                      color: AppTheme.activeGold,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: const Text(
+                      'Best',
+                      style: TextStyle(fontSize: 8, fontWeight: FontWeight.w900, color: Color(0xFF231A00)),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Mini app-window preview drawn purely from the palette: gradient body,
+  // surface sidebar with an accent bar and the fixed gold ACTIVE dot,
+  // an input box and an accent progress bar with fixed green/red dots.
+  Widget _buildThemePreview(AppPalette pal, bool selected) {
+    return Stack(
+      children: [
+        Container(
+          decoration: BoxDecoration(
+            gradient: LinearGradient(
+              colors: [pal.bg2, pal.bgBody],
+              begin: Alignment.topLeft,
+              end: Alignment.bottomRight,
+            ),
+            borderRadius: BorderRadius.circular(7),
+            border: Border.all(color: pal.border),
+          ),
+          child: ClipRRect(
+            borderRadius: BorderRadius.circular(7),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Container(
+                  width: 26,
+                  color: pal.surface,
+                  padding: const EdgeInsets.fromLTRB(5, 6, 5, 6),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    children: [
+                      Container(height: 4, decoration: BoxDecoration(color: pal.accentGold, borderRadius: BorderRadius.circular(2))),
+                      const SizedBox(height: 4),
+                      Container(height: 4, decoration: BoxDecoration(color: pal.textDim.withValues(alpha: 0.55), borderRadius: BorderRadius.circular(2))),
+                      const SizedBox(height: 4),
+                      Container(height: 4, decoration: BoxDecoration(color: pal.textDim.withValues(alpha: 0.35), borderRadius: BorderRadius.circular(2))),
+                      const Spacer(),
+                      Container(
+                        width: 7,
+                        height: 7,
+                        decoration: BoxDecoration(color: pal.activeGold, shape: BoxShape.circle),
+                      ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: Padding(
+                    padding: const EdgeInsets.all(6),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Container(
+                          height: 15,
+                          decoration: BoxDecoration(
+                            color: pal.inputBg,
+                            borderRadius: BorderRadius.circular(4),
+                            border: Border.all(color: pal.borderSoft),
+                          ),
+                        ),
+                        const SizedBox(height: 5),
+                        Row(
+                          children: [
+                            Expanded(
+                              child: Container(
+                                height: 6,
+                                decoration: BoxDecoration(color: pal.surfaceElevated, borderRadius: BorderRadius.circular(3)),
+                                child: FractionallySizedBox(
+                                  alignment: Alignment.centerLeft,
+                                  widthFactor: 0.64,
+                                  child: Container(
+                                    decoration: BoxDecoration(color: pal.accentGold, borderRadius: BorderRadius.circular(3)),
+                                  ),
+                                ),
+                              ),
+                            ),
+                            const SizedBox(width: 5),
+                            Container(
+                              width: 16,
+                              height: 8,
+                              decoration: BoxDecoration(color: pal.accentGold, borderRadius: BorderRadius.circular(4)),
+                            ),
+                          ],
+                        ),
+                        const SizedBox(height: 5),
+                        Row(
+                          children: [
+                            Container(width: 6, height: 6, decoration: BoxDecoration(color: pal.green, shape: BoxShape.circle)),
+                            const SizedBox(width: 5),
+                            Expanded(
+                              child: Container(
+                                height: 4,
+                                decoration: BoxDecoration(color: pal.textDim.withValues(alpha: 0.6), borderRadius: BorderRadius.circular(2)),
+                              ),
+                            ),
+                            const SizedBox(width: 5),
+                            Container(width: 6, height: 6, decoration: BoxDecoration(color: pal.red, shape: BoxShape.circle)),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        if (selected)
+          Positioned(
+            top: 3,
+            right: 3,
+            child: Container(
+              width: 15,
+              height: 15,
+              decoration: BoxDecoration(color: pal.accentGold, shape: BoxShape.circle),
+              child: const Icon(Icons.check, size: 10, color: Colors.white),
+            ),
+          ),
+      ],
     );
   }
 

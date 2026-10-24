@@ -1,5 +1,6 @@
 class AppSettings {
   String appearance; // 'dark', 'white', 'system'
+  String theme; // v2.26.0: colour theme id (see AppTheme.themeIds)
   String model; // 'Omni Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'
   String duration; // '4s', '6s', '8s', '10s'
   String aspectRatio; // '9:16', '16:9', '1:1'
@@ -20,6 +21,7 @@ class AppSettings {
 
   AppSettings({
     this.appearance = 'dark',
+    this.theme = 'macos',
     this.model = 'Omni Flash',
     this.duration = '4s',
     this.aspectRatio = '9:16',
@@ -33,7 +35,7 @@ class AppSettings {
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.currentVersion = 'v2.25.0',
+    this.currentVersion = 'v2.26.0',
     this.whatsAppLink = 'https://wa.me/',
     this.chatLink = 'https://flowstudio.chat/',
     this.supportLink = 'https://flowstudio.support/',
@@ -41,6 +43,7 @@ class AppSettings {
 
   AppSettings copyWith({
     String? appearance,
+    String? theme,
     String? model,
     String? duration,
     String? aspectRatio,
@@ -61,6 +64,7 @@ class AppSettings {
   }) {
     return AppSettings(
       appearance: appearance ?? this.appearance,
+      theme: theme ?? this.theme,
       model: model ?? this.model,
       duration: duration ?? this.duration,
       aspectRatio: aspectRatio ?? this.aspectRatio,

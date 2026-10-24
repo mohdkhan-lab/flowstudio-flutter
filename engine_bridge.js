@@ -233,13 +233,13 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.25.0', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.26.0', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
       if (pathname === '/api/settings' && req.method === 'GET') {
         const keys = [
-          'appearance', 'default_model', 'default_duration', 'default_aspect',
+          'appearance', 'theme', 'default_model', 'default_duration', 'default_aspect',
           'default_naming', 'default_quality', 'custom_tags', 'download_folder', 'chrome_path',
           'browser_background', 'show_browsers', 'preview_autoplay', 'auto_verify_start', 'auto_check_updates',
           'social_links', 'live_only_accounts'

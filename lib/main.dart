@@ -34,13 +34,15 @@ class FlowStudioApp extends StatelessWidget {
         builder: (context, settingsProv, _) {
           // v2.24.0: real appearance switching — 'dark' = Soft Charcoal,
           // 'white' = Creamy light, 'system' follows Windows.
+          // v2.26.0: the colour theme is independent of the mode —
+          // applyTheme picks the selected theme's palette for this mode.
           final appearance = settingsProv.settings.appearance;
           final platformDark =
               WidgetsBinding.instance.platformDispatcher.platformBrightness ==
                   Brightness.dark;
           final useDark =
               appearance == 'dark' || (appearance == 'system' && platformDark);
-          AppTheme.dark = useDark;
+          AppTheme.applyTheme(settingsProv.settings.theme, useDark);
           return MaterialApp(
             title: 'FlowStudio Lite',
             debugShowCheckedModeBanner: false,

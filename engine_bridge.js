@@ -233,7 +233,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.27.0', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.28.0', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -563,7 +563,17 @@ async function startBridge() {
           concurrency: config.parallelBrowsers || 1,
           headless: headless,
           liveOnly: dbService.getSetting('live_only_accounts', '0') === '1',
-          onLog: (msg, type) => broadcastEvent('automation-log', { message: msg, level: type }),
+          // v2.28.0: the engine's log() passes ONE OBJECT
+          // ({ message, type, timestamp, ...extra }) — the old wiring
+          // treated it as (msg, type) strings, so the whole object
+          // became the SSE message (the app printed the raw dump and
+          // the level was lost). Accept the object form, stay tolerant
+          // of a plain string.
+          onLog: (entry) => {
+            const m = (entry && typeof entry === 'object') ? (entry.message ?? String(entry)) : String(entry ?? '');
+            const lvl = (entry && typeof entry === 'object' && entry.type) ? entry.type : 'info';
+            broadcastEvent('automation-log', { message: m, level: lvl });
+          },
           onProgress: (data) => broadcastEvent('automation-progress', data),
           onVideoCompleted: (data) => broadcastEvent('video-completed', data),
           onAccountUpdated: (data) => broadcastEvent('account-updated', data),

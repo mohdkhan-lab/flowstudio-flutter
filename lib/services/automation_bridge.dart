@@ -217,7 +217,15 @@ class AutomationBridge {
                     'error' => LogLevel.error,
                     _ => LogLevel.info,
                   };
-                  onLog?.call(data['message'].toString(), level);
+                  // v2.28.0 (defensive): if a frame ever carries the
+                  // log object itself, show its message text — never
+                  // the raw Map dump.
+                  final rawMessage = data['message'];
+                  final messageText = rawMessage is Map
+                      ? (rawMessage['message']?.toString() ??
+                          rawMessage.toString())
+                      : rawMessage.toString();
+                  onLog?.call(messageText, level);
                 }
                 if (data['account'] is Map) {
                   onAccountUpdated?.call(

@@ -145,14 +145,23 @@ class VideoSettingsBar extends StatelessWidget {
                         : null,
               ),
 
-              const Spacer(),
+              const SizedBox(width: 8),
 
               // Estimate (design): "N prompts · est. X credits · Y Live accounts"
-              Text(
-                '$promptCount prompts · est. ${promptCount * 7} credits · $liveCount Live accounts',
-                style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
+              // v2.28.0: the estimate flexes + ellipsizes — Stop/Pause
+              // keep their intrinsic size and the Generate button is
+              // NEVER clipped (at 1024 wide the old Spacer row
+              // overflowed and cut the button at the right edge).
+              Expanded(
+                child: Text(
+                  '$promptCount prompts · est. ${promptCount * 7} credits · $liveCount Live accounts',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
+                ),
               ),
-              const SizedBox(width: 10),
+              const SizedBox(width: 8),
 
               // Generate Button — big BLUE gradient (design)
               InkWell(
@@ -255,7 +264,7 @@ class VideoSettingsBar extends StatelessWidget {
         const SizedBox(height: 5),
         Container(
           height: 34,
-          padding: const EdgeInsets.symmetric(horizontal: 8),
+          padding: const EdgeInsets.symmetric(horizontal: 6),
           decoration: BoxDecoration(
             color: AppTheme.inputBg,
             borderRadius: BorderRadius.circular(7),
@@ -268,7 +277,7 @@ class VideoSettingsBar extends StatelessWidget {
               isDense: true,
               isExpanded: true,
               style: TextStyle(
-                fontSize: 11.5,
+                fontSize: 12,
                 fontWeight: FontWeight.bold,
                 color: AppTheme.textMain,
               ),
@@ -276,7 +285,18 @@ class VideoSettingsBar extends StatelessWidget {
               items: items.map((String item) {
                 return DropdownMenuItem<String>(
                   value: item,
-                  child: Text(display[item] ?? item),
+                  // v2.28.0: ONE line always — FittedBox scales the
+                  // label down to the column width instead of letting
+                  // it wrap ("Omni 1.1 / Flash" on two lines).
+                  child: FittedBox(
+                    fit: BoxFit.scaleDown,
+                    alignment: Alignment.centerLeft,
+                    child: Text(
+                      display[item] ?? item,
+                      maxLines: 1,
+                      softWrap: false,
+                    ),
+                  ),
                 );
               }).toList(),
               onChanged: onChanged,

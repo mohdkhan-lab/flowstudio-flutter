@@ -36,6 +36,11 @@ class GoogleAccount {
   // Both are driven by the engine's 'active-browsers' events.
   bool isActive;
   bool browserShown;
+  // v2.30.2 (bulk cookie add): RUNTIME only — this account was
+  // added with its verification deferred and is queued for the
+  // batch's phase-2 check. The row shows a faint "Waiting" until
+  // the check lands. Driven by AccountsProvider's pending set.
+  bool pendingCheck;
   final String? profilePath;
   final String? reason;
   DateTime lastUsed;
@@ -51,6 +56,7 @@ class GoogleAccount {
     this.isChecked = true,
     this.isActive = false,
     this.browserShown = false,
+    this.pendingCheck = false,
     this.profilePath,
     this.reason,
     DateTime? lastUsed,
@@ -65,6 +71,7 @@ class GoogleAccount {
     bool? isChecked,
     bool? isActive,
     bool? browserShown,
+    bool? pendingCheck,
     String? profilePath,
     String? reason,
     DateTime? lastUsed,
@@ -80,6 +87,7 @@ class GoogleAccount {
       isChecked: isChecked ?? this.isChecked,
       isActive: isActive ?? this.isActive,
       browserShown: browserShown ?? this.browserShown,
+      pendingCheck: pendingCheck ?? this.pendingCheck,
       profilePath: profilePath ?? this.profilePath,
       reason: reason ?? this.reason,
       lastUsed: lastUsed ?? this.lastUsed,

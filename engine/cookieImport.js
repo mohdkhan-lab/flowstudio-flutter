@@ -274,8 +274,16 @@ async function finishCookieCheck(accountId, accountName, onPhase) {
  * already-parsed cookie set: create the account, save the cookies,
  * inject, and run the automatic check. Parse failures happen BEFORE
  * this is called, so bad input never leaves a junk account behind.
+ *
+ * v2.30.2 (owner's bulk-add order): with `deferCheck` the import
+ * stops after the injection — the account exists, its cookies are in
+ * its profile, and NO verification runs yet. The bridge's batch flow
+ * adds EVERY picked file first and only then runs the checks via
+ * checkImportedAccount(), so adds and checks never interleave
+ * one-by-one. The account's line shows "Waiting" until its check
+ * runs.
  */
-async function finishCookieImport({ parsed, name, onPhase, fileName = '' }) {
+async function finishCookieImport({ parsed, name, onPhase, fileName = '', deferCheck = false }) {
   const fail = (error, extra = {}) => ({ success: false, error, fileName, accounts: getAccounts(), ...extra });
   const { account } = addAccount(name);
   const accountId = account.id;
@@ -293,8 +301,10 @@ async function finishCookieImport({ parsed, name, onPhase, fileName = '' }) {
     dbService.updateAccountFields(accountId, { hasCookies: 1 });
   } catch (e) { /* saving is best-effort; the import itself continues */ }
 
-  emitPhase(onPhase, accountId, 'checking', null);
-  recordActivity({ category: 'login', level: 'info', accountId, accountName: name, message: `🍪 Cookie check started: ${name}` });
+  if (!deferCheck) {
+    emitPhase(onPhase, accountId, 'checking', null);
+    recordActivity({ category: 'login', level: 'info', accountId, accountName: name, message: `🍪 Cookie check started: ${name}` });
+  }
 
   try {
     await injectCookiesIntoProfile(accountId, parsed.cookies);
@@ -303,6 +313,24 @@ async function finishCookieImport({ parsed, name, onPhase, fileName = '' }) {
     emitPhase(onPhase, accountId, 'done', check);
     recordActivity({ category: 'errors', level: 'error', accountId, accountName: name, message: `🍪 Cookie check FAIL: ${name} — ${check.reason}` });
     return fail(`Cookie import failed: ${e.message}`, { account: dbService.getAccount(accountId), check });
+  }
+
+  // v2.30.2: deferred — the account is ADDED (cookies saved +
+  // injected) but deliberately NOT verified yet. The batch's phase 2
+  // runs checkImportedAccount() for every new account once ALL adds
+  // are in. Nothing about the login is claimed at this point.
+  if (deferCheck) {
+    recordActivity({ category: 'login', level: 'info', accountId, accountName: name, message: `🍪 Cookies added: ${name} — check queued (runs after all files are added)` });
+    return {
+      success: true,
+      deferred: true,
+      verified: false,
+      message: 'Cookies added — the check runs after all files are added.',
+      account: dbService.getAccount(accountId),
+      accounts: getAccounts(),
+      fileName,
+      check: null
+    };
   }
 
   // Authoritative verification — the same live check a manual Sync runs.
@@ -353,7 +381,7 @@ async function finishCookieImport({ parsed, name, onPhase, fileName = '' }) {
  * onPhase({ accountId, phase, state, outcome, reason }) reports the
  * automatic check live so the row's 🍪 chip can show Checking… -> result.
  */
-async function importAccountFromCookieFile({ filePath, label, onPhase } = {}) {
+async function importAccountFromCookieFile({ filePath, label, onPhase, deferCheck = false } = {}) {
   const fileName = filePath ? path.basename(filePath) : '';
   const fail = (error, extra = {}) => ({ success: false, error, fileName, accounts: getAccounts(), ...extra });
 
@@ -376,7 +404,7 @@ async function importAccountFromCookieFile({ filePath, label, onPhase } = {}) {
   }
 
   const name = (label && String(label).trim()) || fileName.replace(/\.[^.]*$/, '') || 'Cookie Account';
-  return finishCookieImport({ parsed, name, onPhase, fileName });
+  return finishCookieImport({ parsed, name, onPhase, fileName, deferCheck });
 }
 
 /**
@@ -387,7 +415,7 @@ async function importAccountFromCookieFile({ filePath, label, onPhase } = {}) {
  * so the modal can show the error inline and the user can fix the
  * paste and retry. Cookie values are never logged here either.
  */
-async function importAccountFromCookieText({ text, label, onPhase } = {}) {
+async function importAccountFromCookieText({ text, label, onPhase, deferCheck = false } = {}) {
   const fail = (error, extra = {}) => ({ success: false, error, fileName: '', accounts: getAccounts(), ...extra });
 
   if (typeof text !== 'string' || !text.trim()) {
@@ -405,7 +433,50 @@ async function importAccountFromCookieText({ text, label, onPhase } = {}) {
   }
 
   const name = (label && String(label).trim()) || 'Cookie Account';
-  return finishCookieImport({ parsed, name, onPhase, fileName: '' });
+  return finishCookieImport({ parsed, name, onPhase, fileName: '', deferCheck });
+}
+
+/**
+ * v2.30.2 (bulk-add phase 2): run the verification for ONE account
+ * whose cookie import was deferred. The cookies are already saved
+ * and injected into the account's profile (finishCookieImport did
+ * that in phase 1), so this is exactly the import's own check tail —
+ * finishCookieCheck (the authoritative live verification, with its
+ * one bounded retry on an inconclusive first look) plus the same
+ * result mapping finishCookieImport applies after a non-deferred
+ * import. NOT a new verify engine.
+ */
+async function checkImportedAccount(accountId, onPhase) {
+  const account = dbService.getAccount(accountId);
+  if (!account) return { success: false, error: 'Account not found.', account: null, check: null };
+  const name = account.googleName || account.name || 'Account';
+
+  emitPhase(onPhase, accountId, 'checking', null);
+  recordActivity({ category: 'login', level: 'info', accountId, accountName: name, message: `🍪 Cookie check started: ${name}` });
+
+  const { res, updated, check } = await finishCookieCheck(accountId, name, onPhase);
+
+  if (res && res.explicitSignedOut) {
+    return { success: false, error: 'Login failed — Google rejected this session. Press "Sign In" on this line.', account: updated, cookiesRejected: true, check };
+  }
+  if (res && res.success && updated && (updated.status === 'Ready' || updated.status === 'Exhausted')) {
+    return {
+      success: true,
+      verified: true,
+      message: updated.status === 'Exhausted'
+        ? 'Login confirmed. Credits are finished (Exhausted) — the live number shows on the line.'
+        : 'Login confirmed. The live credit number shows on the line.',
+      account: updated,
+      check
+    };
+  }
+  if (res && res.success && res.unknown) {
+    return { success: false, error: 'Cookies imported, but login is not confirmed yet. Press "Sync" on this line to check again.', account: updated, unverified: true, check };
+  }
+  if (res && res.chromeOpen) {
+    return { success: false, error: res.error || 'Chrome is open for this profile. Close it and press Sync on the card.', account: updated, check };
+  }
+  return { success: false, error: (res && res.error) || 'Login could not be verified after the cookie import. Press "Sync" on this line to check again.', account: updated, check };
 }
 
 /**
@@ -484,4 +555,4 @@ async function importAccountsFromCookieFiles(filePaths, onPhase) {
   };
 }
 
-module.exports = { importAccountFromCookieFile, importAccountFromCookieText, importAccountsFromCookieFiles, recheckAccountCookies, cookieCheckState, runCookieCheckCore };
+module.exports = { importAccountFromCookieFile, importAccountFromCookieText, importAccountsFromCookieFiles, recheckAccountCookies, checkImportedAccount, cookieCheckState, runCookieCheckCore };

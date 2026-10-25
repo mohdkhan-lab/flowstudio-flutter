@@ -166,10 +166,24 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                       separatorBuilder: (_, _) => const SizedBox(height: 5),
                       itemBuilder: (context, index) {
                         final acc = visibleAccounts[index];
-                        final chip = _statusChip(acc);
+                        final word = _statusWord(acc);
+                        final browserOn = acc.isActive && acc.browserShown;
 
+                        // v2.30.2 (owner-approved sample v3, FINAL):
+                        // the account row is rebuilt to the sample —
+                        // NO avatar before the text; checkbox, then
+                        // the left-aligned text block (alias 13px
+                        // bold / sub-line 11px / ● ACTIVE 12px gold
+                        // in an ALWAYS-RESERVED slot); open space in
+                        // the middle; on the right the status as
+                        // plain coloured text in a fixed-width slot
+                        // and a proper "Chrome" button. The row
+                        // height is FIXED (74) for every state, so
+                        // nothing resizes or shifts when a status
+                        // changes.
                         return Container(
-                          padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 7),
+                          height: 74,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
                           decoration: BoxDecoration(
                             color: AppTheme.overlay08,
                             borderRadius: BorderRadius.circular(8),
@@ -180,162 +194,187 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                               width: acc.isActive ? 1.2 : 1.0,
                             ),
                           ),
-                          child: Row(
-                            children: [
-                              // Square Checkbox
-                              SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: Checkbox(
-                                  value: acc.isChecked,
-                                  activeColor: AppTheme.accentGold,
-                                  checkColor: Colors.black,
-                                  side: const BorderSide(color: Colors.white70, width: 1.5),
-                                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(2)),
-                                  materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                                  onChanged: (_) => accountsProv.toggleAccount(acc.id),
-                                ),
-                              ),
-                              const SizedBox(width: 3),
-                              // v2.27.0 (design): avatar circle with the
-                              // account's initial, coloured per account.
-                              // v2.30.0: 28px (was 24) — the row was
-                              // rebalanced so the name column gets the
-                              // room instead (see below).
-                              Container(
-                                width: 28,
-                                height: 28,
-                                decoration: BoxDecoration(
-                                  color: _avatarColor(acc),
-                                  shape: BoxShape.circle,
-                                ),
-                                alignment: Alignment.center,
-                                child: Text(
-                                  _initialOf(acc),
-                                  style: const TextStyle(
-                                    fontSize: 13,
-                                    fontWeight: FontWeight.w800,
-                                    color: Colors.white,
+                          child: FittedBox(
+                            // The row's inner layout is built ONCE
+                            // at its full-scale natural width (238 —
+                            // the wide sidebar's inner width, the
+                            // sample's geometry) and scale-down
+                            // fitted, the app's established fit
+                            // mechanism: at compact widths everything
+                            // shrinks a hair, but no word is ever cut
+                            // or ellipsized and no element ever
+                            // changes position.
+                            fit: BoxFit.scaleDown,
+                            child: SizedBox(
+                              width: 238,
+                              height: 54,
+                              child: Row(
+                                children: [
+                                  // Square Checkbox
+                                  SizedBox(
+                                    width: 20,
+                                    height: 20,
+                                    child: Checkbox(
+                                      value: acc.isChecked,
+                                      activeColor: AppTheme.accentGold,
+                                      checkColor: Colors.black,
+                                      side: const BorderSide(color: Colors.white70, width: 1.5),
+                                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(2)),
+                                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                                      onChanged: (_) => accountsProv.toggleAccount(acc.id),
+                                    ),
                                   ),
-                                ),
-                              ),
-                              const SizedBox(width: 3),
-                              Expanded(
-                                // v2.30.0 (owner's photo: "Acco..." /
-                                // "26 cre..." at 1024×768): the alias
-                                // and the credits line must NEVER be
-                                // cut with an ellipsis. The column is
-                                // scale-down fitted (the same pattern
-                                // the top strip uses) — at the compact
-                                // 215px sidebar it shrinks a hair if it
-                                // must, but the full words always
-                                // render. No TextOverflow.ellipsis here.
-                                child: FittedBox(
-                                  fit: BoxFit.scaleDown,
-                                  alignment: Alignment.centerLeft,
-                                  child: Column(
-                                    crossAxisAlignment: CrossAxisAlignment.start,
-                                    mainAxisSize: MainAxisSize.min,
-                                    children: [
-                                    Text(
-                                      // v2.29.0 (B): the row TITLE is
-                                      // the source alias ("Cookie N" /
-                                      // "Account N"); the real name /
-                                      // email stay in the popup cards.
-                                      acc.alias.isNotEmpty ? acc.alias : acc.name,
-                                      maxLines: 1,
-                                      softWrap: false,
-                                      style: TextStyle(
-                                        fontSize: 11.5,
-                                        fontWeight: FontWeight.bold,
-                                        color: AppTheme.textMain,
-                                      ),
-                                    ),
-                                    Text(
-                                      _subLineOf(acc),
-                                      maxLines: 1,
-                                      softWrap: false,
-                                      style: TextStyle(
-                                        fontSize: 10,
-                                        color: AppTheme.textFaint,
-                                      ),
-                                    ),
-                                    // v2.25.0 (parked browser): gold
-                                    // ACTIVE text under the credits —
-                                    // ONLY on the account that is
-                                    // generating right now.
-                                    if (acc.isActive)
-                                      Padding(
-                                        padding: const EdgeInsets.only(top: 1),
+                                  const SizedBox(width: 10),
+                                  // Left text block (sample v3): the
+                                  // alias, the sub-line, and the
+                                  // ● ACTIVE slot — the slot is ALWAYS
+                                  // here (empty when not generating),
+                                  // so the block's height is constant.
+                                  // The block takes the row's flexible
+                                  // share and is scale-down fitted
+                                  // (the v2.30.0 pattern): its words
+                                  // are never cut or ellipsized, in
+                                  // any font or sidebar width.
+                                  Expanded(
+                                    child: FittedBox(
+                                      fit: BoxFit.scaleDown,
+                                      alignment: Alignment.centerLeft,
+                                      child: Column(
+                                        crossAxisAlignment: CrossAxisAlignment.start,
+                                        mainAxisAlignment: MainAxisAlignment.center,
+                                        children: [
+                                      SizedBox(
+                                        height: 17,
                                         child: Text(
-                                          '● ACTIVE',
+                                          // v2.29.0 (B): the row TITLE
+                                          // is the source alias
+                                          // ("Cookie N" / "Account N");
+                                          // the real name / email stay
+                                          // in the popup cards.
+                                          acc.alias.isNotEmpty ? acc.alias : acc.name,
+                                          maxLines: 1,
+                                          softWrap: false,
                                           style: TextStyle(
-                                            fontSize: 10,
-                                            fontWeight: FontWeight.w800,
-                                            color: AppTheme.activeGold,
-                                            letterSpacing: 0.4,
+                                            fontSize: 13,
+                                            fontWeight: FontWeight.bold,
+                                            color: AppTheme.textMain,
+                                            height: 1.0,
                                           ),
                                         ),
                                       ),
-                                    ],
+                                      const SizedBox(height: 2),
+                                      SizedBox(
+                                        height: 15,
+                                        child: Text(
+                                          _subLineOf(acc),
+                                          maxLines: 1,
+                                          softWrap: false,
+                                          style: TextStyle(
+                                            fontSize: 11,
+                                            color: AppTheme.textFaint,
+                                            height: 1.0,
+                                          ),
+                                        ),
+                                      ),
+                                      const SizedBox(height: 1),
+                                      SizedBox(
+                                        height: 16,
+                                        // v2.25.0 (parked browser): gold
+                                        // ● ACTIVE under the credits —
+                                        // ONLY on the account that is
+                                        // generating right now; the
+                                        // slot stays reserved either way.
+                                        child: acc.isActive
+                                            ? Text(
+                                                '● ACTIVE',
+                                                maxLines: 1,
+                                                softWrap: false,
+                                                style: TextStyle(
+                                                  fontSize: 12,
+                                                  fontWeight: FontWeight.w800,
+                                                  color: AppTheme.activeGold,
+                                                  letterSpacing: 0.5,
+                                                  height: 1.0,
+                                                ),
+                                              )
+                                            : null,
+                                      ),
+                                        ],
+                                      ),
+                                    ),
                                   ),
-                                ),
+                                  // (Sample v3's middle open space is
+                                  // the Expanded's unused share — the
+                                  // right side is pinned by its fixed
+                                  // slots and never moves.)
+                                  // Right side (sample v3): the status
+                                  // as plain coloured TEXT in a
+                                  // FIXED-WIDTH slot (58) — no chip.
+                                  // Scale-down fitted like the text
+                                  // block, so the longest word
+                                  // ("Checking") always fits its slot.
+                                  SizedBox(
+                                    width: 58,
+                                    child: FittedBox(
+                                      fit: BoxFit.scaleDown,
+                                      child: Text(
+                                        word.$1,
+                                        textAlign: TextAlign.center,
+                                        maxLines: 1,
+                                        softWrap: false,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w700,
+                                          color: word.$2,
+                                          height: 1.0,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(width: 8),
+                                  // "Chrome" button (sample v3) — an
+                                  // outlined pill replacing the eye
+                                  // icon, with the eye's EXACT
+                                  // behaviour: v2.25.0 (parked
+                                  // browser) Show/Hide toggle for a
+                                  // GENERATING account's working
+                                  // browser, open-Chrome for any
+                                  // other account. While the parked
+                                  // browser is on screen it wears the
+                                  // "on" look (blue border + blue
+                                  // label), mirroring the blue eye.
+                                  InkWell(
+                                    onTap: () => acc.isActive
+                                        ? accountsProv.toggleBrowser(acc.id)
+                                        : accountsProv.openChrome(acc.id),
+                                    borderRadius: BorderRadius.circular(7),
+                                    child: Container(
+                                      width: 76,
+                                      height: 30,
+                                      alignment: Alignment.center,
+                                      decoration: BoxDecoration(
+                                        color: AppTheme.surfaceElevated,
+                                        borderRadius: BorderRadius.circular(7),
+                                        border: Border.all(
+                                          color: browserOn ? AppTheme.blue : AppTheme.border,
+                                        ),
+                                      ),
+                                      child: Text(
+                                        'Chrome',
+                                        maxLines: 1,
+                                        softWrap: false,
+                                        style: TextStyle(
+                                          fontSize: 11,
+                                          fontWeight: FontWeight.w600,
+                                          color: browserOn ? AppTheme.accentText : AppTheme.textMain,
+                                          height: 1.0,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              // v2.27.0 (design): status chip — LIVE
-                              // (green) / CHECKING (amber) / FAIL (red).
-                              // v2.30.0: slightly tighter padding/letters
-                              // so the name column keeps its room.
-                              Container(
-                                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
-                                decoration: BoxDecoration(
-                                  color: chip.$2.withValues(alpha: 0.15),
-                                  borderRadius: BorderRadius.circular(4),
-                                  border: Border.all(color: chip.$2.withValues(alpha: 0.4)),
-                                ),
-                                child: Text(
-                                  chip.$1,
-                                  style: TextStyle(
-                                    fontSize: 8.5,
-                                    fontWeight: FontWeight.w800,
-                                    color: chip.$2,
-                                    letterSpacing: 0.2,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 3),
-                              // Chrome button. v2.25.0 (parked browser):
-                              // on a GENERATING account this is a
-                              // Show/Hide toggle for the working
-                              // browser itself — a filled blue circle
-                              // with a white eye while its window is on
-                              // screen. On any other account it keeps
-                              // opening the account's own Chrome.
-                              InkWell(
-                                onTap: () => acc.isActive
-                                    ? accountsProv.toggleBrowser(acc.id)
-                                    : accountsProv.openChrome(acc.id),
-                                borderRadius: BorderRadius.circular(14),
-                                child: Container(
-                                  width: 28,
-                                  height: 28,
-                                  decoration: BoxDecoration(
-                                    shape: BoxShape.circle,
-                                    color: (acc.isActive && acc.browserShown)
-                                        ? const Color(0xFF0A84FF)
-                                        : const Color(0x1A0A84FF),
-                                  ),
-                                  child: Icon(
-                                    (acc.isActive && acc.browserShown)
-                                        ? Icons.visibility
-                                        : Icons.arrow_outward,
-                                    size: 14,
-                                    color: (acc.isActive && acc.browserShown)
-                                        ? Colors.white
-                                        : AppTheme.accentGold,
-                                  ),
-                                ),
-                              ),
-                            ],
+                            ),
                           ),
                         );
                       },
@@ -554,6 +593,28 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     return ('FAIL', AppTheme.red);
   }
 
+  // v2.30.2 (owner-approved sample v3): the row's right-side status
+  // as plain coloured TEXT (no chip box). Colours are the sample's
+  // fixed status colours: Live green, Checking amber, Login orange,
+  // Fail red. An account added with its check deferred (bulk-add
+  // phase 1) shows a faint "Waiting" until its check lands; a check
+  // in flight reads "Checking" from the account state itself.
+  (String, Color) _statusWord(GoogleAccount acc) {
+    if (acc.status == AccountStatus.checking) {
+      return ('Checking', const Color(0xFFF5B301));
+    }
+    if (acc.pendingCheck) {
+      return ('Waiting', AppTheme.textFaint);
+    }
+    if (acc.status == AccountStatus.loginRequired) {
+      return ('Login', const Color(0xFFFF9F0A));
+    }
+    final isLive = acc.status == AccountStatus.running ||
+        (acc.status == AccountStatus.ready && acc.credits > 0);
+    if (isLive) return ('Live', AppTheme.green);
+    return ('Fail', AppTheme.red);
+  }
+
   // v2.27.0 (design): the line under the account name — "Checking…"
   // while checking, the failure reason when failed, else the credits.
   String _subLineOf(GoogleAccount acc) {
@@ -565,33 +626,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     return '${acc.credits} credits';
   }
 
-  static const List<Color> _avatarPalette = [
-    Color(0xFF0A84FF), // blue
-    Color(0xFF30D158), // green
-    Color(0xFFF5B301), // amber
-    Color(0xFFBF5AF2), // purple
-    Color(0xFFFF6961), // red
-    Color(0xFF2DD4BF), // teal
-    Color(0xFFFF8A3D), // orange
-    Color(0xFF64D2FF), // sky
-  ];
-
-  Color _avatarColor(GoogleAccount acc) {
-    final seed = (acc.email.isNotEmpty ? acc.email : acc.name).toLowerCase();
-    var h = 0;
-    for (final c in seed.codeUnits) {
-      h = (h * 31 + c) & 0x7fffffff;
-    }
-    return _avatarPalette[h % _avatarPalette.length];
-  }
-
-  String _initialOf(GoogleAccount acc) {
-    // v2.29.0: the avatar initial follows the row title (the alias).
-    final src = acc.alias.trim().isNotEmpty
-        ? acc.alias.trim()
-        : (acc.name.trim().isNotEmpty ? acc.name.trim() : acc.email.trim());
-    return src.isEmpty ? '?' : src[0].toUpperCase();
-  }
+  // v2.30.2: the row's avatar helpers (_avatarColor / _initialOf /
+  // _avatarPalette) are GONE with the avatar itself (sample v3: "no
+  // logo before the cookies text"). The Add Account popup keeps its
+  // own separate card colour/initial helpers below.
 
   Widget _buildActionGridBtn(String label, {bool isDim = false, bool isRed = false, VoidCallback? onTap}) {
     return InkWell(

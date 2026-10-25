@@ -1,8 +1,10 @@
 // v2.30.0 fit harness — pumps the REAL app (MainStudioScreen with
 // the real providers) against a FAKE engine bridge on the real
 // port (127.0.0.1:48190), seeded with the owner's worst cases:
-//   - "Account 1" / "26 credits" / LIVE chip / ticked checkbox /
-//     eye button in the compact 215px sidebar (item D)
+//   - "Account 1" / "26 credits" / Live status word / ticked
+//     checkbox / "Chrome" button in the compact 215px sidebar
+//     (item D; v2.30.2: the row follows approved sample v3 — no
+//     avatar, plain status text, fixed height)
 //   - a CHECKING account (longest chip), a LOGIN account
 //   - long saved-file names in Progress + History
 //   - dynamic states: GENERATING pill, live counts
@@ -27,6 +29,7 @@ import 'package:flutter_flow/providers/generator_provider.dart';
 import 'package:flutter_flow/providers/settings_provider.dart';
 import 'package:flutter_flow/services/automation_bridge.dart';
 import 'package:flutter_flow/widgets/top_strip.dart';
+import 'package:flutter_flow/widgets/sidebar_accounts.dart';
 
 const longFileName = 'Ep11-01_Gauri-thakur-sahab-ke-kamre-me-purani-tasveer-dekhti-hai_final-render.mp4';
 
@@ -81,7 +84,7 @@ void main() {
       return; // keep open
     }
     if (path == '/api/status') {
-      return send({'ok': true, 'version': '2.30.0', 'workers': generationStarted ? 1 : 0});
+      return send({'ok': true, 'version': '2.30.2', 'workers': generationStarted ? 1 : 0});
     }
     if (path == '/api/accounts') {
       return send({
@@ -160,7 +163,7 @@ void main() {
     return send({'ok': true});
   }
 
-  testWidgets('v2.30.0 fit harness — all views, all sizes, worst-case strings',
+  testWidgets('v2.30.2 fit harness — all views, all sizes, worst-case strings',
       (tester) async {
     // Start the fake bridge on the REAL port before any provider
     // is constructed (providers dial it in their constructors).
@@ -275,10 +278,25 @@ void main() {
       // Item D strings exist in the sidebar.
       expect(find.text('Account 1'), findsOneWidget);
       expect(find.text('26 credits'), findsOneWidget);
-      expect(find.text('LIVE'), findsOneWidget);
       expect(find.text('Cookie 1'), findsOneWidget);
-      expect(find.text('CHECKING'), findsOneWidget);
-      expect(find.text('● ACTIVE'), findsOneWidget);
+      // v2.30.2 (sample v3 row): the status is plain title-case
+      // text — the SAME casing as the filter-box labels — so these
+      // assertions are scoped to the account list itself: each of
+      // the three seeded rows shows its word (Live / Checking /
+      // Login), the ● ACTIVE line rides the generating row, and
+      // every row carries the new "Chrome" button.
+      final rowArea = find.descendant(
+          of: find.byType(SidebarAccounts), matching: find.byType(ListView));
+      expect(find.descendant(of: rowArea, matching: find.text('Live')),
+          findsOneWidget);
+      expect(find.descendant(of: rowArea, matching: find.text('Checking')),
+          findsOneWidget);
+      expect(find.descendant(of: rowArea, matching: find.text('Login')),
+          findsOneWidget);
+      expect(find.descendant(of: rowArea, matching: find.text('Chrome')),
+          findsNWidgets(3));
+      expect(find.descendant(of: rowArea, matching: find.text('● ACTIVE')),
+          findsOneWidget);
     }
 
     // ---------- item D deep check at the owner's size ----------

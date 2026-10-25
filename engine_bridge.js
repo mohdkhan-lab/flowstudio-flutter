@@ -63,6 +63,7 @@ const {
   importAccountFromCookieText,
   importAccountsFromCookieFiles,
   recheckAccountCookies,
+  checkImportedAccount,
 } = require('./engine/cookieImport');
 const { WorkerPool } = require('./engine/workerPool');
 const { recordActivity } = require('./engine/activityStore');
@@ -233,7 +234,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.30.1', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.30.2', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -442,6 +443,10 @@ async function startBridge() {
       if (pathname === '/api/cookies/import-file' && req.method === 'POST') {
         const body = await readBody();
         const onPhase = makePhaseBroadcaster();
+        // v2.30.2 (bulk add): the app's batch flow imports with
+        // deferVerify — the account is ADDED now and its check runs
+        // in phase 2 (/api/cookies/check) once every file is in.
+        const deferVerify = body.deferVerify === true;
 
         // v2.22.1 duplicate guard: same cookies again → re-check the
         // existing account, never add a second copy of it.
@@ -449,7 +454,13 @@ async function startBridge() {
         try { fp = cookieFingerprint(fs.readFileSync(body.filePath, 'utf8')); } catch (e) {}
         if (fp) {
           const existingId = loadFingerprints()[fp];
-          if (existingId && dbService.getAccount(existingId)) {
+          const existingAcc = existingId ? dbService.getAccount(existingId) : null;
+          if (existingAcc && deferVerify) {
+            // Deferred: no re-check inside the add — the existing
+            // account joins the batch's phase-2 check list instead.
+            return sendJson(200, { ok: true, account: existingAcc, duplicate: true, needsCheck: true, message: 'These cookies were already imported — the existing account will be re-checked with the batch.' });
+          }
+          if (existingAcc) {
             const re = await recheckAccountCookies(existingId, onPhase);
             if (re && re.account) {
               broadcastEvent('account-updated', { account: re.account });
@@ -464,6 +475,7 @@ async function startBridge() {
           filePath: body.filePath,
           label: body.label,
           onPhase,
+          deferCheck: deferVerify,
         });
         if (res.account) {
           if (fp) {
@@ -472,6 +484,11 @@ async function startBridge() {
             saveFingerprints(map);
           }
           mergeDuplicateByEmail(res.account);
+        }
+        if (res.success && res.account && res.deferred) {
+          broadcastEvent('account-updated', { account: res.account });
+          broadcastEvent('automation-log', { message: `Account added from cookie file: ${res.account.name} — check queued (runs after all files are added)`, level: 'info' });
+          return sendJson(200, { ok: true, account: res.account, deferred: true, message: res.message });
         }
         if (res.success && res.account) {
           broadcastEvent('account-updated', { account: res.account });
@@ -486,12 +503,19 @@ async function startBridge() {
       if (pathname === '/api/cookies/import-text' && req.method === 'POST') {
         const body = await readBody();
         const onPhase = makePhaseBroadcaster();
+        // v2.30.2 (bulk add): same deferVerify contract as the file
+        // path above.
+        const deferVerify = body.deferVerify === true;
 
         // v2.22.1 duplicate guard (same as the file path above).
         const fp = typeof body.text === 'string' ? cookieFingerprint(body.text) : null;
         if (fp) {
           const existingId = loadFingerprints()[fp];
-          if (existingId && dbService.getAccount(existingId)) {
+          const existingAcc = existingId ? dbService.getAccount(existingId) : null;
+          if (existingAcc && deferVerify) {
+            return sendJson(200, { ok: true, account: existingAcc, duplicate: true, needsCheck: true, message: 'These cookies were already imported — the existing account will be re-checked with the batch.' });
+          }
+          if (existingAcc) {
             const re = await recheckAccountCookies(existingId, onPhase);
             if (re && re.account) {
               broadcastEvent('account-updated', { account: re.account });
@@ -505,6 +529,7 @@ async function startBridge() {
           text: body.text,
           label: body.label || 'Cookie Account',
           onPhase,
+          deferCheck: deferVerify,
         });
         if (res.account) {
           if (fp) {
@@ -514,6 +539,11 @@ async function startBridge() {
           }
           mergeDuplicateByEmail(res.account);
         }
+        if (res.success && res.account && res.deferred) {
+          broadcastEvent('account-updated', { account: res.account });
+          broadcastEvent('automation-log', { message: `Account added from cookies: ${res.account.name} — check queued (runs after all files are added)`, level: 'info' });
+          return sendJson(200, { ok: true, account: res.account, deferred: true, message: res.message });
+        }
         if (res.success && res.account) {
           broadcastEvent('account-updated', { account: res.account });
           broadcastEvent('automation-log', { message: `Imported Account from cookies: ${res.account.name}`, level: 'success' });
@@ -522,6 +552,45 @@ async function startBridge() {
           broadcastEvent('automation-log', { message: `Cookie Import failed: ${res.error || 'Failed to verify cookies'}`, level: 'error' });
           return sendJson(400, { ok: false, error: res.error || 'Cookie verification failed' });
         }
+      }
+
+      // 8a2. v2.30.2 (bulk cookie add — PHASE 2): check the accounts
+      // a batch import deferred. Runs each account's own deferred
+      // check (checkImportedAccount — the import's verification tail)
+      // sequentially, exactly like sync-selected drives per-account
+      // syncs. Every phase/final state rides the same
+      // account-updated events the sidebar already consumes, so each
+      // line flips Waiting → Checking… → Live/Fail as ITS result
+      // lands.
+      if (pathname === '/api/cookies/check' && req.method === 'POST') {
+        const body = await readBody();
+        const ids = Array.isArray(body.ids)
+          ? body.ids.filter(x => typeof x === 'string' && x.length > 0)
+          : [];
+        const onPhase = makePhaseBroadcaster();
+        const results = [];
+        for (const id of ids) {
+          try {
+            const re = await checkImportedAccount(id, onPhase);
+            if (re && re.account) {
+              broadcastEvent('account-updated', { account: re.account });
+              mergeDuplicateByEmail(re.account);
+              if (re.success) {
+                broadcastEvent('automation-log', { message: `🍪 Cookie check LIVE: ${re.account.name}`, level: 'success' });
+              } else {
+                broadcastEvent('automation-log', { message: `🍪 Cookie check FAIL: ${re.account.name} — ${re.error || 'check failed'}`, level: 'error' });
+              }
+            }
+            results.push({
+              id,
+              success: !!(re && re.success),
+              error: re && re.success ? null : ((re && re.error) || 'Check failed'),
+            });
+          } catch (e) {
+            results.push({ id, success: false, error: e.message });
+          }
+        }
+        return sendJson(200, { ok: true, results });
       }
 
       // 8b. v2.27.0 (History view): list / open the real video files in

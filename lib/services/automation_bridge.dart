@@ -354,17 +354,30 @@ class AutomationBridge {
     }
   }
 
-  Future<Map<String, dynamic>> importAccountFromCookieFile(String filePath, {String? label}) async {
+  /// v2.30.2 (bulk cookie add): [deferVerify] asks the bridge to
+  /// ADD the account without verifying it — the check runs in
+  /// phase 2 via checkCookieAccounts() once every add is in. A
+  /// deferred duplicate comes back with 'needsCheck' (the existing
+  /// account joins the phase-2 list instead of being re-checked
+  /// inside the add).
+  Future<Map<String, dynamic>> importAccountFromCookieFile(String filePath, {String? label, bool deferVerify = false}) async {
     await ensureEngineRunning();
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/api/cookies/import-file'),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({'filePath': filePath, 'label': label}),
+        body: json.encode({'filePath': filePath, 'label': label, 'deferVerify': deferVerify}),
       );
       final data = json.decode(res.body);
       if (res.statusCode == 200 && data['ok'] == true) {
-        return {'ok': true, 'account': data['account'], 'message': data['message'], 'duplicate': data['duplicate'] == true};
+        return {
+          'ok': true,
+          'account': data['account'],
+          'message': data['message'],
+          'duplicate': data['duplicate'] == true,
+          'deferred': data['deferred'] == true,
+          'needsCheck': data['needsCheck'] == true,
+        };
       }
       return {'ok': false, 'error': data['error'] ?? 'Cookie import failed'};
     } catch (e) {
@@ -373,22 +386,51 @@ class AutomationBridge {
     }
   }
 
-  Future<Map<String, dynamic>> importAccountFromCookieText(String label, String text) async {
+  Future<Map<String, dynamic>> importAccountFromCookieText(String label, String text, {bool deferVerify = false}) async {
     await ensureEngineRunning();
     try {
       final res = await http.post(
         Uri.parse('$baseUrl/api/cookies/import-text'),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({'label': label, 'text': text}),
+        body: json.encode({'label': label, 'text': text, 'deferVerify': deferVerify}),
       );
       final data = json.decode(res.body);
       if (res.statusCode == 200 && data['ok'] == true) {
-        return {'ok': true, 'account': data['account'], 'message': data['message'], 'duplicate': data['duplicate'] == true};
+        return {
+          'ok': true,
+          'account': data['account'],
+          'message': data['message'],
+          'duplicate': data['duplicate'] == true,
+          'deferred': data['deferred'] == true,
+          'needsCheck': data['needsCheck'] == true,
+        };
       }
       return {'ok': false, 'error': data['error'] ?? 'Cookie import failed'};
     } catch (e) {
       debugPrint('[importAccountFromCookieText Error] $e');
       return {'ok': false, 'error': e.toString()};
+    }
+  }
+
+  /// v2.30.2 (bulk cookie add — phase 2): run the deferred checks
+  /// for a batch of account ids. The bridge drives each account's
+  /// check in order; every state change arrives live through the
+  /// account-updated events, so each sidebar line flips
+  /// Waiting → Checking… → Live/Fail as its own result lands. The
+  /// call returns when the LAST check has finished (same shape as
+  /// syncSelectedAccounts' await-the-whole-sync call).
+  Future<bool> checkCookieAccounts(List<String> ids) async {
+    if (ids.isEmpty) return true;
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/cookies/check'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'ids': ids}),
+      );
+      return res.statusCode == 200;
+    } catch (e) {
+      debugPrint('[checkCookieAccounts Error] $e');
+      return false;
     }
   }
 

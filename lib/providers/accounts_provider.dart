@@ -18,6 +18,23 @@ class AccountsProvider with ChangeNotifier {
   // account-updated events) can re-apply them instead of wiping them.
   final Map<String, bool> _activeShown = {};
 
+  // v2.30.2 (bulk cookie add): account ids whose cookie check was
+  // deferred at add time and is queued for / still running in the
+  // batch's phase-2 check. Like _activeShown, this is the source of
+  // truth for the runtime pendingCheck flag, so wholesale refreshes
+  // re-apply it instead of wiping it. An id leaves the set when its
+  // check's final account state arrives (see onAccountUpdated) or
+  // when the phase-2 call ends (see _runCookieChecks).
+  final Set<String> _pendingCheckIds = {};
+
+  // v2.30.2: pending ids whose phase-2 check has actually STARTED
+  // (a 'Checking…' state was seen for them). A pending id may only
+  // leave _pendingCheckIds after its check has started — the bridge
+  // also broadcasts the deferred ADD itself (a plain 'Need Login'
+  // object), and that early broadcast must not clear the flag
+  // before the account's own check has even run.
+  final Set<String> _checkSeenIds = {};
+
   // v2.29.0 (source numbering): accountId -> {alias, source}, the
   // display-alias store. Persisted in the engine settings under
   // 'account_aliases' (it lives in %APPDATA% with the database, so
@@ -42,6 +59,20 @@ class AccountsProvider with ChangeNotifier {
       if (acc.isActive != active || acc.browserShown != shownFlag) {
         acc.isActive = active;
         acc.browserShown = shownFlag;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  /// Push the runtime pendingCheck flags from [_pendingCheckIds]
+  /// onto the account objects. Returns true when anything changed.
+  bool _applyPendingFlags() {
+    var changed = false;
+    for (final acc in _accounts) {
+      final pending = _pendingCheckIds.contains(acc.id);
+      if (acc.pendingCheck != pending) {
+        acc.pendingCheck = pending;
         changed = true;
       }
     }
@@ -136,6 +167,7 @@ class AccountsProvider with ChangeNotifier {
     if (remote.isEmpty) return;
     _accounts = remote;
     _applyActiveFlags();
+    _applyPendingFlags();
     _ensureAliases(hints: hints);
     notifyListeners();
   }
@@ -180,6 +212,19 @@ class AccountsProvider with ChangeNotifier {
       // v2.25.0: a fresh account object arrives without the runtime
       // ACTIVE flags — re-apply them from the engine-reported map.
       _applyActiveFlags();
+      // v2.30.2: a phase-2 check streams a 'Checking…' object first
+      // and then the FINAL account. Only once the check has been
+      // seen running does a final (non-checking) state clear the
+      // pending flag — the deferred add's own broadcast also
+      // carries a non-checking state and must not clear it early.
+      if (_pendingCheckIds.contains(acc.id)) {
+        if (acc.status == AccountStatus.checking) {
+          _checkSeenIds.add(acc.id);
+        } else if (_checkSeenIds.remove(acc.id)) {
+          _pendingCheckIds.remove(acc.id);
+        }
+      }
+      _applyPendingFlags();
       // v2.29.0: same for the display alias.
       _ensureAliases();
       notifyListeners();
@@ -342,11 +387,20 @@ class AccountsProvider with ChangeNotifier {
     }
   }
 
-  Future<Map<String, dynamic>> importCookiesFromFile(String filePath, {String? label}) async {
-    final res = await AutomationBridge.instance.importAccountFromCookieFile(filePath, label: label);
+  /// v2.30.2 (bulk cookie add): with [deferVerify] the account is
+  /// added WITHOUT its check — it joins the pending set (its line
+  /// shows "Waiting") and its id is the caller's to pass to
+  /// _runCookieChecks once every add is in. A deferred duplicate
+  /// ('needsCheck') joins the pending set the same way: the existing
+  /// account is re-checked in phase 2, never re-added.
+  Future<Map<String, dynamic>> importCookiesFromFile(String filePath, {String? label, bool deferVerify = false}) async {
+    final res = await AutomationBridge.instance.importAccountFromCookieFile(filePath, label: label, deferVerify: deferVerify);
     if (res['ok'] == true) {
       // v2.29.0: record the add route exactly — cookies.
       final accId = (res['account'] is Map) ? res['account']['id']?.toString() : null;
+      if (accId != null && (deferVerify || res['needsCheck'] == true)) {
+        _pendingCheckIds.add(accId);
+      }
       final remote = await AutomationBridge.instance.getAccounts();
       _replaceAccounts(
         remote,
@@ -356,17 +410,42 @@ class AccountsProvider with ChangeNotifier {
     return res;
   }
 
+  /// v2.30.2: paste-text import runs the same two-phase path as a
+  /// batch of one — add (deferred) first, then its check right
+  /// after, so there is only ONE add→check code path in the app.
   Future<Map<String, dynamic>> importCookies(String label, String text) async {
-    final res = await AutomationBridge.instance.importAccountFromCookieText(label, text);
+    final res = await AutomationBridge.instance.importAccountFromCookieText(label, text, deferVerify: true);
     if (res['ok'] == true) {
       final accId = (res['account'] is Map) ? res['account']['id']?.toString() : null;
+      if (accId != null) {
+        _pendingCheckIds.add(accId);
+      }
       final remote = await AutomationBridge.instance.getAccounts();
       _replaceAccounts(
         remote,
         hints: accId != null ? {accId: 'cookie'} : const {},
       );
+      if (accId != null) {
+        await _runCookieChecks([accId]);
+      }
     }
     return res;
+  }
+
+  /// v2.30.2 (bulk cookie add — PHASE 2): run the deferred checks
+  /// for exactly [ids]. The bridge drives each account's check in
+  /// order and streams its states through account-updated, so every
+  /// line flips Waiting → Checking… → Live/Fail as its own result
+  /// lands. When the call ends, no id may stay "Waiting": anything
+  /// the events did not already clear is cleared here and the list
+  /// is re-read fresh.
+  Future<void> _runCookieChecks(List<String> ids) async {
+    if (ids.isEmpty) return;
+    await AutomationBridge.instance.checkCookieAccounts(ids);
+    _pendingCheckIds.removeAll(ids);
+    _checkSeenIds.removeAll(ids);
+    final remote = await AutomationBridge.instance.getAccounts();
+    _replaceAccounts(remote);
   }
 
   /// v2.29.0: the sidebar's top "+ Add Cookies" button — opens the
@@ -374,6 +453,12 @@ class AccountsProvider with ChangeNotifier {
   /// engine (the behaviour the old sidebar-local helper had, now
   /// in the provider where the rest of the account actions live).
   /// Results are reported in the Activity log.
+  ///
+  /// v2.30.2 (owner's explicit order): TWO PHASES — every picked
+  /// file is ADDED first (verification deferred, lines appear at
+  /// once in a "Waiting" state), and only when all adds are in do
+  /// the CHECKS run, one batch call for exactly the new (+duplicate)
+  /// accounts. Adds and checks no longer interleave one-by-one.
   Future<void> pickAndImportCookieFiles() async {
     try {
       final picked = await FilePickerPlatform.instance.pickFiles(
@@ -381,37 +466,59 @@ class AccountsProvider with ChangeNotifier {
         allowedExtensions: ['json', 'txt'],
       );
       if (picked.isEmpty) return;
-      var success = 0;
+
+      // PHASE 1 — add ALL first.
+      var added = 0;
       var duplicates = 0;
       String? lastError;
+      final toCheck = <String>[];
       for (final file in picked) {
         final path = file.path;
         if (path == null) continue;
-        final res = await importCookiesFromFile(path);
+        final res = await importCookiesFromFile(path, deferVerify: true);
         if (res['ok'] == true) {
-          success++;
-          if (res['duplicate'] == true) duplicates++;
+          final accId = (res['account'] is Map) ? res['account']['id']?.toString() : null;
+          if (res['duplicate'] == true) {
+            duplicates++;
+          } else {
+            added++;
+          }
+          if (accId != null && accId.isNotEmpty && !toCheck.contains(accId)) {
+            toCheck.add(accId);
+          }
         } else {
           lastError = res['error']?.toString() ?? 'Unknown error';
         }
       }
-      if (success > 0) {
+
+      if (toCheck.isEmpty) {
+        if (lastError != null) {
+          AutomationBridge.instance.onLog?.call(
+            'Cookie import failed: $lastError',
+            LogLevel.error,
+            false,
+          );
+        }
+        return;
+      }
+
+      AutomationBridge.instance.onLog?.call(
+        added == 0 && duplicates > 0
+            ? 'Those cookies were already added — re-checking the existing account(s) now, no duplicate made.'
+            : '$added account(s) added from cookies — checking ${toCheck.length} account(s) now…',
+        LogLevel.success,
+        false,
+      );
+      if (lastError != null) {
         AutomationBridge.instance.onLog?.call(
-          duplicates > 0 && duplicates == success
-              ? 'Those cookies were already added — the existing account was re-checked, no duplicate made.'
-              : success == 1
-                  ? 'Account added from cookies successfully!'
-                  : '$success accounts added from cookies!',
-          LogLevel.success,
-          false,
-        );
-      } else if (lastError != null) {
-        AutomationBridge.instance.onLog?.call(
-          'Cookie import failed: $lastError',
+          'Some cookie files could not be added: $lastError',
           LogLevel.error,
           false,
         );
       }
+
+      // PHASE 2 — check ALL (exactly the newly added + duplicates).
+      await _runCookieChecks(toCheck);
     } catch (e) {
       AutomationBridge.instance.onLog?.call(
         'Cookie file error: $e',

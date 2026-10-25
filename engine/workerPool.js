@@ -144,6 +144,10 @@ class WorkerPool {
       try { engine.stop(); } catch (e) {}
     }
     await Promise.all(engines.map(engine => engine.closeBrowser().catch(() => {})));
+    // v2.31.3: a stopped run also arms each browser's watcher sweep.
+    for (const engine of engines) {
+      try { engine.scheduleDownloadWatcherSweep(); } catch (e) {}
+    }
     if (this.queuePromise) {
       await Promise.race([
         this.queuePromise.catch(() => {}),
@@ -223,6 +227,27 @@ class WorkerPool {
     const done = await engine.setBrowserWindowShown(!(engine.windowShown === true));
     this._emitActiveBrowsers();
     return { ok: done, windowShown: engine.windowShown === true };
+  }
+
+  /**
+   * v2.31.3 (download fix pack): the DOWNLOAD LEDGER port bound into
+   * every engine this pool creates. The engine counts each download
+   * ROUND through it; the counts live on the task's database row
+   * (dbService), so the 3-round budget survives runs and restarts.
+   * Success resets the budget; failure records the round + reason.
+   */
+  _downloadPort() {
+    return {
+      attempts: (taskId) => {
+        try { return dbService.getDownloadAttemptCount(taskId); } catch (e) { return 0; }
+      },
+      roundSettled: (taskId, ok, errorText) => {
+        try {
+          if (ok) dbService.resetDownloadAttempts(taskId);
+          else dbService.noteDownloadRound(taskId, errorText || 'download failed');
+        } catch (e) {}
+      }
+    };
   }
 
   _creditPort() {
@@ -371,7 +396,9 @@ class WorkerPool {
       }, {
         headless: this.headless,
         workerId: 'recovery',
-        creditPort: this._creditPort()
+        creditPort: this._creditPort(),
+        // v2.31.3: recovery downloads count in the same ledger.
+        downloadPort: this._downloadPort()
       });
 
       try {
@@ -418,6 +445,9 @@ class WorkerPool {
         }
       } finally {
         await engine.closeBrowser().catch(() => {});
+        // v2.31.3: recovery is a run too — arm the 5-minute watcher
+        // sweep for this browser (see releaseDownloadWatchers).
+        try { engine.scheduleDownloadWatcherSweep(); } catch (e) {}
       }
     }
     return handled;
@@ -442,6 +472,14 @@ class WorkerPool {
       let pendingTasks;
       if (opts && Array.isArray(opts.existingTasks) && opts.existingTasks.length > 0) {
         pendingTasks = [...opts.existingTasks];
+        // v2.31.3 (download fix pack): an owner RESUME earns every
+        // resumed task a FRESH download-attempt budget — the
+        // persisted ledger resets to 0 before anything runs, so
+        // the check-only recovery below and any download-retry in
+        // this run each get their full 3 rounds again.
+        for (const t of pendingTasks) {
+          try { dbService.resetDownloadAttempts(t.id); } catch (e) {}
+        }
         if (!settings) {
           settings = {};
           try { settings = JSON.parse(pendingTasks[0].settings_json || '{}'); } catch (e) { settings = {}; }
@@ -815,6 +853,10 @@ class WorkerPool {
               outcome = { status: 'download-failed', attempts: engineTask.downloadAttempts || [] };
             }
             if (!outcome || outcome.status !== 'download-failed') break;
+            // v2.31.3: the persisted 3-round budget is spent — more
+            // retries in THIS run would only be refused by the cap.
+            // The task stays parked (pending + needs_check) below.
+            if (outcome.capped) break;
             if (round < 2 && !this.isStopping) {
               this.log(`Prompt #${rowTask.prompt_index + 1}: the download still did not happen — after a short wait, ONLY the download will be tried once more…`, 'warn');
               await sleep(3000);
@@ -822,6 +864,11 @@ class WorkerPool {
           }
           if (!outcome) continue;
           if (outcome.status === 'downloaded') {
+            // v2.31.3: a saved download clears the attempt budget
+            // (this branch also covers retryDownloadForTask's
+            // backend pre-attempt, which settles outside
+            // downloadTaskMedia's own ledger settle).
+            try { dbService.resetDownloadAttempts(rowTask.id); } catch (e) {}
             try { dbService.setTaskNeedsCheck(rowTask.id, 0); } catch (e) {}
             // v2.30.3 (dropped completion signal): this branch used
             // to ONLY log — the app had already marked the card
@@ -1110,7 +1157,9 @@ class WorkerPool {
         }, {
           headless: this.headless,
           workerId,
-          creditPort
+          creditPort,
+          // v2.31.3: persisted download-attempt ledger (3-round cap).
+          downloadPort: this._downloadPort()
         });
 
         this.activeWorkers.set(workerId, engine);
@@ -1505,6 +1554,11 @@ class WorkerPool {
         } finally {
           // No orphaned browsers, no leaked account assignments — ever.
           await engine.closeBrowser().catch(() => {});
+          // v2.31.3: this worker's run has ended (complete, stopped
+          // or error) — arm the 5-minute watcher sweep so anything
+          // download-related still armed on this browser is released
+          // and the owner's own later downloads stay untouched.
+          try { engine.scheduleDownloadWatcherSweep(); } catch (e) {}
           if (workerAccount) {
             this.assignedAccounts.delete(workerAccount.id);
             // v2.25.0: the worker is done with this account — its

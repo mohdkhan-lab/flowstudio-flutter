@@ -203,6 +203,16 @@ function initSchema() {
   // tell a cookie account from a plain one on a fresh engine read.
   addColumnIfMissing('accounts', 'has_cookies INTEGER DEFAULT 0');
   addColumnIfMissing('queue_tasks', 'needs_check INTEGER DEFAULT 0');
+  // v2.31.3 (download fix pack, ADOPT #1 + #3): the persisted
+  // per-task DOWNLOAD-attempt ledger. download_attempts counts
+  // download ROUNDS (one orchestrator pass each) across runs and
+  // restarts — it lives on the task row, so a crash or an app close
+  // can never reset a failing download's budget back to full. The
+  // cap (3) and the reset rules (owner Resume / successful download)
+  // live in workerPool + flowAutomation; the columns live here.
+  addColumnIfMissing('queue_tasks', 'download_attempts INTEGER DEFAULT 0');
+  addColumnIfMissing('queue_tasks', "last_download_error TEXT DEFAULT ''");
+  addColumnIfMissing('queue_tasks', "last_download_attempt_at TEXT DEFAULT ''");
   // v2.3.0: the prompt's TAG (smart parser: `#00-01`, `scene3`, …) —
   // downloads are named by it and the sequence report checks by it.
   addColumnIfMissing('queue_tasks', "prompt_tag TEXT DEFAULT ''");
@@ -430,6 +440,38 @@ const dbService = {
 
   setTaskNeedsCheck(taskId, flag) {
     run('UPDATE queue_tasks SET needs_check = ? WHERE id = ?', [flag ? 1 : 0, taskId]);
+    return this.getTask(taskId);
+  },
+
+  /**
+   * v2.31.3 (download fix pack): the persisted download-attempt
+   * ledger (see initSchema). A "round" is ONE download orchestrator
+   * pass for the task (flowAutomation.downloadTaskMedia) — counted
+   * whether it succeeds or fails, and durable across restarts
+   * because it is written to the task row itself.
+   */
+  getDownloadAttemptCount(taskId) {
+    const row = queryOne('SELECT download_attempts FROM queue_tasks WHERE id = ?', [taskId]);
+    return row ? (Number(row.download_attempts) || 0) : 0;
+  },
+
+  /** Record one finished download round. Returns the new count. */
+  noteDownloadRound(taskId, errorText) {
+    run(
+      "UPDATE queue_tasks SET download_attempts = COALESCE(download_attempts, 0) + 1, last_download_error = ?, last_download_attempt_at = ? WHERE id = ?",
+      [String(errorText || 'download failed').slice(0, 500), new Date().toISOString(), taskId]
+    );
+    return this.getDownloadAttemptCount(taskId);
+  },
+
+  /**
+   * Fresh download budget: an owner Resume / check-only recovery,
+   * or a download that finally succeeded. The last-attempt
+   * timestamp is kept (it records when the last round happened,
+   * not when the budget was refreshed).
+   */
+  resetDownloadAttempts(taskId) {
+    run("UPDATE queue_tasks SET download_attempts = 0, last_download_error = '' WHERE id = ?", [taskId]);
     return this.getTask(taskId);
   },
 

@@ -117,6 +117,29 @@ class FlowAutomationEngine {
     };
     this.creditPort = Object.assign({}, noopPort, options.creditPort || {});
 
+    // v2.31.3 (download fix pack): the DOWNLOAD LEDGER port — the
+    // pool binds it to dbService so every download round is counted
+    // on the task's own database row (durable across restarts) and
+    // the 3-round cap can be enforced here, at the one place every
+    // download passes through. No-op unless the pool binds it (old
+    // callers / tests simply get no cap and no counting).
+    //   attempts(taskId)              -> rounds already spent
+    //   roundSettled(taskId, ok, err) -> persist this round's result
+    const noopDownloadPort = {
+      attempts: () => 0,
+      roundSettled: () => {}
+    };
+    this.downloadPort = Object.assign({}, noopDownloadPort, options.downloadPort || {});
+    // v2.31.3 tuning (constructor options so simulations can shrink
+    // the windows; production uses these defaults): one download
+    // ROUND gets 120s (was a 240s guard default), a native browser
+    // download whose file stops growing for 45s is abandoned as
+    // stalled, and the post-run watcher sweep fires after 5 minutes.
+    this.downloadRoundTimeoutMs = Number(options.downloadRoundTimeoutMs) > 0 ? Number(options.downloadRoundTimeoutMs) : 120000;
+    this.nativeDownloadStallMs = Number(options.nativeDownloadStallMs) > 0 ? Number(options.nativeDownloadStallMs) : 45000;
+    this.watcherSweepDelayMs = Number(options.watcherSweepDelayMs) > 0 ? Number(options.watcherSweepDelayMs) : 300000;
+    this._watcherSweepTimer = null;
+
     this.browser = null;
     this.page = null;
     this.cdpSession = null;
@@ -190,6 +213,10 @@ class FlowAutomationEngine {
 
   async launchBrowserForAccount(account, downloadDir) {
     this.lastLaunchError = null;
+    // v2.31.3: new work starting on this browser cancels any pending
+    // post-run watcher sweep — the watchers are about to be re-armed
+    // for the new run and must not be released from under it.
+    this.cancelDownloadWatcherSweep();
     // Audit fix #5: a fresh browser launch must always re-apply settings.
     this.hasConfiguredSettings = false;
 
@@ -423,7 +450,70 @@ class FlowAutomationEngine {
     }
   }
 
+  /**
+   * v2.31.3 (download fix pack, ADOPT #2): the 5-MINUTE WATCHER
+   * SWEEP. When a generation run ends, the pool schedules ONE timer
+   * per worker/browser; when it fires, everything download-related
+   * that is still armed on this browser is force-released: the
+   * network capture listeners + arming, the video-stream capture
+   * (page response handler gate + buffered streams), the task
+   * bindings, and the CDP download-folder redirect (set back to the
+   * browser default). This protects the owner's OWN later downloads
+   * in a parked Chrome: nothing of FlowStudio's may keep watching,
+   * capturing or redirecting them. If the browser is already closed
+   * the release is a silent no-op; if a new run starts first (a
+   * fresh launch), the pending sweep is cancelled at launch.
+   */
+  scheduleDownloadWatcherSweep() {
+    this.cancelDownloadWatcherSweep();
+    this._watcherSweepTimer = setTimeout(() => {
+      this._watcherSweepTimer = null;
+      try { this.releaseDownloadWatchers(); } catch (e) {}
+    }, this.watcherSweepDelayMs || 300000);
+    // Cleanup nicety only — a pending sweep must never keep the
+    // process alive on its own (if the app exits, the browser and
+    // its watchers go with it anyway).
+    if (this._watcherSweepTimer && this._watcherSweepTimer.unref) this._watcherSweepTimer.unref();
+  }
+
+  cancelDownloadWatcherSweep() {
+    if (this._watcherSweepTimer) {
+      clearTimeout(this._watcherSweepTimer);
+      this._watcherSweepTimer = null;
+    }
+  }
+
+  releaseDownloadWatchers() {
+    const hadBrowser = !!(this.browser && this.page && !this.page.isClosed());
+    const wasArmed = !!(this.captureArmed || (this.netCapture && this.netCapture.armed));
+    try { if (this.netCapture) this.netCapture.disarm(); } catch (e) {}
+    try { if (this.netCapture) this.netCapture.detach(); } catch (e) {}
+    this.captureArmed = false;
+    if (this.capturedVideoBuffers) {
+      this.capturedVideoBuffers.clear();
+      this.capturedVideoBytes = 0;
+    }
+    this.capturedVideoUrls = [];
+    if (this._captureTasks) this._captureTasks.clear();
+    if (this._earlyBackend) this._earlyBackend.clear();
+    if (hadBrowser && this.cdpSession) {
+      // Hand the browser's download behaviour back to Chrome's own
+      // default — the manual-download protection this sweep exists
+      // for. Best effort: a dead session just throws and is ignored.
+      try {
+        const p = this.cdpSession.send('Page.setDownloadBehavior', { behavior: 'default' });
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } catch (e) {}
+    }
+    if (hadBrowser || wasArmed) {
+      this.log('Download watchers released — this browser\'s downloads are no longer watched, captured or redirected by FlowStudio.', 'info');
+    }
+  }
+
   async closeBrowser() {
+    // v2.31.3: the browser is going away — a pending watcher sweep
+    // has nothing left to protect and is cancelled.
+    this.cancelDownloadWatcherSweep();
     // v2.8.0: capture ke listeners har session ke saath saaf band —
     // koi listener leak nahi, koi purana binding naye session me nahi.
     try { this.netCapture.detach(); } catch (e) {}
@@ -2746,6 +2836,19 @@ class FlowAutomationEngine {
     let newlyDownloadedFile = null;
     const pollStart = Date.now();
     const timeout = Math.max(5000, Number(timeoutMs) || 90000);
+    // v2.31.3 (download fix pack): PROGRESS STALL CHECK — the poll
+    // used to see only FINISHED files; a browser download whose
+    // bytes simply stopped moving (dead connection, wedged Chrome
+    // download) sat invisible until the whole wait timed out.
+    // In-progress files (.crdownload / .tmp) are now tracked by
+    // size: no growth for the stall window (45s) abandons the wait
+    // as a stalled download, the partial is deleted (it must never
+    // be treated as the video, nor finish later under another
+    // task's watch), and the orchestrator falls through to the
+    // next route.
+    const stallMs = this.nativeDownloadStallMs || 45000;
+    const partials = new Map(); // folder|name -> { size, lastGrowAt, fullPath }
+    let stalledPartial = null;
     while (Date.now() - pollStart < timeout && !this.isStopping) {
       await sleep(1000);
       for (const fld of prep.foldersToWatch) {
@@ -2767,8 +2870,41 @@ class FlowAutomationEngine {
             break;
           }
         }
+        // v2.31.3: watch this folder's in-progress files for growth.
+        if (!newlyDownloadedFile && !stalledPartial) {
+          const now = Date.now();
+          for (const f of newFiles) {
+            if (!(f.endsWith('.crdownload') || f.endsWith('.tmp'))) continue;
+            const fullPath = path.join(fld, f);
+            let st = null;
+            try { st = fs.statSync(fullPath); } catch (e) { st = null; }
+            if (!st) continue;
+            const key = `${fld}|${f}`;
+            const seen = partials.get(key);
+            if (!seen) {
+              partials.set(key, { size: st.size, lastGrowAt: now, fullPath });
+              continue;
+            }
+            if (st.size > seen.size) {
+              seen.size = st.size;
+              seen.lastGrowAt = now;
+              continue;
+            }
+            if (now - seen.lastGrowAt >= stallMs) {
+              stalledPartial = { name: f, fullPath };
+              break;
+            }
+          }
+        }
+        if (stalledPartial) break;
       }
       if (newlyDownloadedFile) break;
+      if (stalledPartial) break;
+    }
+
+    if (stalledPartial) {
+      this.log(`[Prompt #${task.promptIndex + 1}] The browser download stalled — the file stopped growing, so this wait was abandoned. The partial file was removed and will NOT be treated as the video; the next download route will be tried.`, 'warn');
+      try { fs.unlinkSync(stalledPartial.fullPath); } catch (e) {}
     }
 
     // Return the viewer to the grid either way — VERIFIED (v1.6.1).
@@ -3331,32 +3467,83 @@ class FlowAutomationEngine {
    * task ka video kabhi nahi.
    */
   async downloadTaskMedia(task, downloadFolder, settings, tileIndexHint) {
+    const n = (task.promptIndex || 0) + 1;
+    // v2.31.3 (download fix pack, ADOPT #1 + #3): a ROUND is one
+    // pass of this orchestrator. Rounds are counted on the task's
+    // database row through the download ledger port (durable across
+    // runs and restarts) and capped at 3: once the budget is spent
+    // the task parks as pending + needs_check and the run moves on
+    // — a stuck download can never block or fail the whole run, and
+    // a download retry NEVER resubmits the prompt (no credits can
+    // be re-spent here; the guard only ever re-runs downloads).
+    // An owner Resume / check-only recovery resets the budget to 0
+    // (workerPool), and a successful download resets it too.
+    const ROUND_CAP = 3;
+    const taskId = task && task.taskId;
+    let used = 0;
+    if (taskId) {
+      try { used = Number(this.downloadPort.attempts(taskId)) || 0; } catch (e) { used = 0; }
+    }
+    if (taskId && used >= ROUND_CAP) {
+      this.log(`[Prompt #${n}] This video's download has already been tried ${ROUND_CAP} times — it is parked (pending, check-only) and the run will move on. On the next Resume only its download will be tried again; the prompt will NOT be submitted again.`, 'warn');
+      return {
+        ok: false,
+        capped: true,
+        attempts: [{ strategy: 'download-step', ok: false, note: `download tried ${ROUND_CAP} of ${ROUND_CAP} times already — parked until the next Resume (download-only)` }]
+      };
+    }
+    const roundNo = used + 1;
+    if (taskId) {
+      if (roundNo > 1) {
+        this.log(`Download attempt ${roundNo} of ${ROUND_CAP} for Prompt #${n} — trying again (download only, the prompt is NOT generated again).`, 'warn');
+      } else {
+        this.log(`Download attempt 1 of ${ROUND_CAP} for Prompt #${n} (download only — the prompt is NOT generated again).`, 'info');
+      }
+    }
     task._downloadInProgress = true;
+    let result = null;
     try {
-      // v2.30.0 (2nd-video stall fix): the whole strategy chain now
-      // runs under downloadGuard — a hard per-attempt deadline
-      // (240s) plus ONE download-only retry. Before, nothing here
-      // (or in the caller) had any timeout: one stuck await inside
-      // a strategy (an un-signalled fetch, a page.evaluate on a
-      // busy renderer) froze the render monitor on that video
-      // forever and every later video stalled behind it. The retry
-      // re-runs ONLY this download orchestrator — it cannot submit
-      // the prompt again, so no credits can be re-spent.
-      return await downloadGuard.attemptDownload(
+      // v2.30.0 (2nd-video stall fix): the whole strategy chain runs
+      // under downloadGuard — a hard deadline around a step that
+      // used to have NO timeout anywhere, so one stuck await froze
+      // the render monitor (and every later video) forever.
+      // v2.31.3: the deadline is now 120s per ROUND and the guard's
+      // own blind retry is OFF — rounds are governed by the
+      // persisted ledger above, so every retry is counted, logged
+      // and capped, never silent and never unbounded.
+      result = await downloadGuard.attemptDownload(
         () => this._downloadTaskMediaInner(task, downloadFolder, settings, tileIndexHint),
         {
-          timeoutMs: 240000,
-          retries: 1,
-          retryDelayMs: 2000,
-          label: `prompt #${(task.promptIndex || 0) + 1} download`,
+          timeoutMs: this.downloadRoundTimeoutMs || 120000,
+          retries: 0,
+          retryDelayMs: 0,
+          label: `prompt #${n} download`,
           onTimeout: () => {
-            this.log(`[Prompt #${(task.promptIndex || 0) + 1}] The download step took too long and was cut off — only the download will be tried once more (the prompt will NOT be submitted again).`, 'warn');
+            this.log(`[Prompt #${n}] The download step took too long and was cut off (download only — the prompt will NOT be submitted again).`, 'warn');
           }
         }
       );
     } finally {
       task._downloadInProgress = false;
     }
+    // Settle the round in the persisted ledger — success resets the
+    // budget to 0, failure records the round and its reason.
+    if (taskId) {
+      try {
+        if (result && result.ok) {
+          this.downloadPort.roundSettled(taskId, true, '');
+        } else {
+          const failedNotes = (result && Array.isArray(result.attempts))
+            ? result.attempts.filter(a => a && !a.ok && a.note)
+            : [];
+          const note = result && result.timedOut
+            ? `the download step did not finish within ${Math.round((this.downloadRoundTimeoutMs || 120000) / 1000)}s`
+            : (failedNotes.length > 0 ? String(failedNotes[failedNotes.length - 1].note) : 'the download did not complete');
+          this.downloadPort.roundSettled(taskId, false, note);
+        }
+      } catch (e) {}
+    }
+    return result;
   }
 
   async _downloadTaskMediaInner(task, downloadFolder, settings, tileIndexHint) {
@@ -3495,7 +3682,10 @@ class FlowAutomationEngine {
     const dl = await this.downloadTaskMedia(task, downloadFolder, settings, task.tileIndex);
     return dl.ok
       ? { status: 'downloaded', attempts: backendAttempts.concat(dl.attempts) }
-      : { status: 'download-failed', attempts: backendAttempts.concat(dl.attempts) };
+      // v2.31.3: capped = the persisted 3-round download budget is
+      // spent — the pool must not loop another retry this run; the
+      // task simply stays parked (pending + needs_check).
+      : { status: 'download-failed', capped: !!dl.capped, attempts: backendAttempts.concat(dl.attempts) };
   }
 
   /**

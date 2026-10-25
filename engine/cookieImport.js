@@ -167,7 +167,19 @@ async function injectCookiesIntoProfile(accountId, cookies) {
   } finally {
     if (injectPid) liveBrowsers.unregister(accountId, injectPid);
     if (browser) {
-      try { await browser.close(); } catch (e) {}
+      // v2.30.3: this close used to be UNBOUNDED — the exact hang
+      // the bounded close above (v1.4.1) exists to prevent. Any
+      // throw between launch and the happy-path close landed here,
+      // and a stuck close() meant the import never settled at all
+      // (the account sat in limbo, no result, no phase event). Same
+      // guard as the happy path: race 5s, then kill OUR import
+      // browser by PID (a no-op if the close already succeeded).
+      try {
+        await Promise.race([browser.close(), sleep(5000)]);
+      } catch (e) {}
+      if (injectPid) {
+        try { await killProcessesByPid([injectPid]); } catch (e) {}
+      }
     }
   }
 }
@@ -191,6 +203,22 @@ async function injectCookiesIntoProfile(accountId, cookies) {
  * a second explicit sign-out still lands on 'Need Login' through
  * creditService, exactly as before.
  */
+// v2.30.3 (no-hang): one credit fetch gets at most this long.
+// fetchRealCredits drives a real Chrome; a wedged page used to
+// leave the account on "Checking…" forever because nothing raced
+// the await. 4 minutes is far above a healthy check (tens of
+// seconds) and matches the download guard's per-attempt bound.
+const FETCH_ONCE_TIMEOUT_MS = 240000;
+
+function withFetchTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    sleep(ms).then(() => {
+      throw new Error(`The credit check took too long (over ${Math.round(ms / 60000)} minutes) and was stopped.`);
+    })
+  ]);
+}
+
 async function runCookieCheckCore({ fetchOnce, getAccount, retryDelayMs = 2000, onRetry } = {}) {
   if (typeof fetchOnce !== 'function' || typeof getAccount !== 'function') {
     throw new Error('runCookieCheckCore requires { fetchOnce, getAccount }');
@@ -198,11 +226,16 @@ async function runCookieCheckCore({ fetchOnce, getAccount, retryDelayMs = 2000, 
   const attempt = async () => {
     let res = null;
     try {
-      res = await fetchOnce();
+      res = await withFetchTimeout(fetchOnce(), FETCH_ONCE_TIMEOUT_MS);
     } catch (e) {
       res = { success: false, error: e.message };
     }
-    const updated = getAccount();
+    // v2.30.3: a throwing account read (e.g. DB not ready) used to
+    // reject the whole core past every caller's terminal handling;
+    // classifyOutcome is null-safe, so a failed read is just an
+    // inconclusive look, not a lost check.
+    let updated = null;
+    try { updated = getAccount(); } catch (e) { updated = null; }
     return { res: res || {}, updated, outcome: classifyOutcome(res || {}, updated) };
   };
 
@@ -232,20 +265,37 @@ async function runCookieCheckCore({ fetchOnce, getAccount, retryDelayMs = 2000, 
  * object. `res` semantics mirror fetchRealCredits.
  */
 async function finishCookieCheck(accountId, accountName, onPhase) {
-  const { res, updated, check, attempts } = await runCookieCheckCore({
-    fetchOnce: () => fetchRealCredits(accountId),
-    getAccount: () => dbService.getAccount(accountId),
-    onRetry: (firstOutcome) => {
-      // Keep the chip on "Checking…" — the verdict is not final yet.
-      emitPhase(onPhase, accountId, 'checking', null);
-      recordActivity({
-        category: 'login', level: 'info', accountId, accountName,
-        stage: 'cookie-check',
-        message: `🍪 Cookie check: ${accountName} — first check not certain (${firstOutcome === 'unconfirmed' ? 'sign-out seen' : 'page/network not confirmed'}), checking again automatically…`,
-        detail: 'Seeing the sign-in page the first time Flow opens is often just a landing bounce, not a dead session. That is why the same live check is run once more before a final FAIL/Live verdict — the same rule as Verify All.'
-      });
-    }
-  });
+  // v2.30.3: the 'done' phase emit below must ALWAYS land. Any throw
+  // out of the core used to propagate past both callers
+  // (finishCookieImport / checkImportedAccount) with no try/finally,
+  // so the account kept its "Checking…" state and no Activity fail
+  // entry was ever written. A core failure is now converted into a
+  // final 'unknown' FAIL verdict and the normal tail runs.
+  let core;
+  try {
+    core = await runCookieCheckCore({
+      fetchOnce: () => fetchRealCredits(accountId),
+      getAccount: () => dbService.getAccount(accountId),
+      onRetry: (firstOutcome) => {
+        // Keep the chip on "Checking…" — the verdict is not final yet.
+        emitPhase(onPhase, accountId, 'checking', null);
+        recordActivity({
+          category: 'login', level: 'info', accountId, accountName,
+          stage: 'cookie-check',
+          message: `🍪 Cookie check: ${accountName} — first check not certain (${firstOutcome === 'unconfirmed' ? 'sign-out seen' : 'page/network not confirmed'}), checking again automatically…`,
+          detail: 'Seeing the sign-in page the first time Flow opens is often just a landing bounce, not a dead session. That is why the same live check is run once more before a final FAIL/Live verdict — the same rule as Verify All.'
+        });
+      }
+    });
+  } catch (e) {
+    core = {
+      res: { success: false, error: e.message },
+      updated: null,
+      check: cookieCheckState('unknown', { success: false, error: e.message }, null),
+      attempts: 1
+    };
+  }
+  const { res, updated, check, attempts } = core;
   emitPhase(onPhase, accountId, 'done', check);
 
   if (check.state === 'live' || check.state === 'ready') {

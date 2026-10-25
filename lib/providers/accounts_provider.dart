@@ -290,6 +290,11 @@ class AccountsProvider with ChangeNotifier {
   }
 
   Future<void> removeAccount(String id) async {
+    // v2.30.3: purge the runtime check sets too — a leaked id
+    // would resurrect a phantom "Waiting" on any later account
+    // that reuses it, with no check running and no exit.
+    _pendingCheckIds.remove(id);
+    _checkSeenIds.remove(id);
     _accounts.removeWhere((a) => a.id == id);
     notifyListeners();
     await AutomationBridge.instance.deleteAccount(id);
@@ -344,6 +349,9 @@ class AccountsProvider with ChangeNotifier {
     final selectedIds = _accounts.where((a) => a.isChecked).map((a) => a.id).toList();
     if (selectedIds.isEmpty) return;
 
+    // v2.30.3: same pending-set purge as removeAccount.
+    _pendingCheckIds.removeAll(selectedIds);
+    _checkSeenIds.removeAll(selectedIds);
     _accounts.removeWhere((a) => selectedIds.contains(a.id));
     notifyListeners();
 
@@ -444,6 +452,12 @@ class AccountsProvider with ChangeNotifier {
     await AutomationBridge.instance.checkCookieAccounts(ids);
     _pendingCheckIds.removeAll(ids);
     _checkSeenIds.removeAll(ids);
+    // v2.30.3: clear the visible flag HERE, not only through the
+    // re-read below — _replaceAccounts returns early on an empty
+    // engine response, which used to leave the surviving account
+    // objects showing "Waiting" with the pending set already
+    // emptied and no exit left.
+    if (_applyPendingFlags()) notifyListeners();
     final remote = await AutomationBridge.instance.getAccounts();
     _replaceAccounts(remote);
   }
@@ -460,6 +474,15 @@ class AccountsProvider with ChangeNotifier {
   /// the CHECKS run, one batch call for exactly the new (+duplicate)
   /// accounts. Adds and checks no longer interleave one-by-one.
   Future<void> pickAndImportCookieFiles() async {
+    // v2.30.3: the phase bookkeeping lives OUTSIDE the try — an
+    // exception partway through phase 1 used to skip phase 2
+    // entirely, stranding every already-added account on "Waiting"
+    // with no check ever running and no cleanup. Now whatever was
+    // added always reaches phase 2 below.
+    final toCheck = <String>[];
+    var added = 0;
+    var duplicates = 0;
+    String? lastError;
     try {
       final picked = await FilePickerPlatform.instance.pickFiles(
         type: FileType.custom,
@@ -468,10 +491,6 @@ class AccountsProvider with ChangeNotifier {
       if (picked.isEmpty) return;
 
       // PHASE 1 — add ALL first.
-      var added = 0;
-      var duplicates = 0;
-      String? lastError;
-      final toCheck = <String>[];
       for (final file in picked) {
         final path = file.path;
         if (path == null) continue;
@@ -491,34 +510,6 @@ class AccountsProvider with ChangeNotifier {
         }
       }
 
-      if (toCheck.isEmpty) {
-        if (lastError != null) {
-          AutomationBridge.instance.onLog?.call(
-            'Cookie import failed: $lastError',
-            LogLevel.error,
-            false,
-          );
-        }
-        return;
-      }
-
-      AutomationBridge.instance.onLog?.call(
-        added == 0 && duplicates > 0
-            ? 'Those cookies were already added — re-checking the existing account(s) now, no duplicate made.'
-            : '$added account(s) added from cookies — checking ${toCheck.length} account(s) now…',
-        LogLevel.success,
-        false,
-      );
-      if (lastError != null) {
-        AutomationBridge.instance.onLog?.call(
-          'Some cookie files could not be added: $lastError',
-          LogLevel.error,
-          false,
-        );
-      }
-
-      // PHASE 2 — check ALL (exactly the newly added + duplicates).
-      await _runCookieChecks(toCheck);
     } catch (e) {
       AutomationBridge.instance.onLog?.call(
         'Cookie file error: $e',
@@ -526,6 +517,36 @@ class AccountsProvider with ChangeNotifier {
         false,
       );
     }
+
+    if (toCheck.isEmpty) {
+      if (lastError != null) {
+        AutomationBridge.instance.onLog?.call(
+          'Cookie import failed: $lastError',
+          LogLevel.error,
+          false,
+        );
+      }
+      return;
+    }
+
+    AutomationBridge.instance.onLog?.call(
+      added == 0 && duplicates > 0
+          ? 'Those cookies were already added — re-checking the existing account(s) now, no duplicate made.'
+          : '$added account(s) added from cookies — checking ${toCheck.length} account(s) now…',
+      LogLevel.success,
+      false,
+    );
+    if (lastError != null) {
+      AutomationBridge.instance.onLog?.call(
+        'Some cookie files could not be added: $lastError',
+        LogLevel.error,
+        false,
+      );
+    }
+
+    // PHASE 2 — check ALL (exactly the newly added + duplicates).
+    // Runs even when phase 1 threw partway (v2.30.3, see above).
+    await _runCookieChecks(toCheck);
   }
 }
 

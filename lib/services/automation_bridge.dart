@@ -28,6 +28,11 @@ class AutomationBridge {
   // v2.30.1: per-task engine updates (WorkerPool.onTaskUpdate),
   // forwarded by the bridge as 'task-updated' SSE events.
   Function(Map<String, dynamic> data)? onTaskUpdated;
+  // v2.30.3: live render progress (tile percentage + elapsed),
+  // forwarded by the bridge as 'video-progress' SSE events. The
+  // generator provider shows the real percentage and uses these
+  // events as the run's heartbeat for its no-response watchdog.
+  Function(Map<String, dynamic> data)? onVideoProgress;
   // v2.25.0 (parked browser): [{ 'id': ..., 'windowShown': bool }] for
   // every account with a live generation browser right now.
   Function(List<Map<String, dynamic>> accounts)? onActiveBrowsers;
@@ -195,6 +200,9 @@ class AutomationBridge {
               case 'task-updated':
                 onTaskUpdated?.call(data);
                 break;
+              case 'video-progress':
+                onVideoProgress?.call(data);
+                break;
               case 'account-updated':
                 if (data['account'] is Map) {
                   onAccountUpdated?.call(
@@ -255,9 +263,33 @@ class AutomationBridge {
         }
       }, onError: (err) {
         debugPrint('[SSE Stream Error] $err');
+        _scheduleSseReconnect();
+      }, onDone: () {
+        // v2.30.3: a dropped SSE stream used to deafen the app for
+        // the rest of the session — every later engine event was
+        // silently lost. Resubscribe instead.
+        _scheduleSseReconnect();
       });
     }).catchError((err) {
       debugPrint('[SSE Connection Error] $err');
+      _scheduleSseReconnect();
+    });
+  }
+
+  bool _disposed = false;
+  bool _sseReconnectPending = false;
+
+  /// v2.30.3: re-join the event stream a few seconds after it
+  /// drops (engine restart, transient socket error). Guarded so an
+  /// error+done pair schedules only one reconnect, and a disposed
+  /// bridge never resurrects its stream.
+  void _scheduleSseReconnect() {
+    if (_disposed || _sseReconnectPending) return;
+    _sseReconnectPending = true;
+    Future.delayed(const Duration(seconds: 3), () {
+      _sseReconnectPending = false;
+      if (_disposed) return;
+      _listenToSse();
     });
   }
 
@@ -422,11 +454,19 @@ class AutomationBridge {
   Future<bool> checkCookieAccounts(List<String> ids) async {
     if (ids.isEmpty) return true;
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/api/cookies/check'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({'ids': ids}),
-      );
+      // v2.30.3: this call used to have NO timeout — if it hung,
+      // the accounts provider's phase-2 cleanup never ran and the
+      // affected lines stayed on "Waiting" for the life of the
+      // process. The timeout is a hang-breaker only: the engine
+      // checks accounts sequentially with its own per-check bound,
+      // so a healthy batch finishes long before this.
+      final res = await http
+          .post(
+            Uri.parse('$baseUrl/api/cookies/check'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'ids': ids}),
+          )
+          .timeout(const Duration(seconds: 900));
       return res.statusCode == 200;
     } catch (e) {
       debugPrint('[checkCookieAccounts Error] $e');
@@ -703,6 +743,7 @@ class AutomationBridge {
   }
 
   void dispose() {
+    _disposed = true;
     _sseSubscription?.cancel();
     _nodeProcess?.kill();
   }

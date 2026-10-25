@@ -84,7 +84,7 @@ void main() {
       return; // keep open
     }
     if (path == '/api/status') {
-      return send({'ok': true, 'version': '2.30.2', 'workers': generationStarted ? 1 : 0});
+      return send({'ok': true, 'version': '2.30.3', 'workers': generationStarted ? 1 : 0});
     }
     if (path == '/api/accounts') {
       return send({
@@ -163,7 +163,7 @@ void main() {
     return send({'ok': true});
   }
 
-  testWidgets('v2.30.2 fit harness — all views, all sizes, worst-case strings',
+  testWidgets('v2.30.3 fit harness — all views, all sizes, worst-case strings',
       (tester) async {
     // Start the fake bridge on the REAL port before any provider
     // is constructed (providers dial it in their constructors).
@@ -355,11 +355,34 @@ void main() {
       reason: 'settings load must persist download_folder to the engine',
     );
 
+    // ---------- v2.30.3: phantom progress (pre-run panel) ----------
+    // ignore: avoid_print
+    print('HARNESS section: phantom progress');
+    // Typing prompts materialises the item set (counting works)…
+    generator.setRawText(
+        '#11-01 Gauri thakur sahab ke kamre me purani tasveer dekhti hai\n\n#11-02 Malti darwaze par khadi sab sun leti hai');
+    await tester.pump();
+    expect(generator.totalPrompts, 2,
+        reason: 'prompt counting must keep working pre-run');
+    expect(generator.runStarted, isFalse);
+    // …but the Progress panel must show its EMPTY state — no
+    // QUEUED cards, no "waiting for account", zeroed header chips —
+    // because no run has been started for this set.
+    expect(
+        find.text(
+            'No prompts yet — paste prompts on the left,\nthen press Generate.'),
+        findsOneWidget,
+        reason: 'pre-run Progress panel must show the empty state');
+    expect(find.text('QUEUED'), findsNothing,
+        reason: 'no QUEUED cards before Generate is pressed');
+    expect(find.text('waiting for account'), findsNothing);
+    expect(find.text('0 Queued'), findsOneWidget,
+        reason: 'header counts stay zero pre-run');
+    expectNoException('pre-run phantom progress check');
+
     // ---------- dynamic states: run a generation ----------
     // ignore: avoid_print
     print('HARNESS section: generation');
-    generator.setRawText(
-        '#11-01 Gauri thakur sahab ke kamre me purani tasveer dekhti hai\n\n#11-02 Malti darwaze par khadi sab sun leti hai');
     // NOT awaited directly: a bare await on a real-IO future in
     // the fake zone deadlocks (its continuations only advance when
     // the zone is pumped). Fire it, then flush until it lands.
@@ -382,6 +405,21 @@ void main() {
     expectNoException('Generate while GENERATING');
     expect(find.text('GENERATING'), findsOneWidget);
     expect(find.text(longFileName), findsWidgets);
+
+    // v2.30.3: editing the prompt text after a run returns the
+    // Progress panel to the pre-run display at once.
+    generator.setRawText('Ek bilkul naya prompt jo abhi run nahi hua');
+    await tester.pump();
+    expect(generator.runStarted, isFalse);
+    expect(
+        find.text(
+            'No prompts yet — paste prompts on the left,\nthen press Generate.'),
+        findsOneWidget,
+        reason: 'editing after a run must reset the Progress panel');
+    expectNoException('post-edit panel reset');
+    // Stop the still-open run so no watchdog timer outlives the test.
+    generator.stopGeneration(activity);
+    await tester.pump();
 
     // ---------- Settings view at every size (item E/F) ----------
     // ignore: avoid_print

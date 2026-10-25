@@ -13,7 +13,7 @@ class ActivityProvider with ChangeNotifier {
     // — whether or not the engine had actually connected. Only the plain
     // start line is honest; engine state is logged by the accounts
     // provider after a real health check.
-    addLog('FlowStudio Lite v2.30.2 started');
+    addLog('FlowStudio Lite v2.30.3 started');
 
     // v2.29.0: the bridge's DETAIL flag now flows end-to-end into
     // addLog(isDetail:) — before this, no log was ever marked

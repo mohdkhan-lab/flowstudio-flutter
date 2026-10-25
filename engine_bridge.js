@@ -234,7 +234,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.30.2', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.30.3', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -741,6 +741,13 @@ async function startBridge() {
           // cards then span as RENDERING past the end of the run.
           onTaskUpdate: (data) => broadcastEvent('task-updated', data),
           onVideoCompleted: (data) => broadcastEvent('video-completed', data),
+          // v2.30.3: forward the engine's live render progress
+          // (tile percentage + elapsed). This callback was never
+          // wired either — the pool relayed it to a no-op, so the
+          // app never saw a percentage and a rendering card could
+          // only sit on "Working…". The app also uses these events
+          // as the run's heartbeat for its no-response watchdog.
+          onVideoProgress: (data) => broadcastEvent('video-progress', data),
           onAccountUpdated: (data) => broadcastEvent('account-updated', data),
           // v2.25.0 (parked browser): the pool announces which accounts
           // have a live generation browser (+ window shown/parked) —

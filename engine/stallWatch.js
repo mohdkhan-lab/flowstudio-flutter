@@ -68,6 +68,24 @@ function observeStall(task, obs) {
   }
 
   if (st.gaveUp) return { type: 'none' };
+
+  // v2.30.3 (infinite-hang fix): the recovery window is a WALL-CLOCK
+  // bound. Before this, expiry was only checked further below, past
+  // the `!obs.stalled` return — and the monitor's stalled flag
+  // requires NO tile anywhere in the project to be showing progress.
+  // A sibling (or zombie) tile stuck at some % kept stalled=false
+  // forever, so a task whose own tile never appeared stayed "in
+  // recovery" forever, and the monitor's deadline exemption kept
+  // extending the wait by +30s per pass — waitForAccountTasks never
+  // returned and the app's card sat on "Working..." for good. Now:
+  // still tile-less at/after the window -> give up, whatever the
+  // rest of the project is doing. (A task WITH a tile never reaches
+  // here — the hasTile branch above already returned.)
+  if (st.recoverySince != null && (now - st.recoverySince) >= recoveryWindowMs) {
+    st.gaveUp = true;
+    return { type: 'give-up', recoveryForSec: Math.round((now - st.recoverySince) / 1000) };
+  }
+
   if (!obs || !obs.stalled) return { type: 'none' };
 
   if (st.recoverySince == null) {
@@ -95,6 +113,22 @@ function isInRecovery(task) {
   return !!(task && task._stall && task._stall.recoverySince != null && !task._stall.gaveUp);
 }
 
+/**
+ * v2.30.3: milliseconds left in this task's recovery window (0 when
+ * not in recovery or the window has expired). The monitor's deadline
+ * branch uses it so an EXPIRED recovery can never keep the deadline
+ * exemption alive — the exemption is what used to extend the wait
+ * forever (see observeStall).
+ */
+function recoveryRemainingMs(task, now, recoveryWindowMs) {
+  if (!isInRecovery(task)) return 0;
+  const win = Math.max(1000, Number(recoveryWindowMs) || 600000);
+  const nowNum = Number(now);
+  const at = Number.isFinite(nowNum) ? nowNum : Date.now();
+  const left = (task._stall.recoverySince + win) - at;
+  return left > 0 ? left : 0;
+}
+
 /** Drop the stall state (task finished one way or another). */
 function clearStall(task) {
   if (task && task._stall) task._stall = { recoverySince: null, lastProgressAt: 0, gaveUp: false };
@@ -109,4 +143,4 @@ function formatDuration(totalSec) {
   return r ? `${m} min ${r} s` : `${m} min`;
 }
 
-module.exports = { observeStall, isInRecovery, clearStall, formatDuration, DEFAULT_PROGRESS_EVERY_SEC };
+module.exports = { observeStall, isInRecovery, recoveryRemainingMs, clearStall, formatDuration, DEFAULT_PROGRESS_EVERY_SEC };

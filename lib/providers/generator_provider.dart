@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/prompt_item.dart';
 import '../models/activity_log.dart';
@@ -17,6 +18,21 @@ class GeneratorProvider with ChangeNotifier {
   List<PromptItem> _items = [];
   GenerationState _state = GenerationState.idle;
   int _currentIndex = 0;
+  // v2.30.3 (phantom progress fix): true only once a run has
+  // actually been started for the CURRENT item set. The Progress
+  // panel renders run cards only while this is set — prompts that
+  // were merely typed show the panel's empty state, never QUEUED
+  // "waiting for account" cards. Any edit re-parses the items and
+  // resets this, returning the panel to its pre-run display.
+  bool _runStarted = false;
+  // v2.30.3 (run heartbeat watchdog): the engine streams events
+  // (progress / task updates / completions) throughout a healthy
+  // run. If a run hears NOTHING for over 10 minutes, the engine
+  // or the event stream is dead — the run is settled with that
+  // concrete reason instead of the cards spinning forever.
+  Timer? _runWatchdog;
+  DateTime? _lastEngineEventAt;
+  static const Duration _engineSilenceLimit = Duration(minutes: 10);
   // v2.27.0: the TAG chosen in the Prompts header lives here so the
   // Progress cards can name queued files like the design ("#<tag>-<nn>.mp4").
   String _selectedTag = 'None';
@@ -41,6 +57,7 @@ class GeneratorProvider with ChangeNotifier {
     // promptIndex when present, else by exact prompt text, else by the
     // first item still generating.
     AutomationBridge.instance.onVideoCompleted = (data) {
+      _stampEngineEvent();
       final item = _matchCompletedItem(data);
       if (item == null) return;
       final err = data['error']?.toString();
@@ -71,6 +88,7 @@ class GeneratorProvider with ChangeNotifier {
       notifyListeners();
     };
     AutomationBridge.instance.onProgress = (data) {
+      _stampEngineEvent();
       final statusStr = data['status']?.toString() ?? '';
       // v2.30.1 (terminal settling): the engine's terminal progress
       // statuses are 'Completed', 'NoAccounts', 'Stopped' and
@@ -109,10 +127,33 @@ class GeneratorProvider with ChangeNotifier {
     // on purpose: it models engine-queued as generating). 'done' is
     // already covered by the video-completed event.
     AutomationBridge.instance.onTaskUpdated = (data) {
+      _stampEngineEvent();
       final item = _matchTaskItem(data);
       if (item == null) return;
       final statusStr = data['status']?.toString() ?? '';
-      if (statusStr == 'generating') {
+      if (statusStr == 'done') {
+        // v2.30.3: 'done' used to be ignored on the assumption that
+        // video-completed always covers it — false on two paths:
+        // restart-recovery completions emit ONLY this update, and a
+        // download-retry success (after the card was already marked
+        // failed by the 'Download failed' completion event) had no
+        // signal that could flip the card back. A 'done' update is
+        // final: the file exists, so complete the card with it.
+        if (item.status != PromptStatus.completed) {
+          item.status = PromptStatus.completed;
+          item.progress = 1.0;
+          item.error = null;
+          final fp = data['filePath']?.toString();
+          if (fp != null && fp.isNotEmpty) item.localFilePath = fp;
+          final fn = data['fileName']?.toString();
+          if (fn != null && fn.isNotEmpty) item.outputFileName = fn;
+          final accName = data['accountName']?.toString();
+          if (accName != null && accName.isNotEmpty) item.accountName = accName;
+          _completionTimes.add(DateTime.now());
+          _refreshEngineStats();
+          notifyListeners();
+        }
+      } else if (statusStr == 'generating') {
         final accName = data['accountName']?.toString();
         if (accName != null && accName.isNotEmpty) {
           item.accountName = accName;
@@ -133,17 +174,82 @@ class GeneratorProvider with ChangeNotifier {
         }
       }
     };
+    // v2.30.3: live render progress from the engine (the bridge
+    // forwards WorkerPool.onVideoProgress as 'video-progress').
+    // Until now that callback was dropped at the bridge, so the
+    // app never saw a percentage and item.progress stayed 0 — the
+    // panel's percent branch was unreachable and every rendering
+    // card could only say "Working…". These events also feed the
+    // run heartbeat (a generating tile reports every few seconds).
+    AutomationBridge.instance.onVideoProgress = (data) {
+      _stampEngineEvent();
+      final item = _matchTaskItem(data);
+      if (item == null) return;
+      var changed = false;
+      final accName = data['accountName']?.toString();
+      if (accName != null && accName.isNotEmpty && item.accountName != accName) {
+        item.accountName = accName;
+        changed = true;
+      }
+      final pctRaw = data['percentage']?.toString() ?? '';
+      final pct = double.tryParse(pctRaw.replaceAll('%', '').trim());
+      if (pct != null &&
+          (item.status == PromptStatus.generating ||
+              item.status == PromptStatus.downloading)) {
+        final v = (pct / 100).clamp(0.0, 1.0);
+        if (v != item.progress) {
+          item.progress = v;
+          changed = true;
+        }
+      }
+      if (changed) notifyListeners();
+    };
+  }
+
+  // v2.30.3: every engine event of any kind proves the run is
+  // alive; the watchdog below only fires on TOTAL silence.
+  void _stampEngineEvent() {
+    _lastEngineEventAt = DateTime.now();
+  }
+
+  void _armRunWatchdog() {
+    _runWatchdog?.cancel();
+    _stampEngineEvent();
+    _runWatchdog = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (_state != GenerationState.running) {
+        _disarmRunWatchdog();
+        return;
+      }
+      final last = _lastEngineEventAt;
+      if (last != null && DateTime.now().difference(last) > _engineSilenceLimit) {
+        _settleRun(
+          'The engine stopped responding — no update arrived for over 10 minutes, so this run was ended here. Check the Activity log; press Generate to run the unfinished prompts again.',
+        );
+      }
+    });
+  }
+
+  void _disarmRunWatchdog() {
+    _runWatchdog?.cancel();
+    _runWatchdog = null;
   }
 
   /// v2.30.1: match an engine task-update to its prompt item by
   /// promptIndex, else by exact prompt text. Unlike
   /// [_matchCompletedItem] there is deliberately NO "first generating"
   /// fallback — a task update that matches nothing changes nothing.
+  ///
+  /// v2.30.3 (index-base fix): engine promptIndex values are
+  /// 0-based (DB queue_tasks.prompt_index), while PromptItem.index
+  /// is 1-based. The old direct comparison never matched index 0
+  /// and matched the WRONG card for every later prompt (an update
+  /// for prompt #2 hit prompt #1's card whenever the text fallback
+  /// was not reached first). Convert before comparing.
   PromptItem? _matchTaskItem(Map<String, dynamic> data) {
     final idxRaw = data['promptIndex'] ?? data['prompt_index'];
     if (idxRaw is int) {
       for (final i in _items) {
-        if (i.index == idxRaw) return i;
+        if (i.index == idxRaw + 1) return i;
       }
     }
     final promptText = (data['promptText'] ?? data['prompt'])?.toString();
@@ -161,6 +267,7 @@ class GeneratorProvider with ChangeNotifier {
   /// header counts — which derive from item statuses — stop claiming
   /// anything is still rendering.
   void _settleRun(String reason) {
+    _disarmRunWatchdog();
     for (final item in _items) {
       if (item.status == PromptStatus.pending ||
           item.status == PromptStatus.queued ||
@@ -177,8 +284,10 @@ class GeneratorProvider with ChangeNotifier {
   PromptItem? _matchCompletedItem(Map<String, dynamic> data) {
     final idxRaw = data['promptIndex'] ?? data['prompt_index'];
     if (idxRaw is int) {
+      // v2.30.3: engine indices are 0-based, item indices 1-based
+      // (see _matchTaskItem).
       for (final i in _items) {
-        if (i.index == idxRaw) return i;
+        if (i.index == idxRaw + 1) return i;
       }
     }
     final promptText = data['prompt']?.toString();
@@ -193,11 +302,23 @@ class GeneratorProvider with ChangeNotifier {
         return i;
       }
     }
-    return _items.isNotEmpty ? _items.first : null;
+    // v2.30.3: the last-resort "first item" fallback may only fire
+    // while a run is actually live — a stray/late completion that
+    // matches nothing must not settle a never-started item after
+    // the run has ended or the text was edited.
+    if (_state == GenerationState.running && _items.isNotEmpty) {
+      return _items.first;
+    }
+    return null;
   }
 
   String get promptsRawText => _promptsRawText;
   List<PromptItem> get items => List.unmodifiable(_items);
+
+  /// v2.30.3: whether a run has been started for the current item
+  /// set (see _runStarted). The Progress panel shows run cards only
+  /// when this is true.
+  bool get runStarted => _runStarted;
   GenerationState get state => _state;
   bool get isRunning => _state == GenerationState.running;
   bool get isPaused => _state == GenerationState.paused;
@@ -277,6 +398,8 @@ class GeneratorProvider with ChangeNotifier {
   void clearPrompts() {
     _promptsRawText = '';
     _items.clear();
+    _runStarted = false;
+    _disarmRunWatchdog();
     _state = GenerationState.idle;
     notifyListeners();
   }
@@ -302,6 +425,10 @@ class GeneratorProvider with ChangeNotifier {
           .toList();
     }
 
+    // v2.30.3: a fresh item set has had no run started for it —
+    // the Progress panel returns to its pre-run (empty) display
+    // until Generate is pressed for THIS set.
+    _runStarted = false;
     _items = List.generate(
       blocks.length,
       (i) => PromptItem(
@@ -317,6 +444,17 @@ class GeneratorProvider with ChangeNotifier {
     required ActivityProvider activity,
     required SettingsProvider settings,
   }) async {
+    // v2.30.3: re-entry guard. The Generate button stays enabled
+    // while paused, and a second start used to re-submit EVERY
+    // prompt (including finished ones) to the engine. A run must
+    // be stopped (or settled) before another can start.
+    if (_state != GenerationState.idle) {
+      activity.addLog(
+        'A run is already in progress — stop it before starting another.',
+        level: LogLevel.warning,
+      );
+      return;
+    }
     if (_items.isEmpty) {
       activity.addLog('No prompts found. Paste prompts or import TXT/SRT file.', level: LogLevel.warning);
       return;
@@ -380,6 +518,11 @@ class GeneratorProvider with ChangeNotifier {
 
     // Mark the queued items as generating; real per-video completion
     // arrives through the engine's video-completed events.
+    // v2.30.3: only NOW has a run actually been started for this
+    // item set — the Progress panel may show its cards, and the
+    // heartbeat watchdog starts watching for engine silence.
+    _runStarted = true;
+    _armRunWatchdog();
     for (final item in _items) {
       if (item.status == PromptStatus.pending) {
         item.status = PromptStatus.generating;
@@ -389,6 +532,11 @@ class GeneratorProvider with ChangeNotifier {
   }
 
   void pauseGeneration(ActivityProvider activity) {
+    // v2.30.3: only a running run can pause (this used to flip the
+    // state even from idle). Pausing also suspends the heartbeat
+    // watchdog — a paused run is SUPPOSED to be silent.
+    if (_state != GenerationState.running) return;
+    _disarmRunWatchdog();
     _state = GenerationState.paused;
     AutomationBridge.instance.pauseGeneration();
     activity.addLog('Generation paused by user.', level: LogLevel.warning);
@@ -402,6 +550,9 @@ class GeneratorProvider with ChangeNotifier {
   }) {
     if (_state == GenerationState.paused) {
       _state = GenerationState.running;
+      // v2.30.3: resume re-arms the heartbeat watchdog with a
+      // fresh silence window.
+      _armRunWatchdog();
       AutomationBridge.instance.resumeGeneration();
       activity.addLog('Generation resumed.', level: LogLevel.info);
       notifyListeners();
@@ -409,6 +560,7 @@ class GeneratorProvider with ChangeNotifier {
   }
 
   void stopGeneration(ActivityProvider activity) {
+    _disarmRunWatchdog();
     // v2.30.1: settle in-flight items too — v2.30.0 only flipped the
     // run state, so cards whose videos were mid-generation kept
     // rendering RENDERING forever after Stop (owner's field test).
@@ -433,6 +585,7 @@ class GeneratorProvider with ChangeNotifier {
 
   @override
   void dispose() {
+    _disarmRunWatchdog();
     super.dispose();
   }
 }

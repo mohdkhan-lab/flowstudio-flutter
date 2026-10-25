@@ -11,6 +11,7 @@ const { recordActivity } = require('./activityStore');
 const plainError = require('./plainError');
 const tileState = require('./tileState');
 const stallWatch = require('./stallWatch');
+const downloadGuard = require('./downloadGuard');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -793,7 +794,21 @@ class WorkerPool {
           let outcome = null;
           for (let round = 1; round <= 2; round++) {
             try {
-              outcome = await engine.retryDownloadForTask(engineTask, downloadFolder, settings);
+              // v2.30.3 (no-hang): bound the whole retry call. Its
+              // inner steps are individually guarded (downloadGuard
+              // inside downloadTaskMedia, CDP timeouts on page ops),
+              // but the chain as a whole had no ceiling — a wedged
+              // chain would have held this worker (and so the run's
+              // terminal progress) forever. 15 minutes is far above
+              // any legitimate chain; a timeout lands in the catch
+              // below and becomes 'download-failed' — the task stays
+              // pending + needs_check for Resume, and the prompt is
+              // NEVER resubmitted (no credit re-spend, as always).
+              outcome = await downloadGuard.withTimeout(
+                engine.retryDownloadForTask(engineTask, downloadFolder, settings),
+                900000,
+                `prompt #${rowTask.prompt_index + 1} download-retry`
+              );
             } catch (e) {
               const t = plainError.translateError(e);
               this.log(`Prompt #${rowTask.prompt_index + 1}: problem during the download-retry — ${t.plain}.`, 'warn', { rawError: t.raw });
@@ -808,6 +823,45 @@ class WorkerPool {
           if (!outcome) continue;
           if (outcome.status === 'downloaded') {
             try { dbService.setTaskNeedsCheck(rowTask.id, 0); } catch (e) {}
+            // v2.30.3 (dropped completion signal): this branch used
+            // to ONLY log — the app had already marked the card
+            // FAILED from the original 'Download failed'
+            // video-completed event, and nothing ever flipped it
+            // back, so a saved video showed as failed until the run
+            // ended (and its card never showed the file). Mirror the
+            // normal completion path exactly: complete the DB row,
+            // count the save, settle the run stats, and emit BOTH
+            // completion signals with the real file.
+            try {
+              dbService.completeTask(rowTask.id, {
+                filePath: engineTask.filePath || '',
+                fileName: engineTask.fileName || '',
+                fileSizeMb: engineTask.fileSizeMb || null
+              });
+            } catch (e) {}
+            try { usageStats.recordSaved(dbService, requiredCredits); } catch (e) {}
+            noteTaskSettled(rowTask.id, 'done');
+            this.onTaskUpdate({
+              taskId: rowTask.id,
+              promptIndex: rowTask.prompt_index,
+              promptText: rowTask.prompt_text,
+              tag: rowTask.prompt_tag || '',
+              status: 'done',
+              filePath: engineTask.filePath || null,
+              fileName: engineTask.fileName || null
+            });
+            this.onVideoCompleted({
+              id: rowTask.id,
+              prompt: rowTask.prompt_text,
+              promptIndex: rowTask.prompt_index,
+              accountName: entry.accountName || '',
+              status: 'Completed',
+              filePath: engineTask.filePath || null,
+              fileName: engineTask.fileName || null,
+              error: null,
+              type: settings.type,
+              timestamp: new Date().toLocaleTimeString()
+            });
             this.log(`Prompt #${rowTask.prompt_index + 1}: download-retry succeeded — the same generated video was saved, no new charge was applied.`, 'success');
           } else if (outcome.status === 'tile-missing') {
             const reason = 'The generated video was not found in the project (lost render): even after scanning the whole project, this prompt\'s tile was not found — a download-only retry was not possible, and the prompt was NOT quietly resubmitted.';

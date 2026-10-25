@@ -3503,6 +3503,19 @@ class FlowAutomationEngine {
     // repeated monitor calls for the same window).
     const stallTimeoutSec = this.stallTimeoutSecOverride || (isImageMode ? 45 : 120);
     const recoveryWindowMs = (this.recoveryWindowSecOverride || (isImageMode ? 120 : 600)) * 1000;
+    // v2.30.3 (no-hang watchdog): an ABSOLUTE per-task cap, counted
+    // from the task's own submission time. The deadline + recovery
+    // machinery below is generous by design (a paid render gets
+    // every chance), but each of its extensions used to be able to
+    // outlive the others — most concretely, a task parked "in
+    // recovery" while any sibling tile showed progress could extend
+    // the monitor forever (the owner's stuck "Working..." run,
+    // 2026-10-25). The cap sits above every legitimate path —
+    // base wait + one full recovery window + 10 minutes of slack
+    // for downloads/sweeps — and any task still unsettled past it
+    // is failed with a concrete watchdog reason in the per-task
+    // loop, so this monitor ALWAYS returns.
+    const absoluteCapSec = maxWaitSec + (recoveryWindowMs / 1000) + 600;
     let lastReportedPercentage = {};
     // v1.5.0: when a task ends in failure, free its tile claim so a
     // sibling task is never starved by a dead binding.
@@ -3567,18 +3580,26 @@ class FlowAutomationEngine {
           // Fail whatever is unfinished — EXCEPT a task still inside
           // its own stall-recovery window: its give-up moment (in the
           // per-task loop below) is what ends it, never this deadline.
+          // v2.30.3: the exemption now also requires time LEFT in the
+          // window (recoveryRemainingMs) — an expired recovery no
+          // longer keeps this branch extending the deadline by +30s
+          // per pass forever; the task is failed right here with the
+          // recovery-exhausted reason.
           let stillRecovering = false;
           let failedAny = false;
           for (const t of accountTasks) {
             if (t.downloaded || t.completed) continue;
-            if (stallWatch.isInRecovery(t)) { stillRecovering = true; continue; }
+            const wasInRecovery = stallWatch.isInRecovery(t);
+            if (wasInRecovery && stallWatch.recoveryRemainingMs(t, Date.now(), recoveryWindowMs) > 0) { stillRecovering = true; continue; }
             failedAny = true;
             t.completed = true;
             t.downloaded = true;
             t.failed = true;
             releaseTileClaim(t);
             stallWatch.clearStall(t);
-            this.onTaskFailed(t, 'Render timed out before this prompt\'s video could be identified and downloaded (in-project recovery search included)');
+            this.onTaskFailed(t, wasInRecovery
+              ? `Generation tile for this prompt could not be identified even after ${stallWatch.formatDuration(recoveryWindowMs / 1000)} of in-project recovery search (dropped or rejected by Flow)`
+              : 'Render timed out before this prompt\'s video could be identified and downloaded (in-project recovery search included)');
             this.onVideoCompleted({
               id: t.videoId,
               prompt: t.promptText,
@@ -3866,6 +3887,36 @@ class FlowAutomationEngine {
 
           const elapsedSec = (Date.now() - task.startTime) / 1000;
           let bestTile = null;
+
+          // v2.30.3 (no-hang watchdog): absolute per-task cap (see
+          // absoluteCapSec above). Whatever state this task is in —
+          // tile generating, tile missing, recovery, captcha wait —
+          // past the cap it is failed HERE with a concrete reason,
+          // so no combination of the monitor's generous extensions
+          // can keep the run (or the app's card) waiting forever.
+          // A task whose download is actively running is exempt:
+          // the download guard already bounds that step.
+          if (elapsedSec > absoluteCapSec && !task._downloadInProgress) {
+            task.completed = true;
+            task.downloaded = true;
+            task.failed = true;
+            releaseTileClaim(task);
+            stallWatch.clearStall(task);
+            const capReason = `Generation watchdog: this prompt was still unfinished ${stallWatch.formatDuration(elapsedSec)} after it was submitted — past the absolute limit of ${stallWatch.formatDuration(absoluteCapSec)} (render wait + recovery window + slack). It has been marked failed so the queue can end; the video may still exist in the Flow project.`;
+            this.log(`[Prompt #${task.promptIndex + 1}] ${capReason}`, 'warn');
+            this.onTaskFailed(task, capReason);
+            this.onVideoCompleted({
+              id: task.videoId,
+              prompt: task.promptText,
+              accountName: this.currentAccount.name,
+              status: 'Failed (Watchdog timeout)',
+              filePath: null,
+              error: 'Watchdog timeout',
+              type: settings.type,
+              timestamp: new Date().toLocaleTimeString()
+            });
+            continue;
+          }
 
           if (modalViolation && modalVictim && task === modalVictim) {
             task.completed = true;

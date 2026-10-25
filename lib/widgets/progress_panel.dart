@@ -61,11 +61,21 @@ class ProgressPanel extends StatelessWidget {
     final generator = context.watch<GeneratorProvider>();
     final items = generator.items;
 
-    final rendering = items
+    // v2.30.3 (phantom progress fix — owner's rule): run cards
+    // exist ONLY for a run that has actually been started for the
+    // current prompt set. Merely typing prompts used to materialise
+    // QUEUED "waiting for account" cards here before Generate was
+    // ever pressed; now the panel shows its empty state until a
+    // run starts, and any prompt edit returns it to that state.
+    // The header counts follow the same rule (all zero pre-run).
+    final showRunCards = generator.runStarted && items.isNotEmpty;
+    final visibleItems = showRunCards ? items : const <PromptItem>[];
+
+    final rendering = visibleItems
         .where((i) => i.status == PromptStatus.generating || i.status == PromptStatus.downloading)
         .length;
-    final done = items.where((i) => i.status == PromptStatus.completed).length;
-    final queued = items
+    final done = visibleItems.where((i) => i.status == PromptStatus.completed).length;
+    final queued = visibleItems
         .where((i) => i.status == PromptStatus.pending || i.status == PromptStatus.queued)
         .length;
 
@@ -119,7 +129,7 @@ class ProgressPanel extends StatelessWidget {
 
           // Content
           Expanded(
-            child: items.isEmpty
+            child: !showRunCards
                 ? Center(
                     child: Text(
                       'No prompts yet — paste prompts on the left,\nthen press Generate.',
@@ -301,6 +311,25 @@ class ProgressPanel extends StatelessWidget {
               ),
             ],
           ),
+          // v2.30.3: a FAILED card shows WHY. The engine's concrete
+          // reason (and the settle/watchdog reasons) already land in
+          // item.error — until now nothing rendered it, so a failed
+          // card was a dead end the owner could not act on.
+          if (item.status == PromptStatus.failed &&
+              item.error != null &&
+              item.error!.isNotEmpty) ...[
+            const SizedBox(height: 4),
+            Text(
+              item.error!,
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 9.5,
+                color: Color(0xFFFF6961),
+                height: 1.35,
+              ),
+            ),
+          ],
         ],
       ),
     );

@@ -196,6 +196,12 @@ function initSchema() {
   addColumnIfMissing('accounts', 'signout_strikes INTEGER DEFAULT 0');
   addColumnIfMissing('accounts', "strike_at TEXT DEFAULT ''");
   addColumnIfMissing('accounts', 'cooldown_level INTEGER DEFAULT 0');
+  // v2.30.3: has_cookies was read (mapAccountRow) and written
+  // (updateAccountFields <- cookieImport) since v2.0.0 but NEVER
+  // created — every write threw "no such column" inside a silent
+  // catch and every read came back false, so the app could not
+  // tell a cookie account from a plain one on a fresh engine read.
+  addColumnIfMissing('accounts', 'has_cookies INTEGER DEFAULT 0');
   addColumnIfMissing('queue_tasks', 'needs_check INTEGER DEFAULT 0');
   // v2.3.0: the prompt's TAG (smart parser: `#00-01`, `scene3`, …) —
   // downloads are named by it and the sequence report checks by it.

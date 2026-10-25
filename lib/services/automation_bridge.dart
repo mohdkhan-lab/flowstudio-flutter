@@ -813,6 +813,26 @@ class AutomationBridge {
     return null;
   }
 
+  /// v2.31.1: The raw MCP access token only (Settings "Copy Token"
+  /// button). Read from the same localhost-only bridge endpoint as
+  /// the config JSON — the token never leaves the owner's PC except
+  /// into the owner's own clipboard.
+  Future<String?> getMcpToken() async {
+    try {
+      final res = await http.get(Uri.parse('$baseUrl/api/mcp/config'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        final auth = data['config']?['mcpServers']?['flowstudio']?['headers']?['Authorization']?.toString() ?? '';
+        if (auth.startsWith('Bearer ') && auth.length > 7) {
+          return auth.substring(7);
+        }
+      }
+    } catch (e) {
+      debugPrint('[getMcpToken Error] $e');
+    }
+    return null;
+  }
+
   void dispose() {
     _disposed = true;
     _sseSubscription?.cancel();

@@ -117,6 +117,16 @@ class _SettingsViewState extends State<SettingsView> {
     _mcpSnack('Connection URL copied');
   }
 
+  Future<void> _copyMcpToken() async {
+    final token = await AutomationBridge.instance.getMcpToken();
+    if (token == null || token.isEmpty) {
+      _mcpSnack('Could not load the token — is the engine running?');
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: token));
+    _mcpSnack('Access token copied');
+  }
+
   Future<void> _copyMcpConfig() async {
     final json = await AutomationBridge.instance.getMcpConfigJson();
     if (json == null) {
@@ -244,6 +254,10 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
               ),
               const SizedBox(width: 8),
+              TextButton(
+                onPressed: _copyMcpToken,
+                child: Text('Copy Token', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.accentText)),
+              ),
               TextButton(
                 onPressed: _mcpBusy ? null : _regenMcpToken,
                 child: Text('Regenerate', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.accentText)),

@@ -22,7 +22,7 @@ const os = require('os');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.31.0';
+const SERVER_VERSION = '2.31.1';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -275,6 +275,15 @@ function startMcpServer({ dbService, broadcastEvent }) {
       const auth = String(req.headers.authorization || '');
       const headerToken = String(req.headers['x-mcp-token'] || '');
       if (auth !== `Bearer ${token}` && headerToken !== token) {
+        // v2.31.1 diagnostic: report WHAT arrived to the Activity log —
+        // first 8 chars + total length of the presented value, never
+        // more — so a wrong paste is distinguishable from a client
+        // that sent nothing or an unswapped placeholder.
+        if (broadcastEvent) {
+          const presented = auth.startsWith('Bearer ') ? auth.slice(7) : auth || headerToken;
+          const detail = presented ? `starts "${presented.slice(0, 8)}", length ${presented.length}` : 'no token';
+          broadcastEvent('automation-log', { message: `🔌 MCP • auth FAILED — ${detail}`, level: 'warning' });
+        }
         return send(401, { jsonrpc: '2.0', error: { code: -32001, message: 'Unauthorized — a valid MCP access token is required' }, id: null });
       }
 

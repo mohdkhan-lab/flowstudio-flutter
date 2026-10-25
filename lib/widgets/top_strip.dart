@@ -115,7 +115,7 @@ class TopStrip extends StatelessWidget {
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                   ),
                   child: Text(
-                    'v2.30.0',
+                    'v2.30.1',
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,

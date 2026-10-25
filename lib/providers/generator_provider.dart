@@ -72,15 +72,106 @@ class GeneratorProvider with ChangeNotifier {
     };
     AutomationBridge.instance.onProgress = (data) {
       final statusStr = data['status']?.toString() ?? '';
-      if (statusStr == 'Completed' || statusStr == 'NoAccounts') {
-        if (_items.every((i) =>
-            i.status == PromptStatus.completed ||
-            i.status == PromptStatus.failed)) {
-          _state = GenerationState.idle;
+      // v2.30.1 (terminal settling): the engine's terminal progress
+      // statuses are 'Completed', 'NoAccounts', 'Stopped' and
+      // 'Error: <reason>'. v2.30.0 idled only on Completed/NoAccounts
+      // AND only when every item was already completed/failed — but
+      // in the no-eligible-account path the items sit in `generating`
+      // (their per-task failure updates never reached the app), so
+      // the guard never passed and the UI stayed on "Running..."
+      // forever (owner's v2.30.0 field test, 2026-10-25). Now ANY
+      // terminal status settles the run: every item that never
+      // finished is failed with the concrete reason, then idle.
+      // 'Completed' with all items done settles nothing and idles,
+      // exactly as before.
+      if (statusStr == 'Completed' ||
+          statusStr == 'NoAccounts' ||
+          statusStr == 'Stopped' ||
+          statusStr.startsWith('Error:')) {
+        final reason = statusStr.startsWith('Error:')
+            ? statusStr.substring('Error:'.length).trim()
+            : statusStr == 'NoAccounts'
+                ? 'No account was available — no Live account with enough credits was found for this prompt.'
+                : statusStr == 'Stopped'
+                    ? 'Stopped by user'
+                    : 'Run ended before this prompt finished';
+        _settleRun(reason);
+      }
+    };
+    // v2.30.1: the engine's per-task updates (WorkerPool.onTaskUpdate)
+    // reach the app as 'task-updated' SSE events — until now the
+    // bridge never wired that callback, so every per-task failure,
+    // with its concrete reason, was silently dropped and the card
+    // span as RENDERING until the queue ended. Consume the two
+    // updates that change what a card shows mid-run: 'generating'
+    // (the real account name) and 'failed' (final for that task —
+    // a failover re-emits 'pending' instead, which the app ignores
+    // on purpose: it models engine-queued as generating). 'done' is
+    // already covered by the video-completed event.
+    AutomationBridge.instance.onTaskUpdated = (data) {
+      final item = _matchTaskItem(data);
+      if (item == null) return;
+      final statusStr = data['status']?.toString() ?? '';
+      if (statusStr == 'generating') {
+        final accName = data['accountName']?.toString();
+        if (accName != null && accName.isNotEmpty) {
+          item.accountName = accName;
+        }
+        if (item.status == PromptStatus.pending ||
+            item.status == PromptStatus.queued) {
+          item.status = PromptStatus.generating;
+        }
+        notifyListeners();
+      } else if (statusStr == 'failed') {
+        // Only settle an item this run actually started — a stray
+        // update for a never-started prompt must not fail its card.
+        if (item.status == PromptStatus.generating ||
+            item.status == PromptStatus.downloading) {
+          item.status = PromptStatus.failed;
+          item.error = data['reason']?.toString() ?? 'Generation failed';
           notifyListeners();
         }
       }
     };
+  }
+
+  /// v2.30.1: match an engine task-update to its prompt item by
+  /// promptIndex, else by exact prompt text. Unlike
+  /// [_matchCompletedItem] there is deliberately NO "first generating"
+  /// fallback — a task update that matches nothing changes nothing.
+  PromptItem? _matchTaskItem(Map<String, dynamic> data) {
+    final idxRaw = data['promptIndex'] ?? data['prompt_index'];
+    if (idxRaw is int) {
+      for (final i in _items) {
+        if (i.index == idxRaw) return i;
+      }
+    }
+    final promptText = (data['promptText'] ?? data['prompt'])?.toString();
+    if (promptText != null && promptText.isNotEmpty) {
+      for (final i in _items) {
+        if (i.text == promptText) return i;
+      }
+    }
+    return null;
+  }
+
+  /// v2.30.1: end the run in the UI. Every item that never reached a
+  /// final state is failed with [reason] (completed/failed items keep
+  /// their real outcome), the run state goes idle, and the Progress
+  /// header counts — which derive from item statuses — stop claiming
+  /// anything is still rendering.
+  void _settleRun(String reason) {
+    for (final item in _items) {
+      if (item.status == PromptStatus.pending ||
+          item.status == PromptStatus.queued ||
+          item.status == PromptStatus.generating ||
+          item.status == PromptStatus.downloading) {
+        item.status = PromptStatus.failed;
+        item.error ??= reason;
+      }
+    }
+    _state = GenerationState.idle;
+    notifyListeners();
   }
 
   PromptItem? _matchCompletedItem(Map<String, dynamic> data) {
@@ -318,6 +409,18 @@ class GeneratorProvider with ChangeNotifier {
   }
 
   void stopGeneration(ActivityProvider activity) {
+    // v2.30.1: settle in-flight items too — v2.30.0 only flipped the
+    // run state, so cards whose videos were mid-generation kept
+    // rendering RENDERING forever after Stop (owner's field test).
+    // Never-started items stay pending/queued: they do not render as
+    // Rendering and the header counts derive from item statuses.
+    for (final item in _items) {
+      if (item.status == PromptStatus.generating ||
+          item.status == PromptStatus.downloading) {
+        item.status = PromptStatus.failed;
+        item.error = 'Stopped by user';
+      }
+    }
     _state = GenerationState.idle;
     AutomationBridge.instance.stopGeneration();
     activity.addLog('Generation stopped.', level: LogLevel.warning);

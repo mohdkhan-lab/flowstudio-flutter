@@ -233,7 +233,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.30.0', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.30.1', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -665,6 +665,12 @@ async function startBridge() {
             broadcastEvent('automation-log', { message: m, level: lvl, detail: !milestone });
           },
           onProgress: (data) => broadcastEvent('automation-progress', data),
+          // v2.30.1: forward the pool's per-task updates — this
+          // callback was never wired, so WorkerPool.onTaskUpdate
+          // defaulted to a no-op and every per-task failure (with
+          // its concrete reason) was silently dropped; the app's
+          // cards then span as RENDERING past the end of the run.
+          onTaskUpdate: (data) => broadcastEvent('task-updated', data),
           onVideoCompleted: (data) => broadcastEvent('video-completed', data),
           onAccountUpdated: (data) => broadcastEvent('account-updated', data),
           // v2.25.0 (parked browser): the pool announces which accounts

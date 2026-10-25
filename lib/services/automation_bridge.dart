@@ -25,6 +25,9 @@ class AutomationBridge {
   Function(GoogleAccount account)? onAccountUpdated;
   Function(Map<String, dynamic> data)? onProgress;
   Function(Map<String, dynamic> data)? onVideoCompleted;
+  // v2.30.1: per-task engine updates (WorkerPool.onTaskUpdate),
+  // forwarded by the bridge as 'task-updated' SSE events.
+  Function(Map<String, dynamic> data)? onTaskUpdated;
   // v2.25.0 (parked browser): [{ 'id': ..., 'windowShown': bool }] for
   // every account with a live generation browser right now.
   Function(List<Map<String, dynamic>> accounts)? onActiveBrowsers;
@@ -188,6 +191,9 @@ class AutomationBridge {
                 break;
               case 'automation-progress':
                 onProgress?.call(data);
+                break;
+              case 'task-updated':
+                onTaskUpdated?.call(data);
                 break;
               case 'account-updated':
                 if (data['account'] is Map) {

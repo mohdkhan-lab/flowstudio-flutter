@@ -2680,30 +2680,51 @@ class FlowAutomationEngine {
 
   /** Resolution wala menu aaye to uska sahi option click karo. */
   async _nativePickResolution() {
+    const findOption = async () => {
+      try {
+        return await this.page.evaluate(() => {
+          const menuItems = Array.from(document.querySelectorAll('.cdk-overlay-pane button, [role="menuitem"], .mat-mdc-menu-panel button'));
+          const origBtn = menuItems.find(b => {
+            const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+            return t.includes('original') || t.includes('720p') || t.includes('1080p') || t.includes('360p') || aria.includes('original');
+          });
+          if (origBtn) {
+            const rect = origBtn.getBoundingClientRect();
+            if (rect.width > 0 && rect.height > 0) {
+              return { found: true, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, text: (origBtn.innerText || origBtn.textContent || '').trim() };
+            }
+          }
+          return { found: false };
+        });
+      } catch (e) {
+        return { found: false };
+      }
+    };
     let optCoords = { found: false };
     for (let r = 0; r < 6; r++) {
-      optCoords = await this.page.evaluate(() => {
-        const menuItems = Array.from(document.querySelectorAll('.cdk-overlay-pane button, [role="menuitem"], .mat-mdc-menu-panel button'));
-        const origBtn = menuItems.find(b => {
-          const t = (b.innerText || b.textContent || '').trim().toLowerCase();
-          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-          return t.includes('original') || t.includes('720p') || t.includes('1080p') || t.includes('360p') || aria.includes('original');
-        });
-        if (origBtn) {
-          const rect = origBtn.getBoundingClientRect();
-          if (rect.width > 0 && rect.height > 0) {
-            return { found: true, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, text: (origBtn.innerText || origBtn.textContent || '').trim() };
-          }
-        }
-        return { found: false };
-      });
+      optCoords = await findOption();
       if (optCoords.found) break;
       await sleep(400);
     }
     if (optCoords.found) {
       this.log(`Selecting the resolution: "${optCoords.text}"…`, 'info');
-      const clickedAt = Date.now();
+      let clickedAt = Date.now();
       await this.page.mouse.click(optCoords.x, optCoords.y);
+      // v2.30.4: click ke baad pakka karo ki menu BAND hua. Owner ke
+      // v2.30.3 run (2026-10-25) me editor route par resolution click
+      // ke baad bhi menu khula atka raha (screenshot saboot) aur file
+      // kabhi nahi aayi — engine 90s tak andha intezaar karta raha.
+      // Menu ab bhi khula hai to coordinates TAZE padh kar dobara
+      // click karo (kul 3 koshish). Menu band = click lag gaya.
+      for (let clickTry = 1; clickTry < 3; clickTry++) {
+        await sleep(900);
+        const still = await findOption();
+        if (!still.found) break;
+        this.log('The resolution menu stayed open after the click — clicking the option again with fresh coordinates…', 'warn');
+        clickedAt = Date.now();
+        await this.page.mouse.click(still.x, still.y);
+      }
       return { found: true, clickedAt };
     }
     this.log('The resolution menu did not appear — the download may have started directly; waiting for the file…', 'warn');
@@ -2944,7 +2965,12 @@ class FlowAutomationEngine {
     const clickTime = Date.now();
     await this.page.mouse.click(ctl.x, ctl.y);
     const res = await this._nativePickResolution();
-    const ok = await this._nativeAwaitAndSave(task, prep, res.clickedAt || clickTime, 90000, downloadFolder, settings);
+    // v2.30.4: editor route ka file-intezaar 90s → 40s. Ye rasta owner
+    // ki machine par aaj tak kabhi file nahi laya (v2.8.0, v2.30.3 ke
+    // runs) — click lage to 360p ki chhoti file chand seconds me aa
+    // jati hai (menu raste par 2–5s lage); 90s ka andha intezaar
+    // multi-video run ko "atka hua" dikhata tha.
+    const ok = await this._nativeAwaitAndSave(task, prep, res.clickedAt || clickTime, 40000, downloadFolder, settings);
     attempts.push({ strategy: 'native-editor', ok, note: ok ? `the file came from the editor's top bar "Download media" (${ctl.how})` : 'the editor\'s "Download media" was clicked, but no file arrived' });
     if (!ok) this.log(`[Prompt #${n}] No file came from the editor route — the next form will be tried.`, 'warn');
     return ok;
@@ -2987,24 +3013,34 @@ class FlowAutomationEngine {
     };
 
     let more = { found: false };
-    let onGrid = false;
-    try { onGrid = await this.page.evaluate(() => document.querySelectorAll('flow-grid-tile-container').length > 0); } catch (e) {}
-    if (onGrid) {
-      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
-      if (idx >= 0) {
-        const coords = await this._tileCenterCoords(idx);
-        if (coords.found) {
-          await this.page.mouse.move(coords.x, coords.y);
-          await sleep(900);
+    // v2.30.4: ⋮ button ki talash ab 3 koshishon tak chalti hai aur
+    // nakami LOG hoti hai. v2.30.3 tak ye rasta bina ek bhi log line
+    // ke chup-chaap mar jata tha (owner ka 2026-10-25 multi-video
+    // run: Prompt #4 par ⋮ us pal nahi mila — grid usi pal Prompt #5
+    // ke render se badal raha tha — aur engine seedha dheele editor
+    // raste par chala gaya, jahan run atka raha).
+    for (let hunt = 0; hunt < 3 && !more.found; hunt++) {
+      if (hunt > 0) await sleep(1200);
+      let onGrid = false;
+      try { onGrid = await this.page.evaluate(() => document.querySelectorAll('flow-grid-tile-container').length > 0); } catch (e) {}
+      if (onGrid) {
+        const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+        if (idx >= 0) {
+          const coords = await this._tileCenterCoords(idx);
+          if (coords.found) {
+            await this.page.mouse.move(coords.x, coords.y);
+            await sleep(900);
+          }
+          more = await findMoreControl(idx);
         }
-        more = await findMoreControl(idx);
+      } else {
+        // Editor khula hai — uske ⋮ button ko dhoondho (page scope).
+        more = await findMoreControl(-1);
       }
-    } else {
-      // Editor khula hai — uske ⋮ button ko dhoondho (page scope).
-      more = await findMoreControl(-1);
     }
     if (!more.found) {
-      attempts.push({ strategy: 'native-menu', ok: false, note: 'the ⋮ (more options) button was not found at all' });
+      this.log(`[Prompt #${n}] The ⋮ (more options) button was not found on its tile even after 3 tries — the editor form will be tried.`, 'warn');
+      attempts.push({ strategy: 'native-menu', ok: false, note: 'the ⋮ (more options) button was not found even after 3 tries' });
       return false;
     }
     this.log(`[Prompt #${n}] Opening the ⋮ (more options) menu — Download will be searched inside it…`, 'info');

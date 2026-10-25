@@ -67,6 +67,7 @@ const {
 } = require('./engine/cookieImport');
 const { WorkerPool } = require('./engine/workerPool');
 const { recordActivity } = require('./engine/activityStore');
+const mcp = require('./mcp_server');
 const { getStats } = require('./engine/usageStats');
 const { parseCookieText } = require('./engine/cookieParser');
 const crypto = require('crypto');
@@ -173,6 +174,14 @@ function broadcastEvent(eventName, data) {
 async function startBridge() {
   await dbService.ensureInit();
   console.log(`[FlowStudio Engine] Database initialized. Running on port ${PORT}...`);
+  // v2.31.0: start the MCP server at boot when the connector is on.
+  try {
+    if (mcp.mcpEnabled(dbService)) {
+      mcp.startMcpServer({ dbService, broadcastEvent });
+    }
+  } catch (e) {
+    console.warn('[FlowStudio MCP] Boot start failed:', e.message);
+  }
 
   const server = http.createServer(async (req, res) => {
     // Enable CORS
@@ -234,7 +243,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.30.3', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: '2.31.0', workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -247,7 +256,10 @@ async function startBridge() {
           // v2.29.0: the sidebar's source-numbering aliases
           // (account id -> { alias, source }) and the persisted
           // parallel-browsers count.
-          'account_aliases', 'parallel_browsers'
+          'account_aliases', 'parallel_browsers',
+          // v2.31.0: MCP connector on/off (the token itself is only
+          // ever served by the /api/mcp/* endpoints below).
+          'mcp_enabled'
         ];
         const settings = {};
         for (const k of keys) {
@@ -266,6 +278,51 @@ async function startBridge() {
           dbService.setSetting(body.key, body.value);
         }
         return sendJson(200, { ok: true });
+      }
+
+      // 3b. v2.31.0: MCP connector management (local UI only — this
+      // bridge listens on 127.0.0.1, so the full token served by
+      // /api/mcp/config never leaves the owner's PC).
+      if (pathname === '/api/mcp/status' && req.method === 'GET') {
+        return sendJson(200, { ok: true, mcp: mcp.getStatus(dbService) });
+      }
+
+      if (pathname === '/api/mcp/enable' && req.method === 'POST') {
+        const body = await readBody();
+        const enabled = !!body.enabled;
+        dbService.setSetting('mcp_enabled', enabled ? '1' : '0');
+        if (enabled) {
+          mcp.startMcpServer({ dbService, broadcastEvent });
+        } else {
+          mcp.stopMcpServer();
+        }
+        broadcastEvent('automation-log', {
+          message: enabled ? '🔌 MCP • Muse connector started (port 48191)' : '🔌 MCP • Muse connector stopped',
+          level: 'info',
+        });
+        return sendJson(200, { ok: true, mcp: mcp.getStatus(dbService) });
+      }
+
+      if (pathname === '/api/mcp/regenerate-token' && req.method === 'POST') {
+        mcp.regenerateToken(dbService);
+        broadcastEvent('automation-log', { message: '🔌 MCP • New access token generated — Muse must use the new config', level: 'warning' });
+        return sendJson(200, { ok: true, mcp: mcp.getStatus(dbService) });
+      }
+
+      if (pathname === '/api/mcp/config' && req.method === 'GET') {
+        const status = mcp.getStatus(dbService);
+        const token = mcp.ensureToken(dbService);
+        return sendJson(200, {
+          ok: true,
+          config: {
+            mcpServers: {
+              flowstudio: {
+                url: status.url,
+                headers: { Authorization: `Bearer ${token}` },
+              },
+            },
+          },
+        });
       }
 
       // 4. Usage Stats

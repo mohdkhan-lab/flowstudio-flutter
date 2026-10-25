@@ -4,6 +4,8 @@ import 'package:file_picker/file_picker.dart';
 import '../theme/app_theme.dart';
 import '../models/app_settings.dart';
 import '../providers/settings_provider.dart';
+import 'package:flutter/services.dart';
+import '../services/automation_bridge.dart';
 
 class SettingsView extends StatefulWidget {
   const SettingsView({super.key});
@@ -20,6 +22,11 @@ class _SettingsViewState extends State<SettingsView> {
   final TextEditingController _chatController = TextEditingController();
   final TextEditingController _supportController = TextEditingController();
 
+  // v2.31.0: MCP connector state (Settings → Muse AI — MCP).
+  Map<String, dynamic>? _mcpStatus;
+  bool _mcpBusy = false;
+  String _mcpFeedback = '';
+
   @override
   void initState() {
     super.initState();
@@ -29,6 +36,7 @@ class _SettingsViewState extends State<SettingsView> {
     _whatsappController.text = s.whatsAppLink;
     _chatController.text = s.chatLink;
     _supportController.text = s.supportLink;
+    _loadMcpStatus();
   }
 
   @override
@@ -60,6 +68,229 @@ class _SettingsViewState extends State<SettingsView> {
       context.read<SettingsProvider>().setChromePath(path);
       _chromeController.text = path;
     }
+  }
+
+
+  // --- v2.31.0: MCP connector (approved design Option 2 — grid card) ---
+
+  Future<void> _loadMcpStatus() async {
+    final st = await AutomationBridge.instance.getMcpStatus();
+    if (mounted && st != null) setState(() => _mcpStatus = st);
+  }
+
+  void _mcpSnack(String msg) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(msg), duration: const Duration(seconds: 3)),
+    );
+  }
+
+  Future<void> _toggleMcp(bool v) async {
+    if (_mcpBusy) return;
+    setState(() => _mcpBusy = true);
+    final st = await AutomationBridge.instance.setMcpEnabled(v);
+    if (!mounted) return;
+    setState(() {
+      if (st != null) _mcpStatus = st;
+      _mcpBusy = false;
+      _mcpFeedback = v ? 'MCP server is running — Muse can connect now.' : 'MCP server stopped.';
+    });
+  }
+
+  Future<void> _regenMcpToken() async {
+    if (_mcpBusy) return;
+    setState(() => _mcpBusy = true);
+    final st = await AutomationBridge.instance.regenerateMcpToken();
+    if (!mounted) return;
+    setState(() {
+      if (st != null) _mcpStatus = st;
+      _mcpBusy = false;
+      _mcpFeedback = 'New token generated — copy the new Muse config for Muse.';
+    });
+    _mcpSnack('New MCP token generated');
+  }
+
+  Future<void> _copyMcpUrl() async {
+    final url = _mcpStatus?['url']?.toString() ?? '';
+    if (url.isEmpty) return;
+    await Clipboard.setData(ClipboardData(text: url));
+    _mcpSnack('Connection URL copied');
+  }
+
+  Future<void> _copyMcpConfig() async {
+    final json = await AutomationBridge.instance.getMcpConfigJson();
+    if (json == null) {
+      _mcpSnack('Could not load the config — is the engine running?');
+      return;
+    }
+    await Clipboard.setData(ClipboardData(text: json));
+    _mcpSnack('Muse config copied — paste it into Muse to connect');
+  }
+
+  String _mcpLastConnectedText() {
+    final raw = _mcpStatus?['lastConnectedAt'];
+    final client = _mcpStatus?['lastClient']?.toString() ?? '';
+    if (raw == null) return 'Not connected yet';
+    final ms = raw is num ? raw.toInt() : int.tryParse(raw.toString()) ?? 0;
+    if (ms <= 0) return 'Not connected yet';
+    final dt = DateTime.fromMillisecondsSinceEpoch(ms);
+    var hour = dt.hour % 12;
+    if (hour == 0) hour = 12;
+    final ampm = dt.hour >= 12 ? 'PM' : 'AM';
+    final minute = dt.minute.toString().padLeft(2, '0');
+    final who = client.isEmpty ? 'Muse (MK)' : client;
+    return 'Last connected: ${dt.day}/${dt.month}, $hour:$minute $ampm · $who';
+  }
+
+  Widget _buildMcpPanel() {
+    final st = _mcpStatus;
+    final enabled = st == null ? true : st['enabled'] == true;
+    final running = st != null && st['running'] == true;
+    final url = st?['url']?.toString() ?? 'http://127.0.0.1:48191/mcp';
+    final tokenMasked = st?['tokenMasked']?.toString() ?? '••••••••••••';
+    const toolLabels = [
+      'Status', 'Accounts', 'Credits', 'History', 'Outputs',
+      'Generate', 'Pause / Resume', 'Stop', 'Sync Credits', 'Check Cookies',
+    ];
+    return _buildPanel(
+      title: '🔌 Muse AI — MCP',
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: running ? const Color(0xFF22A355).withValues(alpha: 0.16) : AppTheme.overlay08,
+                  borderRadius: BorderRadius.circular(999),
+                  border: Border.all(color: running ? const Color(0xFF22A355) : AppTheme.borderSoft),
+                ),
+                child: Text(
+                  running ? '● RUNNING' : '○ STOPPED',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w800,
+                    color: running ? const Color(0xFF1E7D46) : AppTheme.textFaint,
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: Text(
+                  _mcpLastConnectedText(),
+                  overflow: TextOverflow.ellipsis,
+                  style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          _buildToggleRow(
+            title: 'Enable MCP Server',
+            subtitle: 'Port 48191 · Muse can use 10 tools',
+            value: enabled,
+            onChanged: _toggleMcp,
+          ),
+          const SizedBox(height: 10),
+          Text('CONNECTION URL (TAILSCALE)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8, color: AppTheme.textFaint)),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  height: 32,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.inputBg,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: AppTheme.borderSoft),
+                  ),
+                  alignment: Alignment.centerLeft,
+                  child: Text(url, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: AppTheme.textMain)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              OutlinedButton(
+                onPressed: _copyMcpUrl,
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: AppTheme.textMain,
+                  backgroundColor: AppTheme.overlay10,
+                  side: BorderSide(color: AppTheme.borderSoft),
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                  visualDensity: VisualDensity.compact,
+                ),
+                child: const Text('Copy', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Text('ACCESS TOKEN', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8, color: AppTheme.textFaint)),
+          const SizedBox(height: 4),
+          Row(
+            children: [
+              Expanded(
+                child: Container(
+                  height: 32,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.inputBg,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: AppTheme.borderSoft),
+                  ),
+                  alignment: Alignment.centerLeft,
+                  child: Text(tokenMasked, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: AppTheme.textMain)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              TextButton(
+                onPressed: _mcpBusy ? null : _regenMcpToken,
+                child: Text('Regenerate', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.accentText)),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: toolLabels.map((t) {
+              return Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                decoration: BoxDecoration(
+                  color: const Color(0x1A0A84FF),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: AppTheme.borderSoft),
+                ),
+                child: Text(t, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppTheme.accentText)),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 12),
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: _copyMcpConfig,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.accentGold,
+                foregroundColor: Colors.black,
+                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
+                visualDensity: VisualDensity.compact,
+              ),
+              child: const Text('Copy Muse Config', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
+            ),
+          ),
+          const SizedBox(height: 8),
+          Text(
+            _mcpFeedback.isNotEmpty
+                ? _mcpFeedback
+                : 'Cookies & passwords are never shared. Starting a generation always asks for approval.',
+            style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+          ),
+        ],
+      ),
+    );
   }
 
   @override
@@ -302,37 +533,74 @@ class _SettingsViewState extends State<SettingsView> {
             ),
           );
 
+    // v2.31.0 (approved design Option 2): the four Automation
+    // toggles are built once and arranged two ways — stacked in the
+    // half-width panel (narrow layout) and 2×2 in the full-width
+    // panel that sits under Defaults + MCP in the wide layout.
+    final tglShowBrowsers = _buildToggleRow(
+      title: 'Show Browsers',
+      subtitle: 'ON = browsers open on screen while generating, so you can watch the work. OFF = they work hidden in the background.',
+      value: s.showBrowsers,
+      onChanged: (v) => prov.toggleShowBrowsers(v),
+    );
+    final tglPreviewAutoplay = _buildToggleRow(
+      title: 'Preview autoplay',
+      subtitle: 'The video starts playing as soon as the preview window opens',
+      value: s.previewAutoplay,
+      onChanged: (v) => prov.togglePreviewAutoplay(v),
+    );
+    final tglAutoVerify = _buildToggleRow(
+      title: 'Run Verify All when the app starts',
+      subtitle: 'Checks every account live in the background (this can take a little time)',
+      value: s.autoVerifyOnStart,
+      onChanged: (v) => prov.toggleAutoVerify(v),
+    );
+    // v2.27.0: moved here from the sidebar (design).
+    final tglOnlyLive = _buildToggleRow(
+      title: 'Only run live accounts',
+      subtitle: 'Only Live accounts take part in generation; other accounts are skipped.',
+      value: s.onlyRunLiveAccounts,
+      onChanged: (v) => prov.toggleOnlyRunLiveAccounts(v),
+    );
+
     final automationPanel = _buildPanel(
             title: '🤖 Automation',
             child: Column(
               children: [
-                _buildToggleRow(
-                  title: 'Show Browsers',
-                  subtitle: 'ON = browsers open on screen while generating, so you can watch the work. OFF = they work hidden in the background.',
-                  value: s.showBrowsers,
-                  onChanged: (v) => prov.toggleShowBrowsers(v),
-                ),
+                tglShowBrowsers,
                 Divider(color: AppTheme.borderSoft, height: 16),
-                _buildToggleRow(
-                  title: 'Preview autoplay',
-                  subtitle: 'The video starts playing as soon as the preview window opens',
-                  value: s.previewAutoplay,
-                  onChanged: (v) => prov.togglePreviewAutoplay(v),
-                ),
+                tglPreviewAutoplay,
                 Divider(color: AppTheme.borderSoft, height: 16),
-                _buildToggleRow(
-                  title: 'Run Verify All when the app starts',
-                  subtitle: 'Checks every account live in the background (this can take a little time)',
-                  value: s.autoVerifyOnStart,
-                  onChanged: (v) => prov.toggleAutoVerify(v),
-                ),
+                tglAutoVerify,
                 Divider(color: AppTheme.borderSoft, height: 16),
-                // v2.27.0: moved here from the sidebar (design).
-                _buildToggleRow(
-                  title: 'Only run live accounts',
-                  subtitle: 'Only Live accounts take part in generation; other accounts are skipped.',
-                  value: s.onlyRunLiveAccounts,
-                  onChanged: (v) => prov.toggleOnlyRunLiveAccounts(v),
+                tglOnlyLive,
+              ],
+            ),
+          );
+
+    final automationWidePanel = _buildPanel(
+            title: '🤖 Automation',
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    children: [
+                      tglShowBrowsers,
+                      Divider(color: AppTheme.borderSoft, height: 16),
+                      tglOnlyLive,
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 16),
+                Expanded(
+                  child: Column(
+                    children: [
+                      tglPreviewAutoplay,
+                      Divider(color: AppTheme.borderSoft, height: 16),
+                      tglAutoVerify,
+                    ],
+                  ),
                 ),
               ],
             ),
@@ -455,6 +723,8 @@ class _SettingsViewState extends State<SettingsView> {
             ),
           );
 
+    final mcpPanel = _buildMcpPanel();
+
     final aboutPanel = _buildPanel(
             title: '📋 About',
             child: Container(
@@ -547,38 +817,42 @@ class _SettingsViewState extends State<SettingsView> {
           // ever squeezed; the page scrolls, as it already could.
           LayoutBuilder(
             builder: (context, constraints) {
-              final leftColumn = Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  appearancePanel,
-                  const SizedBox(height: 12),
-                  defaultsPanel,
-                ],
-              );
-              final rightColumn = Column(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  updatesPanel,
-                  const SizedBox(height: 12),
-                  automationPanel,
-                ],
-              );
+              // v2.31.0 (approved design Option 2): wide layout is
+              // row-based — Appearance + Updates, Defaults + MCP,
+              // then Automation full-width. Below 700 the panels
+              // stack in that same reading order and the page scrolls.
+              Widget pair(Widget a, Widget b) => Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Expanded(child: a),
+                      const SizedBox(width: 12),
+                      Expanded(child: b),
+                    ],
+                  );
               if (constraints.maxWidth < 700) {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    leftColumn,
+                    appearancePanel,
                     const SizedBox(height: 12),
-                    rightColumn,
+                    updatesPanel,
+                    const SizedBox(height: 12),
+                    defaultsPanel,
+                    const SizedBox(height: 12),
+                    mcpPanel,
+                    const SizedBox(height: 12),
+                    automationPanel,
                   ],
                 );
               }
-              return Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Expanded(child: leftColumn),
-                  const SizedBox(width: 12),
-                  Expanded(child: rightColumn),
+                  pair(appearancePanel, updatesPanel),
+                  const SizedBox(height: 12),
+                  pair(defaultsPanel, mcpPanel),
+                  const SizedBox(height: 12),
+                  automationWidePanel,
                 ],
               );
             },

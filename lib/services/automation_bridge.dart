@@ -742,6 +742,77 @@ class AutomationBridge {
     }
   }
 
+  // --- v2.31.0: MCP connector (Settings → Muse AI — MCP) ---
+
+  /// Current MCP connector state from the bridge: enabled, running,
+  /// port, connection URL, masked token, last connection, tool names.
+  Future<Map<String, dynamic>?> getMcpStatus() async {
+    try {
+      final res = await http.get(Uri.parse('$baseUrl/api/mcp/status'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true && data['mcp'] is Map) {
+          return Map<String, dynamic>.from(data['mcp'] as Map);
+        }
+      }
+    } catch (e) {
+      debugPrint('[getMcpStatus Error] $e');
+    }
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> setMcpEnabled(bool enabled) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/mcp/enable'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'enabled': enabled}),
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true && data['mcp'] is Map) {
+          return Map<String, dynamic>.from(data['mcp'] as Map);
+        }
+      }
+    } catch (e) {
+      debugPrint('[setMcpEnabled Error] $e');
+    }
+    return null;
+  }
+
+  Future<Map<String, dynamic>?> regenerateMcpToken() async {
+    try {
+      final res = await http.post(Uri.parse('$baseUrl/api/mcp/regenerate-token'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true && data['mcp'] is Map) {
+          return Map<String, dynamic>.from(data['mcp'] as Map);
+        }
+      }
+    } catch (e) {
+      debugPrint('[regenerateMcpToken Error] $e');
+    }
+    return null;
+  }
+
+  /// The full ready-to-paste Muse config JSON (contains the access
+  /// token — it comes from the bridge on this PC only, for the
+  /// Settings "Copy Muse Config" button).
+  Future<String?> getMcpConfigJson() async {
+    try {
+      final res = await http.get(Uri.parse('$baseUrl/api/mcp/config'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true && data['config'] != null) {
+          return const JsonEncoder.withIndent('  ').convert(data['config']);
+        }
+      }
+    } catch (e) {
+      debugPrint('[getMcpConfigJson Error] $e');
+    }
+    return null;
+  }
+
   void dispose() {
     _disposed = true;
     _sseSubscription?.cancel();

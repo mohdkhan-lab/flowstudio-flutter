@@ -1,6 +1,6 @@
 ; Script generated for FlowStudio Lite Inno Setup Installer
 #define MyAppName "FlowStudio Lite"
-#define MyAppVersion "2.30.4"
+#define MyAppVersion "2.31.0"
 #define MyAppPublisher "MK"
 ; v2.22.0 fix: the Flutter Windows build produces "flutter_flow.exe"
 ; (BINARY_NAME in windows/CMakeLists.txt). The old script pointed the
@@ -45,6 +45,8 @@ Source: "node_modules\*"; DestDir: "{app}\node_modules"; Excludes: "*electron*,*
 Source: "assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Root Engine Bridge & Config
 Source: "engine_bridge.js"; DestDir: "{app}"; Flags: ignoreversion
+; v2.31.0: the MCP server module the bridge requires at startup.
+Source: "mcp_server.js"; DestDir: "{app}"; Flags: ignoreversion
 Source: "package.json"; DestDir: "{app}"; Flags: ignoreversion
 ; Embedded Node Runtime (self-contained, no external dependencies required)
 ; v2.22.0 fix: node.exe is staged NEXT TO this script before compiling

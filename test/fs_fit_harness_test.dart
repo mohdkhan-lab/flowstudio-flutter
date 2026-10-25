@@ -439,9 +439,14 @@ void main() {
         'macOS Classic',
       ]) {
         final w = tester.widget<Text>(find.text(themeName));
-        expect(w.maxLines, 2, reason: '$themeName gets a two-line slot');
-        expect(w.overflow, isNot(TextOverflow.ellipsis),
-            reason: '$themeName must not be clipped with an ellipsis');
+        // v2.31.2: the owner-approved Option A compact cards put the
+        // theme name in a ONE-line slot (supersedes the v2.30.0
+        // two-line slot this check originally guarded). The names
+        // still render in full at the harness sizes (9px in ~87px+
+        // cells); the ellipsis exists only for far narrower widths.
+        expect(w.maxLines, 1, reason: '$themeName gets a one-line slot (v2.31.2 Option A)');
+        expect(w.overflow, TextOverflow.ellipsis,
+            reason: '$themeName one-line slot uses an ellipsis (v2.31.2 Option A)');
       }
     }
 

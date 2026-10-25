@@ -321,56 +321,24 @@ class _SettingsViewState extends State<SettingsView> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  'Your chosen appearance is kept even after the app restarts.',
-                  style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
-                ),
+                // v2.31.2 (owner-approved design Option A, Compact
+                // Cards): one slim segmented mode row, a compact 5×2
+                // theme grid and a single closing note, so this panel
+                // is finally the same height class as the other
+                // Settings boxes instead of towering over them.
+                _buildModeSegment(prov, s),
                 const SizedBox(height: 10),
-                // v2.30.0: scale-down fitted so the three mode cards
-                // can never poke outside the Appearance panel at
-                // narrow widths (the panel is ~half the window in
-                // the two-column layout).
-                FittedBox(
-                  fit: BoxFit.scaleDown,
-                  alignment: Alignment.centerLeft,
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      _buildAppearanceBtn(
-                        '🌙 Dark',
-                        'dark',
-                        s.appearance == 'dark',
-                        () => prov.updateAppearance('dark'),
-                      ),
-                      const SizedBox(width: 8),
-                      _buildAppearanceBtn(
-                        '☀️ Light',
-                        'white',
-                        s.appearance == 'white',
-                        () => prov.updateAppearance('white'),
-                      ),
-                      const SizedBox(width: 8),
-                      _buildAppearanceBtn(
-                        '💻 System',
-                        'system',
-                        s.appearance == 'system',
-                        () => prov.updateAppearance('system'),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 14),
                 Text(
                   'THEME',
                   style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8, color: AppTheme.textFaint),
                 ),
-                const SizedBox(height: 3),
-                Text(
-                  'Every theme comes in Dark and Light — switching the mode keeps your theme.',
-                  style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
-                ),
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 _buildThemeGrid(prov, s),
+                const SizedBox(height: 8),
+                Text(
+                  'Your choice is saved and kept after the app restarts.',
+                  style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
+                ),
               ],
             ),
           );
@@ -923,51 +891,50 @@ class _SettingsViewState extends State<SettingsView> {
     );
   }
 
-  // v2.26.0: the 10-theme grid. Previews are drawn from each family's
-  // palette for the CURRENTLY APPLIED mode (AppTheme.dark), so flipping
-  // Dark/Light re-renders every card in that mode's colours.
+  // v2.31.2 (owner-approved design Option A): the 10 themes in a
+  // compact 5×2 grid of small cards at a FIXED row height, so the
+  // grid is always two short rows whatever width the panel gets.
+  // Previews are still drawn from each family's palette for the
+  // CURRENTLY APPLIED mode (AppTheme.dark), so flipping Dark/Light
+  // re-renders every card in that mode's colours.
   Widget _buildThemeGrid(SettingsProvider prov, AppSettings s) {
-    // v2.27.0: the Settings page is two-column now, so the Appearance
-    // panel is narrower — the theme grid adapts its column count to
-    // the width it actually gets (5 across when wide, 3 in the
-    // two-column layout) so cards never overflow at 1024×768.
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final crossAxisCount = constraints.maxWidth > 520 ? 5 : 3;
-        return GridView.builder(
-          shrinkWrap: true,
-          physics: const NeverScrollableScrollPhysics(),
-          gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-            crossAxisCount: crossAxisCount,
-            mainAxisSpacing: 8,
-            crossAxisSpacing: 8,
-            // v2.30.0: 0.92 (was 1.05) — with the two-line theme-name
-            // slot the cards need more height; at the tightest
-            // geometry (5-across in the two-column layout) the
-            // preview column was short by ~0.9px and overflowed.
-            childAspectRatio: 0.92,
-          ),
-          itemCount: AppTheme.themeIds.length,
-          itemBuilder: (context, i) {
-            final id = AppTheme.themeIds[i];
-            return _buildThemeCard(prov, s, id);
-          },
-        );
+    return GridView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
+        crossAxisCount: 5,
+        mainAxisSpacing: 6,
+        crossAxisSpacing: 6,
+        // Card content: 3px padding top/bottom + 20px preview chip +
+        // 3px gap + one name line, inside a 48px row with even the
+        // selected card's 2px border counted — ~2px of slack, so
+        // nothing can overflow (the fit harness caught a 1px spill
+        // at extent 46 with the real font's line height).
+        mainAxisExtent: 48,
+      ),
+      itemCount: AppTheme.themeIds.length,
+      itemBuilder: (context, i) {
+        final id = AppTheme.themeIds[i];
+        return _buildThemeCardCompact(prov, s, id);
       },
     );
   }
 
-  Widget _buildThemeCard(SettingsProvider prov, AppSettings s, String id) {
+  // v2.31.2 compact theme card (approved Option A): a 20px palette
+  // preview chip with the theme name in ONE line under it (ellipsis
+  // at the narrowest widths), and the family's accent ring when
+  // selected — same tap behaviour as the old tall card.
+  Widget _buildThemeCardCompact(SettingsProvider prov, AppSettings s, String id) {
     final pal = AppTheme.paletteFor(id, AppTheme.dark);
     final selected = s.theme == id;
     return InkWell(
       onTap: () => prov.setTheme(id),
-      borderRadius: BorderRadius.circular(9),
+      borderRadius: BorderRadius.circular(8),
       child: Container(
-        padding: const EdgeInsets.all(6),
+        padding: const EdgeInsets.all(3),
         decoration: BoxDecoration(
           color: AppTheme.surfaceElevated,
-          borderRadius: BorderRadius.circular(9),
+          borderRadius: BorderRadius.circular(8),
           border: Border.all(
             color: selected ? pal.accentGold : AppTheme.borderSoft,
             width: selected ? 2 : 1,
@@ -976,49 +943,21 @@ class _SettingsViewState extends State<SettingsView> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            Expanded(
-              child: Stack(
-                children: [
-                  Positioned.fill(child: _buildThemePreview(pal, selected)),
-                  // v2.30.0: the "Best" badge moved OFF the name row
-                  // (it was squeezing "macOS Classic" into a mid-word
-                  // clip) and onto the preview's corner.
-                  if (id == 'macos')
-                    Positioned(
-                      top: 3,
-                      left: 3,
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
-                        decoration: BoxDecoration(
-                          color: AppTheme.activeGold,
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: const Text(
-                          'Best',
-                          style: TextStyle(fontSize: 8, fontWeight: FontWeight.w900, color: Color(0xFF231A00)),
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-            const SizedBox(height: 5),
-            // v2.30.0 (owner's photo: theme names clipped mid-word —
-            // "macC…", "Graphite + Wh…"): the name gets a FIXED
-            // two-line slot and NO ellipsis, so "Midnight Blue",
-            // "Graphite + White", "Gold Premium" and "macOS Classic"
-            // always show in full and every card's name block aligns.
-            SizedBox(
-              height: 24,
-              child: Text(
-                AppTheme.themeNames[id] ?? id,
-                maxLines: 2,
-                style: TextStyle(
-                  fontSize: 10,
-                  height: 1.15,
-                  fontWeight: selected ? FontWeight.bold : FontWeight.w600,
-                  color: selected ? AppTheme.textMain : AppTheme.textDim,
-                ),
+            SizedBox(height: 20, child: _buildThemePreviewCompact(pal)),
+            const SizedBox(height: 3),
+            Text(
+              AppTheme.themeNames[id] ?? id,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                // 9px (inside the approved 8.5–10 range) so even the
+                // longest names ("Graphite + White") show in full in
+                // the ~87px cells of the 1024-wide two-column layout;
+                // the ellipsis only bites at far narrower widths.
+                fontSize: 9,
+                fontWeight: selected ? FontWeight.bold : FontWeight.w600,
+                color: selected ? AppTheme.textMain : AppTheme.textDim,
               ),
             ),
           ],
@@ -1027,146 +966,130 @@ class _SettingsViewState extends State<SettingsView> {
     );
   }
 
-  // Mini app-window preview drawn purely from the palette: gradient body,
-  // surface sidebar with an accent bar and the fixed gold ACTIVE dot,
-  // an input box and an accent progress bar with fixed green/red dots.
-  Widget _buildThemePreview(AppPalette pal, bool selected) {
-    return Stack(
-      children: [
-        Container(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              colors: [pal.bg2, pal.bgBody],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(color: pal.border),
-          ),
-          child: ClipRRect(
-            borderRadius: BorderRadius.circular(7),
-            child: Row(
+  // Compact preview chip for the v2.31.2 theme cards: the same
+  // palette story as the old full preview (gradient body, surface
+  // sidebar strip with the accent bar and gold ACTIVE dot, an input
+  // box and an accent bar) drawn at a fixed 20px height.
+  Widget _buildThemePreviewCompact(AppPalette pal) {
+    return Container(
+      clipBehavior: Clip.antiAlias,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [pal.bg2, pal.bgBody],
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+        borderRadius: BorderRadius.circular(5),
+        border: Border.all(color: pal.border),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            width: 14,
+            color: pal.surface,
+            padding: const EdgeInsets.symmetric(horizontal: 3, vertical: 2),
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Container(
-                  width: 26,
-                  color: pal.surface,
-                  padding: const EdgeInsets.fromLTRB(5, 6, 5, 6),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.stretch,
-                    children: [
-                      Container(height: 4, decoration: BoxDecoration(color: pal.accentGold, borderRadius: BorderRadius.circular(2))),
-                      const SizedBox(height: 4),
-                      Container(height: 4, decoration: BoxDecoration(color: pal.textDim.withValues(alpha: 0.55), borderRadius: BorderRadius.circular(2))),
-                      const SizedBox(height: 4),
-                      Container(height: 4, decoration: BoxDecoration(color: pal.textDim.withValues(alpha: 0.35), borderRadius: BorderRadius.circular(2))),
-                      const Spacer(),
-                      Container(
-                        width: 7,
-                        height: 7,
-                        decoration: BoxDecoration(color: pal.activeGold, shape: BoxShape.circle),
-                      ),
-                    ],
-                  ),
-                ),
-                Expanded(
-                  child: Padding(
-                    padding: const EdgeInsets.all(6),
-                    child: Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      children: [
-                        Container(
-                          height: 13,
-                          decoration: BoxDecoration(
-                            color: pal.inputBg,
-                            borderRadius: BorderRadius.circular(4),
-                            border: Border.all(color: pal.borderSoft),
-                          ),
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Expanded(
-                              child: Container(
-                                height: 6,
-                                decoration: BoxDecoration(color: pal.surfaceElevated, borderRadius: BorderRadius.circular(3)),
-                                child: FractionallySizedBox(
-                                  alignment: Alignment.centerLeft,
-                                  widthFactor: 0.64,
-                                  child: Container(
-                                    decoration: BoxDecoration(color: pal.accentGold, borderRadius: BorderRadius.circular(3)),
-                                  ),
-                                ),
-                              ),
-                            ),
-                            const SizedBox(width: 5),
-                            Container(
-                              width: 16,
-                              height: 8,
-                              decoration: BoxDecoration(color: pal.accentGold, borderRadius: BorderRadius.circular(4)),
-                            ),
-                          ],
-                        ),
-                        const SizedBox(height: 4),
-                        Row(
-                          children: [
-                            Container(width: 6, height: 6, decoration: BoxDecoration(color: pal.green, shape: BoxShape.circle)),
-                            const SizedBox(width: 5),
-                            Expanded(
-                              child: Container(
-                                height: 4,
-                                decoration: BoxDecoration(color: pal.textDim.withValues(alpha: 0.6), borderRadius: BorderRadius.circular(2)),
-                              ),
-                            ),
-                            const SizedBox(width: 5),
-                            Container(width: 6, height: 6, decoration: BoxDecoration(color: pal.red, shape: BoxShape.circle)),
-                          ],
-                        ),
-                      ],
-                    ),
+                Container(height: 3, decoration: BoxDecoration(color: pal.accentGold, borderRadius: BorderRadius.circular(2))),
+                const SizedBox(height: 3),
+                Center(
+                  child: Container(
+                    width: 5,
+                    height: 5,
+                    decoration: BoxDecoration(color: pal.activeGold, shape: BoxShape.circle),
                   ),
                 ),
               ],
             ),
           ),
-        ),
-        if (selected)
-          Positioned(
-            top: 3,
-            right: 3,
-            child: Container(
-              width: 15,
-              height: 15,
-              decoration: BoxDecoration(color: pal.accentGold, shape: BoxShape.circle),
-              child: const Icon(Icons.check, size: 10, color: Colors.white),
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: [
+                  Container(
+                    height: 5,
+                    decoration: BoxDecoration(
+                      color: pal.inputBg,
+                      borderRadius: BorderRadius.circular(2),
+                      border: Border.all(color: pal.borderSoft),
+                    ),
+                  ),
+                  const SizedBox(height: 3),
+                  Container(
+                    height: 3,
+                    decoration: BoxDecoration(color: pal.accentGold.withValues(alpha: 0.8), borderRadius: BorderRadius.circular(2)),
+                  ),
+                ],
+              ),
             ),
           ),
-      ],
+        ],
+      ),
     );
   }
 
-  Widget _buildAppearanceBtn(String label, String key, bool isActive, VoidCallback onTap) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        decoration: BoxDecoration(
-          gradient: isActive ? AppTheme.accentGrad : null,
-          color: isActive ? null : AppTheme.overlay08,
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: isActive ? Colors.transparent : AppTheme.borderSoft),
-        ),
-        child: Text(
-          label,
-          maxLines: 1,
-          softWrap: false,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: isActive ? FontWeight.bold : FontWeight.w600,
-            color: isActive ? AppTheme.onAccent : AppTheme.textDim,
+  // v2.31.2 (approved Option A): the Dark/Light/System mode picker
+  // as ONE slim segmented row — a rounded track with three equal
+  // segments; the selected segment lifts on a solid elevated
+  // surface with a soft shadow. Same values and provider call as
+  // the old mode buttons ('dark', 'white', 'system').
+  Widget _buildModeSegment(SettingsProvider prov, AppSettings s) {
+    Widget segment(String label, String value) {
+      final isActive = s.appearance == value;
+      return Expanded(
+        child: InkWell(
+          onTap: () => prov.updateAppearance(value),
+          borderRadius: BorderRadius.circular(7),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 5),
+            decoration: BoxDecoration(
+              color: isActive ? AppTheme.surfaceElevated : null,
+              borderRadius: BorderRadius.circular(7),
+              boxShadow: isActive
+                  ? [
+                      BoxShadow(
+                        color: Colors.black.withValues(alpha: AppTheme.dark ? 0.4 : 0.14),
+                        blurRadius: 4,
+                        offset: const Offset(0, 1),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: isActive ? FontWeight.bold : FontWeight.w600,
+                color: isActive ? AppTheme.textMain : AppTheme.textDim,
+              ),
+            ),
           ),
         ),
+      );
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(3),
+      decoration: BoxDecoration(
+        color: AppTheme.overlay08,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: AppTheme.borderSoft),
+      ),
+      child: Row(
+        children: [
+          segment('🌙 Dark', 'dark'),
+          segment('☀️ Light', 'white'),
+          segment('💻 System', 'system'),
+        ],
       ),
     );
   }

@@ -12,6 +12,7 @@ const plainError = require('./plainError');
 const tileState = require('./tileState');
 const stallWatch = require('./stallWatch');
 const downloadGuard = require('./downloadGuard');
+const tagNaming = require('./tagNaming');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -498,6 +499,29 @@ class WorkerPool {
       this.currentBatchId = batchId;
       this.batchIds = new Set(pendingTasks.map(t => t.batch_id).filter(Boolean));
       if (batchId) this.batchIds.add(batchId);
+      // v2.32.1: count how many tasks in this run share each
+      // tag-derived file name, so the engine can number shared-tag
+      // files by prompt (<tag>-1.mp4 … <tag>-5.mp4) instead of
+      // computing one identical name for every task — the collision
+      // that collapsed a 5-prompt tagged run onto a single file
+      // (each download overwrote the previous; live-proven
+      // 2026-10-26). Counts cover the WHOLE batch (not just the
+      // still-pending rows), so a resumed run keeps the original
+      // numbering. Best-effort: any failure leaves the map unset
+      // and the engine falls back to plain tag names plus the
+      // per-task duplicate picker (still overwrite-safe).
+      try {
+        const nameExt = (settings && settings.type === 'Image') ? 'png' : 'mp4';
+        const tagNameGroups = {};
+        for (const id of this.batchIds) {
+          const rows = dbService.query("SELECT prompt_tag FROM queue_tasks WHERE batch_id = ? AND status != 'cancelled'", [id]) || [];
+          for (const r of rows) {
+            const fn = tagNaming.fileNameForTag(r.prompt_tag || '', nameExt);
+            if (fn) tagNameGroups[fn] = (tagNameGroups[fn] || 0) + 1;
+          }
+        }
+        if (settings) settings.tagNameGroups = tagNameGroups;
+      } catch (e) {}
       // v2.3.0: tell main which tasks belong to THIS run (sequence report).
       try { this.onRunStart({ batchId, taskIds: pendingTasks.map(t => t.id), downloadFolder }); } catch (e) {}
 

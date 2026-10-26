@@ -162,7 +162,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.32.0';
+const APP_VERSION = '2.32.1';
 let activeWorkerPool = null;
 const sseClients = new Set();
 

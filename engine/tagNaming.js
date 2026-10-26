@@ -18,8 +18,20 @@ const path = require('path');
  *       suffix;
  *   (b) two prompts in the SAME run carrying the same tag get the
  *       same treatment, so BOTH videos survive;
- *   (c) a path this engine itself saved this session may be reused
- *       (re-save of the same task), mirroring the legacy picker.
+ *   (c) a path THIS TASK itself saved may be reused by that same
+ *       task (a download retry re-save), mirroring the legacy picker.
+ *
+ * v2.32.1 BUG FIX: rule (c) used to be fed the engine's SESSION-WIDE
+ * saved-paths set, which cannot tell tasks apart. A run whose prompts
+ * all share one tag (e.g. one MCP run tag stamped on every prompt)
+ * computed the same file name for every task; the first task's save
+ * put that path in the session set, so every later task was handed
+ * the SAME path as its own "re-save" and overwrote the previous
+ * video — 5 prompts, 1 surviving file, live-proven 2026-10-26.
+ * Callers must now pass ONLY the saving task's own paths as
+ * `ownPaths` (see pickFreeTagPath). The engine additionally numbers
+ * shared-tag files by prompt (numberedTagFileName), so same-tag
+ * siblings get `<tag>-1.mp4` … `<tag>-5.mp4` deterministically.
  * The legacy scene picker (_pickFreeFilePath, `_2` suffix) is NOT
  * touched; this module is used only for tag-named saves.
  */
@@ -54,10 +66,32 @@ function fileNameForTag(tag, ext = 'mp4') {
 }
 
 /**
+ * The prompt-numbered variant of a tag file name (v2.32.1): when a
+ * run carries MORE THAN ONE task with the same tag, each task's file
+ * is named by its own prompt number — `diag5.mp4` becomes
+ * `diag5-1.mp4` … `diag5-5.mp4` — so the name↔prompt mapping is
+ * stable no matter which download finishes first. (The sequence
+ * report's `-N` family rule already treats these as correct names.)
+ */
+function numberedTagFileName(fileName, promptNumber) {
+  const name = String(fileName || '');
+  const ext = path.extname(name);
+  const base = ext ? name.slice(0, -ext.length) : name;
+  const n = Number.isInteger(promptNumber) && promptNumber > 0 ? promptNumber : 1;
+  return `${base}-${n}${ext}`;
+}
+
+/**
  * Choose a save path for `fileName` inside `folder` that never
- * overwrites a foreign file. `existsFn(absPath)` and `ownPaths`
- * (a Set of paths this session saved itself) are injected so the
- * rule is unit-testable without a disk.
+ * overwrites a foreign file. `existsFn(absPath)` and `ownPaths` are
+ * injected so the rule is unit-testable without a disk.
+ *
+ * CONTRACT (v2.32.1): `ownPaths` must contain ONLY the paths saved
+ * for the very task this save belongs to. Paths in `ownPaths` are
+ * treated as freely reusable (a retry re-saving its own file);
+ * passing paths saved by OTHER tasks makes this picker hand the
+ * same path to several tasks and each save overwrites the previous
+ * one — that was the session-wide-set bug fixed in v2.32.1.
  */
 function pickFreeTagPath(folder, fileName, existsFn, ownPaths) {
   const exists = typeof existsFn === 'function' ? existsFn : () => false;
@@ -73,4 +107,4 @@ function pickFreeTagPath(folder, fileName, existsFn, ownPaths) {
   return first;
 }
 
-module.exports = { sanitizeTagBase, fileNameForTag, pickFreeTagPath };
+module.exports = { sanitizeTagBase, fileNameForTag, pickFreeTagPath, numberedTagFileName };

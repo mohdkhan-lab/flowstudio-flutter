@@ -165,6 +165,13 @@ class FlowAutomationEngine {
     // in the download folder (an earlier run's videos) is never
     // silently replaced; the save takes a suffixed name instead.
     this.savedThisSession = new Set();
+    // v2.32.1: WHO saved each path (abs path -> task key). The
+    // pickers' "own path may be reused" exemption is per-TASK: the
+    // session-wide set alone cannot tell a re-save of the same task
+    // from a different task that merely computed the same file name
+    // (shared run tag) — the latter collapsed 5 downloads onto one
+    // file, each overwriting the previous (live-proven 2026-10-26).
+    this.savedPathOwners = new Map();
     this.consumedVideoUrls = new Set();
     this.capturedVideoUrls = [];
     this.capturedVideoBuffers = new Map();
@@ -2322,18 +2329,68 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.32.1: the stable identity of a task for save-path ownership.
+   * taskId (the queue row id) is assigned by the pool before any
+   * download and survives every retry round and restart rebuild;
+   * videoId is the fallback for engine-only task objects.
+   */
+  _taskKey(task) {
+    if (!task) return null;
+    return task.taskId || task.id || task.videoId || null;
+  }
+
+  /**
+   * v2.32.1: the set of paths THIS task may re-save onto — only the
+   * files this very task already saved (its earlier download rounds)
+   * plus the path recorded on the task object itself. Anything saved
+   * by a DIFFERENT task is deliberately absent, so the pickers move
+   * this save to a distinct name instead of overwriting a sibling.
+   */
+  _taskOwnPaths(task) {
+    const own = new Set();
+    const key = this._taskKey(task);
+    if (key && this.savedPathOwners) {
+      for (const [p, owner] of this.savedPathOwners) {
+        if (owner === key) own.add(p);
+      }
+    }
+    if (task && task._ownSavePath) own.add(task._ownSavePath);
+    return own;
+  }
+
+  /**
+   * v2.32.1: record a completed save — the session set (kept for
+   * its other readers) AND the per-task ownership the pickers now
+   * consult, plus the path recorded on the task object itself, so
+   * a retry of the SAME task lands back on its own file name
+   * instead of taking a new suffix on every attempt.
+   */
+  _recordSavedPath(task, absPath) {
+    this.savedThisSession.add(absPath);
+    const key = this._taskKey(task);
+    if (key) this.savedPathOwners.set(absPath, key);
+    if (task) task._ownSavePath = absPath;
+  }
+
+  /**
    * v1.7.0: choose a save path that never silently overwrites a file
    * this engine did not itself save (e.g. a previous run's video with
    * the same scene001.mp4 name) — suffix _2, _3, … instead.
+   * v2.32.1: the reuse exemption now comes from `ownPaths` — ONLY
+   * the saving task's own earlier saves (see _taskOwnPaths). It used
+   * to read the session-wide savedThisSession set, which let a
+   * different task with the same computed name "reuse" (overwrite)
+   * a sibling's file.
    */
-  _pickFreeFilePath(downloadFolder, fileName) {
+  _pickFreeFilePath(downloadFolder, fileName, ownPaths) {
+    const own = ownPaths && typeof ownPaths.has === 'function' ? ownPaths : new Set();
     const first = path.join(downloadFolder, fileName);
-    if (!fs.existsSync(first) || this.savedThisSession.has(first)) return first;
+    if (!fs.existsSync(first) || own.has(first)) return first;
     const ext = path.extname(fileName);
     const base = ext ? fileName.slice(0, -ext.length) : fileName;
     for (let n = 2; n < 1000; n++) {
       const alt = path.join(downloadFolder, `${base}_${n}${ext}`);
-      if (!fs.existsSync(alt) || this.savedThisSession.has(alt)) return alt;
+      if (!fs.existsSync(alt) || own.has(alt)) return alt;
     }
     return first;
   }
@@ -2343,12 +2400,15 @@ class FlowAutomationEngine {
    * TAG naming mode the duplicate suffix is the deterministic `-2`,
    * `-3`… (engine/tagNaming.js); every other mode keeps the legacy
    * `_2` picker untouched.
+   * v2.32.1: both pickers receive ONLY the saving task's own paths
+   * as reusable — never the whole session's (see _taskOwnPaths).
    */
-  _resolveSavePath(downloadFolder, fileName, settings) {
+  _resolveSavePath(downloadFolder, fileName, settings, task) {
+    const own = this._taskOwnPaths(task);
     if (settings && settings.namingPattern === 'tag') {
-      return tagNaming.pickFreeTagPath(downloadFolder, fileName, (p) => fs.existsSync(p), this.savedThisSession);
+      return tagNaming.pickFreeTagPath(downloadFolder, fileName, (p) => fs.existsSync(p), own);
     }
-    return this._pickFreeFilePath(downloadFolder, fileName);
+    return this._pickFreeFilePath(downloadFolder, fileName, own);
   }
 
   // File naming: strictly by prompt index (001-based), as in V2.
@@ -2365,7 +2425,22 @@ class FlowAutomationEngine {
     // without a usable tag falls back to the scene pattern below.
     if (pattern === 'tag') {
       const fromTag = tagNaming.fileNameForTag(task && task.tag, fileExt);
-      if (fromTag) return fromTag;
+      if (fromTag) {
+        // v2.32.1: when the RUN carries more than one task with
+        // this same tag (the pool counts them into
+        // settings.tagNameGroups — e.g. one MCP run tag stamped on
+        // every prompt), the plain tag name would be IDENTICAL for
+        // every task. Each task's file is therefore numbered by its
+        // own prompt number: <tag>-1.mp4 … <tag>-5.mp4 — distinct
+        // per prompt no matter which download finishes first. A
+        // single-task tag group keeps exactly <tag>.mp4, and
+        // distinct per-prompt tags are untouched.
+        const groups = settings && settings.tagNameGroups;
+        if (groups && Number(groups[fromTag]) > 1) {
+          return tagNaming.numberedTagFileName(fromTag, (task && task.promptIndex || 0) + 1);
+        }
+        return fromTag;
+      }
     }
 
     if (pattern === 'numeric') return `${paddedIndex}.${fileExt}`;
@@ -2407,7 +2482,7 @@ class FlowAutomationEngine {
     // v1.7.0: never silently overwrite a file this engine did not
     // itself save — a previous run's same-named video stays intact
     // and this save takes a suffixed name.
-    const finalSavedFilePath = this._resolveSavePath(downloadFolder, this._fileNameForTask(task, settings), settings);
+    const finalSavedFilePath = this._resolveSavePath(downloadFolder, this._fileNameForTask(task, settings), settings, task);
     const fileName = path.basename(finalSavedFilePath);
     task.fileName = fileName;
     task.filePath = finalSavedFilePath;
@@ -2438,7 +2513,7 @@ class FlowAutomationEngine {
     // bhi settled mark ke liye downloaded=true lete hain — ginati ke
     // liye wahi purani galti jhooti success line bana rahi thi).
     task.mediaSaved = true;
-    this.savedThisSession.add(finalSavedFilePath);
+    this._recordSavedPath(task, finalSavedFilePath);
     this._markTaskUrlConsumed(task, sourceUrl);
     if (sourceUrl && this.capturedVideoBuffers && this.capturedVideoBuffers.has(sourceUrl)) {
       this.capturedVideoBytes -= this.capturedVideoBuffers.get(sourceUrl).length;
@@ -2917,7 +2992,7 @@ class FlowAutomationEngine {
 
     // v1.7.0: never overwrite a file this engine did not save itself
     // (e.g. a previous run's scene001.mp4) — take a suffixed name.
-    const freePath = this._resolveSavePath(downloadFolder, fileName, settings);
+    const freePath = this._resolveSavePath(downloadFolder, fileName, settings, task);
     if (freePath !== finalSavedFilePath) {
       finalSavedFilePath = freePath;
       task.fileName = path.basename(freePath);
@@ -2950,7 +3025,7 @@ class FlowAutomationEngine {
     task.downloaded = true;
     task.completed = true;
     task.mediaSaved = true;
-    this.savedThisSession.add(finalSavedFilePath);
+    this._recordSavedPath(task, finalSavedFilePath);
 
     const result = {
       filePath: finalSavedFilePath,

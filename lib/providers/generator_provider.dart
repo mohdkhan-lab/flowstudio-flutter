@@ -342,6 +342,26 @@ class GeneratorProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  /// v2.34.0 (Problem 9): the selected tag lives ONLY here — the
+  /// Prompts header dropdown displays and edits this value, with
+  /// no private copy of its own (the old widget copy diverged:
+  /// deleting the selected tag in Settings left this provider
+  /// silently stamping file names with a tag that no longer
+  /// existed, and an MCP in-app run changed the tag without the
+  /// dropdown ever showing it). When the tag list changes and the
+  /// current selection is not in it any more, the selection clears
+  /// to 'None' — a removed tag can never be used silently. The
+  /// composition root calls this whenever Settings' custom tags
+  /// change; a fresh programmatic set (e.g. an MCP run tag, which
+  /// is not a custom tag) is NOT reconciled away — only a tag-list
+  /// change triggers this.
+  void reconcileSelectedTag(Iterable<String> availableTags) {
+    if (_selectedTag == 'None') return;
+    if (availableTags.contains(_selectedTag)) return;
+    _selectedTag = 'None';
+    notifyListeners();
+  }
+
   String get projectName => _projectName;
 
   void setProjectName(String name) {
@@ -435,13 +455,17 @@ class GeneratorProvider with ChangeNotifier {
     // Plain blank-line pastes parse exactly as before.
     // Agent mode: the entire text is still ONE prompt; its label
     // (first line) is still detected so its file is named by it.
+    // v2.34.0 (Problem 5): the label is stripped from the item's
+    // text here too — the single Agent prompt reaches Flow clean,
+    // exactly like every Bulk item.
     final normalized = _promptsRawText.replaceAll('\r\n', '\n').trim();
     final List<ParsedPrompt> parsed;
     if (normalized.isEmpty) {
       parsed = const [];
     } else if (!_isBulkMode) {
+      final parts = PromptParser.splitLabelPrefix(normalized);
       parsed = [
-        ParsedPrompt(PromptParser.extractLabel(normalized), normalized),
+        ParsedPrompt(parts.label, parts.text),
       ];
     } else {
       parsed = PromptParser.parse(_promptsRawText);

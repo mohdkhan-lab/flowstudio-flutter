@@ -2,6 +2,7 @@
 
 const path = require('path');
 const { fileNameForTag } = require('./tagNaming');
+const { splitLabelPrefix } = require('./promptParser');
 
 /**
  * FlowStudio Lite — SEQUENCE INTEGRITY report (v2.3.0, owner's order).
@@ -115,6 +116,14 @@ function buildSequenceReport(rows, { exists, namingMode = 'tag' } = {}) {
  * missing tasks, with their ORIGINAL prompt text, tag and index —
  * renumbering kabhi nahi, taaki dobara bane videos apni sahi jagah
  * (tag-naam) par hi save hon.
+ *
+ * v2.34.0 (Problem 5): the recreated task's TEXT is cleaned with
+ * splitLabelPrefix — task rows stored before v2.34.0 still carry
+ * their label inside prompt_text ("#00-01 A lighthouse…"), and a
+ * redo submits that text to Flow again, so the label must come
+ * out here too. The tag keeps the row's own identity; a row whose
+ * tag was never stored recovers its label from the text instead
+ * of falling back to a scene number.
  */
 function selectMissingItems(rows, report) {
   const byId = new Map();
@@ -125,9 +134,11 @@ function selectMissingItems(rows, report) {
   for (const m of (report && Array.isArray(report.missing)) ? report.missing : []) {
     const row = byId.get(String(m.taskId));
     if (!row) continue;
+    const parts = splitLabelPrefix(row.prompt_text || '');
+    const ownTag = typeof row.prompt_tag === 'string' ? row.prompt_tag.trim() : '';
     items.push({
-      text: row.prompt_text || '',
-      tag: displayTag(row),
+      text: parts.text,
+      tag: ownTag || parts.label || displayTag(row),
       index: Number.isInteger(row.prompt_index) ? row.prompt_index : items.length
     });
   }

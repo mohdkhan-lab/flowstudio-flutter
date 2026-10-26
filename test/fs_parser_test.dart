@@ -53,6 +53,33 @@ void main() {
     });
   });
 
+  // v2.34.0 (Problem 5): splitLabelPrefix spot checks — the Dart
+  // mirror of the JS suite's checks (test_js/run_prompt_fixtures.js).
+  group('splitLabelPrefix spot checks (v2.34.0)', () {
+    final checks = <String, (String?, String)>{
+      '#00-01 A lighthouse in a storm': ('#00-01', 'A lighthouse in a storm'),
+      'Scene 1: A lighthouse in a storm': ('Scene 1', 'A lighthouse in a storm'),
+      'PROMPT ID: 004: A forest in fog': ('PROMPT ID: 004', 'A forest in fog'),
+      '1. A lighthouse in a storm': ('1', 'A lighthouse in a storm'),
+      '(2) A calm valley at dawn': ('2', 'A calm valley at dawn'),
+      'Scene 1:\nA lighthouse in a storm': ('Scene 1', 'A lighthouse in a storm'),
+      'PROMPT 1: line one\nline two\nline three':
+          ('PROMPT 1', 'line one\nline two\nline three'),
+      '#00-01 A lighthouse\nScene 9: stays in the body':
+          ('#00-01', 'A lighthouse\nScene 9: stays in the body'),
+      'A lighthouse in a storm': (null, 'A lighthouse in a storm'),
+      '3.5 litres of oil for the lamp': (null, '3.5 litres of oil for the lamp'),
+      '#stormwatch over the bay': (null, '#stormwatch over the bay'),
+    };
+    checks.forEach((input, want) {
+      test('splitLabelPrefix(${input.replaceAll('\n', r'\n')})', () {
+        final got = PromptParser.splitLabelPrefix(input);
+        expect(got.label, want.$1);
+        expect(got.text, want.$2);
+      });
+    });
+  });
+
   group('labelFileBase mirror (Progress card names)', () {
     final cases = <String, String>{
       '#00-01': '#00-01',
@@ -83,6 +110,13 @@ void main() {
       expect(gen.items.map((i) => i.label).toList(),
           ['Scene 1', 'Scene 2', 'Scene 10']);
       expect(gen.items.every((i) => i.status == PromptStatus.pending), isTrue);
+      // v2.34.0 (Problem 5): the item TEXTS are clean — the label
+      // lives only in item.label, never in the submitted words.
+      expect(gen.items.map((i) => i.text).toList(), [
+        'A lighthouse in a storm',
+        'A calm valley at dawn',
+        'A mountain pass in snow',
+      ]);
     });
 
     test('owner canonical hash paste keeps working identically', () {
@@ -99,6 +133,10 @@ void main() {
       gen.setRawText('#00-01 A single long agent prompt\nwith a second line');
       expect(gen.totalPrompts, 1);
       expect(gen.items.single.label, '#00-01');
+      // v2.34.0 (Problem 5): the single Agent prompt is cleaned
+      // too — its text reaches Flow without the label.
+      expect(gen.items.single.text,
+          'A single long agent prompt\nwith a second line');
     });
   });
 }

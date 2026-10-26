@@ -37,6 +37,58 @@ void main() {
     });
   });
 
+  // v2.34.0 (Problem 6): the open flow resolves the video's
+  // dimensions BEFORE any shaped player is shown. The native
+  // player still cannot initialise under flutter_test, so the
+  // logic is pinned at the same level as v2.33.0's: the pure
+  // aspectFromDimensions resolver the dialog's stream handlers
+  // use, and the neutral loading card the dialog shows while the
+  // aspect is unresolved (no AdaptiveVideoArea exists in that
+  // state — a wrong-shaped player can never paint).
+  group('aspectFromDimensions (v2.34.0 resolve-before-show)', () {
+    test('portrait dimensions resolve to a portrait aspect', () {
+      expect(aspectFromDimensions(720, 1280), closeTo(9 / 16, 0.001));
+    });
+
+    test('landscape dimensions resolve to a landscape aspect', () {
+      expect(aspectFromDimensions(1280, 720), closeTo(16 / 9, 0.001));
+    });
+
+    test('missing dimensions stay unresolved (null)', () {
+      expect(aspectFromDimensions(null, 1280), isNull);
+      expect(aspectFromDimensions(720, null), isNull);
+      expect(aspectFromDimensions(null, null), isNull);
+    });
+
+    test('non-positive dimensions stay unresolved (null)', () {
+      expect(aspectFromDimensions(0, 1280), isNull);
+      expect(aspectFromDimensions(720, 0), isNull);
+      expect(aspectFromDimensions(-720, 1280), isNull);
+    });
+  });
+
+  group('PlayerLoadingCard (v2.34.0 neutral state)', () {
+    testWidgets('renders with NO video area at 1024x700', (tester) async {
+      tester.view.physicalSize = const Size(1024, 700);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: SizedBox(width: 420, child: PlayerLoadingCard()),
+            ),
+          ),
+        ),
+      );
+      expect(tester.takeException(), isNull);
+      expect(find.byType(PlayerLoadingCard), findsOneWidget);
+      expect(find.byType(AdaptiveVideoArea), findsNothing,
+          reason: 'the unresolved state must not contain any shaped video area');
+      expect(find.text('Loading video…'), findsOneWidget);
+    });
+  });
+
   group('AdaptiveVideoArea in a dialog at 1024x700 (FIT LAW)', () {
     // The dialog's own chrome math, mirrored from _PlayerDialog:
     // header ~42 + controls ~56 + the framework's dialog insets.

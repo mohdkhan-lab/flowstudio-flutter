@@ -1,13 +1,18 @@
 'use strict';
 
-// v2.33.0 bridge smoke (Problems 2-4 integration): boot the REAL
-// bridge on a throwaway APPDATA (stub DB, no accounts), then verify
-//  - /api/status reports 2.33.0
+// Bridge smoke (v2.33.0 Problems 2-4 integration; v2.34.0 updated):
+// boot the REAL bridge on a throwaway APPDATA (stub DB, no
+// accounts), then verify
+//  - /api/status reports the current version
 //  - redo-missing with no run yet -> 400
 //  - a start with a project name creates the project subfolder,
 //    stores the per-prompt labels as task tags, persists the
 //    project in settings_json, and points download_folder at the
 //    project subfolder
+//  - v2.34.0 (Problem 5): the stored prompt_text is CLEAN — the
+//    label lives only in prompt_tag, never in the submitted text
+//  - v2.34.0 (Problem 7): /api/output-files badges a stray local
+//    file dropped into the folder as origin "local"
 //  - redo-missing afterwards finds both scenes missing (they never
 //    ran — no accounts) and starts a redo of the EXISTING tasks
 // Usage: node test_js/run_project_smoke.js
@@ -69,7 +74,7 @@ async function main() {
   try {
     const status = await waitStatus();
     check('bridge boots', !!status, bridgeLog.slice(-400));
-    check('status version is 2.33.0', status && status.version === '2.33.0', JSON.stringify(status));
+    check('status version is 2.34.0', status && status.version === '2.34.0', JSON.stringify(status));
 
     const redoEarly = await req('POST', '/api/generation/redo-missing', {});
     check('redo before any run -> 400', redoEarly.status === 400, JSON.stringify(redoEarly.data));
@@ -108,19 +113,35 @@ async function main() {
       // NOTE: the bridge migrates the repo's local dev DB into a
       // fresh APPDATA, so old task rows may sit alongside — select
       // only THIS smoke's rows, by their unique prompt texts.
-      const rows = db.exec("SELECT prompt_tag, settings_json FROM queue_tasks WHERE prompt_text LIKE '#00-01%' OR prompt_text LIKE 'Scene 2:%' ORDER BY prompt_index");
+      const rows = db.exec("SELECT prompt_text, prompt_tag, settings_json FROM queue_tasks WHERE prompt_text IN ('A lighthouse in a storm', 'A calm valley at dawn') ORDER BY prompt_index");
       const tasks = rows.length ? rows[0].values : [];
       check('two task rows', tasks.length === 2, `got ${tasks.length}`);
-      check('task 1 tag is its hash label', tasks.length === 2 && tasks[0][0] === '#00-01', JSON.stringify(tasks[0]));
-      check('task 2 tag is its scene label', tasks.length === 2 && tasks[1][0] === 'Scene 2', JSON.stringify(tasks[1]));
+      // v2.34.0 (Problem 5): stored text is the CLEAN body — the
+      // start payload above carried label-ful texts on the object
+      // path ("#00-01 A lighthouse in a storm" with tag "#00-01",
+      // "Scene 2: A calm valley at dawn" with tag "Scene 2"), and
+      // neither label may survive into prompt_text.
+      check('task 1 stored text is label-free', tasks.length === 2 && tasks[0][0] === 'A lighthouse in a storm', JSON.stringify(tasks[0]));
+      check('task 2 stored text is label-free', tasks.length === 2 && tasks[1][0] === 'A calm valley at dawn', JSON.stringify(tasks[1]));
+      check('task 1 tag is its hash label', tasks.length === 2 && tasks[0][1] === '#00-01', JSON.stringify(tasks[0]));
+      check('task 2 tag is its scene label', tasks.length === 2 && tasks[1][1] === 'Scene 2', JSON.stringify(tasks[1]));
       check('project persisted in settings_json',
-        tasks.length === 2 && tasks.every(r => String(r[1]).includes('"project":"My Film"')),
-        tasks.length ? String(tasks[0][1]).slice(0, 200) : 'no rows');
+        tasks.length === 2 && tasks.every(r => String(r[2]).includes('"project":"My Film"')),
+        tasks.length ? String(tasks[0][2]).slice(0, 200) : 'no rows');
       const setRows = db.exec("SELECT value FROM app_settings WHERE key = 'download_folder'");
       const dl = setRows.length && setRows[0].values.length ? String(setRows[0].values[0][0]) : '';
       check('download_folder points at the project subfolder', dl === projDir, dl);
       db.close();
     }
+
+    // v2.34.0 (Problem 7): a stray local file dropped into the
+    // project folder must be listed with origin "local" (no DB
+    // record exists for it; nothing may fabricate one).
+    fs.writeFileSync(path.join(projDir, 'stray-local.mp4'), 'not a real video');
+    const listing = await req('GET', '/api/output-files');
+    const stray = (((listing.data || {}).files) || []).find(f => f.name === 'stray-local.mp4');
+    check('output-files lists the stray file', !!stray, JSON.stringify(listing.data).slice(0, 300));
+    check('stray file origin is local', !!stray && stray.origin === 'local', JSON.stringify(stray));
 
     const redo = await req('POST', '/api/generation/redo-missing', { accountIds: [] });
     check('redo answers ok', redo.status === 200 && redo.data && redo.data.ok === true, JSON.stringify(redo.data));

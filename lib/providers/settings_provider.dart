@@ -548,8 +548,47 @@ class SettingsProvider with ChangeNotifier {
         url = _settings.supportLink;
         break;
     }
-    if (url.isNotEmpty && url.startsWith('http')) {
+    // v2.34.0 (Problem 12): never open a dead placeholder or a
+    // malformed link — an unusable value behaves exactly like no
+    // link at all.
+    if (isUsableSocialLink(url)) {
       await AutomationBridge.instance.openUrl(url);
     }
   }
+}
+
+/// v2.34.0 (Problem 12): is a social link worth OPENING / SHOWING?
+/// The app used to ship placeholder defaults (a bare
+/// "https://wa.me/" with no number, "https://flowstudio.chat/",
+/// "https://flowstudio.support/") and the top-strip / About icons
+/// happily opened those dead pages. A link is usable only when
+/// ALL of these hold:
+///   - it parses as an absolute http/https URL with a dotted host;
+///   - it is not one of the three shipped placeholder values;
+///   - for WhatsApp (host wa.me) the path is a phone number
+///     (digits) — a handle like "MohdKhan_18?s=t" is not a valid
+///     wa.me target.
+/// Unusable links are treated like empty for DISPLAY (the icon is
+/// hidden) — the owner's stored value is never deleted or edited.
+bool isUsableSocialLink(String url) {
+  final u = url.trim();
+  if (u.isEmpty) return false;
+  const placeholders = {
+    'https://wa.me/',
+    'https://wa.me',
+    'https://flowstudio.chat/',
+    'https://flowstudio.chat',
+    'https://flowstudio.support/',
+    'https://flowstudio.support',
+  };
+  if (placeholders.contains(u.toLowerCase())) return false;
+  final uri = Uri.tryParse(u);
+  if (uri == null) return false;
+  if (uri.scheme != 'http' && uri.scheme != 'https') return false;
+  if (!uri.host.contains('.')) return false;
+  if (uri.host == 'wa.me' || uri.host == 'www.wa.me') {
+    final path = uri.path.replaceAll('/', '');
+    if (!RegExp(r'^\d+$').hasMatch(path)) return false;
+  }
+  return true;
 }

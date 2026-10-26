@@ -68,6 +68,7 @@ const {
 } = require('./engine/cookieImport');
 const { WorkerPool } = require('./engine/workerPool');
 const promptParser = require('./engine/promptParser');
+const historyOrigin = require('./engine/historyOrigin');
 const projectFolder = require('./engine/projectFolder');
 const sequenceReport = require('./engine/sequenceReport');
 const { recordActivity, getActivityStore } = require('./engine/activityStore');
@@ -165,7 +166,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.33.0';
+const APP_VERSION = '2.34.0';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -910,6 +911,18 @@ async function startBridge() {
               .sort((a, b) => b.mtime - a.mtime);
           }
         } catch (e) {}
+        // v2.34.0 (Problem 7): every file carries its ORIGIN —
+        // "flow" when a queue_tasks record proves this app
+        // generated it, "local" otherwise — so the History page
+        // can badge the two apart instead of mixing them. The
+        // evidence is the engine's own download records; a local
+        // file never gets a fabricated record (engine/historyOrigin).
+        try {
+          const records = dbService.getGeneratedFileRecords() || [];
+          files = historyOrigin.withOrigins(files, dir, records);
+        } catch (e) {
+          files = files.map(f => ({ ...f, origin: 'local' }));
+        }
         return sendJson(200, { ok: true, files, folder: dir });
       }
 
@@ -1071,13 +1084,25 @@ async function startBridge() {
             // labelled paste arriving as strings saved fallback
             // names. (A hashtag WORD like "#stormwatch" is not a
             // label any more — digits are required.)
-            const lead = promptParser.extractLabel(p);
-            return { text: p, index: idx, tag: lead || config.tag || '' };
+            // v2.34.0 (Problem 5): the label is IDENTITY ONLY — the
+            // text handed to Flow is splitLabelPrefix's CLEAN text,
+            // so a string prompt's label never rides into the
+            // submitted words either.
+            const parts = promptParser.splitLabelPrefix(p);
+            return { text: parts.text, index: idx, tag: parts.label || config.tag || '' };
           }
+          // v2.34.0 (Problem 5): the object path is cleaned the same
+          // way — an item whose text still carries its label (an
+          // older client, a raw caller) is stripped here, so the
+          // task's stored prompt_text is always the clean text Flow
+          // will receive. The item's own tag wins; a marker found
+          // in the text only fills a missing tag.
+          const rawText = p.text || p.prompt || '';
+          const parts = promptParser.splitLabelPrefix(rawText);
           return {
-            text: p.text || p.prompt || '',
+            text: parts.text,
             index: Number.isInteger(p.index) ? p.index : idx,
-            tag: p.tag || config.tag || ''
+            tag: p.tag || parts.label || config.tag || ''
           };
         });
 

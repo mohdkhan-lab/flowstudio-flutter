@@ -19,9 +19,14 @@ class PromptsEditor extends StatefulWidget {
 class _PromptsEditorState extends State<PromptsEditor> {
   late TextEditingController _controller;
   late TextEditingController _projectController;
-  String _selectedTag = 'None';
   // v2.29.0: the Bulk/Agent mode lives in GeneratorProvider now
   // (it drives the real parsing) — this widget only renders it.
+  // v2.34.0 (Problem 9): the selected TAG lives in
+  // GeneratorProvider ONLY — this widget used to keep a private
+  // copy that diverged from the provider's (a tag deleted in
+  // Settings stayed silently in use; an MCP run's tag never
+  // showed here). The dropdown below displays and edits the
+  // provider's value directly.
 
   @override
   void initState() {
@@ -129,7 +134,19 @@ class _PromptsEditorState extends State<PromptsEditor> {
                   child: Consumer<SettingsProvider>(
                     builder: (context, settingsProv, _) {
                       final tags = settingsProv.settings.customTags;
-                      final currentVal = tags.contains(_selectedTag) ? _selectedTag : (tags.isNotEmpty ? tags.first : 'None');
+                      // v2.34.0 (Problem 9): the value IS the
+                      // provider's selected tag (this widget is
+                      // rebuilt by the watch on GeneratorProvider
+                      // above, so a programmatic set — e.g. an MCP
+                      // in-app run — reflects here immediately).
+                      // When the provider holds a tag that is not
+                      // in the list (a fresh MCP run tag), the
+                      // display falls back to 'None' honestly
+                      // instead of inventing a selection.
+                      final selected = generator.selectedTag;
+                      final currentVal = tags.contains(selected)
+                          ? selected
+                          : (tags.isNotEmpty ? tags.first : 'None');
 
                       return DropdownButtonHideUnderline(
                         child: DropdownButton<String>(
@@ -141,7 +158,6 @@ class _PromptsEditorState extends State<PromptsEditor> {
                         items: tags.map((t) => DropdownMenuItem(value: t, child: Text(t))).toList(),
                         onChanged: (val) {
                           if (val != null) {
-                            setState(() => _selectedTag = val);
                             // v2.27.0: Progress cards name queued
                             // files from the selected tag.
                             context.read<GeneratorProvider>().setSelectedTag(val);
@@ -418,7 +434,8 @@ class _PromptsEditorState extends State<PromptsEditor> {
               final newTag = tagCtrl.text.trim();
               if (newTag.isNotEmpty) {
                 context.read<SettingsProvider>().addCustomTag(newTag);
-                setState(() => _selectedTag = newTag);
+                // v2.34.0 (Problem 9): the provider is the only
+                // place the selection lives — no widget copy.
                 context.read<GeneratorProvider>().setSelectedTag(newTag);
                 Navigator.pop(ctx);
               }

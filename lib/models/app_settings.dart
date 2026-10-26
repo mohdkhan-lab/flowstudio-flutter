@@ -37,10 +37,15 @@ class AppSettings {
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.currentVersion = 'v2.33.0',
-    this.whatsAppLink = 'https://wa.me/',
-    this.chatLink = 'https://flowstudio.chat/',
-    this.supportLink = 'https://flowstudio.support/',
+    this.currentVersion = 'v2.34.0',
+    // v2.34.0 (Problem 12): no placeholder social links ship any
+    // more — an unconfigured service shows NO icon (top strip /
+    // About) instead of an icon that opens a dead page. The owner
+    // sets real links in Settings → Created By; values stored in
+    // the engine still load over these defaults exactly as before.
+    this.whatsAppLink = '',
+    this.chatLink = '',
+    this.supportLink = '',
   }) : customTags = customTags ?? ['None', 'Cinematic', 'Anime', 'Drone', '4K'];
 
   AppSettings copyWith({

@@ -71,6 +71,48 @@ class MainStudioScreen extends StatefulWidget {
 }
 
 class _MainStudioScreenState extends State<MainStudioScreen> {
+  // v2.34.0 (Problem 9): watch the Settings custom-tag list — when
+  // it changes (a tag deleted in Settings, or a fresh list loaded
+  // from the engine), the GeneratorProvider's selected tag is
+  // reconciled against it, so a removed tag is never silently used
+  // for file naming. Only a tag-LIST change triggers this: an MCP
+  // run tag (set programmatically, not a custom tag) is untouched.
+  SettingsProvider? _tagsSettingsProv;
+  GeneratorProvider? _tagsGeneratorProv;
+  List<String> _lastKnownTags = const [];
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final settingsProv = context.read<SettingsProvider>();
+    if (!identical(settingsProv, _tagsSettingsProv)) {
+      _tagsSettingsProv?.removeListener(_onSettingsTagsChanged);
+      _tagsSettingsProv = settingsProv;
+      _lastKnownTags = List.of(settingsProv.settings.customTags);
+      settingsProv.addListener(_onSettingsTagsChanged);
+    }
+    _tagsGeneratorProv = context.read<GeneratorProvider>();
+  }
+
+  void _onSettingsTagsChanged() {
+    final settingsProv = _tagsSettingsProv;
+    final generatorProv = _tagsGeneratorProv;
+    if (settingsProv == null || generatorProv == null) return;
+    final tags = settingsProv.settings.customTags;
+    if (tags.length == _lastKnownTags.length &&
+        tags.every(_lastKnownTags.contains)) {
+      return;
+    }
+    _lastKnownTags = List.of(tags);
+    generatorProv.reconcileSelectedTag(tags);
+  }
+
+  @override
+  void dispose() {
+    _tagsSettingsProv?.removeListener(_onSettingsTagsChanged);
+    super.dispose();
+  }
+
   @override
   void initState() {
     super.initState();

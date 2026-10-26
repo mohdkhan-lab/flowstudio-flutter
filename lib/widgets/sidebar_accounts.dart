@@ -76,12 +76,17 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             onTap: () => context.read<SettingsProvider>().setNavView('generate'),
             borderRadius: BorderRadius.circular(8),
             child: Container(
-              height: 32,
+              // v2.34.0 (Problem 14, owner-FINAL Sample B): the
+              // Generate nav button loses its flashy ring — a FLAT
+              // soft blue-tinted fill (accent at 13%) with a THIN
+              // blue border (38%), the same height as the Add
+              // Cookies pill below it. Inactive state unchanged.
+              height: 34,
               decoration: BoxDecoration(
-                color: isGenerate ? const Color(0x150A84FF) : AppTheme.overlay08,
+                color: isGenerate ? AppTheme.accentGold.withValues(alpha: 0.13) : AppTheme.overlay08,
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
-                  color: isGenerate ? AppTheme.accentGold.withValues(alpha: 0.6) : AppTheme.borderSoft,
+                  color: isGenerate ? AppTheme.accentGold.withValues(alpha: 0.38) : AppTheme.borderSoft,
                 ),
               ),
               child: Center(
@@ -474,8 +479,9 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // styling can be re-skinned in a single place. Owner-FINAL spec:
   // ONE ROW on the sidebar's own Soft Charcoal surface (NO black
   // anywhere); LEFT = "⚙ Settings" quiet/flat like a YouTube
-  // Studio menu item; RIGHT = blue PILL "+ Add Account"; equal
-  // widths.
+  // Studio menu item; RIGHT = "+ Add Account"; equal widths.
+  // v2.34.0 (Problem 14, Sample B): the right button's loud
+  // solid-blue pill became a muted dark face with a blue "+".
   Widget _buildBottomBar(BuildContext context, {required bool isGenerate}) {
     return Row(
       children: [
@@ -505,21 +511,36 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
         Expanded(
           child: InkWell(
             onTap: () => _showAddAccountDialog(context),
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(8),
             child: Container(
               height: 32,
               alignment: Alignment.center,
               decoration: BoxDecoration(
-                gradient: const LinearGradient(
-                  colors: [Color(0xFF1A94FF), Color(0xFF0066D6)],
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                ),
-                borderRadius: BorderRadius.circular(16),
+                // v2.34.0 (Problem 14, owner-FINAL Sample B): the
+                // solid-blue pill is gone — a MUTED dark face from
+                // the sidebar's own button family (translucent
+                // overlay + soft border, like Sync Selected), with
+                // only the "+" keeping the blue accent.
+                color: AppTheme.overlay08,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.borderSoft),
               ),
-              child: const Text(
-                '+ Add Account',
-                style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold, color: Colors.white),
+              // One Text widget (two spans) so the label stays a
+              // single accessible/findable string: "+ Add Account".
+              child: Text.rich(
+                TextSpan(
+                  children: [
+                    TextSpan(
+                      text: '+ ',
+                      style: TextStyle(color: AppTheme.accentText),
+                    ),
+                    TextSpan(
+                      text: 'Add Account',
+                      style: TextStyle(color: AppTheme.textMain),
+                    ),
+                  ],
+                ),
+                style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
               ),
             ),
           ),

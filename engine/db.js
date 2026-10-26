@@ -415,6 +415,18 @@ const dbService = {
   },
 
   /**
+   * v2.34.0 (Problem 7): every task row that recorded a downloaded
+   * file — the engine's evidence of which files in the output
+   * folder IT generated, as opposed to local files the owner
+   * dropped there. The History output-files route matches folder
+   * listings against these records (engine/historyOrigin.js).
+   * Read-only; no record is ever created for a local file.
+   */
+  getGeneratedFileRecords() {
+    return query("SELECT file_path, file_name FROM queue_tasks WHERE file_path IS NOT NULL AND file_path != ''");
+  },
+
+  /**
    * v1.8.0: every task still waiting to run, across all batches, in the
    * order it was created — the Resume surface. Includes needs_check
    * tasks recovered from an interrupted session.

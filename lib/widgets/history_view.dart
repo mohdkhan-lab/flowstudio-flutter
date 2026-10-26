@@ -13,6 +13,11 @@ import 'video_player_dialog.dart';
 // under a file name shows its real folder/date/size — nothing is
 // invented. "Clear History (records only)" hides names in this app
 // (persisted via the 'history_cleared' setting); files stay on disk.
+// v2.34.0 (Problem 7): each file also carries an ORIGIN from the
+// engine — "flow" when a queue_tasks record proves this app
+// generated it, "local" for files the owner dropped into the
+// folder himself — rendered as a small pill next to the name, so
+// the two kinds no longer mix invisibly.
 class HistoryView extends StatefulWidget {
   const HistoryView({super.key});
 
@@ -406,11 +411,19 @@ class _HistoryViewState extends State<HistoryView> {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(
-                  name,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textMain),
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        name,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textMain),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    _originPill(f['origin']?.toString()),
+                  ],
                 ),
                 const SizedBox(height: 2),
                 Text(
@@ -441,6 +454,35 @@ class _HistoryViewState extends State<HistoryView> {
             onTap: () => AutomationBridge.instance.openOutputFolder(),
           ),
         ],
+      ),
+    );
+  }
+
+  // v2.34.0 (Problem 7): the origin pill — "Flow" in the app's
+  // blue chip language for app-generated files, "Local" in a
+  // muted grey for the owner's own files. Anything that is not an
+  // explicit "flow" (including a missing field from an older
+  // engine) reads as Local — never the other way round.
+  Widget _originPill(String? origin) {
+    final isFlow = origin == 'flow';
+    final fg = isFlow ? const Color(0xFF6DB3FF) : AppTheme.textDim;
+    final bg = isFlow ? const Color(0x1464A0FF) : AppTheme.overlay08;
+    final border = isFlow ? const Color(0xFF2F6FB4) : AppTheme.borderSoft;
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: border),
+      ),
+      child: Text(
+        isFlow ? 'FLOW' : 'LOCAL',
+        style: TextStyle(
+          fontSize: 8.5,
+          fontWeight: FontWeight.w800,
+          letterSpacing: 0.6,
+          color: fg,
+        ),
       ),
     );
   }

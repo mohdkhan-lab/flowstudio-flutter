@@ -16,10 +16,15 @@ import 'dart:convert';
 // XML <prompt>, JSON, YAML, CSV (subsets documented per extractor).
 //
 // An item is {label, text}: label is AS WRITTEN or null; text is
-// the prompt exactly as it will be submitted — for line-based
-// formats the label line STAYS in the text (the engine has always
-// submitted and fingerprinted it that way; v2.33.0 changes identity
-// bookkeeping, never the submitted words).
+// the prompt exactly as it will be submitted. v2.34.0 (owner's
+// Problem 5): the text is CLEAN — a label NEVER rides into the
+// submitted words (in v2.33.0 the label line stayed in the text
+// for line-based formats, so Flow received "#00-01 …" /
+// "Scene 1: …" verbatim). Every parsed item passes through
+// splitLabelPrefix: the leading label marker (and its one
+// separator character) is removed from the first line, the
+// remaining body is preserved byte-for-byte, and the label lives
+// ONLY as the item's identity.
 //
 // Hard rules (2026-10-14 fixture lesson): markers count ONLY at
 // the start of a line; a number or # inside a prompt's own text
@@ -64,35 +69,73 @@ class PromptParser {
   static const _promptKeys = ['prompt', 'text', 'content', 'description'];
   static const _labelKeys = ['label', 'tag', 'id', 'scene', 'name'];
 
+  /// One matcher cascade, three consumers: [matchLabelAtLineStart]
+  /// (identity), [extractLabel] and [splitLabelPrefix] (v2.34.0
+  /// text cleaning). `end` is the index just past the marker TOKEN
+  /// — for the number-dot family the trailing "." / ")" is part of
+  /// the marker and inside `end`; for the other families a
+  /// following ":" / "." is a separate separator that
+  /// [splitLabelPrefix] removes on top of the span.
+  static ({String family, String label, int end})? _labelSpan(String s) {
+    RegExpMatch? m;
+    if ((m = _hashRangeRe.firstMatch(s)) != null) {
+      return (family: 'hash', label: m!.group(0)!, end: m.end);
+    }
+    if ((m = _promptIdRe.firstMatch(s)) != null) {
+      return (family: 'prompt', label: m!.group(0)!.trim(), end: m.end);
+    }
+    if ((m = _promptNumRe.firstMatch(s)) != null) {
+      return (family: 'prompt', label: m!.group(0)!.trim(), end: m.end);
+    }
+    if ((m = _sceneRe.firstMatch(s)) != null) {
+      return (family: 'scene', label: m!.group(0)!.trim(), end: m.end);
+    }
+    if ((m = _hashNumRe.firstMatch(s)) != null) {
+      return (family: 'hashnum', label: m!.group(0)!, end: m.end);
+    }
+    if ((m = _numberDotRe.firstMatch(s)) != null) {
+      return (family: 'number', label: m!.group(1)!, end: m.end);
+    }
+    if ((m = _numberParenRe.firstMatch(s)) != null) {
+      return (family: 'number', label: m!.group(1)!, end: m.end);
+    }
+    if ((m = _numberBracketRe.firstMatch(s)) != null) {
+      return (family: 'number', label: m!.group(1)!, end: m.end);
+    }
+    return null;
+  }
+
   /// Label match at the start of one line, or null.
   static LabelHit? matchLabelAtLineStart(String line) {
     final s = line.replaceFirst(_leadingWsRe, '');
-    RegExpMatch? m;
-    if ((m = _hashRangeRe.firstMatch(s)) != null) {
-      return LabelHit('hash', m!.group(0)!);
+    final span = _labelSpan(s);
+    return span == null ? null : LabelHit(span.family, span.label);
+  }
+
+  /// v2.34.0 (Problem 5): split ONE prompt text into its label and
+  /// its CLEAN text — the label marker removed. Only the FIRST
+  /// line is examined; the rest of a multi-line body is preserved
+  /// byte-for-byte. The marker token plus ONE following separator
+  /// character (":" / "." / ")" / "-") and any spaces after it are
+  /// removed; a label alone on its own line leaves the body
+  /// starting at the next line. A text with no leading marker is
+  /// returned unchanged with a null label.
+  static ({String? label, String text}) splitLabelPrefix(String text) {
+    if (text.isEmpty) return (label: null, text: text);
+    final normalized = text.replaceAll(_crlfRe, '\n');
+    final nl = normalized.indexOf('\n');
+    final first = nl == -1 ? normalized : normalized.substring(0, nl);
+    final rest = nl == -1 ? '' : normalized.substring(nl + 1);
+    final s = first.replaceFirst(_leadingWsRe, '');
+    final span = _labelSpan(s);
+    if (span == null) return (label: null, text: normalized);
+    var tail = s.substring(span.end);
+    if (tail.isNotEmpty && ':.)-–—'.contains(tail[0])) {
+      tail = tail.substring(1);
     }
-    if ((m = _promptIdRe.firstMatch(s)) != null) {
-      return LabelHit('prompt', m!.group(0)!.trim());
-    }
-    if ((m = _promptNumRe.firstMatch(s)) != null) {
-      return LabelHit('prompt', m!.group(0)!.trim());
-    }
-    if ((m = _sceneRe.firstMatch(s)) != null) {
-      return LabelHit('scene', m!.group(0)!.trim());
-    }
-    if ((m = _hashNumRe.firstMatch(s)) != null) {
-      return LabelHit('hashnum', m!.group(0)!);
-    }
-    if ((m = _numberDotRe.firstMatch(s)) != null) {
-      return LabelHit('number', m!.group(1)!);
-    }
-    if ((m = _numberParenRe.firstMatch(s)) != null) {
-      return LabelHit('number', m!.group(1)!);
-    }
-    if ((m = _numberBracketRe.firstMatch(s)) != null) {
-      return LabelHit('number', m!.group(1)!);
-    }
-    return null;
+    tail = tail.replaceFirst(RegExp(r'^[ \t]+'), '');
+    final body = tail.isNotEmpty ? (rest.isNotEmpty ? '$tail\n$rest' : tail) : rest;
+    return (label: span.label, text: body.trim());
   }
 
   /// The label of ONE prompt text (first line only), or null.
@@ -464,10 +507,31 @@ class PromptParser {
     return _blocksOf(t).map((b) => ParsedPrompt(extractLabel(b), b)).toList();
   }
 
-  /// Parse a pasted prompt document into items. Structured formats
-  /// are recognised whole-document first (JSON -> XML -> CSV ->
-  /// YAML), then the line-based families run.
+  /// The public parse: [_parseRaw] + the v2.34.0 (Problem 5)
+  /// cleaning pass. EVERY item's text goes through
+  /// [splitLabelPrefix], so no path — line-based, structured, or
+  /// single-block — can hand Flow a prompt that still carries its
+  /// label. An item's own label (from a structured field or a
+  /// segment boundary) always wins over the marker found in its
+  /// text; the marker fills the label only when the item had none.
+  /// Items left empty by the strip (a paste of nothing but a
+  /// label) are dropped.
   static List<ParsedPrompt> parse(String raw) {
+    final items = _parseRaw(raw);
+    final out = <ParsedPrompt>[];
+    for (final item in items) {
+      final parts = splitLabelPrefix(item.text);
+      if (parts.text.isEmpty) continue;
+      out.add(ParsedPrompt(item.label ?? parts.label, parts.text));
+    }
+    return out;
+  }
+
+  /// Parse a pasted prompt document into items (RAW pass — the
+  /// item texts may still carry their label line; [parse] cleans
+  /// them). Structured formats are recognised whole-document first
+  /// (JSON -> XML -> CSV -> YAML), then the line-based families run.
+  static List<ParsedPrompt> _parseRaw(String raw) {
     final t = raw.replaceAll(_crlfRe, '\n').trim();
     if (t.isEmpty) return const [];
 

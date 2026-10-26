@@ -21,10 +21,17 @@
  *
  * An item is { label, text }: `label` is the label AS WRITTEN
  * ("#00-01", "Scene 1", "PROMPT_001", "3") or null; `text` is the
- * prompt exactly as it will be submitted — for line-based formats
- * the label line STAYS in the text (that is what the engine has
- * always submitted and fingerprinted; v2.33.0 changes identity
- * bookkeeping, never the submitted words).
+ * prompt exactly as it will be submitted.
+ *
+ * v2.34.0 (owner's Problem 5): the text is CLEAN — a label NEVER
+ * rides into the submitted words. In v2.33.0 the label line stayed
+ * in the text for line-based formats, so Flow received e.g.
+ * "#00-01 A lighthouse…" / "Scene 1: …" verbatim. Now every item
+ * passes through splitLabelPrefix: the leading label marker (and
+ * its one separator character) is removed from the first line, the
+ * remaining body is preserved byte-for-byte (multi-line bodies
+ * intact), and the label lives ONLY as the item's identity. Tile
+ * fingerprints bind to this same clean text within a run.
  *
  * Hard rules (2026-10-14 fixture lesson, still in force):
  *   - markers count ONLY at the start of a line;
@@ -41,42 +48,82 @@
 // part of any match), except number forms, whose label is the digits.
 // ---------------------------------------------------------------------
 
-function matchLabelAtLineStart(line) {
-  const s = String(line || '').replace(/^\s+/, '');
+// One matcher cascade, three consumers: matchLabelAtLineStart
+// (identity), extractLabel (bridge string path) and splitLabelPrefix
+// (v2.34.0 text cleaning). `end` is the index just past the marker
+// TOKEN — for the number-dot family the trailing "." / ")" is part
+// of the marker and inside `end`; for the other families a
+// following ":" / "." is a separate separator that
+// splitLabelPrefix removes on top of the span.
+function labelSpan(s) {
   let m;
   // Family 4: owner's hash-number ranges — #00-01, #01-03, #02-45.
   if ((m = s.match(/^#[0-9]{1,4}-[0-9]{1,4}(?=[\s:.\-–—]|$)/))) {
-    return { family: 'hash', label: m[0] };
+    return { family: 'hash', label: m[0], end: m[0].length };
   }
   // Family 2: PROMPT ID: 001 (the colon rides inside the label).
   if ((m = s.match(/^prompt\s*id\s*[:\-]\s*[0-9]+/i))) {
-    return { family: 'prompt', label: m[0].trim() };
+    return { family: 'prompt', label: m[0].trim(), end: m[0].length };
   }
   // Family 2: PROMPT 1 / Prompt 01 / PROMPT_001.
   if ((m = s.match(/^prompt[\s_]*[0-9]+/i))) {
-    return { family: 'prompt', label: m[0].trim() };
+    return { family: 'prompt', label: m[0].trim(), end: m[0].length };
   }
   // Family 3: Scene 1 / SCENE_001 / IMAGE_PROMPT_1 / VIDEO_PROMPT_1 /
   // SHOT-001 / CLIP-001.
   if ((m = s.match(/^(?:scene|image[\s_]?prompt|video[\s_]?prompt|shot|clip)[\s_\-]*[0-9]+/i))) {
-    return { family: 'scene', label: m[0].trim() };
+    return { family: 'scene', label: m[0].trim(), end: m[0].length };
   }
   // Families 1/4: #1 (a bare hashtag word like #storm is NOT a label —
   // digits are required).
   if ((m = s.match(/^#[0-9]+(?=[\s:.)\]]|$)/))) {
-    return { family: 'hashnum', label: m[0] };
+    return { family: 'hashnum', label: m[0], end: m[0].length };
   }
   // Family 1: 1. / 1) — a following space is required so "3.5 litres"
   // inside a prompt can never pose as a list marker.
-  if ((m = s.match(/^([0-9]+)[.)](?=[\s]|$)/))) {
-    return { family: 'number', label: m[1] };
+  if ((m = s.match(/^[0-9]+[.)](?=[\s]|$)/))) {
+    return { family: 'number', label: m[0].slice(0, -1), end: m[0].length };
   }
   // Family 1: (1) / [1].
-  if ((m = s.match(/^\(([0-9]+)\)(?=[\s:.\-]|$)/)) ||
-      (m = s.match(/^\[([0-9]+)\](?=[\s:.\-]|$)/))) {
-    return { family: 'number', label: m[1] };
+  if ((m = s.match(/^\(([0-9]+)\)(?=[\s:.\-]|$)/))) {
+    return { family: 'number', label: m[1], end: m[0].length };
+  }
+  if ((m = s.match(/^\[([0-9]+)\](?=[\s:.\-]|$)/))) {
+    return { family: 'number', label: m[1], end: m[0].length };
   }
   return null;
+}
+
+function matchLabelAtLineStart(line) {
+  const s = String(line || '').replace(/^\s+/, '');
+  const span = labelSpan(s);
+  return span ? { family: span.family, label: span.label } : null;
+}
+
+/**
+ * v2.34.0 (Problem 5): split ONE prompt text into { label, text }
+ * with the label marker REMOVED from the text. Only the FIRST line
+ * is examined; the rest of a multi-line body is preserved
+ * byte-for-byte. The marker token plus ONE following separator
+ * character (":" / "." / ")" / "-") and any spaces after it are
+ * removed; a label alone on its own line leaves the body starting
+ * at the next line. A text with no leading marker is returned
+ * unchanged with label null.
+ */
+function splitLabelPrefix(text) {
+  if (typeof text !== 'string' || !text) return { label: null, text: text || '' };
+  const normalized = text.replace(/\r\n?/g, '\n');
+  const nl = normalized.indexOf('\n');
+  const first = nl === -1 ? normalized : normalized.slice(0, nl);
+  const rest = nl === -1 ? '' : normalized.slice(nl + 1);
+  const s = first.replace(/^\s+/, '');
+  const span = labelSpan(s);
+  if (!span) return { label: null, text: normalized };
+  let tail = s.slice(span.end);
+  if (/^[:.)\-–—]/.test(tail)) tail = tail.slice(1);
+  tail = tail.replace(/^[ \t]+/, '');
+  const body = tail ? (rest ? `${tail}\n${rest}` : tail) : rest;
+  return { label: span.label, text: body.trim() };
 }
 
 /**
@@ -402,11 +449,12 @@ function parseLineBased(t) {
 }
 
 /**
- * Parse a pasted prompt document into items. Structured formats are
- * recognised whole-document first (JSON -> XML -> CSV -> YAML), then
- * the line-based families run.
+ * Parse a pasted prompt document into items (RAW pass — the item
+ * texts may still carry their label line; parsePrompts cleans
+ * them). Structured formats are recognised whole-document first
+ * (JSON -> XML -> CSV -> YAML), then the line-based families run.
  */
-function parsePrompts(raw) {
+function parseItems(raw) {
   if (typeof raw !== 'string') return [];
   const t = raw.replace(/\r\n?/g, '\n').trim();
   if (!t) return [];
@@ -426,4 +474,28 @@ function parsePrompts(raw) {
   return parseLineBased(t);
 }
 
-module.exports = { parsePrompts, extractLabel, matchLabelAtLineStart };
+/**
+ * The public parse: parseItems + the v2.34.0 (Problem 5) cleaning
+ * pass. EVERY item's text goes through splitLabelPrefix, so no
+ * path — line-based, structured, or single-block — can hand Flow a
+ * prompt that still carries its label. An item's own label (from a
+ * structured field or a segment boundary) always wins over the
+ * marker found in its text; the marker fills the label only when
+ * the item had none. Items left empty by the strip (a paste of
+ * nothing but a label) are dropped.
+ */
+function parsePrompts(raw) {
+  const items = parseItems(raw);
+  const out = [];
+  for (const item of items) {
+    const parts = splitLabelPrefix(item.text);
+    if (!parts.text) continue;
+    out.push({
+      label: item.label != null ? item.label : parts.label,
+      text: parts.text,
+    });
+  }
+  return out;
+}
+
+module.exports = { parsePrompts, extractLabel, matchLabelAtLineStart, splitLabelPrefix };

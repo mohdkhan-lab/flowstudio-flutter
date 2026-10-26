@@ -60,6 +60,59 @@ class AdaptiveVideoArea extends StatelessWidget {
   }
 }
 
+// v2.34.0 (Problem 6): the aspect a decoded width/height pair
+// implies, or null while either is missing or not positive. Pure
+// and exported so the open-flow logic is testable without a
+// native player, at the same level as fitVideoSize.
+double? aspectFromDimensions(int? width, int? height) {
+  if (width == null || height == null || width <= 0 || height <= 0) {
+    return null;
+  }
+  return width / height;
+}
+
+// v2.34.0 (Problem 6): what the dialog shows while the video's
+// dimensions are being resolved — a NEUTRAL card (same chrome
+// width, a plain loading area) that commits to NO aspect. The
+// owner asked for exactly this trade: a brief neutral wait is
+// fine; a player that opens in the wrong shape and then flips is
+// not. Exported for the widget tests.
+class PlayerLoadingCard extends StatelessWidget {
+  const PlayerLoadingCard({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      height: 170,
+      margin: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        color: Colors.black,
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            SizedBox(
+              width: 26,
+              height: 26,
+              child: CircularProgressIndicator(
+                strokeWidth: 2.5,
+                color: AppTheme.accentText,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'Loading video…',
+              style: TextStyle(fontSize: 11, color: AppTheme.textDim),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // v2.29.0 (in-app player): Play buttons used to hand the file to
 // the OS default player (bridge /api/open-file). Now the video
 // plays INSIDE FlowStudio, in this dialog — modelled on the
@@ -127,14 +180,23 @@ class _PlayerDialogState extends State<_PlayerDialog> {
   double _lastVolume = 100;
   // v2.33.0: the video's REAL aspect, from the player's own width /
   // height streams (media_kit exposes the decoded dimensions — no
-  // new dependency). 16:9 until the metadata lands, then the dialog
-  // reshapes itself to the video: tall for portrait, wide for
-  // landscape.
-  double _aspect = 16 / 9;
+  // new dependency).
+  // v2.34.0 (Problem 6): the aspect starts UNRESOLVED (null). The
+  // media is opened paused; the first width/height event resolves
+  // the aspect and ONLY THEN does the shaped player appear (and
+  // autoplay start, when the toggle asks for it). v2.33.0 instead
+  // painted a 16:9 fallback immediately and reshaped when the
+  // metadata landed — the owner saw the player flip shape on every
+  // open. While unresolved, the dialog shows the neutral
+  // PlayerLoadingCard — never a wrong-shaped player. A 4-second
+  // fallback resolves to 16:9 so a stream that never reports
+  // dimensions still opens a player instead of spinning forever.
+  double? _aspect;
   int? _videoWidth;
   int? _videoHeight;
   StreamSubscription<int?>? _widthSub;
   StreamSubscription<int?>? _heightSub;
+  Timer? _resolveFallback;
 
   @override
   void initState() {
@@ -149,19 +211,31 @@ class _PlayerDialogState extends State<_PlayerDialog> {
       _videoHeight = h;
       _updateAspect();
     });
-    _player.open(Media(widget.path), play: widget.autoplay);
+    _player.open(Media(widget.path), play: false);
+    _resolveFallback = Timer(const Duration(seconds: 4), () {
+      if (mounted && _aspect == null) _resolveAspect(16 / 9);
+    });
   }
 
   void _updateAspect() {
-    final w = _videoWidth;
-    final h = _videoHeight;
-    if (w == null || h == null || w <= 0 || h <= 0 || !mounted) return;
-    final a = w / h;
-    if (a != _aspect) setState(() => _aspect = a);
+    final a = aspectFromDimensions(_videoWidth, _videoHeight);
+    if (a == null || !mounted) return;
+    if (_aspect == null) {
+      _resolveAspect(a);
+    } else if (a != _aspect) {
+      setState(() => _aspect = a);
+    }
+  }
+
+  void _resolveAspect(double a) {
+    _resolveFallback?.cancel();
+    setState(() => _aspect = a);
+    if (widget.autoplay) _player.play();
   }
 
   @override
   void dispose() {
+    _resolveFallback?.cancel();
     _widthSub?.cancel();
     _heightSub?.cancel();
     _player.dispose();
@@ -186,13 +260,17 @@ class _PlayerDialogState extends State<_PlayerDialog> {
     final screen = MediaQuery.sizeOf(context);
     final maxVideoW = math.min(660.0, math.max(240.0, screen.width - 88));
     final maxVideoH = math.max(160.0, screen.height - 220);
+    // v2.34.0 (Problem 6): until the aspect resolves there is NO
+    // video area at all — the dialog is a fixed neutral card.
+    final resolved = _aspect != null;
     final videoSize = fitVideoSize(
-      aspect: _aspect,
+      aspect: _aspect ?? 16 / 9,
       maxWidth: maxVideoW,
       maxHeight: maxVideoH,
     );
     // The header/controls need a minimum width to stay whole.
-    final contentWidth = math.max(videoSize.width, 300.0);
+    final contentWidth =
+        resolved ? math.max(videoSize.width, 300.0) : 420.0;
     return Dialog(
       backgroundColor: AppTheme.surfaceElevated,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
@@ -256,11 +334,19 @@ class _PlayerDialogState extends State<_PlayerDialog> {
               ),
             ),
 
+            // v2.34.0 (Problem 6): while the dimensions resolve,
+            // a neutral loading card — and no shaped player.
+            if (!resolved) ...[
+              const PlayerLoadingCard(),
+              const SizedBox(height: 14),
+            ],
+
             // Video area — sized to the video's own aspect (v2.33.0);
             // tap toggles play/pause; the centre button mirrors the
             // sample (pause while playing, play while paused).
+            if (resolved)
             AdaptiveVideoArea(
-              aspect: _aspect,
+              aspect: _aspect!,
               maxWidth: maxVideoW,
               maxHeight: maxVideoH,
               child: Container(
@@ -303,7 +389,8 @@ class _PlayerDialogState extends State<_PlayerDialog> {
               ),
             ),
 
-            // Control bar
+            // Control bar (only once the player exists, v2.34.0)
+            if (resolved)
             Padding(
               padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
               child: StreamBuilder<Duration>(

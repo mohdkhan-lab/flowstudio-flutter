@@ -6,6 +6,7 @@ import '../providers/settings_provider.dart';
 import '../providers/generator_provider.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/activity_provider.dart';
+import '../services/credit_costs.dart';
 
 // v2.27.0 (design): ONE row of four labelled dropdowns
 // (MODEL / DURATION / ASPECT / BROWSERS, labels above), then a row
@@ -161,9 +162,25 @@ class VideoSettingsBar extends StatelessWidget {
               // keep their intrinsic size and the Generate button is
               // NEVER clipped (at 1024 wide the old Spacer row
               // overflowed and cut the button at the right edge).
+              // v2.34.0 (Problem 10): the estimate is REAL — the
+              // per-model+duration cost table the engine itself
+              // charges by (services/credit_costs.dart), updating
+              // live with the MODEL/DURATION dropdowns above. The
+              // old hardcoded "× 7" printed 14 for two 4-credit
+              // Omni videos. A combination with no evidenced rate
+              // shows NO estimate at all — never a fake number.
               Expanded(
                 child: Text(
-                  '$promptCount prompts · est. ${promptCount * 7} credits · $liveCount Live accounts',
+                  () {
+                    final est = creditEstimateText(
+                      model: settings.model,
+                      duration: settings.duration,
+                      promptCount: promptCount,
+                    );
+                    return est == null
+                        ? '$promptCount prompts · $liveCount Live accounts'
+                        : '$promptCount prompts · $est · $liveCount Live accounts';
+                  }(),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   textAlign: TextAlign.right,

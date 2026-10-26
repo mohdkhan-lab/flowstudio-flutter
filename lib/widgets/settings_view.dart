@@ -164,7 +164,7 @@ class _SettingsViewState extends State<SettingsView> {
       'Update App',
     ];
     return _buildPanel(
-      title: '🔌 Muse AI — MCP',
+      title: '🔌 MCP CONNECTION',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -317,8 +317,12 @@ class _SettingsViewState extends State<SettingsView> {
     // Defaults on the left, Updates + Automation on the right, then
     // the full-width About strip and the Created By panel. Every
     // existing control is kept, only redistributed.
+    // v2.34.0 (Problem 13, owner-FINAL Sample A): the grid is now
+    // Appearance | Defaults, Automation | Files & Paths, Updates |
+    // MCP Connection, with an About BAR along the bottom — each
+    // row's two cards share one height and one heading style.
     final appearancePanel = _buildPanel(
-            title: '🎨 Appearance',
+            title: '🎨 APPEARANCE',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -345,18 +349,22 @@ class _SettingsViewState extends State<SettingsView> {
           );
 
     final defaultsPanel = _buildPanel(
-            title: '⚙ Defaults',
+            title: '⚙ DEFAULTS',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                // 4 Dropdowns
+                // Dropdown grid (Sample A): MODEL | DURATION,
+                // ASPECT | QUALITY, FILE NAMING — v2.34.0 adds the
+                // Quality control (Problem 11): the setting existed
+                // and was sent on every run, but no control anywhere
+                // could change it.
                 Column(
                   children: [
                     Row(
                       children: [
                         Expanded(
                       child: _buildDropdown(
-                        label: 'Default Model',
+                        label: 'MODEL',
                         value: s.model,
                         items: ['Omni Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'],
                         onChanged: (v) => prov.updateModel(v!),
@@ -365,7 +373,7 @@ class _SettingsViewState extends State<SettingsView> {
                         const SizedBox(width: 8),
                         Expanded(
                       child: _buildDropdown(
-                        label: 'Default Duration',
+                        label: 'DURATION',
                         value: s.duration,
                         items: ['4s', '6s', '8s', '10s'],
                         onChanged: (v) => prov.updateDuration(v!),
@@ -378,7 +386,7 @@ class _SettingsViewState extends State<SettingsView> {
                       children: [
                         Expanded(
                       child: _buildDropdown(
-                        label: 'Default Aspect',
+                        label: 'ASPECT',
                         value: s.aspectRatio,
                         items: ['9:16', '16:9', '1:1'],
                         onChanged: (v) => prov.updateAspectRatio(v!),
@@ -387,13 +395,28 @@ class _SettingsViewState extends State<SettingsView> {
                         const SizedBox(width: 8),
                         Expanded(
                       child: _buildDropdown(
-                        label: 'Default File Name',
+                        label: 'QUALITY',
+                        value: s.quality,
+                        items: ['720p', '1080p'],
+                        onChanged: (v) => prov.updateQuality(v!),
+                      ),
+                    ),
+                      ],
+                    ),
+                    const SizedBox(height: 10),
+                    Row(
+                      children: [
+                        Expanded(
+                      child: _buildDropdown(
+                        label: 'FILE NAMING',
                         value: s.namingPattern,
                         items: ['tag', 'scene'],
                         labels: {'tag': 'By tag name (00-01.mp4)', 'scene': 'Old way (scene001.mp4)'},
                         onChanged: (v) => prov.updateNamingPattern(v!),
                       ),
                     ),
+                        const SizedBox(width: 8),
+                        const Expanded(child: SizedBox()),
                       ],
                     ),
                   ],
@@ -491,9 +514,18 @@ class _SettingsViewState extends State<SettingsView> {
                   'These tags appear in the TAG list at the top of the Generate page. A video is saved with its tag as the file name; a prompt with no tag is saved by its number (01.mp4, 02.mp4...).',
                   style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
                 ),
+              ],
+            ),
+          );
 
-                const SizedBox(height: 14),
-
+    // v2.34.0 (Problem 13, Sample A): the two path pickers move out
+    // of Defaults into their own Files & Paths card, paired with
+    // Automation in the grid.
+    final filesPathsPanel = _buildPanel(
+            title: '🗂 FILES & PATHS',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
                 // Output Folder
                 _buildPathPicker(
                   label: 'Output folder',
@@ -512,14 +544,18 @@ class _SettingsViewState extends State<SettingsView> {
                   buttonText: 'Browse...',
                   onBrowse: _pickChromeFile,
                 ),
+
+                const SizedBox(height: 8),
+                Text(
+                  'Project runs save into their own subfolder inside the output folder.',
+                  style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+                ),
               ],
             ),
           );
 
-    // v2.31.0 (approved design Option 2): the four Automation
-    // toggles are built once and arranged two ways — stacked in the
-    // half-width panel (narrow layout) and 2×2 in the full-width
-    // panel that sits under Defaults + MCP in the wide layout.
+    // The four Automation toggles, stacked in the half-width panel
+    // (Sample A's grid pairs Automation with Files & Paths).
     final tglShowBrowsers = _buildToggleRow(
       title: 'Show Browsers',
       subtitle: 'ON = browsers open on screen while generating, so you can watch the work. OFF = they work hidden in the background.',
@@ -547,7 +583,7 @@ class _SettingsViewState extends State<SettingsView> {
     );
 
     final automationPanel = _buildPanel(
-            title: '🤖 Automation',
+            title: '🤖 AUTOMATION',
             child: Column(
               children: [
                 tglShowBrowsers,
@@ -561,36 +597,8 @@ class _SettingsViewState extends State<SettingsView> {
             ),
           );
 
-    final automationWidePanel = _buildPanel(
-            title: '🤖 Automation',
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Expanded(
-                  child: Column(
-                    children: [
-                      tglShowBrowsers,
-                      Divider(color: AppTheme.borderSoft, height: 16),
-                      tglOnlyLive,
-                    ],
-                  ),
-                ),
-                const SizedBox(width: 16),
-                Expanded(
-                  child: Column(
-                    children: [
-                      tglPreviewAutoplay,
-                      Divider(color: AppTheme.borderSoft, height: 16),
-                      tglAutoVerify,
-                    ],
-                  ),
-                ),
-              ],
-            ),
-          );
-
     final updatesPanel = _buildPanel(
-            title: '🔔 Updates',
+            title: '🔔 UPDATES',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -708,29 +716,121 @@ class _SettingsViewState extends State<SettingsView> {
 
     final mcpPanel = _buildMcpPanel();
 
-    final aboutPanel = _buildPanel(
-            title: '📋 About',
-            child: Container(
-              padding: const EdgeInsets.all(10),
-              decoration: BoxDecoration(
-                color: AppTheme.overlay08,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppTheme.borderSoft),
+    // v2.34.0 (Problem 13, Sample A): About is a full-width BAR
+    // along the bottom — logo + version on the left, the account /
+    // video stats and the social icons on the right — not another
+    // tall card. (The old card's "Design" row is gone: themes live
+    // in the Appearance card directly above.)
+    final aboutPanel = Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppTheme.surface,
+        borderRadius: BorderRadius.circular(13),
+        border: Border.all(color: AppTheme.borderSoft),
+        boxShadow: const [
+          BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '📋 ABOUT',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.3,
+              color: AppTheme.textDim,
+            ),
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Container(
+                width: 30,
+                height: 30,
+                decoration: BoxDecoration(
+                  gradient: AppTheme.accentGrad,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: ClipRRect(
+                  borderRadius: BorderRadius.circular(8),
+                  child: Image.asset(
+                    'assets/icon.png',
+                    width: 30,
+                    height: 30,
+                    fit: BoxFit.contain,
+                    errorBuilder: (ctx, err, st) => Center(
+                      child: Icon(Icons.play_arrow_rounded, size: 20, color: AppTheme.onAccent),
+                    ),
+                  ),
+                ),
               ),
-              child: Column(
+              const SizedBox(width: 10),
+              Column(
                 crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
                 children: [
-                  _buildAboutRow('Version', 'FlowStudio Lite ${s.currentVersion}'),
-                  const SizedBox(height: 4),
-                  _buildAboutRow('Accounts', '${prov.totalAccounts}'),
-                  const SizedBox(height: 4),
-                  _buildAboutRow('Total videos saved', '${prov.totalVideosSaved}'),
-                  const SizedBox(height: 4),
-                  _buildAboutRow('Design', 'macOS style — Soft Charcoal (Dark) + Creamy (Light) — change it above'),
+                  Text(
+                    'FlowStudio Lite ${s.currentVersion}',
+                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppTheme.textMain),
+                  ),
+                  Text(
+                    'Multi-Account Flow Studio — About',
+                    style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
+                  ),
                 ],
               ),
-            ),
-          );
+              const Spacer(),
+              Flexible(
+                child: Text(
+                  '${prov.totalAccounts} account${prov.totalAccounts == 1 ? '' : 's'} · ${prov.totalVideosSaved} videos all-time · Created by MK',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  textAlign: TextAlign.right,
+                  style: TextStyle(fontSize: 11, color: AppTheme.textDim),
+                ),
+              ),
+              // v2.34.0 (Problem 12): the About social icons render
+              // only for usable links — same rule as the top strip.
+              if (isUsableSocialLink(s.whatsAppLink)) ...[
+                const SizedBox(width: 10),
+                InkWell(
+                  onTap: () => prov.openSocial('whatsapp'),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(Icons.chat_bubble, size: 18, color: AppTheme.whatsApp),
+                  ),
+                ),
+              ],
+              if (isUsableSocialLink(s.chatLink)) ...[
+                const SizedBox(width: 6),
+                InkWell(
+                  onTap: () => prov.openSocial('chat'),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(Icons.message_outlined, size: 18, color: AppTheme.textDim),
+                  ),
+                ),
+              ],
+              if (isUsableSocialLink(s.supportLink)) ...[
+                const SizedBox(width: 6),
+                InkWell(
+                  onTap: () => prov.openSocial('support'),
+                  borderRadius: BorderRadius.circular(12),
+                  child: Padding(
+                    padding: const EdgeInsets.all(4),
+                    child: Icon(Icons.headphones_outlined, size: 18, color: AppTheme.textDim),
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ],
+      ),
+    );
 
     final createdByPanel = _buildPanel(
             title: 'CREATED BY',
@@ -740,33 +840,43 @@ class _SettingsViewState extends State<SettingsView> {
                 Row(
                   children: [
                     Text('MK', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: AppTheme.textMain)),
-                    const SizedBox(width: 14),
-                    InkWell(
-                      onTap: () => prov.openSocial('whatsapp'),
-                      borderRadius: BorderRadius.circular(12),
-                      child: Padding(
-                        padding: EdgeInsets.all(4),
-                        child: Icon(Icons.chat_bubble, size: 18, color: AppTheme.whatsApp),
+                    // v2.34.0 (Problem 12): these icons render only
+                    // when the link saved below is usable — the
+                    // editors stay, so a real link can always be
+                    // typed in and the icon then appears.
+                    if (isUsableSocialLink(s.whatsAppLink)) ...[
+                      const SizedBox(width: 14),
+                      InkWell(
+                        onTap: () => prov.openSocial('whatsapp'),
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(4),
+                          child: Icon(Icons.chat_bubble, size: 18, color: AppTheme.whatsApp),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    InkWell(
-                      onTap: () => prov.openSocial('chat'),
-                      borderRadius: BorderRadius.circular(12),
-                      child: Padding(
-                        padding: EdgeInsets.all(4),
-                        child: Icon(Icons.message_outlined, size: 18, color: AppTheme.textDim),
+                    ],
+                    if (isUsableSocialLink(s.chatLink)) ...[
+                      const SizedBox(width: 8),
+                      InkWell(
+                        onTap: () => prov.openSocial('chat'),
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(4),
+                          child: Icon(Icons.message_outlined, size: 18, color: AppTheme.textDim),
+                        ),
                       ),
-                    ),
-                    const SizedBox(width: 8),
-                    InkWell(
-                      onTap: () => prov.openSocial('support'),
-                      borderRadius: BorderRadius.circular(12),
-                      child: Padding(
-                        padding: EdgeInsets.all(4),
-                        child: Icon(Icons.headphones_outlined, size: 18, color: AppTheme.textDim),
+                    ],
+                    if (isUsableSocialLink(s.supportLink)) ...[
+                      const SizedBox(width: 8),
+                      InkWell(
+                        onTap: () => prov.openSocial('support'),
+                        borderRadius: BorderRadius.circular(12),
+                        child: Padding(
+                          padding: const EdgeInsets.all(4),
+                          child: Icon(Icons.headphones_outlined, size: 18, color: AppTheme.textDim),
+                        ),
                       ),
-                    ),
+                    ],
                   ],
                 ),
                 const SizedBox(height: 10),
@@ -800,16 +910,28 @@ class _SettingsViewState extends State<SettingsView> {
           // ever squeezed; the page scrolls, as it already could.
           LayoutBuilder(
             builder: (context, constraints) {
-              // v2.31.0 (approved design Option 2): wide layout is
-              // row-based — Appearance + Updates, Defaults + MCP,
-              // then Automation full-width. Below 700 the panels
-              // stack in that same reading order and the page scrolls.
-              Widget pair(Widget a, Widget b) => Row(
-                    crossAxisAlignment: CrossAxisAlignment.start,
+              // v2.34.0 (Problem 13, owner-FINAL Sample A): the
+              // wide layout is a strict two-column GRID —
+              // Appearance | Defaults, Automation | Files & Paths,
+              // Updates | MCP Connection — and each row's two cards
+              // share the SAME height, with identical
+              // padding/radius/heading style and aligned tops. The
+              // equal height comes from a one-row Table with filled
+              // cells: IntrinsicHeight cannot be used here because
+              // the Appearance card contains a shrink-wrapping
+              // GridView, which cannot answer intrinsic heights
+              // (the fit harness caught exactly that). Below 700
+              // the panels stack in that same reading order and
+              // the page scrolls (as it already could).
+              Widget pair(Widget a, Widget b) => Table(
+                    columnWidths: const {
+                      0: FlexColumnWidth(1),
+                      1: FixedColumnWidth(12),
+                      2: FlexColumnWidth(1),
+                    },
+                    defaultVerticalAlignment: TableCellVerticalAlignment.fill,
                     children: [
-                      Expanded(child: a),
-                      const SizedBox(width: 12),
-                      Expanded(child: b),
+                      TableRow(children: [a, const SizedBox(), b]),
                     ],
                   );
               if (constraints.maxWidth < 700) {
@@ -818,24 +940,26 @@ class _SettingsViewState extends State<SettingsView> {
                   children: [
                     appearancePanel,
                     const SizedBox(height: 12),
-                    updatesPanel,
-                    const SizedBox(height: 12),
                     defaultsPanel,
                     const SizedBox(height: 12),
-                    mcpPanel,
-                    const SizedBox(height: 12),
                     automationPanel,
+                    const SizedBox(height: 12),
+                    filesPathsPanel,
+                    const SizedBox(height: 12),
+                    updatesPanel,
+                    const SizedBox(height: 12),
+                    mcpPanel,
                   ],
                 );
               }
               return Column(
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  pair(appearancePanel, updatesPanel),
+                  pair(appearancePanel, defaultsPanel),
                   const SizedBox(height: 12),
-                  pair(defaultsPanel, mcpPanel),
+                  pair(automationPanel, filesPathsPanel),
                   const SizedBox(height: 12),
-                  automationWidePanel,
+                  pair(updatesPanel, mcpPanel),
                 ],
               );
             },
@@ -847,26 +971,6 @@ class _SettingsViewState extends State<SettingsView> {
           const SizedBox(height: 20),
         ],
       ),
-    );
-  }
-
-  Widget _buildAboutRow(String label, String value) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Text(
-          '$label: ',
-          style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-        ),
-        // Responsive pass: long values (the "Design" line) wrap
-        // inside the row instead of overflowing it.
-        Expanded(
-          child: Text(
-            value,
-            style: TextStyle(fontSize: 11, color: AppTheme.textDim),
-          ),
-        ),
-      ],
     );
   }
 
@@ -884,7 +988,18 @@ class _SettingsViewState extends State<SettingsView> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text(title, style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppTheme.textMain)),
+          // v2.34.0 (Problem 13, Sample A): ONE heading style for
+          // every section — small-caps, letter-spaced, dim — so no
+          // card shouts louder than its neighbour.
+          Text(
+            title,
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.3,
+              color: AppTheme.textDim,
+            ),
+          ),
           const SizedBox(height: 10),
           child,
         ],

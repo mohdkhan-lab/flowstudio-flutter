@@ -115,7 +115,7 @@ class TopStrip extends StatelessWidget {
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                   ),
                   child: Text(
-                    'v2.33.0',
+                    'v2.34.0',
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
@@ -157,26 +157,42 @@ class TopStrip extends StatelessWidget {
           ),
           const SizedBox(width: 14),
 
-          // Social Icons (WhatsApp, Chat, Support)
-          _buildCircleIcon(
-            icon: Icons.chat_bubble,
-            color: AppTheme.whatsApp,
-            tooltip: 'WhatsApp',
-            onTap: () => context.read<SettingsProvider>().openSocial('whatsapp'),
-          ),
-          const SizedBox(width: 6),
-          _buildCircleIcon(
-            icon: Icons.message_outlined,
-            color: AppTheme.textDim,
-            tooltip: 'Chat',
-            onTap: () => context.read<SettingsProvider>().openSocial('chat'),
-          ),
-          const SizedBox(width: 6),
-          _buildCircleIcon(
-            icon: Icons.headphones_outlined,
-            color: AppTheme.textDim,
-            tooltip: 'Support',
-            onTap: () => context.read<SettingsProvider>().openSocial('support'),
+          // Social Icons (WhatsApp, Chat, Support) — v2.34.0
+          // (Problem 12): an icon renders ONLY when its saved link
+          // is usable; an unconfigured or placeholder link shows
+          // nothing instead of opening a dead page.
+          Consumer<SettingsProvider>(
+            builder: (context, settingsProv, _) {
+              final s = settingsProv.settings;
+              final icons = <Widget>[];
+              if (isUsableSocialLink(s.whatsAppLink)) {
+                icons.add(_buildCircleIcon(
+                  icon: Icons.chat_bubble,
+                  color: AppTheme.whatsApp,
+                  tooltip: 'WhatsApp',
+                  onTap: () => context.read<SettingsProvider>().openSocial('whatsapp'),
+                ));
+              }
+              if (isUsableSocialLink(s.chatLink)) {
+                if (icons.isNotEmpty) icons.add(const SizedBox(width: 6));
+                icons.add(_buildCircleIcon(
+                  icon: Icons.message_outlined,
+                  color: AppTheme.textDim,
+                  tooltip: 'Chat',
+                  onTap: () => context.read<SettingsProvider>().openSocial('chat'),
+                ));
+              }
+              if (isUsableSocialLink(s.supportLink)) {
+                if (icons.isNotEmpty) icons.add(const SizedBox(width: 6));
+                icons.add(_buildCircleIcon(
+                  icon: Icons.headphones_outlined,
+                  color: AppTheme.textDim,
+                  tooltip: 'Support',
+                  onTap: () => context.read<SettingsProvider>().openSocial('support'),
+                ));
+              }
+              return Row(mainAxisSize: MainAxisSize.min, children: icons);
+            },
           ),
 
           const SizedBox(width: 14),

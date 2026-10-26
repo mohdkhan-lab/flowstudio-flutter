@@ -143,7 +143,23 @@ try {
   eq('redo: download-failed stays an existing task (no re-charge)', plan.existingTaskIds.join(','), 't2');
   eq('redo: gen-failed + file-gone are recreated', plan.recreateItems.map(i => i.tag).join(','), '#00-04,#00-05');
   eq('redo: recreated item keeps original index', plan.recreateItems[0].index, 3);
-  eq('redo: recreated item keeps original text', plan.recreateItems[1].text, '#00-05 five');
+  // v2.34.0 (Problem 5): the rows above simulate PRE-v2.34.0 stored
+  // tasks — their prompt_text still carries the label ("#00-05
+  // five"). A redo SUBMITS the text again, so the recreated item
+  // must carry the CLEAN text ("five"); the label survives only as
+  // the tag. (In v2.33.0 this expectation was the raw stored text.)
+  eq('redo: recreated item text is label-free', plan.recreateItems[1].text, 'five');
+  eq('redo: recreated item 1 text is label-free', plan.recreateItems[0].text, 'four');
+
+  // A legacy row whose tag was never stored recovers its identity
+  // from the label inside its stored text.
+  const legacyRows = [
+    { id: 't9', prompt_index: 0, prompt_tag: '', prompt_text: 'Scene 9: A barn at dusk', status: 'failed', error_reason: 'boom', file_path: '' },
+  ];
+  const legacyReport = buildSequenceReport(legacyRows, { exists: () => false, namingMode: 'tag' });
+  const legacyPlan = planRedo(legacyRows, legacyReport);
+  eq('redo: legacy row recovers its label as the tag', legacyPlan.recreateItems[0].tag, 'Scene 9');
+  eq('redo: legacy row text is cleaned', legacyPlan.recreateItems[0].text, 'A barn at dusk');
 
   // Tag-mode name check: a completed scene saved under a DIFFERENT
   // name is wrongName, not present.

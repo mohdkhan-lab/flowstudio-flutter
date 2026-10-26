@@ -13,6 +13,8 @@ const tileState = require('./tileState');
 const stallWatch = require('./stallWatch');
 const downloadGuard = require('./downloadGuard');
 const tagNaming = require('./tagNaming');
+const fs = require('fs');
+const sequenceReport = require('./sequenceReport');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -514,7 +516,17 @@ class WorkerPool {
         const nameExt = (settings && settings.type === 'Image') ? 'png' : 'mp4';
         const tagNameGroups = {};
         for (const id of this.batchIds) {
-          const rows = dbService.query("SELECT prompt_tag FROM queue_tasks WHERE batch_id = ? AND status != 'cancelled'", [id]) || [];
+          // v2.33.0: 'failed' rows are excluded alongside 'cancelled'
+          // — a failed task produces NO file, so it must not inflate
+          // a tag's group count. This matters for the missing-scene
+          // redo: the recreated row carries the same tag as its dead
+          // failed original (possibly in a batch this run also
+          // scans); counting the corpse would number the redone
+          // scene's file (<tag>-N.mp4) and break its fixed slot.
+          // Fresh runs are unaffected — at count time their rows are
+          // all still pending — and completed rows still count, so a
+          // resumed shared-tag run keeps its original numbering.
+          const rows = dbService.query("SELECT prompt_tag FROM queue_tasks WHERE batch_id = ? AND status NOT IN ('cancelled', 'failed')", [id]) || [];
           for (const r of rows) {
             const fn = tagNaming.fileNameForTag(r.prompt_tag || '', nameExt);
             if (fn) tagNameGroups[fn] = (tagNameGroups[fn] || 0) + 1;
@@ -1617,6 +1629,47 @@ class WorkerPool {
           }
         } catch (e) {}
       }
+
+      // v2.33.0 (SEQUENCE CHECK — the missing-scene protection):
+      // the v2.3.0 sequence report finally runs where it belongs —
+      // at the end of every run that reached the workers. It trusts
+      // the FILES, not task statuses: a scene counts as saved only
+      // when its file exists (in tag-naming mode, under its tag's
+      // name). Missing scenes are NAMED in the log + Activity, never
+      // silent — the project stays visibly incomplete until the
+      // owner redoes just those scenes (bridge /api/generation/
+      // redo-missing executes sequenceReport.planRedo). The report
+      // is kept on the pool (this.lastRunReport) for that route.
+      try {
+        const ids = (this.batchIds && this.batchIds.size > 0) ? [...this.batchIds] : [batchId];
+        const allRows = [];
+        for (const id of ids) {
+          if (!id) continue;
+          const part = dbService.query('SELECT * FROM queue_tasks WHERE batch_id = ?', [id]) || [];
+          for (const r of part) allRows.push(r);
+        }
+        const report = sequenceReport.buildSequenceReport(allRows, {
+          exists: (p) => fs.existsSync(p),
+          namingMode: (settings && settings.namingPattern === 'tag') ? 'tag' : 'other'
+        });
+        this.lastRunReport = report;
+        if (report.total > 0) {
+          if (report.missing.length === 0 && report.wrongName.length === 0) {
+            this.log(`Sequence check: all ${report.total} scene(s) are saved — nothing is missing.`, 'success');
+          } else {
+            let msg = `Sequence check: ${report.presentCount} of ${report.total} scene(s) saved`;
+            if (report.missing.length > 0) {
+              msg += ` — MISSING: ${report.missing.map(mn => mn.tag).join(', ')}`;
+            }
+            if (report.wrongName.length > 0) {
+              msg += ` — ${report.wrongName.length} scene(s) saved under a different name (${report.wrongName.map(w => w.tag).join(', ')})`;
+            }
+            msg += '. The project is INCOMPLETE until the missing scenes are made — Redo Missing makes only those.';
+            this.log(msg, 'warn');
+            recordActivity({ category: 'generation', level: 'warn', message: msg });
+          }
+        }
+      } catch (e) {}
 
       if (this.isStopping) {
         // v1.8.0: a resumed run can span several original batches.

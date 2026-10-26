@@ -18,6 +18,7 @@ class PromptsEditor extends StatefulWidget {
 
 class _PromptsEditorState extends State<PromptsEditor> {
   late TextEditingController _controller;
+  late TextEditingController _projectController;
   String _selectedTag = 'None';
   // v2.29.0: the Bulk/Agent mode lives in GeneratorProvider now
   // (it drives the real parsing) — this widget only renders it.
@@ -26,11 +27,13 @@ class _PromptsEditorState extends State<PromptsEditor> {
   void initState() {
     super.initState();
     _controller = TextEditingController();
+    _projectController = TextEditingController();
   }
 
   @override
   void dispose() {
     _controller.dispose();
+    _projectController.dispose();
     super.dispose();
   }
 
@@ -70,6 +73,9 @@ class _PromptsEditorState extends State<PromptsEditor> {
 
     if (_controller.text != generator.promptsRawText) {
       _controller.text = generator.promptsRawText;
+    }
+    if (_projectController.text != generator.projectName) {
+      _projectController.text = generator.projectName;
     }
 
     return Container(
@@ -188,6 +194,67 @@ class _PromptsEditorState extends State<PromptsEditor> {
                   ),
                 ),
               ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+          // v2.33.0 (project folder): one slim row under the header.
+          // When a project name is set, the run's videos save into a
+          // folder of that name inside the output folder instead of
+          // mixing with the general downloads. Empty = no project,
+          // exactly the old behaviour. The height comes out of the
+          // flexible textarea, so the FIT LAW sizes are untouched.
+          Row(
+            children: [
+              Text(
+                'PROJECT',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.6,
+                  color: AppTheme.textFaint,
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Container(
+                  height: 24,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.inputBg,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: AppTheme.borderSoft),
+                  ),
+                  child: TextField(
+                    controller: _projectController,
+                    style: TextStyle(fontSize: 11, color: AppTheme.textMain),
+                    onChanged: (text) =>
+                        context.read<GeneratorProvider>().setProjectName(text),
+                    decoration: InputDecoration(
+                      hintText:
+                          'Optional — e.g. My Short Film (videos save into this project folder)',
+                      hintStyle: TextStyle(
+                        color: AppTheme.textFaint,
+                        fontSize: 10.5,
+                        fontStyle: FontStyle.italic,
+                      ),
+                      border: InputBorder.none,
+                      isDense: true,
+                      contentPadding: const EdgeInsets.symmetric(vertical: 5),
+                    ),
+                  ),
+                ),
+              ),
+              if (generator.projectName.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                InkWell(
+                  onTap: () =>
+                      context.read<GeneratorProvider>().setProjectName(''),
+                  borderRadius: BorderRadius.circular(10),
+                  child: Icon(Icons.close, size: 13, color: AppTheme.textDim),
+                ),
+              ],
             ],
           ),
 

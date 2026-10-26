@@ -57,9 +57,43 @@ function sanitizeTagBase(tag) {
   return lead + s;
 }
 
+// v2.33.0 (owner's Problem 4 amendment to the 2026-10-16 rule): a
+// NUMERIC label's number is zero-padded to 3 digits in the file
+// name, so a project folder sorts in true numeric order (scene 2
+// never lands after scene 10). Applies to: a bare number (`3` ->
+// `003`), a bare hash number (`#1` -> `#001`), and word+number
+// labels whose word is a known label stem (`Scene 1` -> `Scene001`,
+// `Prompt 01` -> `Prompt001`, `SCENE_001` stays `SCENE_001`).
+// NOT touched, by the owner's own formats: dash forms stay exactly
+// as written (`#00-01`, `SHOT-001` — his hash ranges are already
+// two-digit groups), and tags whose word is not a label stem keep
+// their literal form (`Ep11` stays `Ep11`, `Cinematic` has no
+// number at all). The rule lives HERE, inside fileNameForTag, so
+// the engine, the shared-tag group counter and the sequence report
+// — all of which call fileNameForTag — always agree on the name.
+const NUMERIC_LABEL_STEMS = new Set([
+  'scene', 'shot', 'clip', 'prompt', 'imageprompt', 'videoprompt', 'image', 'video'
+]);
+
+function padNumericTail(base) {
+  let m = base.match(/^#([0-9]+)$/);
+  if (m) return `#${m[1].padStart(3, '0')}`;
+  m = base.match(/^([0-9]+)$/);
+  if (m) return m[1].padStart(3, '0');
+  m = base.match(/^([A-Za-z]+)([0-9]+)$/);
+  if (m && NUMERIC_LABEL_STEMS.has(m[1].toLowerCase())) {
+    return m[1] + m[2].padStart(3, '0');
+  }
+  m = base.match(/^([A-Za-z_]+?)([0-9]+)$/);
+  if (m && NUMERIC_LABEL_STEMS.has(m[1].replace(/_/g, '').toLowerCase())) {
+    return m[1] + m[2].padStart(3, '0');
+  }
+  return base;
+}
+
 /** Full file name for a tag, or null when the tag has no usable base. */
 function fileNameForTag(tag, ext = 'mp4') {
-  const base = sanitizeTagBase(tag);
+  const base = padNumericTail(sanitizeTagBase(tag));
   if (!base) return null;
   const cleanExt = String(ext || 'mp4').replace(/^\./, '').replace(/[^a-zA-Z0-9]/g, '') || 'mp4';
   return `${base}.${cleanExt}`;

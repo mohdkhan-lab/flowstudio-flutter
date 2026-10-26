@@ -67,6 +67,9 @@ const {
   checkImportedAccount,
 } = require('./engine/cookieImport');
 const { WorkerPool } = require('./engine/workerPool');
+const promptParser = require('./engine/promptParser');
+const projectFolder = require('./engine/projectFolder');
+const sequenceReport = require('./engine/sequenceReport');
 const { recordActivity, getActivityStore } = require('./engine/activityStore');
 const mcp = require('./mcp_server');
 const { getStats } = require('./engine/usageStats');
@@ -162,8 +165,16 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.32.2';
+const APP_VERSION = '2.33.0';
 let activeWorkerPool = null;
+// v2.33.0: the composition of the most recent run ({ taskIds,
+// downloadFolder, settings }), captured through the pool's
+// onRunStart. The missing-scene redo route reads it to compute
+// what is missing and to send redo work back into the SAME folder
+// (the project folder, when the run had one). Same-folder runs
+// union their task ids, so the completeness view always covers
+// the whole project rather than only the last batch.
+let lastRunInfo = null;
 const sseClients = new Set();
 
 function broadcastEvent(eventName, data) {
@@ -251,6 +262,97 @@ async function startBridge() {
     }
   } catch (e) {
     console.warn('[FlowStudio MCP] Boot start failed:', e.message);
+  }
+
+  // v2.33.0: ONE pool factory for fresh generation starts AND the
+  // missing-scene redo, so a redo run emits exactly the same events
+  // (logs with the Simple/Details split, task updates, completions,
+  // progress, parked-browser changes) as a fresh run — the app
+  // cannot tell them apart, and neither can the Activity history.
+  // onRunStart is wired here too: it records the run's composition
+  // into lastRunInfo, which the redo route reads.
+  function buildPool({ parallelBrowsers, accountIds, getSettingsHint } = {}) {
+    // v2.22.0 fix: browser visibility comes from the engine's own
+    // 'browser_background' setting — the SAME key the original
+    // Electron main.js uses ('1' or unset = background ON, '0' =
+    // visible). The WorkerPool "headless" option is the background
+    // flag (headed Chrome parked off-screen, never true headless).
+    const backgroundSetting = dbService.getSetting('browser_background', '1');
+    return new WorkerPool({
+      concurrency: parallelBrowsers || 1,
+      headless: backgroundSetting !== '0',
+      liveOnly: dbService.getSetting('live_only_accounts', '0') === '1',
+      // v2.29.0 (checkbox truth): the sidebar's ticked account
+      // IDs from the generate request — the pool may use ONLY
+      // these. Absent (old callers) = no restriction.
+      allowedAccountIds: Array.isArray(accountIds) ? accountIds : null,
+      // v2.28.0: the engine's log() passes ONE OBJECT
+      // ({ message, type, timestamp, ...extra }) — the old wiring
+      // treated it as (msg, type) strings, so the whole object
+      // became the SSE message (the app printed the raw dump and
+      // the level was lost). Accept the object form, stay tolerant
+      // of a plain string.
+      // v2.29.0 (Simple/Details split): pool lines are DETAIL by
+      // default — the Activity "Simple" view hides them. Only
+      // milestone lines stay simple: run completions, downloads /
+      // saves, sync completions, and every error or warning.
+      // Bridge-originated automation-log broadcasts carry no
+      // detail flag at all, which the app reads as simple.
+      onLog: (entry) => {
+        const m = (entry && typeof entry === 'object') ? (entry.message ?? String(entry)) : String(entry ?? '');
+        const lvl = (entry && typeof entry === 'object' && entry.type) ? entry.type : 'info';
+        const lowLevel = lvl === 'error' || lvl === 'warn' || lvl === 'warning';
+        const text = String(m).toLowerCase();
+        const milestone = lowLevel ||
+          text.includes('all work is complete') ||
+          text.includes('generation queue finished') ||
+          text.includes('download complete') ||
+          text.includes('downloaded') ||
+          text.includes('saved as') ||
+          text.includes('sync complete');
+        broadcastEvent('automation-log', { message: m, level: lvl, detail: !milestone });
+      },
+      onProgress: (data) => broadcastEvent('automation-progress', data),
+      // v2.30.1: forward the pool's per-task updates — this
+      // callback was never wired, so WorkerPool.onTaskUpdate
+      // defaulted to a no-op and every per-task failure (with
+      // its concrete reason) was silently dropped; the app's
+      // cards then span as RENDERING past the end of the run.
+      onTaskUpdate: (data) => broadcastEvent('task-updated', data),
+      onVideoCompleted: (data) => broadcastEvent('video-completed', data),
+      // v2.30.3: forward the engine's live render progress
+      // (tile percentage + elapsed). This callback was never
+      // wired either — the pool relayed it to a no-op, so the
+      // app never saw a percentage and a rendering card could
+      // only sit on "Working…". The app also uses these events
+      // as the run's heartbeat for its no-response watchdog.
+      onVideoProgress: (data) => broadcastEvent('video-progress', data),
+      onAccountUpdated: (data) => broadcastEvent('account-updated', data),
+      // v2.25.0 (parked browser): the pool announces which accounts
+      // have a live generation browser (+ window shown/parked) —
+      // the sidebar renders ACTIVE + the Show/Hide toggle from it.
+      onActiveBrowsersChanged: (list) => broadcastEvent('active-browsers', { accounts: list }),
+      // v2.33.0: capture the run's composition for the sequence
+      // check + the missing-scene redo. A run into the SAME folder
+      // (a redo, or the next batch of the same project) unions its
+      // task ids into the recorded run, so the completeness view
+      // covers the whole project; a run into a different folder
+      // starts a fresh record.
+      onRunStart: (info) => {
+        if (lastRunInfo && lastRunInfo.downloadFolder === info.downloadFolder) {
+          const merged = new Set([...lastRunInfo.taskIds, ...(info.taskIds || [])]);
+          lastRunInfo = { ...lastRunInfo, taskIds: [...merged] };
+        } else {
+          let hint = {};
+          try { hint = (typeof getSettingsHint === 'function' ? getSettingsHint() : null) || {}; } catch (e) {}
+          lastRunInfo = {
+            taskIds: [...(info.taskIds || [])],
+            downloadFolder: info.downloadFolder,
+            settings: hint
+          };
+        }
+      }
+    });
   }
 
   const server = http.createServer(async (req, res) => {
@@ -893,80 +995,39 @@ async function startBridge() {
         }
 
         const downloadDir = config.downloadFolder || dbService.getSetting('download_folder', path.join(process.env.FLOW_LITE_DATA_DIR, 'downloads'));
+        // v2.33.0 (project folders): a run may carry a project name —
+        // its downloads then land in that project's own subfolder of
+        // the output folder, never mixed with the general downloads.
+        // The EFFECTIVE folder rides the exact same single-source-of-
+        // truth below, so the output endpoints enumerate the project
+        // folder while it is the most recent run's folder. The name
+        // is sanitised to one safe folder name (engine/projectFolder).
+        const projectName = projectFolder.sanitizeProjectName(config.project);
+        const effectiveDir = projectName ? path.join(downloadDir, projectName) : downloadDir;
         try {
-          if (!fs.existsSync(downloadDir)) fs.mkdirSync(downloadDir, { recursive: true });
+          if (!fs.existsSync(effectiveDir)) fs.mkdirSync(effectiveDir, { recursive: true });
         } catch (e) {}
         // v2.30.0 (single source of truth): record the folder this
         // run is ACTUALLY saving into, so /api/output-files,
         // /api/open-file, /api/output-file-path and
         // /api/open-output-folder enumerate exactly that folder —
         // never a stale setting or the empty fallback again.
-        try { dbService.setSetting('download_folder', downloadDir); } catch (e) {}
+        try { dbService.setSetting('download_folder', effectiveDir); } catch (e) {}
+        if (projectName) {
+          broadcastEvent('automation-log', {
+            message: `Project folder: "${projectName}" — this run's videos will save into their own folder inside the output folder.`,
+            level: 'info'
+          });
+        }
 
-        // v2.22.0 fix: browser visibility comes from the engine's own
-        // 'browser_background' setting — the SAME key the original
-        // Electron main.js uses ('1' or unset = background ON, '0' =
-        // visible). The WorkerPool "headless" option is the background
-        // flag (headed Chrome parked off-screen, never true headless).
-        // The old bridge read the unrelated 'show_browsers' key and
-        // inverted it, so the UI toggle did the opposite of its label.
-        const backgroundSetting = dbService.getSetting('browser_background', '1');
-        const headless = backgroundSetting !== '0';
-
-        const pool = new WorkerPool({
-          concurrency: config.parallelBrowsers || 1,
-          headless: headless,
-          liveOnly: dbService.getSetting('live_only_accounts', '0') === '1',
-          // v2.29.0 (checkbox truth): the sidebar's ticked account
-          // IDs from the generate request — the pool may use ONLY
-          // these. Absent (old callers) = no restriction.
-          allowedAccountIds: Array.isArray(config.accountIds) ? config.accountIds : null,
-          // v2.28.0: the engine's log() passes ONE OBJECT
-          // ({ message, type, timestamp, ...extra }) — the old wiring
-          // treated it as (msg, type) strings, so the whole object
-          // became the SSE message (the app printed the raw dump and
-          // the level was lost). Accept the object form, stay tolerant
-          // of a plain string.
-          // v2.29.0 (Simple/Details split): pool lines are DETAIL by
-          // default — the Activity "Simple" view hides them. Only
-          // milestone lines stay simple: run completions, downloads /
-          // saves, sync completions, and every error or warning.
-          // Bridge-originated automation-log broadcasts carry no
-          // detail flag at all, which the app reads as simple.
-          onLog: (entry) => {
-            const m = (entry && typeof entry === 'object') ? (entry.message ?? String(entry)) : String(entry ?? '');
-            const lvl = (entry && typeof entry === 'object' && entry.type) ? entry.type : 'info';
-            const lowLevel = lvl === 'error' || lvl === 'warn' || lvl === 'warning';
-            const text = String(m).toLowerCase();
-            const milestone = lowLevel ||
-              text.includes('all work is complete') ||
-              text.includes('generation queue finished') ||
-              text.includes('download complete') ||
-              text.includes('downloaded') ||
-              text.includes('saved as') ||
-              text.includes('sync complete');
-            broadcastEvent('automation-log', { message: m, level: lvl, detail: !milestone });
-          },
-          onProgress: (data) => broadcastEvent('automation-progress', data),
-          // v2.30.1: forward the pool's per-task updates — this
-          // callback was never wired, so WorkerPool.onTaskUpdate
-          // defaulted to a no-op and every per-task failure (with
-          // its concrete reason) was silently dropped; the app's
-          // cards then span as RENDERING past the end of the run.
-          onTaskUpdate: (data) => broadcastEvent('task-updated', data),
-          onVideoCompleted: (data) => broadcastEvent('video-completed', data),
-          // v2.30.3: forward the engine's live render progress
-          // (tile percentage + elapsed). This callback was never
-          // wired either — the pool relayed it to a no-op, so the
-          // app never saw a percentage and a rendering card could
-          // only sit on "Working…". The app also uses these events
-          // as the run's heartbeat for its no-response watchdog.
-          onVideoProgress: (data) => broadcastEvent('video-progress', data),
-          onAccountUpdated: (data) => broadcastEvent('account-updated', data),
-          // v2.25.0 (parked browser): the pool announces which accounts
-          // have a live generation browser (+ window shown/parked) —
-          // the sidebar renders ACTIVE + the Show/Hide toggle from it.
-          onActiveBrowsersChanged: (list) => broadcastEvent('active-browsers', { accounts: list }),
+        // v2.33.0: the pool comes from the shared factory (fresh
+        // starts and the missing-scene redo get identical wiring).
+        // The settings hint is read lazily — onRunStart fires during
+        // runQueue, after `settings` below exists.
+        const pool = buildPool({
+          parallelBrowsers: config.parallelBrowsers || 1,
+          accountIds: Array.isArray(config.accountIds) ? config.accountIds : null,
+          getSettingsHint: () => settings
         });
 
         activeWorkerPool = pool;
@@ -1002,9 +1063,15 @@ async function startBridge() {
             // tag-naming engine saves the file as, and what the
             // Progress card already promises on screen. The run's
             // selected tag is only the fallback for untagged prompts.
-            const lead = p.trimStart().startsWith('#')
-              ? p.trimStart().split(/\s+/)[0]
-              : '';
+            // v2.33.0: the lead now comes from the shared prompt
+            // parser — EVERY label family ("Scene 1:", "PROMPT_001:",
+            // "1.", "#00-01", …) reaches the task identity, exactly
+            // as the app's own parser assigns it. Before, only a
+            // leading "#" token was recognised here, so a scene-
+            // labelled paste arriving as strings saved fallback
+            // names. (A hashtag WORD like "#stormwatch" is not a
+            // label any more — digits are required.)
+            const lead = promptParser.extractLabel(p);
             return { text: p, index: idx, tag: lead || config.tag || '' };
           }
           return {
@@ -1028,10 +1095,14 @@ async function startBridge() {
           naming: namingPattern,
           namingPattern: namingPattern,
           customNamingPrefix: config.tag || '',
+          // v2.33.0: persisted in every task's settings_json, so a
+          // later resume/redo restores the project with the run.
+          project: projectName || '',
         };
 
-        // Start asynchronously via runQueue
-        pool.runQueue(formattedPrompts, settings, downloadDir).catch(err => {
+        // Start asynchronously via runQueue (into the project
+        // subfolder when this run carries a project name).
+        pool.runQueue(formattedPrompts, settings, effectiveDir).catch(err => {
           broadcastEvent('automation-log', { message: `Generation error: ${err.message}`, level: 'error' });
         }).finally(() => {
           activeWorkerPool = null;
@@ -1039,6 +1110,76 @@ async function startBridge() {
         });
 
         return sendJson(200, { ok: true });
+      }
+
+      // v2.33.0 (missing-scene redo): make ONLY the scenes the last
+      // run is missing, into the SAME folder (the project folder
+      // when the run had one). The split is sequenceReport.planRedo:
+      // scenes whose task is still 'pending' — above all the
+      // download-failed ones (pending + needs_check) — re-enter AS
+      // THEMSELVES, so the check-only recovery downloads the
+      // already-made video and NO new charge can happen; scenes
+      // whose generation failed are recreated as fresh rows carrying
+      // their ORIGINAL text, tag and index, so the redone scene
+      // lands on its own number. Nothing else is re-run, ever.
+      if (pathname === '/api/generation/redo-missing' && req.method === 'POST') {
+        const body = await readBody();
+        if (activeWorkerPool) {
+          return sendJson(400, { ok: false, error: 'A generation run is already active' });
+        }
+        if (!lastRunInfo || !Array.isArray(lastRunInfo.taskIds) || lastRunInfo.taskIds.length === 0) {
+          return sendJson(400, { ok: false, error: 'No run to check yet — run a generation first, then Redo Missing knows what to look for.' });
+        }
+        const rows = lastRunInfo.taskIds
+          .map(id => { try { return dbService.getTask(id); } catch (e) { return null; } })
+          .filter(Boolean);
+        const namingMode = (lastRunInfo.settings && lastRunInfo.settings.namingPattern === 'tag') ? 'tag' : 'other';
+        const report = sequenceReport.buildSequenceReport(rows, {
+          exists: (p) => fs.existsSync(p),
+          namingMode
+        });
+        if (report.missing.length === 0) {
+          return sendJson(200, {
+            ok: true,
+            started: false,
+            missing: 0,
+            message: `Nothing is missing — all ${report.total} scene(s) of the last run are saved.`
+          });
+        }
+        const plan = sequenceReport.planRedo(rows, report);
+        const redoTasks = [];
+        for (const id of plan.existingTaskIds) {
+          const row = dbService.getTask(id);
+          if (row) redoTasks.push(row);
+        }
+        if (plan.recreateItems.length > 0) {
+          const newBatchId = `batch_${Date.now()}`;
+          const created = dbService.createBatchTasks(newBatchId, plan.recreateItems, lastRunInfo.settings || {});
+          for (const row of created) redoTasks.push(row);
+        }
+        if (redoTasks.length === 0) {
+          return sendJson(400, { ok: false, error: 'The missing scenes could not be prepared for a redo.' });
+        }
+        const pool = buildPool({
+          parallelBrowsers: body.parallelBrowsers || 1,
+          accountIds: Array.isArray(body.accountIds) ? body.accountIds : null,
+          getSettingsHint: () => lastRunInfo ? lastRunInfo.settings : {}
+        });
+        activeWorkerPool = pool;
+        broadcastEvent('automation-log', {
+          message: `Redo Missing: making only the ${report.missing.length} missing scene(s) — ${report.missing.map(mn => mn.tag).join(', ')}. Scenes that only failed to download will be downloaded again with NO new charge.`,
+          level: 'info'
+        });
+        // Settings stay null on purpose: runQueue's resume branch
+        // restores them from the tasks' own settings_json (project
+        // folder, naming pattern and all).
+        pool.runQueue([], null, lastRunInfo.downloadFolder, { existingTasks: redoTasks }).catch(err => {
+          broadcastEvent('automation-log', { message: `Generation error: ${err.message}`, level: 'error' });
+        }).finally(() => {
+          activeWorkerPool = null;
+          broadcastEvent('automation-log', { message: 'Generation queue finished.', level: 'success' });
+        });
+        return sendJson(200, { ok: true, started: true, missing: report.missing.length });
       }
 
       if (pathname === '/api/generation/pause' && req.method === 'POST') {

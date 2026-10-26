@@ -1,3 +1,6 @@
+import 'dart:async';
+import 'dart:math' as math;
+
 import 'package:flutter/material.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
@@ -5,6 +8,57 @@ import 'package:provider/provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/automation_bridge.dart';
 import '../theme/app_theme.dart';
+
+// v2.33.0 (player aspect fix): the largest size a video of
+// [aspect] (width / height) may occupy inside [maxWidth] x
+// [maxHeight] without distorting it. Pure and exported so the fit
+// tests can pin the geometry without a native player.
+Size fitVideoSize({
+  required double aspect,
+  required double maxWidth,
+  required double maxHeight,
+}) {
+  final a = (aspect.isFinite && aspect > 0) ? aspect : 16 / 9;
+  var w = maxWidth;
+  var h = w / a;
+  if (h > maxHeight) {
+    h = maxHeight;
+    w = h * a;
+  }
+  return Size(w, h);
+}
+
+// v2.33.0: the dialog's video area — a box sized to the VIDEO's own
+// aspect (portrait video -> tall box, landscape -> wide box),
+// centred in the dialog. Before, the area was a fixed 16:9 frame
+// and every vertical video played as a narrow pillar inside it.
+class AdaptiveVideoArea extends StatelessWidget {
+  final double aspect;
+  final double maxWidth;
+  final double maxHeight;
+  final Widget child;
+
+  const AdaptiveVideoArea({
+    super.key,
+    required this.aspect,
+    required this.maxWidth,
+    required this.maxHeight,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final size =
+        fitVideoSize(aspect: aspect, maxWidth: maxWidth, maxHeight: maxHeight);
+    return Center(
+      child: SizedBox(
+        width: size.width,
+        height: size.height,
+        child: child,
+      ),
+    );
+  }
+}
 
 // v2.29.0 (in-app player): Play buttons used to hand the file to
 // the OS default player (bridge /api/open-file). Now the video
@@ -71,17 +125,45 @@ class _PlayerDialogState extends State<_PlayerDialog> {
   late final Player _player;
   late final VideoController _controller;
   double _lastVolume = 100;
+  // v2.33.0: the video's REAL aspect, from the player's own width /
+  // height streams (media_kit exposes the decoded dimensions — no
+  // new dependency). 16:9 until the metadata lands, then the dialog
+  // reshapes itself to the video: tall for portrait, wide for
+  // landscape.
+  double _aspect = 16 / 9;
+  int? _videoWidth;
+  int? _videoHeight;
+  StreamSubscription<int?>? _widthSub;
+  StreamSubscription<int?>? _heightSub;
 
   @override
   void initState() {
     super.initState();
     _player = Player();
     _controller = VideoController(_player);
+    _widthSub = _player.stream.width.listen((w) {
+      _videoWidth = w;
+      _updateAspect();
+    });
+    _heightSub = _player.stream.height.listen((h) {
+      _videoHeight = h;
+      _updateAspect();
+    });
     _player.open(Media(widget.path), play: widget.autoplay);
+  }
+
+  void _updateAspect() {
+    final w = _videoWidth;
+    final h = _videoHeight;
+    if (w == null || h == null || w <= 0 || h <= 0 || !mounted) return;
+    final a = w / h;
+    if (a != _aspect) setState(() => _aspect = a);
   }
 
   @override
   void dispose() {
+    _widthSub?.cancel();
+    _heightSub?.cancel();
     _player.dispose();
     super.dispose();
   }
@@ -95,11 +177,27 @@ class _PlayerDialogState extends State<_PlayerDialog> {
 
   @override
   Widget build(BuildContext context) {
+    // v2.33.0: the dialog hugs the VIDEO's shape. The video area is
+    // bounded by the window (never wider than the old 660, never
+    // taller than the screen minus the header/control chrome), and
+    // the dialog's own width follows it — a portrait video gets a
+    // tall, narrow player; a landscape video the familiar wide one.
+    // At the FIT LAW size (1024x700) both orientations fit whole.
+    final screen = MediaQuery.sizeOf(context);
+    final maxVideoW = math.min(660.0, math.max(240.0, screen.width - 88));
+    final maxVideoH = math.max(160.0, screen.height - 220);
+    final videoSize = fitVideoSize(
+      aspect: _aspect,
+      maxWidth: maxVideoW,
+      maxHeight: maxVideoH,
+    );
+    // The header/controls need a minimum width to stay whole.
+    final contentWidth = math.max(videoSize.width, 300.0);
     return Dialog(
       backgroundColor: AppTheme.surfaceElevated,
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
       child: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 660),
+        constraints: BoxConstraints(maxWidth: contentWidth),
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -158,10 +256,13 @@ class _PlayerDialogState extends State<_PlayerDialog> {
               ),
             ),
 
-            // Video area — tap toggles play/pause; the centre button
-            // mirrors the sample (pause while playing, play while paused).
-            AspectRatio(
-              aspectRatio: 16 / 9,
+            // Video area — sized to the video's own aspect (v2.33.0);
+            // tap toggles play/pause; the centre button mirrors the
+            // sample (pause while playing, play while paused).
+            AdaptiveVideoArea(
+              aspect: _aspect,
+              maxWidth: maxVideoW,
+              maxHeight: maxVideoH,
               child: Container(
                 color: Colors.black,
                 child: Stack(

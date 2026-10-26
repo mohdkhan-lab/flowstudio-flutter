@@ -641,7 +641,11 @@ class AutomationBridge {
   }
 
   Future<bool> startGeneration({
-    required List<String> prompts,
+    // v2.33.0: prompts ride in the engine's canonical object form
+    // {text, index, tag} — each item's own label as its tag and its
+    // fixed 0-based slot — so the engine queues exactly the items
+    // the app counted, bound to their identities.
+    required List<Map<String, dynamic>> prompts,
     required String downloadFolder,
     required int parallelBrowsers,
     required String duration,
@@ -654,6 +658,10 @@ class AutomationBridge {
     List<String>? accountIds,
     String? model,
     String? namingPattern,
+    // v2.33.0: the optional project name — when non-empty the run's
+    // downloads land in a subfolder of the output folder named for
+    // the project.
+    String project = '',
   }) async {
     try {
       final res = await http.post(
@@ -670,6 +678,7 @@ class AutomationBridge {
           'accountIds': accountIds,
           'model': model,
           'namingPattern': namingPattern,
+          'project': project,
         }),
       );
       return res.statusCode == 200;
@@ -677,6 +686,32 @@ class AutomationBridge {
       debugPrint('[startGeneration Error] $e');
       return false;
     }
+  }
+
+  /// v2.33.0 (missing-scene redo): ask the engine to make ONLY the
+  /// scenes the last run is missing, into the same (project) folder.
+  /// Returns the bridge's decoded answer: {ok, started, missing} on
+  /// a started redo, {ok, started: false, missing: 0, message} when
+  /// nothing is missing, {ok: false, error} otherwise.
+  Future<Map<String, dynamic>> redoMissing({
+    List<String>? accountIds,
+    int? parallelBrowsers,
+  }) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/generation/redo-missing'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({
+          'accountIds': accountIds,
+          'parallelBrowsers': parallelBrowsers,
+        }),
+      );
+      final data = json.decode(res.body);
+      if (data is Map) return Map<String, dynamic>.from(data);
+    } catch (e) {
+      debugPrint('[redoMissing Error] $e');
+    }
+    return {'ok': false, 'error': 'the engine did not respond.'};
   }
 
   Future<void> pauseGeneration() async {

@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/prompt_item.dart';
 import '../models/activity_log.dart';
 import '../services/automation_bridge.dart';
+import '../services/prompt_parser.dart';
 import 'accounts_provider.dart';
 import 'activity_provider.dart';
 import 'settings_provider.dart';
@@ -36,6 +37,12 @@ class GeneratorProvider with ChangeNotifier {
   // v2.27.0: the TAG chosen in the Prompts header lives here so the
   // Progress cards can name queued files like the design ("#<tag>-<nn>.mp4").
   String _selectedTag = 'None';
+  // v2.33.0: the optional PROJECT name from the Prompts header. When
+  // set, the run's downloads land in a subfolder of the output
+  // folder named for the project; empty = today's flat behaviour.
+  // It is a property of the RUN, not of the prompt text — editing
+  // prompts never clears it.
+  String _projectName = '';
   // v2.27.0: real completion times of THIS session, for the Activity
   // stats line ("Today: M videos · Spent today: C credits").
   final List<DateTime> _completionTimes = [];
@@ -335,6 +342,14 @@ class GeneratorProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  String get projectName => _projectName;
+
+  void setProjectName(String name) {
+    if (_projectName == name) return;
+    _projectName = name;
+    notifyListeners();
+  }
+
   /// v2.29.0: the engine's real credits-spent-today, or null while
   /// unknown (the Activity line shows the engine figure only).
   int? get engineSpentToday => _engineSpentToday;
@@ -408,21 +423,28 @@ class GeneratorProvider with ChangeNotifier {
     // v2.29.0 (prompt splitting fix): the old parser made EVERY
     // non-empty line its own prompt, so one multi-line episode
     // prompt was counted and queued as several fragments.
-    // Bulk mode: prompts are BLOCKS separated by blank lines; the
-    // lines inside a block stay together as one prompt.
-    // Agent mode: the entire text is ONE prompt.
+    // v2.33.0 (prompt syntax): Bulk mode now runs the full syntax
+    // parser (lib/services/prompt_parser.dart — one spec with the
+    // engine's engine/promptParser.js, pinned by the shared fixture
+    // suite). Every label family the owner pastes (1. / (1) /
+    // PROMPT_001: / Scene 1: / #00-01 / separators / JSON / YAML /
+    // CSV / XML / Markdown headings) splits into its own item AND
+    // keeps its label as the item's identity — the label rides to
+    // the engine as the task tag, so the count shown here is exactly
+    // what the engine queues and each file is named by its label.
+    // Plain blank-line pastes parse exactly as before.
+    // Agent mode: the entire text is still ONE prompt; its label
+    // (first line) is still detected so its file is named by it.
     final normalized = _promptsRawText.replaceAll('\r\n', '\n').trim();
-    final List<String> blocks;
+    final List<ParsedPrompt> parsed;
     if (normalized.isEmpty) {
-      blocks = const [];
+      parsed = const [];
     } else if (!_isBulkMode) {
-      blocks = [normalized];
+      parsed = [
+        ParsedPrompt(PromptParser.extractLabel(normalized), normalized),
+      ];
     } else {
-      blocks = normalized
-          .split(RegExp(r'\n[ \t]*\n'))
-          .map((b) => b.trim())
-          .where((b) => b.isNotEmpty)
-          .toList();
+      parsed = PromptParser.parse(_promptsRawText);
     }
 
     // v2.30.3: a fresh item set has had no run started for it —
@@ -430,10 +452,11 @@ class GeneratorProvider with ChangeNotifier {
     // until Generate is pressed for THIS set.
     _runStarted = false;
     _items = List.generate(
-      blocks.length,
+      parsed.length,
       (i) => PromptItem(
         index: i + 1,
-        text: blocks[i],
+        text: parsed[i].text,
+        label: parsed[i].label,
         status: PromptStatus.pending,
       ),
     );
@@ -488,8 +511,20 @@ class GeneratorProvider with ChangeNotifier {
     // pattern finally ride along — they used to be dropped here,
     // so saved files fell back to scene001-style names while the
     // UI promised tag names.
+    // v2.33.0: each prompt now rides in the engine's canonical
+    // object form {text, index, tag} — the item's OWN label is its
+    // tag (the bridge falls back to the run's selected tag when an
+    // item has none), and the index is the item's fixed slot, so
+    // the engine queues exactly the items counted here, each bound
+    // to its identity. The optional project name rides along too.
     final success = await AutomationBridge.instance.startGeneration(
-      prompts: _items.map((i) => i.text).toList(),
+      prompts: _items
+          .map((i) => <String, dynamic>{
+                'text': i.text,
+                'index': i.index - 1,
+                'tag': i.label ?? '',
+              })
+          .toList(),
       downloadFolder: settings.settings.outputDirectory,
       parallelBrowsers: settings.settings.parallelBrowsers,
       duration: settings.settings.duration,
@@ -499,6 +534,7 @@ class GeneratorProvider with ChangeNotifier {
       accountIds: tickedIds,
       model: settings.settings.model,
       namingPattern: settings.settings.namingPattern,
+      project: _projectName.trim(),
     );
 
     if (!success) {
@@ -577,6 +613,72 @@ class GeneratorProvider with ChangeNotifier {
     AutomationBridge.instance.stopGeneration();
     activity.addLog('Generation stopped.', level: LogLevel.warning);
     notifyListeners();
+  }
+
+  /// v2.33.0 (missing-scene redo): ask the engine to make ONLY the
+  /// scenes this item set is missing — the failed cards. The
+  /// engine decides per scene (bridge /api/generation/redo-missing):
+  /// a scene that only failed to DOWNLOAD is downloaded again with
+  /// no new charge; a scene whose generation failed is re-run as
+  /// that one prompt with its original number. Finished scenes are
+  /// never touched. The redo run streams the same events as any
+  /// run, so the cards flip as each missing scene lands.
+  Future<void> redoMissingItems({
+    required AccountsProvider accounts,
+    required ActivityProvider activity,
+    required SettingsProvider settings,
+  }) async {
+    if (_state != GenerationState.idle) {
+      activity.addLog(
+        'A run is already in progress — the missing scenes can be redone once it settles.',
+        level: LogLevel.warning,
+      );
+      return;
+    }
+    final missing =
+        _items.where((i) => i.status == PromptStatus.failed).toList();
+    if (missing.isEmpty) return;
+    final tickedIds = accounts.accounts
+        .where((a) => a.isChecked)
+        .map((a) => a.id)
+        .toList();
+    if (tickedIds.isEmpty) {
+      activity.addLog(
+        'No account is ticked in the sidebar — tick at least one account, then press Redo Missing again.',
+        level: LogLevel.warning,
+      );
+      return;
+    }
+    final result = await AutomationBridge.instance.redoMissing(
+      accountIds: tickedIds,
+      parallelBrowsers: settings.settings.parallelBrowsers,
+    );
+    if (result['ok'] == true && result['started'] == true) {
+      for (final item in missing) {
+        item.status = PromptStatus.generating;
+        item.error = null;
+        item.progress = 0;
+      }
+      _state = GenerationState.running;
+      _runStarted = true;
+      _armRunWatchdog();
+      activity.addLog(
+        'Redo started: making only the ${result['missing'] ?? missing.length} missing scene(s) — finished scenes are not touched and their credits are not spent again.',
+        level: LogLevel.info,
+      );
+      notifyListeners();
+    } else if (result['ok'] == true) {
+      activity.addLog(
+        result['message']?.toString() ??
+            'Nothing is missing — every scene of the last run is already saved.',
+        level: LogLevel.success,
+      );
+    } else {
+      activity.addLog(
+        'Redo could not start: ${result['error']?.toString() ?? 'the engine did not respond.'}',
+        level: LogLevel.error,
+      );
+    }
   }
 
   // v2.22.0: the old fake-simulation queue (_processNextPrompt + Timer)

@@ -134,4 +134,37 @@ function selectMissingItems(rows, report) {
   return items.filter(i => i.text);
 }
 
-module.exports = { buildSequenceReport, selectMissingItems, displayTag };
+/**
+ * v2.33.0 (missing-scene redo plan): split a report's missing scenes
+ * into the two redo routes the owner approved —
+ *   existingTaskIds: rows still 'pending' (above all the
+ *     download-failed ones, which sit in pending + needs_check) —
+ *     they re-enter runQueue AS THEMSELVES, so the check-only
+ *     recovery downloads the already-made video and NO new charge
+ *     can happen;
+ *   recreateItems: rows that must be generated again (failed /
+ *     cancelled, or marked complete but the file is gone) — fresh
+ *     task rows built from selectMissingItems, carrying the
+ *     ORIGINAL text, tag and index, so the redone scene lands on
+ *     its own number, never a neighbour's.
+ * Pure: the bridge route executes the plan; this decides it.
+ */
+function planRedo(rows, report) {
+  const missingIds = new Set(
+    ((report && Array.isArray(report.missing)) ? report.missing : [])
+      .map(m => String(m.taskId))
+  );
+  const existingTaskIds = [];
+  const recreateRows = [];
+  for (const row of Array.isArray(rows) ? rows : []) {
+    if (!row || !missingIds.has(String(row.id))) continue;
+    if (row.status === 'pending') existingTaskIds.push(row.id);
+    else recreateRows.push(row);
+  }
+  return {
+    existingTaskIds,
+    recreateItems: selectMissingItems(recreateRows, report)
+  };
+}
+
+module.exports = { buildSequenceReport, selectMissingItems, displayTag, planRedo };

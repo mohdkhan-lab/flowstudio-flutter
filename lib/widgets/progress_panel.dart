@@ -1,9 +1,13 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
+import '../providers/accounts_provider.dart';
+import '../providers/activity_provider.dart';
 import '../providers/generator_provider.dart';
+import '../providers/settings_provider.dart';
 import '../models/prompt_item.dart';
 import '../services/automation_bridge.dart';
+import '../services/prompt_parser.dart';
 import 'video_player_dialog.dart';
 
 // v2.27.0 (design): PROGRESS header with Rendering / Done / Queued
@@ -19,15 +23,21 @@ class ProgressPanel extends StatelessWidget {
   }
 
   // The file name shown on a card: the real saved file when known,
-  // else the prompt's own leading tag ("#11-01 …" → "#11-01.mp4" —
-  // the engine's own tag naming), else "#<selected tag>-<nn>.mp4",
-  // else "Prompt #n".
+  // else the name the engine will give this prompt's own label
+  // (v2.33.0: EVERY label family — "Scene 1" → "Scene001.mp4",
+  // "#00-01" → "#00-01.mp4" — via the exact mirror of the engine's
+  // naming), else "#<selected tag>-<nn>.mp4", else "Prompt #n".
   static String _fileNameFor(PromptItem item, String selectedTag) {
     if (item.localFilePath != null && item.localFilePath!.isNotEmpty) {
       return _baseName(item.localFilePath!);
     }
     if (item.outputFileName != null && item.outputFileName!.isNotEmpty) {
       return item.outputFileName!;
+    }
+    final label = item.label;
+    if (label != null && label.isNotEmpty) {
+      final base = labelFileBase(label);
+      if (base.isNotEmpty) return '$base.mp4';
     }
     final text = item.text.trim();
     if (text.startsWith('#')) {
@@ -79,6 +89,17 @@ class ProgressPanel extends StatelessWidget {
         .where((i) => i.status == PromptStatus.pending || i.status == PromptStatus.queued)
         .length;
 
+    // v2.33.0 (missing-scene protection): once a run has settled,
+    // its failed cards ARE the missing scenes — they get a visible
+    // banner naming them plus a one-tap redo of ONLY those scenes
+    // (see _incompleteBanner). A missing scene is never silent.
+    final missingItems =
+        showRunCards && generator.state == GenerationState.idle
+            ? visibleItems
+                .where((i) => i.status == PromptStatus.failed)
+                .toList()
+            : const <PromptItem>[];
+
     return Container(
       decoration: BoxDecoration(
         color: AppTheme.surface,
@@ -127,6 +148,11 @@ class ProgressPanel extends StatelessWidget {
           ),
           const SizedBox(height: 10),
 
+          if (missingItems.isNotEmpty) ...[
+            _incompleteBanner(context, missingItems),
+            const SizedBox(height: 8),
+          ],
+
           // Content
           Expanded(
             child: !showRunCards
@@ -145,6 +171,71 @@ class ProgressPanel extends StatelessWidget {
                       return _buildCard(context, item, generator.selectedTag);
                     },
                   ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // v2.33.0: the incomplete banner — which scenes are missing (by
+  // their own labels) and the Redo Missing action that remakes
+  // ONLY those, into the same folder. Download-failed scenes are
+  // re-downloaded by the engine with no new charge; generation-
+  // failed scenes re-run as that single prompt.
+  Widget _incompleteBanner(BuildContext context, List<PromptItem> missing) {
+    final names = missing
+        .take(6)
+        .map((i) => i.label ?? '#${i.index}')
+        .join(', ');
+    final more = missing.length > 6 ? ' +${missing.length - 6} more' : '';
+    const red = Color(0xFFFF6961);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: red.withValues(alpha: 0.12),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: red.withValues(alpha: 0.5)),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.warning_amber_rounded, size: 14, color: red),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              'Incomplete — ${missing.length} scene(s) missing: $names$more',
+              maxLines: 2,
+              overflow: TextOverflow.ellipsis,
+              style: const TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: red,
+                height: 1.3,
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+          InkWell(
+            onTap: () => context.read<GeneratorProvider>().redoMissingItems(
+                  accounts: context.read<AccountsProvider>(),
+                  activity: context.read<ActivityProvider>(),
+                  settings: context.read<SettingsProvider>(),
+                ),
+            borderRadius: BorderRadius.circular(7),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(7),
+                border: Border.all(color: red),
+              ),
+              child: Text(
+                'Redo missing (${missing.length})',
+                style: const TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.w800,
+                  color: red,
+                ),
+              ),
+            ),
           ),
         ],
       ),

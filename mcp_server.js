@@ -22,7 +22,7 @@ const os = require('os');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.31.4';
+const SERVER_VERSION = '2.32.0';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -112,6 +112,42 @@ function bridgeCall(method, pathname, body) {
     if (data) req.write(data);
     req.end();
   });
+}
+
+// --- v2.32.0 (Full Control) helpers -------------------------------------------
+// Account rows from the bridge never carry cookie values or passwords
+// (cookies live in a separate store; a row only has a hasCookies flag),
+// but MCP answers keep the same tight projection the account tools
+// have always used: id / name / email / status / credits, nothing else.
+function publicAccount(a) {
+  if (!a || typeof a !== 'object') return a;
+  return { id: a.id, name: a.name, email: a.email || '', status: a.status, credits: a.credits };
+}
+
+function publicAccounts(list) {
+  return Array.isArray(list) ? list.map(publicAccount) : list;
+}
+
+// The settings keys the bridge's own settings handler serves (the
+// exact list its GET /api/settings returns). flowstudio_update_settings
+// passes through ONLY these keys — the MCP layer adds no other
+// settings surface of its own.
+const SETTING_KEYS = [
+  'appearance', 'theme', 'default_model', 'default_duration', 'default_aspect',
+  'default_naming', 'default_quality', 'custom_tags', 'download_folder', 'chrome_path',
+  'browser_background', 'show_browsers', 'preview_autoplay', 'auto_verify_start',
+  'auto_check_updates', 'social_links', 'live_only_accounts', 'history_cleared',
+  'account_aliases', 'parallel_browsers', 'mcp_enabled',
+];
+
+// The settings store is string-valued (the bridge String()-coerces on
+// write): strings pass through as-is, structured values are stored as
+// their JSON text (the form the app itself reads back), scalars are
+// stringified. null/undefined means "leave unchanged" and is dropped.
+function settingValue(v) {
+  if (typeof v === 'string') return v;
+  if (typeof v === 'number' || typeof v === 'boolean') return String(v);
+  return JSON.stringify(v);
 }
 
 // --- Tools -------------------------------------------------------------------
@@ -261,6 +297,223 @@ const TOOLS = [
       if (args.action === 'check') return bridgeCall('GET', '/api/update/check');
       if (args.action === 'install') return bridgeCall('POST', '/api/update/install', {});
       throw new Error("action must be 'check' or 'install'");
+    },
+  },
+  // --- v2.32.0 Full Control: diagnostics, settings, browsers, accounts, files.
+  {
+    name: 'flowstudio_get_activity',
+    description: 'Read the app\'s Activity log — the generation, login, credit and system events the engine records, newest first. This is the first place to look when something went wrong: use category "errors" to see only the failures. Entries carry a timestamp, category, level (info/success/warn/error) and message.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        limit: { type: 'number', description: 'Max entries to return (default 100, max 500)' },
+        category: { type: 'string', enum: ['all', 'generation', 'credits', 'login', 'errors', 'system'], description: 'Only return this category (default all)' },
+      },
+    },
+    run: async (args) => {
+      const limit = Math.max(1, Math.min(500, Number(args.limit) || 100));
+      const category = typeof args.category === 'string' && args.category ? args.category : 'all';
+      return bridgeCall('GET', `/api/activity?limit=${limit}&category=${encodeURIComponent(category)}`);
+    },
+  },
+  {
+    name: 'flowstudio_get_settings',
+    description: 'Read the app settings exactly as the app stores them (appearance, theme, generation defaults, download folder, automation toggles and more). Values come back as strings, the form the app itself uses.',
+    inputSchema: { type: 'object', properties: {} },
+    run: async () => bridgeCall('GET', '/api/settings'),
+  },
+  {
+    name: 'flowstudio_update_settings',
+    description: 'Change app settings. Pass a settings object with any of the app\'s own setting keys (the same keys flowstudio_get_settings returns) — unknown keys are ignored, and omitting a key leaves it unchanged. Values are stored the way the app stores them (structured values as JSON text). Generation defaults apply to the next run.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        settings: {
+          type: 'object',
+          description: 'Key/value pairs using only the app\'s own setting keys',
+          properties: Object.fromEntries(SETTING_KEYS.map((k) => [k, {}])),
+          additionalProperties: false,
+        },
+      },
+      required: ['settings'],
+    },
+    run: async (args) => {
+      const incoming = args.settings && typeof args.settings === 'object' ? args.settings : {};
+      const clean = {};
+      for (const k of SETTING_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(incoming, k) && incoming[k] !== null && incoming[k] !== undefined) {
+          clean[k] = settingValue(incoming[k]);
+        }
+      }
+      if (Object.keys(clean).length === 0) throw new Error('settings must contain at least one known setting key with a value');
+      return bridgeCall('POST', '/api/settings', { settings: clean });
+    },
+  },
+  {
+    name: 'flowstudio_get_active_browsers',
+    description: 'List the accounts that currently have a live generation browser, and whether each browser window is shown on screen or parked off-screen. Empty when no generation is running.',
+    inputSchema: { type: 'object', properties: {} },
+    run: async () => bridgeCall('GET', '/api/generation/active-browsers'),
+  },
+  {
+    name: 'flowstudio_list_chrome_profiles',
+    description: 'List the Chrome profiles already installed on this PC (profile folder name, profile name, email) — the pool flowstudio_import_chrome_profiles can import from. Nothing is changed.',
+    inputSchema: { type: 'object', properties: {} },
+    run: async () => bridgeCall('GET', '/api/chrome-profiles'),
+  },
+  {
+    name: 'flowstudio_import_chrome_profiles',
+    description: 'Import one Chrome profile that already exists on this PC as a FlowStudio account, by its profile folder name (dirName from flowstudio_list_chrome_profiles). The profile never leaves the PC — no file content or cookie data passes through this call, only the folder name.',
+    inputSchema: {
+      type: 'object',
+      properties: { dirName: { type: 'string', description: 'Chrome profile folder name, e.g. "Default" or "Profile 1"' } },
+      required: ['dirName'],
+    },
+    run: async (args) => {
+      if (typeof args.dirName !== 'string' || !args.dirName) throw new Error('dirName must be a non-empty string');
+      const res = await bridgeCall('POST', '/api/chrome-profiles/import', { dirName: args.dirName });
+      if (res && res.account) return { ...res, account: publicAccount(res.account) };
+      return res;
+    },
+  },
+  {
+    name: 'flowstudio_add_account',
+    description: 'Create a new, empty FlowStudio account line (name and optional email label only). No password, cookie or login is involved — the account still needs a sign-in afterwards (flowstudio_start_login opens one, or the owner signs in inside the app).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        name: { type: 'string', description: 'Display name for the account (the app generates one when empty)' },
+        email: { type: 'string', description: 'Optional email label — the real Google identity still comes from the live sign-in/sync' },
+      },
+    },
+    run: async (args) => {
+      const body = { name: typeof args.name === 'string' ? args.name : '', email: typeof args.email === 'string' ? args.email : '' };
+      const res = await bridgeCall('POST', '/api/accounts/add', body);
+      // The bridge wraps the store result: res.account is itself
+      // { account, accounts } — normalize to the created account only.
+      const created = res && res.account && res.account.account ? res.account.account : res && res.account;
+      return { ok: true, account: publicAccount(created) };
+    },
+  },
+  {
+    name: 'flowstudio_start_login',
+    description: 'Start a Google sign-in for a NEW account: the app creates the account line and opens the real Google login window on this PC. The owner types their password in that window — no credential ever passes through this call. Returns the created account once the window is open.',
+    inputSchema: { type: 'object', properties: {} },
+    run: async () => {
+      const res = await bridgeCall('POST', '/api/accounts/start-login', {});
+      if (res && res.account) {
+        const out = { ...res, account: publicAccount(res.account) };
+        return out;
+      }
+      return res;
+    },
+  },
+  {
+    name: 'flowstudio_complete_login',
+    description: 'Finish checking a sign-in for an account: detects the Google account inside its Chrome profile, fills in the real name/email and syncs its credits. Use after the owner has signed in through the login window.',
+    inputSchema: {
+      type: 'object',
+      properties: { accountId: { type: 'string', description: 'Account ID from flowstudio_list_accounts' } },
+      required: ['accountId'],
+    },
+    run: async (args) => {
+      if (typeof args.accountId !== 'string' || !args.accountId) throw new Error('accountId must be a non-empty string');
+      const res = await bridgeCall('POST', '/api/accounts/complete-login', { id: args.accountId });
+      const out = { ...res };
+      if (Array.isArray(out.accounts)) out.accounts = publicAccounts(out.accounts);
+      if (out.result && typeof out.result === 'object') {
+        const result = { ...out.result };
+        delete result.accounts;
+        if (result.account) result.account = publicAccount(result.account);
+        out.result = result;
+      }
+      return out;
+    },
+  },
+  {
+    name: 'flowstudio_open_chrome',
+    description: 'Open the Chrome window of an existing account (its own dedicated profile) on this PC. The owner can inspect or finish a sign-in there; generation is not started.',
+    inputSchema: {
+      type: 'object',
+      properties: { accountId: { type: 'string', description: 'Account ID from flowstudio_list_accounts' } },
+      required: ['accountId'],
+    },
+    run: async (args) => {
+      if (typeof args.accountId !== 'string' || !args.accountId) throw new Error('accountId must be a non-empty string');
+      return bridgeCall('POST', '/api/accounts/open-chrome', { id: args.accountId });
+    },
+  },
+  {
+    name: 'flowstudio_toggle_browser',
+    description: 'Show or hide the working browser window of an account that is generating right now (the parked-browser toggle). Only the window moves — generation is never interrupted. Fails cleanly when no generation is running.',
+    inputSchema: {
+      type: 'object',
+      properties: { accountId: { type: 'string', description: 'Account ID from flowstudio_list_accounts' } },
+      required: ['accountId'],
+    },
+    run: async (args) => {
+      if (typeof args.accountId !== 'string' || !args.accountId) throw new Error('accountId must be a non-empty string');
+      return bridgeCall('POST', '/api/accounts/toggle-browser', { id: args.accountId });
+    },
+  },
+  {
+    name: 'flowstudio_sync_selected_accounts',
+    description: 'Sync the real credit balance and status of only the given accounts from Google Flow (flowstudio_sync_credits syncs every account). Returns the refreshed accounts.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        accountIds: { type: 'array', items: { type: 'string' }, description: 'Account IDs from flowstudio_list_accounts' },
+      },
+      required: ['accountIds'],
+    },
+    run: async (args) => {
+      const ids = Array.isArray(args.accountIds) ? args.accountIds.filter((x) => typeof x === 'string' && x) : [];
+      if (ids.length === 0) throw new Error('accountIds must be a non-empty array');
+      const res = await bridgeCall('POST', '/api/accounts/sync-selected', { ids });
+      if (res && Array.isArray(res.accounts)) return { ...res, accounts: publicAccounts(res.accounts) };
+      return res;
+    },
+  },
+  {
+    name: 'flowstudio_delete_accounts',
+    description: 'Permanently delete FlowStudio account(s) — the account line, its saved cookies and its dedicated Chrome profile are removed. This permanently deletes the account(s) and cannot be undone. Pass accountId for one account or accountIds for several.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        accountId: { type: 'string', description: 'Single account ID from flowstudio_list_accounts' },
+        accountIds: { type: 'array', items: { type: 'string' }, description: 'Several account IDs from flowstudio_list_accounts' },
+      },
+    },
+    run: async (args) => {
+      const ids = Array.isArray(args.accountIds) ? args.accountIds.filter((x) => typeof x === 'string' && x) : [];
+      if (ids.length > 0) {
+        const res = await bridgeCall('POST', '/api/accounts/delete-selected', { ids });
+        return { ...res, deleted: ids.length };
+      }
+      if (typeof args.accountId === 'string' && args.accountId) {
+        const res = await bridgeCall('POST', '/api/accounts/delete', { id: args.accountId });
+        return { ...res, deleted: 1 };
+      }
+      throw new Error('pass accountId or a non-empty accountIds array');
+    },
+  },
+  {
+    name: 'flowstudio_open_output_folder',
+    description: 'Open the generated-videos output folder in Windows Explorer on this PC.',
+    inputSchema: { type: 'object', properties: {} },
+    run: async () => bridgeCall('POST', '/api/open-output-folder', {}),
+  },
+  {
+    name: 'flowstudio_open_output_file',
+    description: 'Open one generated video in the PC\'s default player. Only a bare file name from flowstudio_list_outputs is accepted — the app confines it to video files inside the output folder; paths are never accepted.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'File name only, e.g. "#00-01.mp4"' } },
+      required: ['name'],
+    },
+    run: async (args) => {
+      if (typeof args.name !== 'string' || !args.name) throw new Error('name must be a non-empty file name');
+      return bridgeCall('POST', '/api/open-file', { name: args.name });
     },
   },
 ];

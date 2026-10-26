@@ -199,7 +199,7 @@ class _SettingsViewState extends State<SettingsView> {
           const SizedBox(height: 6),
           _buildToggleRow(
             title: 'Enable MCP Server',
-            subtitle: 'Port 48191 · Muse can use 11 tools',
+            subtitle: 'Port 48191 · Muse can use 26 tools',
             value: enabled,
             onChanged: _toggleMcp,
           ),

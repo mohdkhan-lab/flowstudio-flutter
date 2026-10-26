@@ -67,7 +67,7 @@ const {
   checkImportedAccount,
 } = require('./engine/cookieImport');
 const { WorkerPool } = require('./engine/workerPool');
-const { recordActivity } = require('./engine/activityStore');
+const { recordActivity, getActivityStore } = require('./engine/activityStore');
 const mcp = require('./mcp_server');
 const { getStats } = require('./engine/usageStats');
 const { parseCookieText } = require('./engine/cookieParser');
@@ -162,7 +162,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.31.4';
+const APP_VERSION = '2.32.0';
 let activeWorkerPool = null;
 const sseClients = new Set();
 
@@ -1036,7 +1036,21 @@ async function startBridge() {
 
       // 10. Recent Activity & Logs
       if (pathname === '/api/activity' && req.method === 'GET') {
-        const activities = dbService.getRecentActivity ? dbService.getRecentActivity(100) : [];
+        // v2.32.0 repair: this route used to read
+        // dbService.getRecentActivity, which does not exist — it
+        // silently answered an empty list forever. The real Activity
+        // data lives in the activity store (the same store the
+        // engine records generation, login, credit and error events
+        // into). Entries come back newest-first; ?limit= (default
+        // 100, max 500) and ?category= (generation | credits |
+        // login | errors | system | all) narrow the list.
+        const limitRaw = parseInt(reqUrl.searchParams.get('limit') || '', 10);
+        const limit = Number.isFinite(limitRaw) ? Math.max(1, Math.min(500, limitRaw)) : 100;
+        const category = reqUrl.searchParams.get('category') || 'all';
+        let activities = [];
+        try {
+          activities = getActivityStore().list({ category, limit });
+        } catch (e) {}
         return sendJson(200, { ok: true, activities });
       }
 

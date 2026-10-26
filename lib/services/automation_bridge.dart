@@ -41,6 +41,12 @@ class AutomationBridge {
   // its own guards pass; the settings provider consumes it by
   // running its existing in-app updater end to end.
   Function(Map<String, dynamic> data)? onMcpUpdateRequest;
+  // v2.32.2: Muse asked (through the MCP connector) for a run to
+  // start FROM this app's own screen. The bridge broadcasts
+  // 'mcp-ui-generate-request' ({prompts, tag}) after its guards
+  // pass; the main screen consumes it by filling the Prompts box
+  // and invoking the same Generate handler the button invokes.
+  Function(Map<String, dynamic> data)? onMcpUiGenerateRequest;
 
   AutomationBridge._();
 
@@ -221,6 +227,12 @@ class AutomationBridge {
                 // v2.31.4: hand the update request to the settings
                 // provider, which runs its own updater flow.
                 onMcpUpdateRequest?.call(data);
+                break;
+              case 'mcp-ui-generate-request':
+                // v2.32.2: hand the in-app generate request to the
+                // main screen, which fills the Prompts box and runs
+                // its own Generate flow.
+                onMcpUiGenerateRequest?.call(data);
                 break;
               case 'active-browsers':
                 // v2.25.0 (parked browser): which accounts are

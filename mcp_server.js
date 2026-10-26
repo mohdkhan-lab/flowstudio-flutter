@@ -22,7 +22,7 @@ const os = require('os');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.32.1';
+const SERVER_VERSION = '2.32.2';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -233,6 +233,33 @@ const TOOLS = [
       }
       if (Number(args.parallelBrowsers) > 0) body.parallelBrowsers = Math.floor(Number(args.parallelBrowsers));
       return bridgeCall('POST', '/api/generation/start', body);
+    },
+  },
+  {
+    // v2.32.2: generate THROUGH the app's own screen. The bridge does
+    // not start the engine for this one — it signals the Dart app
+    // over SSE ('mcp-ui-generate-request') and the app puts the
+    // prompts into its own Prompts box and invokes its own Generate
+    // button handler, so the owner watches the run in the app's
+    // Progress section. The bridge refuses when a run is already
+    // active or when the app screen is not connected; there is no
+    // silent fallback to the direct engine route.
+    name: 'flowstudio_generate_in_app',
+    description: 'Start a video generation run inside the FlowStudio app\'s own screen: the prompts appear in the app\'s Prompts box and the run starts exactly as if the user pressed the app\'s Generate button, so the app\'s Progress section shows the run live on their screen. The FlowStudio app must be open on its main screen. This spends Flow credits like a normal run. Use flowstudio_generate instead when nobody needs to watch the app screen.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        prompts: { type: 'array', items: { type: 'string' }, description: 'One prompt per video' },
+        tag: { type: 'string', description: 'Optional tag — becomes the app\'s selected TAG (used as the file name)' },
+      },
+      required: ['prompts'],
+    },
+    run: async (args) => {
+      const prompts = Array.isArray(args.prompts) ? args.prompts.filter((p) => typeof p === 'string' && p.trim()) : [];
+      if (prompts.length === 0) throw new Error('prompts must be a non-empty array of strings');
+      const body = { prompts };
+      if (typeof args.tag === 'string' && args.tag) body.tag = args.tag;
+      return bridgeCall('POST', '/api/generation/start-ui', body);
     },
   },
   {

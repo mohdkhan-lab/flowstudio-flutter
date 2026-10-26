@@ -74,9 +74,49 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
   @override
   void initState() {
     super.initState();
+    // v2.32.2: an MCP "generate in app" request arrives over the
+    // bridge's SSE stream. This screen is the composition root that
+    // can reach every provider the Generate flow needs, so it owns
+    // the consumption (the update-request callback could live in
+    // SettingsProvider because that flow is self-contained; this
+    // one spans four providers, like the Generate button itself).
+    AutomationBridge.instance.onMcpUiGenerateRequest =
+        _handleMcpUiGenerateRequest;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _runStartupActions();
     });
+  }
+
+  /// v2.32.2: Muse (through the MCP connector) asked for a run to
+  /// start from THIS screen. The prompts land in the Prompts box
+  /// exactly as if pasted — GeneratorProvider.setRawText is the
+  /// box's own text state, and the join is the blank-line join
+  /// appendPrompts uses (Bulk mode parses blank-line-separated
+  /// blocks; Agent mode takes the whole text as one prompt, exactly
+  /// as a paste would). A sent tag becomes the selected TAG, and
+  /// the run starts through the very handler the Generate button
+  /// invokes — no duplicated generation logic anywhere.
+  void _handleMcpUiGenerateRequest(Map<String, dynamic> data) {
+    if (!mounted) return;
+    final raw = data['prompts'];
+    final prompts = raw is List
+        ? raw
+            .map((e) => e.toString())
+            .where((s) => s.trim().isNotEmpty)
+            .toList()
+        : <String>[];
+    if (prompts.isEmpty) return;
+    final generator = context.read<GeneratorProvider>();
+    generator.setRawText(prompts.join('\n\n'));
+    final tag = data['tag']?.toString().trim() ?? '';
+    if (tag.isNotEmpty) {
+      generator.setSelectedTag(tag);
+    }
+    generator.startGeneration(
+      accounts: context.read<AccountsProvider>(),
+      activity: context.read<ActivityProvider>(),
+      settings: context.read<SettingsProvider>(),
+    );
   }
 
   // v2.29.0 (F4): the two startup Settings toggles, for real —

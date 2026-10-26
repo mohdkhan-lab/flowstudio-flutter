@@ -162,7 +162,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.32.1';
+const APP_VERSION = '2.32.2';
 let activeWorkerPool = null;
 const sseClients = new Set();
 
@@ -854,6 +854,38 @@ async function startBridge() {
       }
 
       // 9. Generation Controls
+      // v2.32.2: start a run FROM THE APP SCREEN (MCP tool backend).
+      // Unlike /api/generation/start this route NEVER touches the
+      // engine: it validates, then asks the Dart app over the existing
+      // SSE channel — 'mcp-ui-generate-request' — and the app itself
+      // puts the prompts into its Prompts box and presses its own
+      // Generate button, so the owner watches the run in the app's
+      // Progress section. If the app screen is not connected (no SSE
+      // listener) the request cannot be taken and this is a clean
+      // refusal — there is deliberately NO engine fallback here.
+      if (pathname === '/api/generation/start-ui' && req.method === 'POST') {
+        const body = await readBody();
+        const prompts = Array.isArray(body.prompts)
+          ? body.prompts.filter((p) => typeof p === 'string' && p.trim())
+          : [];
+        if (prompts.length === 0) {
+          return sendJson(400, { ok: false, error: 'prompts must be a non-empty array of non-empty strings' });
+        }
+        if (activeWorkerPool) {
+          return sendJson(400, { ok: false, error: 'A generation run is already active — wait for it to finish before starting a run from the app screen.' });
+        }
+        if (sseClients.size === 0) {
+          return sendJson(400, { ok: false, error: 'The FlowStudio app screen is not connected — open FlowStudio on its main screen, then try again.' });
+        }
+        const tag = typeof body.tag === 'string' ? body.tag.trim() : '';
+        broadcastEvent('automation-log', {
+          message: `🔌 MCP • Muse started a run from the app screen (${prompts.length} prompts)`,
+          level: 'info',
+        });
+        broadcastEvent('mcp-ui-generate-request', { prompts, tag });
+        return sendJson(200, { ok: true, started: true, prompts: prompts.length });
+      }
+
       if (pathname === '/api/generation/start' && req.method === 'POST') {
         const config = await readBody();
         if (activeWorkerPool) {

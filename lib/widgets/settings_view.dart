@@ -915,21 +915,28 @@ class _SettingsViewState extends State<SettingsView> {
               // Appearance | Defaults, Automation | Files & Paths,
               // Updates | MCP Connection — and each row's two cards
               // share the SAME height, with identical
-              // padding/radius/heading style and aligned tops. The
-              // equal height comes from a one-row Table with filled
-              // cells: IntrinsicHeight cannot be used here because
-              // the Appearance card contains a shrink-wrapping
-              // GridView, which cannot answer intrinsic heights
-              // (the fit harness caught exactly that). Below 700
-              // the panels stack in that same reading order and
-              // the page scrolls (as it already could).
+              // padding/radius/heading style and aligned tops.
+              // v2.34.1 HOTFIX: the equal height comes from a
+              // one-row Table with intrinsicHeight cells. The
+              // v2.34.0 version used fill cells, but a RenderTable
+              // row's height accumulates only from NON-fill cells,
+              // so every all-fill row collapsed to height 0 and the
+              // whole grid rendered invisible (only About +
+              // Created By showed). intrinsicHeight is safe now
+              // because the Appearance card's theme grid no longer
+              // contains a shrink-wrapping GridView (it is plain
+              // Rows of cards — see _buildThemeGrid), so every
+              // cell can answer intrinsic heights. Below 700 the
+              // panels stack in that same reading order and the
+              // page scrolls (as it already could).
               Widget pair(Widget a, Widget b) => Table(
                     columnWidths: const {
                       0: FlexColumnWidth(1),
                       1: FixedColumnWidth(12),
                       2: FlexColumnWidth(1),
                     },
-                    defaultVerticalAlignment: TableCellVerticalAlignment.fill,
+                    defaultVerticalAlignment:
+                        TableCellVerticalAlignment.intrinsicHeight,
                     children: [
                       TableRow(children: [a, const SizedBox(), b]),
                     ],
@@ -1013,27 +1020,36 @@ class _SettingsViewState extends State<SettingsView> {
   // Previews are still drawn from each family's palette for the
   // CURRENTLY APPLIED mode (AppTheme.dark), so flipping Dark/Light
   // re-renders every card in that mode's colours.
+  // v2.34.1 HOTFIX: the grid is built from plain Rows of Expanded
+  // cards instead of a shrink-wrapping GridView. A viewport widget
+  // cannot answer intrinsic heights, and the Settings pair() rows
+  // now size themselves intrinsically (see build) — a GridView
+  // inside a cell was the poison that forced the broken Table in
+  // v2.34.0. Same look: 5 cards per row, 48px row height, 6px
+  // gaps, identical cards.
   Widget _buildThemeGrid(SettingsProvider prov, AppSettings s) {
-    return GridView.builder(
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 5,
-        mainAxisSpacing: 6,
-        crossAxisSpacing: 6,
-        // Card content: 3px padding top/bottom + 20px preview chip +
-        // 3px gap + one name line, inside a 48px row with even the
-        // selected card's 2px border counted — ~2px of slack, so
-        // nothing can overflow (the fit harness caught a 1px spill
-        // at extent 46 with the real font's line height).
-        mainAxisExtent: 48,
-      ),
-      itemCount: AppTheme.themeIds.length,
-      itemBuilder: (context, i) {
-        final id = AppTheme.themeIds[i];
-        return _buildThemeCardCompact(prov, s, id);
-      },
-    );
+    final ids = AppTheme.themeIds;
+    final rows = <Widget>[];
+    for (var start = 0; start < ids.length; start += 5) {
+      if (rows.isNotEmpty) rows.add(const SizedBox(height: 6));
+      final end = start + 5 > ids.length ? ids.length : start + 5;
+      final rowIds = ids.sublist(start, end);
+      rows.add(
+        SizedBox(
+          height: 48,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              for (var i = 0; i < rowIds.length; i++) ...[
+                if (i > 0) const SizedBox(width: 6),
+                Expanded(child: _buildThemeCardCompact(prov, s, rowIds[i])),
+              ],
+            ],
+          ),
+        ),
+      );
+    }
+    return Column(mainAxisSize: MainAxisSize.min, children: rows);
   }
 
   // v2.31.2 compact theme card (approved Option A): a 20px palette

@@ -22,7 +22,7 @@ const os = require('os');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.31.3';
+const SERVER_VERSION = '2.31.4';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -239,6 +239,28 @@ const TOOLS = [
       const ids = Array.isArray(args.accountIds) ? args.accountIds.filter((x) => typeof x === 'string' && x) : [];
       if (ids.length === 0) throw new Error('accountIds must be a non-empty array');
       return bridgeCall('POST', '/api/cookies/check', { ids });
+    },
+  },
+  {
+    // v2.31.4: update the app itself, through the app's OWN updater.
+    // 'check' only reads (current version vs the latest GitHub
+    // release). 'install' asks the app to download the latest Setup
+    // from the app's own GitHub releases and run the same silent
+    // install as Settings → Updates — the app closes and restarts,
+    // so a successful call returns "started" before it exits. The
+    // bridge refuses while a generation run is active or when no
+    // newer release exists.
+    name: 'flowstudio_update_app',
+    description: 'Check for a FlowStudio app update, or install it. action "check" reports the current version, the latest published version, and whether an update is available. action "install" starts the app\'s own update (downloads the latest Setup from the app\'s GitHub releases and installs it silently — the app closes and restarts). Install refuses while a generation run is active or when already up to date.',
+    inputSchema: {
+      type: 'object',
+      properties: { action: { type: 'string', enum: ['check', 'install'] } },
+      required: ['action'],
+    },
+    run: async (args) => {
+      if (args.action === 'check') return bridgeCall('GET', '/api/update/check');
+      if (args.action === 'install') return bridgeCall('POST', '/api/update/install', {});
+      throw new Error("action must be 'check' or 'install'");
     },
   },
 ];

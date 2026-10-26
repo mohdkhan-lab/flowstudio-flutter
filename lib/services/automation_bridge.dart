@@ -36,6 +36,11 @@ class AutomationBridge {
   // v2.25.0 (parked browser): [{ 'id': ..., 'windowShown': bool }] for
   // every account with a live generation browser right now.
   Function(List<Map<String, dynamic>> accounts)? onActiveBrowsers;
+  // v2.31.4: Muse asked (through the MCP connector) for the app to
+  // update itself. The bridge broadcasts 'mcp-update-request' after
+  // its own guards pass; the settings provider consumes it by
+  // running its existing in-app updater end to end.
+  Function(Map<String, dynamic> data)? onMcpUpdateRequest;
 
   AutomationBridge._();
 
@@ -211,6 +216,11 @@ class AutomationBridge {
                     ),
                   );
                 }
+                break;
+              case 'mcp-update-request':
+                // v2.31.4: hand the update request to the settings
+                // provider, which runs its own updater flow.
+                onMcpUpdateRequest?.call(data);
                 break;
               case 'active-browsers':
                 // v2.25.0 (parked browser): which accounts are

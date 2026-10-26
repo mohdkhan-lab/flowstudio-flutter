@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const path = require('path');
 const fs = require('fs');
 const { exec } = require('child_process');
@@ -157,6 +158,11 @@ function mergeDuplicateByEmail(newAccount) {
 }
 
 const PORT = 48190;
+// The app version this bridge ships with — bumped with every release,
+// alongside pubspec.yaml / package.json / installer.iss / the Dart
+// defaults. /api/status reports it and the update check compares
+// GitHub's latest tag against it.
+const APP_VERSION = '2.31.4';
 let activeWorkerPool = null;
 const sseClients = new Set();
 
@@ -169,6 +175,70 @@ function broadcastEvent(eventName, data) {
       sseClients.delete(client);
     }
   }
+}
+
+// ---------------------------------------------------------------------------
+// v2.31.4: latest-release lookup for the MCP "update the app" tool.
+// This mirrors the Dart updater in SettingsProvider.checkForUpdates
+// EXACTLY — same GitHub releases source, same headers, same 10s
+// timeout, same version comparison, same "first .exe asset" pick —
+// so the MCP check/install can never disagree with Settings →
+// Updates about whether an update exists. The download + silent
+// install themselves stay on the Dart side (it owns the installer
+// launch); the bridge only signals it over SSE (see /api/update/*).
+// ---------------------------------------------------------------------------
+function isNewerVersion(latest, current) {
+  const parts = (v) => String(v || '').replace(/^v/, '').split('.')
+    .map((p) => parseInt(p.replace(/[^0-9]/g, ''), 10) || 0);
+  const a = parts(latest);
+  const b = parts(current);
+  for (let i = 0; i < a.length || i < b.length; i++) {
+    const av = i < a.length ? a[i] : 0;
+    const bv = i < b.length ? b[i] : 0;
+    if (av !== bv) return av > bv;
+  }
+  return false;
+}
+
+function fetchLatestRelease() {
+  return new Promise((resolve, reject) => {
+    const req = https.get(
+      'https://api.github.com/repos/mohdkhan-lab/flowstudio-flutter/releases/latest',
+      { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'FlowStudioLite' } },
+      (res) => {
+        const chunks = [];
+        res.on('data', (c) => chunks.push(c));
+        res.on('end', () => {
+          if (res.statusCode !== 200) {
+            return reject(new Error(`GitHub answered ${res.statusCode}`));
+          }
+          try {
+            const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            const tag = String(data.tag_name || '');
+            let asset = null;
+            if (Array.isArray(data.assets)) {
+              for (const a of data.assets) {
+                const name = String((a && a.name) || '');
+                if (name.toLowerCase().endsWith('.exe')) {
+                  asset = {
+                    name,
+                    downloadUrl: String(a.browser_download_url || ''),
+                    sizeBytes: Number(a.size) || 0,
+                  };
+                  break;
+                }
+              }
+            }
+            resolve({ tag, asset });
+          } catch (e) {
+            reject(new Error('GitHub returned an unreadable response'));
+          }
+        });
+      }
+    );
+    req.setTimeout(10000, () => req.destroy(new Error('the update check timed out after 10s')));
+    req.on('error', (e) => reject(new Error(`could not reach GitHub (${e.message})`)));
+  });
 }
 
 async function startBridge() {
@@ -243,7 +313,7 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: '2.31.3', workers: activeWorkerPool ? 1 : 0 });
+        return sendJson(200, { ok: true, version: APP_VERSION, workers: activeWorkerPool ? 1 : 0 });
       }
 
       // 3. Settings Endpoints
@@ -322,6 +392,61 @@ async function startBridge() {
               },
             },
           },
+        });
+      }
+
+      // 3c. v2.31.4: app update check + install trigger (MCP tool
+      // backend). CHECK answers from the same GitHub releases source
+      // as Settings → Updates. INSTALL is only a *request*: it guards
+      // (no active run, a newer release with a Setup file must
+      // exist), then signals the Dart app over the existing SSE
+      // channel — 'mcp-update-request' — and the app's own updater
+      // (SettingsProvider) downloads the Setup and runs it silently,
+      // exactly as if the owner had pressed the buttons. This bridge
+      // never downloads or launches an installer itself.
+      if (pathname === '/api/update/check' && req.method === 'GET') {
+        try {
+          const rel = await fetchLatestRelease();
+          return sendJson(200, {
+            ok: true,
+            currentVersion: `v${APP_VERSION}`,
+            latestVersion: rel.tag,
+            updateAvailable: !!rel.tag && isNewerVersion(rel.tag, APP_VERSION),
+            setupFile: rel.asset ? rel.asset.name : '',
+            sizeBytes: rel.asset ? rel.asset.sizeBytes : 0,
+          });
+        } catch (e) {
+          return sendJson(200, { ok: false, error: `Update check failed — ${e.message}` });
+        }
+      }
+
+      if (pathname === '/api/update/install' && req.method === 'POST') {
+        if (activeWorkerPool) {
+          return sendJson(200, { ok: false, error: 'A generation run is active — the app update can only start when no video is generating.' });
+        }
+        let rel;
+        try {
+          rel = await fetchLatestRelease();
+        } catch (e) {
+          return sendJson(200, { ok: false, error: `Update check failed — ${e.message}` });
+        }
+        if (!rel.tag || !isNewerVersion(rel.tag, APP_VERSION)) {
+          return sendJson(200, { ok: false, error: `Already on the latest version (v${APP_VERSION}) — nothing to install.` });
+        }
+        if (!rel.asset || !rel.asset.downloadUrl) {
+          return sendJson(200, { ok: false, error: `Release ${rel.tag} has no Setup file attached — cannot install it.` });
+        }
+        broadcastEvent('automation-log', {
+          message: `🔌 MCP • Muse started the app update to ${rel.tag}`,
+          level: 'info',
+        });
+        broadcastEvent('mcp-update-request', { latestVersion: rel.tag });
+        return sendJson(200, {
+          ok: true,
+          started: true,
+          currentVersion: `v${APP_VERSION}`,
+          latestVersion: rel.tag,
+          note: 'The app is downloading the update itself and will close to install it.',
         });
       }
 

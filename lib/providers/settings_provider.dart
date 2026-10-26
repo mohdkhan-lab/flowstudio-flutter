@@ -58,7 +58,36 @@ class SettingsProvider with ChangeNotifier {
       : '';
 
   SettingsProvider() {
+    // v2.31.4: an MCP "install update" request (Muse, through the
+    // connector) arrives over the bridge's event stream. It runs
+    // through THIS provider's own updater below — the same check,
+    // download and silent install as Settings → Updates — never a
+    // second update path.
+    AutomationBridge.instance.onMcpUpdateRequest = (_) {
+      unawaited(runMcpRequestedUpdate());
+    };
     loadSettingsFromEngine();
+  }
+
+  /// v2.31.4: app update requested by Muse through the MCP
+  /// connector. Chains the existing updater steps exactly as the
+  /// Settings buttons do: checkForUpdates → downloadUpdate →
+  /// installDownloadedUpdate (which closes the app so the Setup can
+  /// replace its files). Does nothing when an update flow is
+  /// already in flight, when no newer version exists, or when the
+  /// download did not produce a Setup file — the Updates card's
+  /// status line explains each outcome, as it does for manual use.
+  /// If a Setup from an earlier check is already downloaded, it is
+  /// installed directly (it is the latest release by construction).
+  Future<void> runMcpRequestedUpdate() async {
+    if (_isCheckingUpdates || _isDownloadingUpdate) return;
+    if (_downloadedSetupPath.isEmpty) {
+      await checkForUpdates();
+      if (!_updateAvailable) return;
+      await downloadUpdate();
+    }
+    if (_downloadedSetupPath.isEmpty) return;
+    await installDownloadedUpdate();
   }
 
   Future<void> loadSettingsFromEngine() async {

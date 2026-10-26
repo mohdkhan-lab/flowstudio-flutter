@@ -161,6 +161,7 @@ class _SettingsViewState extends State<SettingsView> {
     const toolLabels = [
       'Status', 'Accounts', 'Credits', 'History', 'Outputs',
       'Generate', 'Pause / Resume', 'Stop', 'Sync Credits', 'Check Cookies',
+      'Update App',
     ];
     return _buildPanel(
       title: '🔌 Muse AI — MCP',
@@ -198,7 +199,7 @@ class _SettingsViewState extends State<SettingsView> {
           const SizedBox(height: 6),
           _buildToggleRow(
             title: 'Enable MCP Server',
-            subtitle: 'Port 48191 · Muse can use 10 tools',
+            subtitle: 'Port 48191 · Muse can use 11 tools',
             value: enabled,
             onChanged: _toggleMcp,
           ),

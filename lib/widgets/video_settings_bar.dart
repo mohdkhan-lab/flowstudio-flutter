@@ -157,9 +157,12 @@ class VideoSettingsBar extends StatelessWidget {
               // NEVER clipped (at 1024 wide the old Spacer row
               // overflowed and cut the button at the right edge).
               // v2.34.0 (Problem 10): the estimate is REAL — the
-              // per-model+duration cost table the engine itself
-              // charges by (services/credit_costs.dart), updating
-              // live with the MODEL/DURATION dropdowns above. The
+              // cost table the engine itself charges by
+              // (services/credit_costs.dart), updating live with
+              // the MODEL/DURATION dropdowns above. v2.40.0: the
+              // table holds the owner's real panel rates, keyed
+              // by generation resolution (the Quality setting)
+              // as well. The
               // old hardcoded "× 7" printed 14 for two 4-credit
               // Omni videos. A combination with no evidenced rate
               // shows NO estimate at all — never a fake number.
@@ -169,6 +172,7 @@ class VideoSettingsBar extends StatelessWidget {
                     final est = creditEstimateText(
                       model: settings.model,
                       duration: settings.duration,
+                      quality: settings.quality,
                       promptCount: promptCount,
                     );
                     return est == null

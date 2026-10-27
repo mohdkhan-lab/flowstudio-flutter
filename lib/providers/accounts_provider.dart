@@ -79,7 +79,7 @@ class AccountsProvider with ChangeNotifier {
   void _evaluateAccountAlerts(GoogleAccount acc) {
     final prev = _alertStatusById[acc.id];
     _alertStatusById[acc.id] = acc.status;
-    final cheapest = creditCostPerVideo('Omni Flash', '4s');
+    final cheapest = creditCostPerVideo('Omni Flash', '4s', '360p');
     if (prev == null) {
       // First sight: seed the low-credit warned state so an
       // already-low balance does not "newly" warn on load.

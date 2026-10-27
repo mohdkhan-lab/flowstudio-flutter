@@ -959,7 +959,10 @@ class FlowAutomationEngine {
     }
   }
 
-  // MODEL, DURATION & SUBMODE AWARE REQUIRED CREDITS CALCULATOR
+  // MODEL, RESOLUTION & DURATION AWARE REQUIRED CREDITS CALCULATOR
+  // Real rates only — the owner's own Flow panel screenshots,
+  // 2026-10-27 (CREDIT-RATES-REAL-2026-10-27.md); the same table
+  // the app shows in lib/services/credit_costs.dart.
   getRequiredCredits(settings) {
     if (!settings || settings.type === 'Image') {
       return 0;
@@ -967,6 +970,14 @@ class FlowAutomationEngine {
 
     const duration = (settings.duration || '6s').toLowerCase().replace('s', '').trim();
     const model = (settings.model || '').toLowerCase();
+    // The generation resolution follows the Quality setting:
+    // '360p' generates at 360p, '720p' at 720p, and '1080p' at
+    // 720p (1080p is an enhanced DOWNLOAD of a 720p generation —
+    // Flow has no 1080p generation). The real cost of a video
+    // depends on this resolution, so the Omni table below is
+    // keyed by it.
+    const quality = (settings.quality || '360p').toLowerCase();
+    const genRes = (quality.includes('720') || quality.includes('1080')) ? '720p' : '360p';
     // v2.4.0: Outputs is LOCKED to x1 (owner's order — the x2/x3/x4
     // select is gone from the UI; nobody re-renders one prompt into
     // several videos from that option). A settings_json saved by an
@@ -976,41 +987,36 @@ class FlowAutomationEngine {
     let creditsPerOutput;
 
     if (model.includes('quality')) {
+      // Veo rates are FLAT per video: a Veo video is always 8s —
+      // Flow offers no Veo duration choice — at 720p.
       creditsPerOutput = 100;
     } else if (model.includes('fast')) {
-      if (duration === '4') creditsPerOutput = 15;
-      else if (duration === '6') creditsPerOutput = 20;
-      else if (duration === '8') creditsPerOutput = 25;
-      else if (duration === '10') creditsPerOutput = 30;
-      else creditsPerOutput = 20;
+      creditsPerOutput = 20;
     } else if (model.includes('lite')) {
-      if (duration === '4') creditsPerOutput = 7;
-      else if (duration === '6') creditsPerOutput = 10;
-      else if (duration === '8') creditsPerOutput = 12;
-      else if (duration === '10') creditsPerOutput = 15;
-      else creditsPerOutput = 10;
+      creditsPerOutput = 10;
     } else if (model.includes('omni') || model.includes('flash')) {
-      // v1.7.0: Omni Flash TEXT-TO-VIDEO costs 1 credit per second —
-      // verified live on 2026-10-11 (a 4s clip charged exactly 4
-      // credits). The old table (7/10/12/15) over-charged the local
-      // ledger on every estimated deduction, draining displayed
-      // balances ~40% too fast and rotating accounts early (the
-      // owner's "credits kat-te hain" complaint). Ingredients/Frames
-      // modes keep the older, higher estimates — unverified, and
-      // conservative on purpose.
-      const premiumMode = settings.videoMode === 'Ingredients' || settings.videoMode === 'Frames' || settings.referenceImage || settings.startFrame || settings.endFrame;
-      if (!premiumMode) {
-        if (duration === '4') creditsPerOutput = 4;
-        else if (duration === '6') creditsPerOutput = 6;
-        else if (duration === '8') creditsPerOutput = 8;
-        else if (duration === '10') creditsPerOutput = 10;
-        else creditsPerOutput = 6;
-      } else {
+      // Real Omni rates (owner's panel screenshots, 2026-10-27),
+      // keyed by the generation resolution above. The old
+      // premiumMode split is GONE: its "premium" row (7/10/12/15)
+      // was never a mode price — it was the 720p row — and the
+      // "1 credit/second" plain row (4/6/8/10) matched nothing
+      // real beyond a single 4s datapoint. The evidenced rates
+      // are Ingredients-mode; the same table now applies to every
+      // Omni mode — text mode beyond the old 4s=4 datapoint
+      // follows this table too, until live evidence says
+      // otherwise.
+      if (genRes === '720p') {
         if (duration === '4') creditsPerOutput = 7;
         else if (duration === '6') creditsPerOutput = 10;
         else if (duration === '8') creditsPerOutput = 12;
         else if (duration === '10') creditsPerOutput = 15;
         else creditsPerOutput = 10;
+      } else {
+        if (duration === '4') creditsPerOutput = 4;
+        else if (duration === '6') creditsPerOutput = 5;
+        else if (duration === '8') creditsPerOutput = 6;
+        else if (duration === '10') creditsPerOutput = 7;
+        else creditsPerOutput = 5;
       }
     } else if (settings.videoMode === 'Ingredients' || settings.referenceImage || settings.videoMode === 'Frames' || settings.startFrame || settings.endFrame) {
       creditsPerOutput = 20;
@@ -1296,7 +1302,13 @@ class FlowAutomationEngine {
 
       const modeType = settings.type || 'Video';
       const videoMode = settings.videoMode || 'Text';
-      this.log(`Applying Flow settings: Mode=${modeType} | Type=${videoMode} | Model=${settings.model || 'Omni Flash'} | Duration=${settings.duration || '6s'} | Size=${settings.aspectRatio || '9:16'} | Outputs=x1…`, 'info');
+      // The generation resolution follows the Quality setting:
+      // 360p→360p, 720p→720p, 1080p→720p (1080p is an enhanced
+      // DOWNLOAD of a 720p generation — Flow's panel has no
+      // 1080p generation button).
+      const qualitySetting = (settings.quality || '360p').toLowerCase();
+      const genResolution = (qualitySetting.includes('720') || qualitySetting.includes('1080')) ? '720p' : '360p';
+      this.log(`Applying Flow settings: Mode=${modeType} | Type=${videoMode} | Model=${settings.model || 'Omni Flash'} | Duration=${settings.duration || '6s'} | Size=${settings.aspectRatio || '9:16'} | Resolution=${genResolution} | Outputs=x1…`, 'info');
 
       if (videoMode === 'Text') {
         await this.page.evaluate(() => {
@@ -1455,6 +1467,50 @@ class FlowAutomationEngine {
           if (targetBtn) targetBtn.click();
         }, targetAspect);
         await sleep(350);
+
+        // 4.5 Select the generation Resolution (v2.40.0): the
+        // panel's 360p/720p buttons fix the ORIGINAL quality Flow
+        // generates at — and the real credit cost follows it (see
+        // getRequiredCredits). This step never ran before, so a
+        // panel left on 720p silently generated (and charged)
+        // 720p while the app's Quality setting said 360p.
+        // Best-effort, like every panel step: if the buttons are
+        // not found (Flow panel variants exist), log a warning
+        // and continue — never fail a run over this.
+        if (modeType === 'Video') {
+          this.log(`Selecting the Resolution: [${genResolution}]…`, 'info');
+          const readResolutionState = async () => {
+            return await this.page.evaluate(() => {
+              const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content');
+              if (!pop) return { found: false, selected: null };
+              const btns = Array.from(pop.querySelectorAll('button, [role="radio"], [role="tab"]'));
+              const resBtns = btns.filter(b => ['360p', '720p'].includes((b.innerText || '').trim().toLowerCase()));
+              if (!resBtns.length) return { found: false, selected: null };
+              const sel = resBtns.find(b => b.getAttribute('aria-checked') === 'true' || b.getAttribute('aria-selected') === 'true' || b.getAttribute('aria-pressed') === 'true' || b.getAttribute('data-state') === 'on' || b.classList.contains('selected') || b.classList.contains('active'));
+              return { found: true, selected: sel ? (sel.innerText || '').trim().toLowerCase() : null };
+            });
+          };
+          let resState = await readResolutionState();
+          if (!resState.found) {
+            this.log('The 360p/720p buttons were not found on Flow\'s panel — the generation keeps the resolution the panel already shows.', 'warn');
+          } else {
+            if (resState.selected !== genResolution) {
+              await this.page.evaluate((res) => {
+                const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content') || document.body;
+                const btns = Array.from(pop.querySelectorAll('button, [role="radio"], [role="tab"]'));
+                const targetBtn = btns.find(b => (b.innerText || '').trim().toLowerCase() === res);
+                if (targetBtn) targetBtn.click();
+              }, genResolution);
+              await sleep(350);
+              resState = await readResolutionState();
+            }
+            if (resState.selected) {
+              this.log(`Resolution confirmed on Flow: [${resState.selected}] (needed [${genResolution}])`, resState.selected === genResolution ? 'success' : 'warn');
+            } else {
+              this.log('The panel\'s resolution could not be confirmed after selecting — the run continues with the resolution Flow shows.', 'warn');
+            }
+          }
+        }
 
         // 5. Select Duration
         if (modeType === 'Video') {

@@ -408,13 +408,13 @@ class _SettingsViewState extends State<SettingsView> {
                       child: _buildDropdown(
                         label: 'QUALITY',
                         value: s.quality,
-                        // (Fix list 2026-10-27, item 7): mirror
-                        // Flow — 360p and 720p are the generation
-                        // qualities; 1080p is Flow's ENHANCED
-                        // (upscaled) variant, chosen in the
-                        // download menu, never a generation
-                        // resolution. The engine's native download
-                        // path now honours exactly this split.
+                        // (Fix list 2026-10-27, item 7; extended
+                        // v2.40.0): mirror Flow — 360p and 720p are
+                        // the generation qualities, now selected on
+                        // Flow's panel by the engine itself; 1080p
+                        // is Flow's ENHANCED (upscaled) variant of
+                        // a 720p generation, chosen in the download
+                        // menu, never a generation resolution.
                         items: const ['360p', '720p', '1080p'],
                         labels: const {'1080p': '1080p (enhanced)'},
                         onChanged: (v) => prov.updateQuality(v!),
@@ -442,11 +442,11 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
 
                 const SizedBox(height: 6),
-                // Item 7: say plainly what the quality choice does,
-                // so the 1080p entry never reads as a generation
-                // resolution it is not.
+                // Item 7 + v2.40.0: say plainly what the quality
+                // choice does now — it drives the generation
+                // itself, not just the download.
                 Text(
-                  '360p and 720p download the video as generated; 1080p picks Flow\'s enhanced (upscaled) download when Flow offers it.',
+                  '360p and 720p set the generation quality itself — the Flow panel, the credit cost and the download all follow it. 1080p (enhanced) generates at 720p and downloads Flow\'s enhanced 1080p when offered.',
                   style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
                 ),
 

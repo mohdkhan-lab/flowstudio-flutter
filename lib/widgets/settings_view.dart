@@ -1111,9 +1111,9 @@ class _SettingsViewState extends State<SettingsView> {
     );
   }
 
-  // v2.31.2 (owner-approved design Option A): the 10 themes in a
-  // compact 5×2 grid of small cards at a FIXED row height, so the
-  // grid is always two short rows whatever width the panel gets.
+  // v2.31.2 (owner-approved design Option A): the themes in a
+  // compact grid of small cards, 5 per row at a FIXED row height
+  // (v2.39.0: 13 themes → 3 rows), whatever width the panel gets.
   // Previews are still drawn from each family's palette for the
   // CURRENTLY APPLIED mode (AppTheme.dark), so flipping Dark/Light
   // re-renders every card in that mode's colours.

@@ -1,9 +1,7 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
-import 'package:file_picker/file_picker.dart';
 import 'package:intl/intl.dart';
 import '../theme/app_theme.dart';
 import '../providers/settings_provider.dart';
@@ -26,12 +24,20 @@ import 'video_player_dialog.dart';
 // whole output tree — every file carries its PROJECT (the output
 // folder's subfolder it lives in, '' for the base folder) and its
 // `rel` reference ("Project/name.mp4"). This page groups by
-// project under project headers, and the chip row filters to one
-// project. (Item 2): "Add Local Videos" picks video files from
-// anywhere on the PC into an ON THIS PC section — the entries are
-// this view's own records (persisted paths, engine setting
-// 'history_local_files'); the files are never copied or moved,
-// and Play hands the picked path straight to the in-app player.
+// project under project headers.
+// v2.39.0 (owner's corrected spec, FIX-LIST-2026-10-27-B): the
+// v2.36.0 "Add Local Videos" file-picker model is REMOVED (the
+// owner rejected adding files one by one; the old
+// 'history_local_files' picks are simply no longer read or
+// written by this view — the stored key itself is left alone).
+// The page now has two modes: [App Videos] — the engine's own
+// output as before, plus a projects strip where every project
+// shows its video count and an Open button that filters the
+// list to only that project — and [Local PC], which scans the
+// PC's Videos / Downloads / Desktop folders (recursively) for
+// video files and lists them, playable in-app. Local PC results
+// are session-only scans: they never enter the App Videos stat
+// cards and are never written to the engine or the history data.
 class HistoryView extends StatefulWidget {
   const HistoryView({super.key});
 
@@ -41,10 +47,15 @@ class HistoryView extends StatefulWidget {
 
 class _HistoryViewState extends State<HistoryView> {
   List<Map<String, dynamic>> _files = [];
-  // Item 2: the owner's own picked files — same entry shape as the
-  // engine's, plus the absolute 'path'. Session records only; the
-  // files themselves are never touched.
-  List<Map<String, dynamic>> _localPicks = [];
+  // v2.39.0: the two History modes. App Videos (default) is the
+  // engine's output; Local PC holds the latest folder scan —
+  // same entry shape as the engine's, plus the absolute 'path'
+  // and the containing 'folder'. Session-only; the files
+  // themselves are never touched.
+  bool _localMode = false;
+  List<Map<String, dynamic>> _pcFiles = [];
+  bool _scanning = false;
+  bool _scanned = false;
   bool _loading = true;
   String _query = '';
   // Item 1: '' shows everything (grouped); a project name filters
@@ -77,7 +88,6 @@ class _HistoryViewState extends State<HistoryView> {
 
   Future<void> _load() async {
     final files = await AutomationBridge.instance.getOutputFiles();
-    await _loadLocalPicks();
     if (mounted) {
       setState(() {
         _files = files;
@@ -123,11 +133,19 @@ class _HistoryViewState extends State<HistoryView> {
   // projects can hold same-named files without hiding each other.
   static String _keyOf(Map<String, dynamic> f) => _relOf(f);
 
+  // A Local PC scan entry (it carries its own absolute path,
+  // unlike an engine entry, which resolves through its `rel`).
   static bool _isLocalPick(Map<String, dynamic> f) =>
       (f['path']?.toString() ?? '').isNotEmpty;
 
   static String _baseNameOf(String path) =>
       path.replaceAll('\\', '/').split('/').last;
+
+  static String _folderNameOf(Map<String, dynamic> f) {
+    final folder = f['folder']?.toString() ?? '';
+    if (folder.isEmpty) return 'This PC';
+    return _baseNameOf(folder);
+  }
 
   bool _matchesQuery(Map<String, dynamic> f) {
     if (_query.isEmpty) return true;
@@ -135,86 +153,93 @@ class _HistoryViewState extends State<HistoryView> {
     return name.toLowerCase().contains(_query.toLowerCase());
   }
 
-  // --- Item 2: local PC picks --------------------------------------
-  Future<void> _loadLocalPicks() async {
+  // --- v2.39.0: Local PC scan ---------------------------------------
+  // One click on [Local PC] scans the standard video folders —
+  // %USERPROFILE%\Videos, \Downloads, \Desktop — recursively for
+  // video files. Missing or unreadable folders are skipped, a
+  // file that cannot be stat'ed is skipped, and results are
+  // deduped by full path (Windows paths are case-insensitive, so
+  // the dedupe key is the lowercased path). Nothing is persisted:
+  // the scan is this session's view of the PC, refreshed by the
+  // Rescan button.
+  static const Set<String> _videoExtensions = {'.mp4', '.mov', '.webm', '.mkv'};
+
+  void _showLocalPc() {
+    setState(() => _localMode = true);
+    if (!_scanned && !_scanning) _scanPc();
+  }
+
+  Future<void> _scanPc() async {
+    setState(() => _scanning = true);
+    final results = <Map<String, dynamic>>[];
+    final seen = <String>{};
     try {
-      final data = await AutomationBridge.instance.loadSettings();
-      final raw = data?['history_local_files']?.toString();
-      if (raw == null || raw.isEmpty) return;
-      final decoded = json.decode(raw);
-      if (decoded is! List) return;
-      final picks = <Map<String, dynamic>>[];
-      for (final e in decoded) {
-        final p = e?.toString() ?? '';
-        if (p.isEmpty) continue;
-        final file = File(p);
-        if (!await file.exists()) continue; // pruned on next save
-        final st = await file.stat();
-        picks.add({
-          'name': _baseNameOf(p),
-          'size': st.size,
-          'mtime': st.modified.millisecondsSinceEpoch,
-          'origin': 'local',
-          'project': '',
-          'path': p,
-        });
-      }
-      picks.sort((a, b) =>
-          ((b['mtime'] as num?) ?? 0).compareTo((a['mtime'] as num?) ?? 0));
-      if (mounted) {
-        setState(() => _localPicks = picks);
-      } else {
-        _localPicks = picks;
+      final home = Platform.environment['USERPROFILE'] ?? '';
+      if (home.isNotEmpty) {
+        for (final name in const ['Videos', 'Downloads', 'Desktop']) {
+          final dir = Directory('$home\\$name');
+          try {
+            if (!await dir.exists()) continue;
+            await for (final ent in dir
+                .list(recursive: true, followLinks: false)
+                .handleError((_) {})) {
+              if (ent is! File) continue;
+              final lower = ent.path.toLowerCase();
+              final dot = lower.lastIndexOf('.');
+              if (dot < 0 || !_videoExtensions.contains(lower.substring(dot))) {
+                continue;
+              }
+              if (!seen.add(lower)) continue; // dedupe by full path
+              try {
+                final st = await ent.stat();
+                results.add({
+                  'name': _baseNameOf(ent.path),
+                  'size': st.size,
+                  'mtime': st.modified.millisecondsSinceEpoch,
+                  'origin': 'local',
+                  'project': '',
+                  'path': ent.path,
+                  'folder': ent.parent.path,
+                });
+              } catch (_) {
+                // One unstat-able file never sinks the scan.
+              }
+            }
+          } catch (_) {
+            // A missing/unreadable folder is skipped; the
+            // remaining folders still scan.
+          }
+        }
       }
     } catch (_) {
-      // A store that cannot be read just means no picks this time.
+      // A scan that cannot run at all just yields an empty list.
     }
-  }
-
-  void _persistLocalPicks() {
-    AutomationBridge.instance.saveSetting(
-      'history_local_files',
-      json.encode(_localPicks.map((f) => f['path']?.toString() ?? '').where((p) => p.isNotEmpty).toList()),
-    );
-  }
-
-  Future<void> _addLocalVideos() async {
-    final result = await FilePickerPlatform.instance.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['mp4', 'mov', 'webm'],
-    );
-    if (result.isEmpty) return;
-    var changed = false;
-    for (final picked in result) {
-      final p = picked.path;
-      if (p == null || p.isEmpty) continue;
-      if (_localPicks.any((f) => f['path']?.toString() == p)) continue;
-      final file = File(p);
-      if (!await file.exists()) continue;
-      final st = await file.stat();
-      _localPicks.add({
-        'name': _baseNameOf(p),
-        'size': st.size,
-        'mtime': st.modified.millisecondsSinceEpoch,
-        'origin': 'local',
-        'project': '',
-        'path': p,
+    results.sort((a, b) =>
+        ((b['mtime'] as num?) ?? 0).compareTo((a['mtime'] as num?) ?? 0));
+    if (mounted) {
+      setState(() {
+        _pcFiles = results;
+        _scanning = false;
+        _scanned = true;
       });
-      changed = true;
-    }
-    if (changed && mounted) {
-      _localPicks.sort((a, b) =>
-          ((b['mtime'] as num?) ?? 0).compareTo((a['mtime'] as num?) ?? 0));
-      _persistLocalPicks();
-      setState(() {});
+    } else {
+      _pcFiles = results;
+      _scanning = false;
+      _scanned = true;
     }
   }
 
-  void _removeLocalPick(Map<String, dynamic> f) {
-    setState(() {
-      _localPicks.removeWhere((e) => e['path'] == f['path']);
-    });
-    _persistLocalPicks();
+  // A Local PC row's folder button: open the file's own folder
+  // in Explorer (the engine's folder opener is confined to the
+  // output folder, so this goes through the OS directly).
+  void _openContainingFolder(Map<String, dynamic> f) {
+    final p = f['path']?.toString() ?? '';
+    if (p.isEmpty || !Platform.isWindows) return;
+    try {
+      Process.start('explorer', [File(p).parent.path]);
+    } catch (_) {
+      // No Explorer, no action — Play still works.
+    }
   }
 
   DateTime _mtimeOf(Map<String, dynamic> f) {
@@ -264,7 +289,9 @@ class _HistoryViewState extends State<HistoryView> {
       if (isHidden(f)) return false;
       return _matchesQuery(f);
     }).toList();
-    final localVisible = _localPicks.where(_matchesQuery).toList();
+    // v2.39.0: Local PC scan results live apart from the engine
+    // list (see _buildLocalList), so they can never reach the
+    // stat cards below.
 
     // v2.30.0: files an earlier "Clear History (records only)" hid.
     // They still exist in the output folder — the page must SAY so
@@ -272,18 +299,24 @@ class _HistoryViewState extends State<HistoryView> {
     final hiddenCount = _files.where(isHidden).length;
 
     // Stat cards derive from the real (uncleared) ENGINE file list
-    // (the owner's own PC picks are not output-folder videos and
-    // never inflate these numbers).
+    // only — Local PC scan results never inflate these numbers.
     final allFiles = _files.where((f) => !isHidden(f)).toList();
 
-    // Item 1: the projects present in the visible list, newest
-    // project first (the engine list is mtime-sorted, so first
-    // occurrence order is newest-first). A filter naming a project
-    // that is no longer visible simply falls back to All.
+    // Item 1 + v2.39.0: the projects strip lists every project
+    // that has videos, newest project first (the engine list is
+    // mtime-sorted, so first occurrence order is newest-first),
+    // with each project's video count. The strip is derived from
+    // the uncleared list so a project never vanishes just
+    // because a search is typed; the list itself still filters.
+    // A filter naming a project that no longer exists simply
+    // falls back to All.
     final projects = <String>[];
-    for (final f in visible) {
+    final projectCounts = <String, int>{};
+    for (final f in allFiles) {
       final p = _projectOf(f);
-      if (p.isNotEmpty && !projects.contains(p)) projects.add(p);
+      if (p.isEmpty) continue;
+      if (!projects.contains(p)) projects.add(p);
+      projectCounts[p] = (projectCounts[p] ?? 0) + 1;
     }
     final activeFilter =
         projects.contains(_projectFilter) ? _projectFilter : '';
@@ -292,25 +325,22 @@ class _HistoryViewState extends State<HistoryView> {
     // Filtered → just that project's files. Unfiltered → grouped:
     // one header per project, the base folder's files under
     // OUTPUT FOLDER (only when projects exist — with no projects
-    // the list is exactly the old flat one), and the owner's PC
-    // picks under ON THIS PC.
+    // the list is exactly the old flat one).
     final entries = <Object>[];
     if (activeFilter.isNotEmpty) {
       entries.addAll(visible.where((f) => _projectOf(f) == activeFilter));
     } else {
       for (final p in projects) {
+        final inProject = visible.where((f) => _projectOf(f) == p).toList();
+        if (inProject.isEmpty) continue;
         entries.add('PROJECT — $p');
-        entries.addAll(visible.where((f) => _projectOf(f) == p));
+        entries.addAll(inProject);
       }
       final baseFiles = visible.where((f) => _projectOf(f).isEmpty);
       if (projects.isNotEmpty && baseFiles.isNotEmpty) {
         entries.add('OUTPUT FOLDER');
       }
       entries.addAll(baseFiles);
-      if (localVisible.isNotEmpty) {
-        entries.add('ON THIS PC');
-        entries.addAll(localVisible);
-      }
     }
     // v2.29.1: "TOTAL VIDEOS (ALL TIME)" is the engine's real
     // all-time usage total (the same figure Settings → About
@@ -389,28 +419,60 @@ class _HistoryViewState extends State<HistoryView> {
             ],
           ),
 
-          const SizedBox(height: 12),
+          const SizedBox(height: 10),
 
-          // Stat cards (design)
+          // v2.39.0: the two History modes. [App Videos] is the
+          // app's own generated output; [Local PC] scans the PC's
+          // Videos / Downloads / Desktop folders — clicking it IS
+          // the scan (nothing is picked or added by hand).
           Row(
             children: [
-              _statCard('$total', 'TOTAL VIDEOS (ALL TIME)'),
-              const SizedBox(width: 10),
-              _statCard('$todayCount', "TODAY'S VIDEOS"),
-              const SizedBox(width: 10),
-              _statCard('$last7', 'LAST 7 DAYS'),
-              const SizedBox(width: 10),
-              _statCard('$spendToday', "TODAY'S SPEND (CREDITS)"),
+              _modeButton('App Videos', !_localMode,
+                  () => setState(() => _localMode = false)),
+              const SizedBox(width: 6),
+              _modeButton('Local PC', _localMode, _showLocalPc),
+              if (_localMode) ...[
+                const SizedBox(width: 10),
+                Text(
+                  _scanning
+                      ? 'Scanning…'
+                      : _scanned
+                          ? '${_pcFiles.length} video${_pcFiles.length == 1 ? '' : 's'} found on this PC'
+                          : '',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
+                ),
+              ],
             ],
           ),
 
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
+
+          // Stat cards (design) — App Videos only: they count the
+          // engine's output, and Local PC results never enter them.
+          if (!_localMode) ...[
+            Row(
+              children: [
+                _statCard('$total', 'TOTAL VIDEOS (ALL TIME)'),
+                const SizedBox(width: 10),
+                _statCard('$todayCount', "TODAY'S VIDEOS"),
+                const SizedBox(width: 10),
+                _statCard('$last7', 'LAST 7 DAYS'),
+                const SizedBox(width: 10),
+                _statCard('$spendToday', "TODAY'S SPEND (CREDITS)"),
+              ],
+            ),
+            const SizedBox(height: 14),
+          ],
 
           // List header row (design)
           Row(
             children: [
               Text(
-                activeFilter.isEmpty ? 'ALL VIDEOS' : 'PROJECT VIDEOS',
+                _localMode
+                    ? 'VIDEOS ON THIS PC'
+                    : activeFilter.isEmpty
+                        ? 'ALL VIDEOS'
+                        : 'PROJECT VIDEOS',
                 style: TextStyle(
                   fontSize: 11,
                   fontWeight: FontWeight.w800,
@@ -434,10 +496,12 @@ class _HistoryViewState extends State<HistoryView> {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-              // (Fix list 2026-10-27, item 2): pick videos from
-              // anywhere on this PC into the ON THIS PC section.
+              // v2.39.0: Local PC mode's only header action is a
+              // fresh scan; the App Videos actions (Clear History,
+              // Open Output Folder) belong to the app's own list.
+              if (_localMode)
               OutlinedButton(
-                onPressed: _addLocalVideos,
+                onPressed: _scanning ? null : _scanPc,
                 style: OutlinedButton.styleFrom(
                   foregroundColor: AppTheme.textMain,
                   side: BorderSide(color: AppTheme.borderSoft),
@@ -445,9 +509,9 @@ class _HistoryViewState extends State<HistoryView> {
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
                   visualDensity: VisualDensity.compact,
                 ),
-                child: const Text('Add Local Videos', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
+                child: const Text('Rescan', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
               ),
-              const SizedBox(width: 8),
+              if (!_localMode) ...[
               OutlinedButton(
                 onPressed: allFiles.isEmpty
                     ? null
@@ -477,6 +541,7 @@ class _HistoryViewState extends State<HistoryView> {
                 ),
                         child: const Text('Open Output Folder', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
                       ),
+              ],
                     ],
                   ),
                 ),
@@ -486,20 +551,32 @@ class _HistoryViewState extends State<HistoryView> {
 
           const SizedBox(height: 10),
 
-          // (Fix list 2026-10-27, item 1): project filter chips —
-          // "All videos" plus one chip per project present in the
-          // visible list; picking one shows only that project.
-          if (projects.isNotEmpty) ...[
+          // v2.39.0 (owner's spec): the projects strip — every
+          // project that has videos, with its video COUNT (so the
+          // owner can see how many projects exist) and an Open
+          // button that filters the list to ONLY that project.
+          // New projects appear here on their own as their first
+          // video is saved. While a project is open, a
+          // "← All videos" chip leads back. (Supersedes the
+          // v2.36.0 filter chips.)
+          if (!_localMode && projects.isNotEmpty) ...[
             SingleChildScrollView(
               scrollDirection: Axis.horizontal,
               child: Row(
                 children: [
-                  _projectChip('All videos', activeFilter.isEmpty,
-                      () => setState(() => _projectFilter = '')),
-                  for (final p in projects) ...[
+                  if (activeFilter.isNotEmpty) ...[
+                    _projectChip('← All videos', false,
+                        () => setState(() => _projectFilter = '')),
                     const SizedBox(width: 6),
-                    _projectChip(p, activeFilter == p,
-                        () => setState(() => _projectFilter = p)),
+                  ],
+                  for (var i = 0; i < projects.length; i++) ...[
+                    if (i > 0) const SizedBox(width: 6),
+                    _projectCard(
+                      projects[i],
+                      projectCounts[projects[i]] ?? 0,
+                      activeFilter == projects[i],
+                      () => setState(() => _projectFilter = projects[i]),
+                    ),
                   ],
                 ],
               ),
@@ -508,7 +585,7 @@ class _HistoryViewState extends State<HistoryView> {
           ],
 
           // v2.30.0: hidden-by-Clear-History notice + recovery.
-          if (hiddenCount > 0) ...[
+          if (!_localMode && hiddenCount > 0) ...[
             Container(
               padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
               decoration: BoxDecoration(
@@ -544,11 +621,14 @@ class _HistoryViewState extends State<HistoryView> {
             const SizedBox(height: 10),
           ],
 
-          // The list — (fix list item 1): `entries` mixes section
-          // headers (String) with file rows (Map); the row index
-          // counts files only, so tile colours stay stable.
+          // The list — App mode: (fix list item 1) `entries` mixes
+          // section headers (String) with file rows (Map); the
+          // row index counts files only, so tile colours stay
+          // stable. Local mode: the scan list (own builder).
           Expanded(
-            child: _loading
+            child: _localMode
+                ? _buildLocalList()
+                : _loading
                 ? const Center(child: CircularProgressIndicator())
                 : entries.isEmpty
                     ? Center(
@@ -556,10 +636,10 @@ class _HistoryViewState extends State<HistoryView> {
                           // v2.30.0: an empty page must say WHY —
                           // truly no files, everything hidden by a
                           // past Clear, or just no search match.
-                          _files.isEmpty && _localPicks.isEmpty
+                          _files.isEmpty
                               ? 'No videos yet — generated videos will appear here.'
                               : activeFilter.isNotEmpty
-                                  ? 'No videos of this project are showing — pick another project or "All videos" above.'
+                                  ? 'No videos of this project are showing — pick "← All videos" above or open another project.'
                                   : (hiddenCount == _files.length && _query.isEmpty)
                                       ? 'All videos are hidden by an earlier Clear History — tap "Show them" above to bring them back.'
                                       : 'No videos match your search.',
@@ -596,6 +676,79 @@ class _HistoryViewState extends State<HistoryView> {
           ),
         ],
       ),
+    );
+  }
+
+  // v2.39.0: one History mode button — the selected mode takes
+  // the accent chip language, the other stays quiet.
+  Widget _modeButton(String label, bool selected, VoidCallback onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected
+              ? AppTheme.accentGold.withValues(alpha: 0.12)
+              : AppTheme.overlay08,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: selected
+                ? AppTheme.accentGold.withValues(alpha: 0.55)
+                : AppTheme.borderSoft,
+          ),
+        ),
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 12,
+            fontWeight: FontWeight.w800,
+            color: selected ? AppTheme.accentText : AppTheme.textDim,
+          ),
+        ),
+      ),
+    );
+  }
+
+  // v2.39.0: the Local PC list — a brief "Scanning…" state, an
+  // honest empty state, otherwise the scan's rows (same row
+  // builder as App Videos; the rows carry their own paths).
+  Widget _buildLocalList() {
+    if (_scanning) {
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 12),
+            Text(
+              'Scanning this PC for videos…',
+              style: TextStyle(fontSize: 12, color: AppTheme.textFaint),
+            ),
+          ],
+        ),
+      );
+    }
+    final files = _pcFiles.where(_matchesQuery).toList();
+    if (files.isEmpty) {
+      return Center(
+        child: Text(
+          _query.isNotEmpty
+              ? 'No videos on this PC match your search.'
+              : 'No videos found in Videos, Downloads or Desktop.',
+          textAlign: TextAlign.center,
+          style: TextStyle(fontSize: 12, color: AppTheme.textFaint),
+        ),
+      );
+    }
+    return ListView.builder(
+      itemCount: files.length,
+      itemBuilder: (context, index) {
+        return Padding(
+          padding: EdgeInsets.only(top: index == 0 ? 0.0 : 7.0),
+          child: _buildRow(files[index], index),
+        );
+      },
     );
   }
 
@@ -663,10 +816,10 @@ class _HistoryViewState extends State<HistoryView> {
             child: const Icon(Icons.play_arrow, size: 20, color: Colors.white),
           ),
           const SizedBox(width: 12),
-          // Name + real meta line (folder · date · size). (Fix
-          // list item 1/2: the folder wording follows WHERE the
-          // file lives — a project folder, the output folder, or
-          // the owner's own PC.)
+          // Name + real meta line (folder · date · size). The
+          // folder wording follows WHERE the file lives — a
+          // project folder, the output folder, or (Local PC
+          // mode) the folder on this PC it was found in.
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -687,7 +840,10 @@ class _HistoryViewState extends State<HistoryView> {
                 ),
                 const SizedBox(height: 2),
                 Text(
-                  '${local ? 'On this PC' : project.isNotEmpty ? 'Project folder' : 'Output folder'} · ${_dateLabel(date)} · ${_sizeLabel(size)}',
+                  // v2.39.0: a Local PC row names the folder the
+                  // file actually sits in; engine rows keep the
+                  // project/output wording.
+                  '${local ? _folderNameOf(f) : project.isNotEmpty ? 'Project folder' : 'Output folder'} · ${_dateLabel(date)} · ${_sizeLabel(size)}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
@@ -696,7 +852,7 @@ class _HistoryViewState extends State<HistoryView> {
             ),
           ),
           const SizedBox(width: 10),
-          _metaColumn('FOLDER', local ? 'This PC' : project.isNotEmpty ? project : 'Output'),
+          _metaColumn('FOLDER', local ? _folderNameOf(f) : project.isNotEmpty ? project : 'Output'),
           const SizedBox(width: 18),
           _metaColumn('SIZE', _sizeLabel(size)),
           const SizedBox(width: 12),
@@ -708,21 +864,21 @@ class _HistoryViewState extends State<HistoryView> {
             // (Fix list item 1): engine files resolve through their
             // `rel` reference, so a project file plays too — the
             // bare name alone could not reach inside its folder.
-            // (Item 2): a PC pick plays from its own path directly.
+            // v2.39.0: a Local PC file plays from its own path
+            // directly (the same route the old picks used).
             onTap: () => local
                 ? showInAppPlayer(context,
                     title: name, filePath: f['path']?.toString())
                 : showInAppPlayer(context, title: name, fileName: _relOf(f)),
           ),
           const SizedBox(width: 6),
-          // Engine rows open the output folder; a PC pick instead
-          // gets a remove button — it only leaves THIS list, the
-          // file on disk is never touched.
+          // Engine rows open the output folder; a Local PC row
+          // opens the folder that file actually lives in.
           local
               ? _rowIconButton(
-                  icon: Icons.close,
+                  icon: Icons.folder_open_outlined,
                   accent: false,
-                  onTap: () => _removeLocalPick(f),
+                  onTap: () => _openContainingFolder(f),
                 )
               : _rowIconButton(
                   icon: Icons.folder_open_outlined,
@@ -735,7 +891,7 @@ class _HistoryViewState extends State<HistoryView> {
   }
 
   // (Fix list 2026-10-27, item 1): a list section header — the
-  // project name (or OUTPUT FOLDER / ON THIS PC) in the page's
+  // project name (or OUTPUT FOLDER) in the page's
   // small caps label language, with a folder glyph.
   Widget _sectionHeader(String label) {
     return Padding(
@@ -762,8 +918,79 @@ class _HistoryViewState extends State<HistoryView> {
     );
   }
 
+  // v2.39.0: one projects-strip card — project name, its video
+  // count, and an Open button. Open (or tapping the card) filters
+  // the list to ONLY this project; the strip's "← All videos"
+  // chip is the way back.
+  Widget _projectCard(String name, int count, bool active, VoidCallback onOpen) {
+    return InkWell(
+      onTap: onOpen,
+      borderRadius: BorderRadius.circular(10),
+      child: Container(
+        padding: const EdgeInsets.fromLTRB(10, 6, 4, 6),
+        decoration: BoxDecoration(
+          color: active
+              ? AppTheme.accentGold.withValues(alpha: 0.10)
+              : AppTheme.surface,
+          borderRadius: BorderRadius.circular(10),
+          border: Border.all(
+            color: active
+                ? AppTheme.accentGold.withValues(alpha: 0.55)
+                : AppTheme.borderSoft,
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(Icons.folder_outlined,
+                size: 15,
+                color: active ? AppTheme.accentText : AppTheme.textDim),
+            const SizedBox(width: 7),
+            Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                ConstrainedBox(
+                  constraints: const BoxConstraints(maxWidth: 150),
+                  child: Text(
+                    name,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w800,
+                      color: AppTheme.textMain,
+                    ),
+                  ),
+                ),
+                Text(
+                  '$count video${count == 1 ? '' : 's'}',
+                  style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+                ),
+              ],
+            ),
+            const SizedBox(width: 4),
+            TextButton(
+              onPressed: onOpen,
+              style: TextButton.styleFrom(
+                foregroundColor: AppTheme.accentText,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                visualDensity: VisualDensity.compact,
+              ),
+              child: const Text(
+                'Open',
+                style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
   // (Fix list 2026-10-27, item 1): one project filter chip —
   // same selected/unselected language as the sidebar's filters.
+  // (v2.39.0: still used for the strip's "← All videos" way back.)
   Widget _projectChip(String label, bool selected, VoidCallback onTap) {
     return InkWell(
       onTap: onTap,

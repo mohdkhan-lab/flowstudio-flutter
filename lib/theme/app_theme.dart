@@ -2,10 +2,12 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 /// FlowStudio v2.26.0 — 10-theme pack (owner-approved, 2026-10-24).
+/// v2.39.0: + Crimson / Matte / Ember (owner-approved samples,
+/// 2026-10-27) — 13 themes, 26 palettes.
 ///
 /// Settings now has a Mode control (Dark / Light / System) and a grid of
-/// 10 colour themes. EVERY theme ships in both a Dark and a Light
-/// palette (20 palettes total); choosing a theme never forces the mode —
+/// colour themes. EVERY theme ships in both a Dark and a Light
+/// palette; choosing a theme never forces the mode —
 /// switching mode keeps the theme and swaps to its other palette.
 ///
 /// Theme 1 "macOS Classic" is the default and is the owner's locked
@@ -127,6 +129,9 @@ class AppTheme {
     'sunset',
     'teal',
     'rose',
+    'crimson',
+    'matte',
+    'ember',
   ];
 
   static const Map<String, String> themeNames = {
@@ -140,6 +145,9 @@ class AppTheme {
     'sunset': 'Sunset',
     'teal': 'Ocean Teal',
     'rose': 'Rose',
+    'crimson': 'Crimson',
+    'matte': 'Matte',
+    'ember': 'Ember',
   };
 
   static AppPalette _current = _macosDark;
@@ -321,6 +329,50 @@ class AppTheme {
       gradStart: Color(0xFFFF8FA8), gradEnd: Color(0xFFDE2A55),
       panelTop: Color(0xFF4C2439), panelBottom: Color(0xFF3B1B2D),
     ),
+    // v2.39.0 (owner-approved samples, fs-design-v2/build_new_themes.py):
+    // bgBody = sample bg, surface = sample surf, inputBg/bg2 = sample
+    // surf2 (the sample's inner-box fill), borderSoft = sample chip,
+    // accentGold = sample accent, textMain/textDim = sample text/sub;
+    // the remaining tokens follow the derivation rules above.
+    'crimson': AppPalette(
+      id: 'crimson', dark: true,
+      bgBody: Color(0xFF241D20), bg2: Color(0xFF2E2328),
+      surface: Color(0xFF372A2F), surfaceElevated: Color(0xFF45363D),
+      inputBg: Color(0xFF2E2328),
+      border: Color(0xFF654D53), borderSoft: Color(0xFF4A3238),
+      accentGold: Color(0xFFE5484D), accentAmber: Color(0xFFF4737A),
+      accentText: Color(0xFFF4737A),
+      textMain: Color(0xFFF3E9EB), textDim: Color(0xFFB9A3AA),
+      textFaint: Color(0xFF9A858D),
+      gradStart: Color(0xFFF4737A), gradEnd: Color(0xFFC22430),
+      panelTop: Color(0xFF45363D), panelBottom: Color(0xFF372A2F),
+    ),
+    'matte': AppPalette(
+      id: 'matte', dark: true,
+      bgBody: Color(0xFF232323), bg2: Color(0xFF2B2B2B),
+      surface: Color(0xFF333333), surfaceElevated: Color(0xFF404040),
+      inputBg: Color(0xFF2B2B2B),
+      border: Color(0xFF555555), borderSoft: Color(0xFF3D3D3D),
+      accentGold: Color(0xFF8B9096), accentAmber: Color(0xFFB9BEC4),
+      accentText: Color(0xFFB9BEC4),
+      textMain: Color(0xFFECECEC), textDim: Color(0xFFA8A8A8),
+      textFaint: Color(0xFF868686),
+      gradStart: Color(0xFFB9BEC4), gradEnd: Color(0xFF62666C),
+      panelTop: Color(0xFF404040), panelBottom: Color(0xFF333333),
+    ),
+    'ember': AppPalette(
+      id: 'ember', dark: true,
+      bgBody: Color(0xFF261E15), bg2: Color(0xFF2F2417),
+      surface: Color(0xFF392B1D), surfaceElevated: Color(0xFF483723),
+      inputBg: Color(0xFF2F2417),
+      border: Color(0xFF6B4E2E), borderSoft: Color(0xFF4A3823),
+      accentGold: Color(0xFFF0762B), accentAmber: Color(0xFFFFAB5E),
+      accentText: Color(0xFFFFAB5E),
+      textMain: Color(0xFFF5EDE2), textDim: Color(0xFFBFA98F),
+      textFaint: Color(0xFFA08C6E),
+      gradStart: Color(0xFFFFAB5E), gradEnd: Color(0xFFD95D16),
+      panelTop: Color(0xFF483723), panelBottom: Color(0xFF392B1D),
+    ),
   };
 
   static const Map<String, AppPalette> _lightPalettes = {
@@ -441,6 +493,46 @@ class AppTheme {
       textFaint: Color(0xFFBE99A5),
       gradStart: Color(0xFFFF8FA8), gradEnd: Color(0xFFDE2A55),
       panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
+    ),
+    // v2.39.0: same sample mapping as the dark palettes above.
+    'crimson': AppPalette(
+      id: 'crimson', dark: false,
+      bgBody: Color(0xFFFAF1F2), bg2: Color(0xFFF6E7E9),
+      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
+      inputBg: Color(0xFFF6E7E9),
+      border: Color(0xFFE4BEC4), borderSoft: Color(0xFFF3D9DD),
+      accentGold: Color(0xFFD92B3A), accentAmber: Color(0xFFF2707C),
+      accentText: Color(0xFFD92B3A),
+      textMain: Color(0xFF2B2124), textDim: Color(0xFF7A646B),
+      textFaint: Color(0xFF9C888F),
+      gradStart: Color(0xFFF2707C), gradEnd: Color(0xFFD92B3A),
+      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFAF1F2),
+    ),
+    'matte': AppPalette(
+      id: 'matte', dark: false,
+      bgBody: Color(0xFFF2F2F0), bg2: Color(0xFFE9E9E6),
+      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
+      inputBg: Color(0xFFE9E9E6),
+      border: Color(0xFFD2D2CE), borderSoft: Color(0xFFE2E2DE),
+      accentGold: Color(0xFF5F6468), accentAmber: Color(0xFF8B9096),
+      accentText: Color(0xFF5F6468),
+      textMain: Color(0xFF262626), textDim: Color(0xFF767676),
+      textFaint: Color(0xFF9E9E9E),
+      gradStart: Color(0xFF8B9096), gradEnd: Color(0xFF5F6468),
+      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFF2F2F0),
+    ),
+    'ember': AppPalette(
+      id: 'ember', dark: false,
+      bgBody: Color(0xFFFBF4EA), bg2: Color(0xFFF7EAD8),
+      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
+      inputBg: Color(0xFFF7EAD8),
+      border: Color(0xFFEAC99E), borderSoft: Color(0xFFF6DFC6),
+      accentGold: Color(0xFFE85D1F), accentAmber: Color(0xFFFF9A4D),
+      accentText: Color(0xFFE85D1F),
+      textMain: Color(0xFF2C2115), textDim: Color(0xFF86745C),
+      textFaint: Color(0xFFA89477),
+      gradStart: Color(0xFFFF9A4D), gradEnd: Color(0xFFE85D1F),
+      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFBF4EA),
     ),
   };
 

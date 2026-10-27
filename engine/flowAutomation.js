@@ -3841,7 +3841,29 @@ class FlowAutomationEngine {
    * Har ranneeti SIRF task ki apni pehchan par chalti hai — galat
    * task ka video kabhi nahi.
    */
+  /**
+   * v2.41.0 (Fix list C, item 4): download ROUNDS on this engine
+   * instance are serialized through a simple promise chain. The
+   * render monitor already awaits one task's round before moving
+   * to the next, but download-retry (retryDownloadForTask) and a
+   * Resume can reach this orchestrator while a monitor round is
+   * still running on the SAME page — two rounds driving one grid
+   * at once interleave their tile reads, scrolls and menu clicks.
+   * The chain guarantees one round at a time per engine, whoever
+   * the caller is. It cannot deadlock: nothing inside a round
+   * calls back into downloadTaskMedia (the immediate backend fetch
+   * is per-task guarded separately and is not a round), and the
+   * stored chain never rejects, so one failed round can never
+   * stall every later round behind it.
+   */
   async downloadTaskMedia(task, downloadFolder, settings, tileIndexHint) {
+    const run = () => this._downloadTaskMediaRound(task, downloadFolder, settings, tileIndexHint);
+    const chained = (this._downloadRoundChain || Promise.resolve()).then(run, run);
+    this._downloadRoundChain = chained.then(() => undefined, () => undefined);
+    return chained;
+  }
+
+  async _downloadTaskMediaRound(task, downloadFolder, settings, tileIndexHint) {
     const n = (task.promptIndex || 0) + 1;
     // v2.31.3 (download fix pack, ADOPT #1 + #3): a ROUND is one
     // pass of this orchestrator. Rounds are counted on the task's
@@ -3921,6 +3943,94 @@ class FlowAutomationEngine {
     return result;
   }
 
+  /**
+   * v2.41.0 (Fix list C, item 4) — MEDIA READINESS, the step the
+   * 2026-10-27 first-try failures were missing. That evening's live
+   * Activity records showed three first rounds where EVERY strategy
+   * reported the same underlying fact in different words: backend
+   * "no video link was seen at all on the backend (network) in this
+   * run", tile-src "no media URL was found on the tile", the tile
+   * menu "button not found", the editor "Download media not found"
+   * — the Flow PAGE had not yet loaded the tile's media when round
+   * 1 ran (a busy multi-task page). The retry a minute later
+   * succeeded on every route, and all four single-prompt runs that
+   * day succeeded first-try. So, before the strategies run: if
+   * nothing is captured for this task yet, bring its tile into
+   * view, hover it, nudge its <video> to play muted, and poll
+   * (1s interval, up to ~25s) until the network capture binds a URL
+   * for the task OR the tile's own element reports a src/currentSrc.
+   *
+   * Budget: this runs INSIDE _downloadTaskMediaInner, hence inside
+   * the round's 120s downloadGuard deadline — worst case it spends
+   * 25s and leaves at least ~95s for the four strategies. It NEVER
+   * fails the round: on timeout (or any error) the strategies run
+   * anyway, exactly as before. And when a captured URL already
+   * exists — the normal single-task case — it returns immediately,
+   * so those runs do not get slower.
+   */
+  async _awaitTileMediaReady(task, tileIndexHint, isImage, captureKey, n) {
+    try {
+      if (isImage) return; // readiness primes <video> media; image runs keep today's flow
+      if (!task || task.mediaSaved) return;
+      if (!this.page || this.page.isClosed()) return;
+      // A link is already in hand from somewhere — skip the wait.
+      if (task.backendVideoUrl || task.completedVideoUrl) return;
+      if (captureKey && this.netCapture) {
+        let bound = null;
+        try { bound = this.netCapture.urlForKey(captureKey); } catch (e) {}
+        if (bound && bound.url) return;
+        if (this._earlyBackend && this._earlyBackend.has(captureKey)) return;
+      }
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (idx < 0) return; // tile not locatable — the strategies report it, as today
+      const WAIT_MS = 25000;
+      const startedAt = Date.now();
+      this.log(`[Prompt #${n}] The tile's video has not loaded on the page yet — bringing it into view and waiting for its link before trying the download routes…`, 'info');
+      let ready = false;
+      let viaReady = '';
+      while (Date.now() - startedAt < WAIT_MS) {
+        // Prime the tile: scroll into view, hover, muted play. The
+        // player fetching its media is what makes the network
+        // capture see (and bind) this task's URL — and what makes
+        // the tile element itself report a currentSrc.
+        try {
+          await this.page.evaluate((tileIdx) => {
+            const containers = document.querySelectorAll('flow-grid-tile-container');
+            const target = containers[tileIdx] || null;
+            if (!target) return;
+            try { target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+            try {
+              target.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+              target.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+            } catch (e) {}
+            const vid = target.querySelector('video');
+            if (vid) {
+              try { vid.muted = true; } catch (e) {}
+              try { const p = vid.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+            }
+          }, idx);
+        } catch (e) {}
+        if (captureKey && this.netCapture) {
+          let bound = null;
+          try { bound = this.netCapture.urlForKey(captureKey); } catch (e) {}
+          if (bound && bound.url) { ready = true; viaReady = 'the backend link was bound'; break; }
+        }
+        const got = await this._extractTileMediaUrlDetailed(task, idx, false);
+        if (got && got.url) { ready = true; viaReady = `the tile reports its link (${got.via})`; break; }
+        await sleep(1000);
+      }
+      const waitedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
+      if (ready) {
+        this.log(`[Prompt #${n}] The tile's video link is ready (${viaReady}, after ~${waitedSec}s) — downloading now.`, 'success');
+      } else {
+        this.log(`[Prompt #${n}] The tile's video link did not appear within ${Math.round(WAIT_MS / 1000)}s — trying the download routes anyway.`, 'warn');
+      }
+    } catch (e) {
+      // Readiness is a primer, never a gate: any failure just means
+      // the strategies run exactly as they did before v2.41.0.
+    }
+  }
+
   async _downloadTaskMediaInner(task, downloadFolder, settings, tileIndexHint) {
     const attempts = [];
     task.downloadAttempts = attempts;
@@ -3931,6 +4041,14 @@ class FlowAutomationEngine {
     if (!fs.existsSync(downloadFolder)) {
       try { fs.mkdirSync(downloadFolder, { recursive: true }); } catch (e) {}
     }
+
+    // v2.41.0 (Fix list C, item 4): MEDIA READINESS first — on a busy
+    // multi-task page the tile's media may not have loaded yet, and
+    // every strategy below then fails for that one reason (proven
+    // from the 2026-10-27 Activity records). Bounded (~25s) inside
+    // this round's 120s guard; skipped entirely when a captured URL
+    // already exists; never fails the round.
+    await this._awaitTileMediaReady(task, tileIndexHint, isImage, captureKey, n);
 
     // --- Ranneeti 1 (v2.8.0): BACKEND — network se bandha link ---
     try {

@@ -141,6 +141,55 @@ class AutomationBridge {
     }
   }
 
+  /// v2.41.0 (Fix list C, item 3): shut the Node engine down FOR REAL
+  /// before an update install. The engine is this app's child
+  /// process, and dispose() below was the ONLY place it ever got
+  /// killed — the update path never runs dispose (it exit()s
+  /// directly), so the engine used to outlive the app: on Windows a
+  /// child process is not ended when its parent exits. The orphan
+  /// kept both ports (bridge 48190 + MCP 48191) and held the
+  /// install folder's files, and because startEngine's health check
+  /// accepts ANY answer on 48190, the relaunched app simply reused
+  /// the orphan — the "updated" app ran the OLD engine (and its
+  /// cached APP_VERSION) forever. Sequence here: ask the engine to
+  /// close itself cleanly (it stops both of its servers), kill the
+  /// child as the guarantee, then WAIT until the health endpoint
+  /// stops answering — positive proof the ports are free before
+  /// any installer runs. Returns whether the shutdown was
+  /// confirmed; the caller logs the result and proceeds either way.
+  Future<bool> shutdownEngineForUpdate() async {
+    try {
+      await http
+          .post(Uri.parse('$baseUrl/api/engine/shutdown'))
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {
+      // The reply can die together with the engine — that is the
+      // expected outcome here, not an error.
+    }
+    _nodeProcess?.kill();
+    for (var i = 0; i < 40; i++) {
+      if (!await checkHealth()) return true;
+      await Future.delayed(const Duration(milliseconds: 250));
+    }
+    return !await checkHealth();
+  }
+
+  /// v2.41.0 (Fix list C, item 3): record one app-side step (an
+  /// update attempt, say) in the engine's Activity store, so it
+  /// sits in the same record as everything else. Best-effort: a
+  /// failure here must never block the action being logged.
+  Future<void> logActivity(String message, String level) async {
+    try {
+      await http
+          .post(
+            Uri.parse('$baseUrl/api/activity/log'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'message': message, 'level': level}),
+          )
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {}
+  }
+
   /// Maps one raw account JSON object from the engine to a GoogleAccount,
   /// preserving the REAL status and credits the engine reported.
   /// (v2.22.0 fix: the old code forced every account to status=ready and

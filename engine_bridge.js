@@ -167,7 +167,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.40.0';
+const APP_VERSION = '2.41.0';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -1035,6 +1035,50 @@ async function startBridge() {
         return sendJson(200, { ok: true, path: full });
       }
 
+      // v2.41.0 (Fix list C, item 2): return one output file's BYTES
+      // (base64) so the MCP connector can fetch a generated video
+      // off this PC. Same strict confinement as /api/open-file —
+      // resolveOutputRef accepts only a bare file name or one
+      // project-qualified "Project/name" reference inside the
+      // outputs base folder, so traversal, absolute paths and drive
+      // switches can never resolve. A hard 64 MB cap refuses
+      // oversized files with a clear error — data is never
+      // truncated.
+      if (pathname === '/api/output-file-content' && req.method === 'POST') {
+        const body = await readBody();
+        const full = resolveOutputRef(body.name);
+        if (!full) {
+          return sendJson(404, { ok: false, error: 'not found' });
+        }
+        let st;
+        try { st = fs.statSync(full); } catch (e) {
+          return sendJson(404, { ok: false, error: 'not found' });
+        }
+        const CAP_BYTES = 64 * 1024 * 1024;
+        if (st.size > CAP_BYTES) {
+          return sendJson(200, {
+            ok: false,
+            error: `This file is ${(st.size / (1024 * 1024)).toFixed(1)} MB — over the 64 MB download cap, so it was not sent (nothing is ever truncated). Open it from the output folder on this PC instead.`,
+          });
+        }
+        const mimeByExt = { '.mp4': 'video/mp4', '.mov': 'video/quicktime', '.webm': 'video/webm' };
+        let data;
+        try { data = fs.readFileSync(full); } catch (e) {
+          return sendJson(404, { ok: false, error: 'not found' });
+        }
+        // Report the name in the same base-relative form
+        // /api/output-files uses ("Project/name" or a bare name).
+        let rel = path.relative(outputBaseDir(), full).split(path.sep).join('/');
+        if (!rel || rel.startsWith('..')) rel = path.basename(full);
+        return sendJson(200, {
+          ok: true,
+          name: rel,
+          sizeBytes: st.size,
+          mime: mimeByExt[path.extname(full).toLowerCase()] || 'application/octet-stream',
+          dataBase64: data.toString('base64'),
+        });
+      }
+
       if (pathname === '/api/open-output-folder' && req.method === 'POST') {
         // The OUTPUT folder is the tree root (the base) — after a
         // project run 'download_folder' points into that project's
@@ -1072,11 +1116,16 @@ async function startBridge() {
           return sendJson(400, { ok: false, error: 'The FlowStudio app screen is not connected — open FlowStudio on its main screen, then try again.' });
         }
         const tag = typeof body.tag === 'string' ? body.tag.trim() : '';
+        // v2.41.0 (Fix list C, item 1): a project rides along so the
+        // app can set its Project field from it before the run starts
+        // (lib/main.dart handles it beside the tag). Absent/empty
+        // leaves the app's field exactly as it was.
+        const project = typeof body.project === 'string' ? body.project.trim() : '';
         broadcastEvent('automation-log', {
           message: `🔌 MCP • Muse started a run from the app screen (${prompts.length} prompts)`,
           level: 'info',
         });
-        broadcastEvent('mcp-ui-generate-request', { prompts, tag });
+        broadcastEvent('mcp-ui-generate-request', { prompts, tag, project });
         return sendJson(200, { ok: true, started: true, prompts: prompts.length });
       }
 
@@ -1316,6 +1365,46 @@ async function startBridge() {
           broadcastEvent('automation-log', { message: 'Generation stopped.', level: 'warning' });
         }
         return sendJson(200, { ok: true });
+      }
+
+      // v2.41.0 (Fix list C, item 3): let the app record one of ITS
+      // OWN steps (an app update, say) into the same Activity store
+      // the engine writes to, so the record survives in one place.
+      // Category is pinned to 'system' — this route exists for
+      // app-side lifecycle events, not generation bookkeeping.
+      if (pathname === '/api/activity/log' && req.method === 'POST') {
+        const body = await readBody();
+        const message = typeof body.message === 'string' ? body.message.trim() : '';
+        if (!message) {
+          return sendJson(400, { ok: false, error: 'message is required' });
+        }
+        const level = ['info', 'success', 'warn', 'warning', 'error'].includes(body.level) ? body.level : 'info';
+        try { recordActivity({ message, category: 'system', level }); } catch (e) {}
+        return sendJson(200, { ok: true });
+      }
+
+      // v2.41.0 (Fix list C, item 3): clean engine shutdown, called
+      // by the app right before it installs an update. This process
+      // hosts BOTH the bridge API and the MCP server, and it is the
+      // Flutter app's child — a child the app historically never
+      // stopped on its update path (it exit()ed directly, and
+      // dispose(), the only engine kill, never ran). On Windows the
+      // child then outlived the app, kept both ports, and held the
+      // install folder's files against the Inno installer — the
+      // relaunched app's health check was answered by the OLD
+      // process, so every in-app update "came back" on the old
+      // version. Here the engine closes itself properly; the app
+      // still kills the child as a guarantee and waits for the
+      // health endpoint to stop answering before installing.
+      if (pathname === '/api/engine/shutdown' && req.method === 'POST') {
+        sendJson(200, { ok: true, note: 'Engine shutting down.' });
+        setTimeout(() => {
+          try { recordActivity({ message: 'Engine shutting down for an app update.', category: 'system', level: 'info' }); } catch (e) {}
+          try { mcp.stopMcpServer(); } catch (e) {}
+          try { server.close(); } catch (e) {}
+          process.exit(0);
+        }, 200);
+        return;
       }
 
       // 10. Recent Activity & Logs

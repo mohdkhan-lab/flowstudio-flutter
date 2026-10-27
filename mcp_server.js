@@ -22,7 +22,7 @@ const os = require('os');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.40.0';
+const SERVER_VERSION = '2.41.0';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -221,6 +221,7 @@ const TOOLS = [
         quality: { type: 'string', description: "e.g. '720p', '1080p'" },
         parallelBrowsers: { type: 'number', description: 'How many accounts work in parallel (1-4)' },
         tag: { type: 'string', description: 'Optional tag used as the file name' },
+        project: { type: 'string', description: 'Optional project name — the videos save into that project\'s own folder inside the output folder, exactly like a project typed into the app' },
       },
       required: ['prompts'],
     },
@@ -228,7 +229,7 @@ const TOOLS = [
       const prompts = Array.isArray(args.prompts) ? args.prompts.filter((p) => typeof p === 'string' && p.trim()) : [];
       if (prompts.length === 0) throw new Error('prompts must be a non-empty array of strings');
       const body = { prompts };
-      for (const k of ['model', 'duration', 'aspectRatio', 'quality', 'tag']) {
+      for (const k of ['model', 'duration', 'aspectRatio', 'quality', 'tag', 'project']) {
         if (typeof args[k] === 'string' && args[k]) body[k] = args[k];
       }
       if (Number(args.parallelBrowsers) > 0) body.parallelBrowsers = Math.floor(Number(args.parallelBrowsers));
@@ -245,12 +246,13 @@ const TOOLS = [
     // active or when the app screen is not connected; there is no
     // silent fallback to the direct engine route.
     name: 'flowstudio_generate_in_app',
-    description: 'Start a video generation run inside the FlowStudio app\'s own screen: the prompts appear in the app\'s Prompts box and the run starts exactly as if the user pressed the app\'s Generate button, so the app\'s Progress section shows the run live on their screen. The FlowStudio app must be open on its main screen. This spends Flow credits like a normal run. Use flowstudio_generate instead when nobody needs to watch the app screen.',
+    description: 'Start a video generation run inside the FlowStudio app\'s own screen: the prompts appear in the app\'s Prompts box and the run starts exactly as if the user pressed the app\'s Generate button, so the app\'s Progress section shows the run live on their screen. A project name, when given, becomes the app\'s current Project field value before the run starts, so the videos save into that project\'s folder. The FlowStudio app must be open on its main screen. This spends Flow credits like a normal run. Use flowstudio_generate instead when nobody needs to watch the app screen.',
     inputSchema: {
       type: 'object',
       properties: {
         prompts: { type: 'array', items: { type: 'string' }, description: 'One prompt per video' },
         tag: { type: 'string', description: 'Optional tag — becomes the app\'s selected TAG (used as the file name)' },
+        project: { type: 'string', description: 'Optional project name — becomes the app\'s current Project field value before the run starts' },
       },
       required: ['prompts'],
     },
@@ -259,6 +261,7 @@ const TOOLS = [
       if (prompts.length === 0) throw new Error('prompts must be a non-empty array of strings');
       const body = { prompts };
       if (typeof args.tag === 'string' && args.tag) body.tag = args.tag;
+      if (typeof args.project === 'string' && args.project) body.project = args.project;
       return bridgeCall('POST', '/api/generation/start-ui', body);
     },
   },
@@ -541,6 +544,27 @@ const TOOLS = [
     run: async (args) => {
       if (typeof args.name !== 'string' || !args.name) throw new Error('name must be a non-empty file name');
       return bridgeCall('POST', '/api/open-file', { name: args.name });
+    },
+  },
+  {
+    // v2.41.0 (Fix list C, item 2): fetch one generated video's BYTES
+    // off this PC, so a finished video can reach the caller without
+    // anyone moving files by hand (the Ep11 takes sat in Downloads
+    // waiting for exactly this). The bridge resolves the name with
+    // the same confined resolver as open-file (bare name or one
+    // project-qualified "Project/name" reference, never a path) and
+    // enforces the 64 MB cap — oversized files come back as a clear
+    // {ok:false} error, never as truncated data.
+    name: 'flowstudio_download_output',
+    description: 'Download one generated video file from this PC as base64 (returns {ok, name, sizeBytes, mime, dataBase64}). The name must come from flowstudio_list_outputs — a bare file name or its project-qualified "rel" form (e.g. "My Project/clip.mp4"). Files over 64 MB are refused with an error (nothing is truncated); a missing file returns {ok:false, error:"not found"}.',
+    inputSchema: {
+      type: 'object',
+      properties: { name: { type: 'string', description: 'File name from flowstudio_list_outputs — bare name or project-qualified rel path' } },
+      required: ['name'],
+    },
+    run: async (args) => {
+      if (typeof args.name !== 'string' || !args.name) throw new Error('name must be a non-empty file name from flowstudio_list_outputs');
+      return bridgeCall('POST', '/api/output-file-content', { name: args.name });
     },
   },
 ];

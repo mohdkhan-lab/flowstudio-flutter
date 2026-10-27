@@ -544,6 +544,11 @@ class SettingsProvider with ChangeNotifier {
         throw 'The downloaded file looks incomplete';
       }
       _downloadedSetupPath = file.path;
+      // v2.41.0 (Fix list C, item 3): every update attempt leaves a
+      // paper trail in the persistent update log (see
+      // _logUpdateStep) — path + size here, install steps below.
+      await _logUpdateStep(
+          'download complete: $_latestVersion — $received bytes at ${file.path}');
       _updateStatusMessage =
           'Download complete ($_latestVersion, ${updateSizeLabel.isNotEmpty ? updateSizeLabel : '${(received / (1024 * 1024)).toStringAsFixed(1)} MB'}). Press "Install update" — the app will close and the new version will install itself.';
     } catch (e) {
@@ -556,35 +561,169 @@ class SettingsProvider with ChangeNotifier {
     }
   }
 
+  /// v2.41.0 (Fix list C, item 3): the persistent update log — one
+  /// line per step of every update attempt, in the app's own data
+  /// folder (beside the engine database; the installer never touches
+  /// it), so a failed update can be diagnosed from the record
+  /// instead of guesswork. Best-effort: a logging failure must never
+  /// block an update.
+  Future<File?> _updateLogFile() async {
+    try {
+      final exeDir = File(Platform.resolvedExecutable).parent.path;
+      final dir = Directory('$exeDir${Platform.pathSeparator}data');
+      if (!await dir.exists()) await dir.create(recursive: true);
+      return File('${dir.path}${Platform.pathSeparator}update.log');
+    } catch (_) {
+      try {
+        return File(
+            '${Directory.systemTemp.path}${Platform.pathSeparator}fslite_update.log');
+      } catch (_) {
+        return null;
+      }
+    }
+  }
+
+  Future<void> _logUpdateStep(String step) async {
+    try {
+      final f = await _updateLogFile();
+      if (f == null) return;
+      await f.writeAsString(
+        '${DateTime.now().toIso8601String()}  $step\n',
+        mode: FileMode.append,
+      );
+    } catch (_) {}
+  }
+
+  /// v2.41.0 (Fix list C, item 3): write + launch a tiny detached
+  /// PowerShell waiter. It waits until THIS app process has exited
+  /// (so flutter_flow.exe itself is unlocked too), then runs the
+  /// Setup silently and appends the Setup's exit code to the update
+  /// log. Returns false when the waiter could not be created or
+  /// launched — the caller then falls back to a direct launch.
+  Future<bool> _startInstallerWaiter(String setupPath) async {
+    try {
+      final logFile = await _updateLogFile();
+      if (logFile == null) return false;
+      final dir = await Directory.systemTemp.createTemp('fslite_waiter');
+      final script =
+          File('${dir.path}${Platform.pathSeparator}install_waiter.ps1');
+      String psq(String s) => s.replaceAll("'", "''");
+      final ps = '''
+\$targetPid = $pid
+\$setupPath = '${psq(setupPath)}'
+\$logPath = '${psq(logFile.path)}'
+function Write-UpdateLog([string]\$m) { try { Add-Content -LiteralPath \$logPath -Value ((Get-Date -Format 'yyyy-MM-ddTHH:mm:ss') + '  waiter: ' + \$m) } catch {} }
+Write-UpdateLog ('waiting for the app process ' + \$targetPid + ' to exit')
+\$deadline = (Get-Date).AddSeconds(120)
+while ((Get-Date) -lt \$deadline) {
+  if (-not (Get-Process -Id \$targetPid -ErrorAction SilentlyContinue)) { break }
+  Start-Sleep -Milliseconds 400
+}
+Start-Sleep -Seconds 1
+Write-UpdateLog 'starting the Setup'
+try {
+  \$proc = Start-Process -FilePath \$setupPath -ArgumentList '/SILENT' -Wait -PassThru
+  Write-UpdateLog ('Setup finished with exit code ' + \$proc.ExitCode)
+} catch {
+  Write-UpdateLog ('Setup could not be started: ' + \$_.Exception.Message)
+}
+''';
+      await script.writeAsString(ps);
+      await Process.start(
+        'powershell.exe',
+        [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-WindowStyle',
+          'Hidden',
+          '-File',
+          script.path,
+        ],
+        mode: ProcessStartMode.detached,
+      );
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// v2.23.0: run the downloaded Setup silently and close this app so
-  /// the installer can replace its files. Accounts and settings live in
-  /// %APPDATA% and are not touched by the installer.
+  /// the installer can replace its files. Accounts and settings live
+  /// in %APPDATA% and are not touched by the installer.
+  ///
+  /// v2.41.0 (Fix list C, item 3): this used to start the Setup and
+  /// exit() 1.5s later WITHOUT ever stopping the Node engine — this
+  /// app's own child process. The only engine kill in the app is
+  /// dispose(), and exit() runs no dispose. On Windows a child is
+  /// not ended when its parent exits, so the engine stayed alive
+  /// holding the bridge/MCP ports AND the install folder's files:
+  /// the installer could not reliably replace locked files, and the
+  /// relaunched app's health check was answered by the OLD engine
+  /// process — the update "came back" on the old version (5 failed
+  /// in-app installs on 2026-10-27; a hand-run Setup worked because
+  /// the app was fully closed by then). Now: log the attempt, stop
+  /// the engine and PROVE it is down (ports free), hand the Setup
+  /// to a detached waiter that starts it only after this process
+  /// has exited, and record every step in the update log.
   Future<void> installDownloadedUpdate() async {
     if (_downloadedSetupPath.isEmpty) return;
     _updateStatusMessage = 'Installing $_latestVersion — the app will close now...';
     notifyListeners();
+
+    final setupPath = _downloadedSetupPath;
+    await _logUpdateStep(
+        'install requested: ${_settings.currentVersion} -> $_latestVersion; setup: $setupPath');
+    await AutomationBridge.instance.logActivity(
+      'Update install started: ${_settings.currentVersion} -> $_latestVersion',
+      'info',
+    );
+
+    final engineDown =
+        await AutomationBridge.instance.shutdownEngineForUpdate();
+    await _logUpdateStep(engineDown
+        ? 'engine shutdown confirmed — ports free'
+        : 'engine shutdown could NOT be confirmed — proceeding anyway');
+
+    var launched = false;
     try {
-      await Process.start(
-        _downloadedSetupPath,
-        ['/SILENT'],
-        mode: ProcessStartMode.detached,
-      );
-    } catch (_) {
+      launched = await _startInstallerWaiter(setupPath);
+    } catch (_) {}
+    if (launched) {
+      await _logUpdateStep('Setup handed to the detached waiter');
+    } else {
+      // Fallback: the pre-v2.41.0 direct launch — still better
+      // than not installing at all.
       try {
         await Process.start(
-          _downloadedSetupPath,
-          [],
+          setupPath,
+          ['/SILENT'],
           mode: ProcessStartMode.detached,
-          runInShell: true,
         );
+        launched = true;
+        await _logUpdateStep('waiter unavailable — Setup launched directly (fallback)');
       } catch (_) {
-        _updateStatusMessage =
-            'The installer could not be started. The Setup file is at: $_downloadedSetupPath';
-        notifyListeners();
-        return;
+        try {
+          await Process.start(
+            setupPath,
+            [],
+            mode: ProcessStartMode.detached,
+            runInShell: true,
+          );
+          launched = true;
+          await _logUpdateStep('waiter unavailable — Setup launched via shell (fallback)');
+        } catch (_) {}
       }
     }
-    await Future.delayed(const Duration(milliseconds: 1500));
+    if (!launched) {
+      _updateStatusMessage =
+          'The installer could not be started. The Setup file is at: $setupPath';
+      await _logUpdateStep('installer could not be started at all');
+      notifyListeners();
+      return;
+    }
+    await _logUpdateStep('app exiting so the installer can replace its files');
+    await Future.delayed(const Duration(milliseconds: 400));
     exit(0);
   }
 

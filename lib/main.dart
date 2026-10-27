@@ -149,9 +149,12 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
   /// box's own text state, and the join is the blank-line join
   /// appendPrompts uses (Bulk mode parses blank-line-separated
   /// blocks; Agent mode takes the whole text as one prompt, exactly
-  /// as a paste would). A sent tag becomes the selected TAG, and
-  /// the run starts through the very handler the Generate button
-  /// invokes — no duplicated generation logic anywhere.
+  /// as a paste would). A sent tag becomes the selected TAG, a sent
+  /// project becomes the Project field's value (through the same
+  /// setter the field itself uses, so the run saves into that
+  /// project's folder and History groups it there), and the run
+  /// starts through the very handler the Generate button invokes —
+  /// no duplicated generation logic anywhere.
   void _handleMcpUiGenerateRequest(Map<String, dynamic> data) {
     if (!mounted) return;
     final raw = data['prompts'];
@@ -167,6 +170,12 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
     final tag = data['tag']?.toString().trim() ?? '';
     if (tag.isNotEmpty) {
       generator.setSelectedTag(tag);
+    }
+    // v2.41.0 (Fix list C, item 1): an absent/empty project leaves
+    // the field exactly as the user left it.
+    final project = data['project']?.toString().trim() ?? '';
+    if (project.isNotEmpty) {
+      generator.setProjectName(project);
     }
     generator.startGeneration(
       accounts: context.read<AccountsProvider>(),

@@ -13,50 +13,63 @@ import 'package:flutter_flow/widgets/prompts_editor.dart';
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
 
-  group('P10 — credit estimate table', () {
-    test('REQUIRED: Omni Flash · 4s · 2 prompts → "est. 8 credits"', () {
+  group('P10 — credit estimate table (REAL rates, owner-verified 2026-10-27)', () {
+    test('REQUIRED: Omni Flash · 4s · 360p · 2 prompts → "est. 8 credits"', () {
       expect(
         creditEstimateText(
-            model: 'Omni Flash', duration: '4s', promptCount: 2),
+            model: 'Omni Flash', duration: '4s', quality: '360p', promptCount: 2),
         'est. 8 credits',
       );
     });
 
-    test('Omni Flash bills 1 credit per second', () {
-      expect(creditCostPerVideo('Omni Flash', '4s'), 4);
-      expect(creditCostPerVideo('Omni Flash', '6s'), 6);
-      expect(creditCostPerVideo('Omni Flash', '8s'), 8);
-      expect(creditCostPerVideo('Omni Flash', '10s'), 10);
+    test('Omni Flash 360p row (owner panel evidence)', () {
+      expect(creditCostPerVideo('Omni Flash', '4s', '360p'), 4);
+      expect(creditCostPerVideo('Omni Flash', '6s', '360p'), 5);
+      expect(creditCostPerVideo('Omni Flash', '8s', '360p'), 6);
+      expect(creditCostPerVideo('Omni Flash', '10s', '360p'), 7);
+    });
+
+    test('Omni Flash 720p row (owner panel evidence)', () {
+      expect(creditCostPerVideo('Omni Flash', '4s', '720p'), 7);
+      expect(creditCostPerVideo('Omni Flash', '6s', '720p'), 10);
+      expect(creditCostPerVideo('Omni Flash', '8s', '720p'), 12);
+      expect(creditCostPerVideo('Omni Flash', '10s', '720p'), 15);
+    });
+
+    test('1080p setting generates at 720p, so it bills the 720p row', () {
+      expect(generationResolution('1080p'), '720p');
+      expect(creditCostPerVideo('Omni Flash', '10s', '1080p'), 15);
     });
 
     test('display name "Omni 1.1 Flash" resolves to the same family', () {
-      expect(creditCostPerVideo('Omni 1.1 Flash', '4s'), 4);
+      expect(creditCostPerVideo('Omni 1.1 Flash', '4s', '360p'), 4);
     });
 
-    test('Veo 3.1 Fast · 10s · 3 prompts → "est. 90 credits"', () {
+    test('Veo 3.1 Fast is a flat 20 — Veo is always 8s, duration ignored', () {
       expect(
         creditEstimateText(
-            model: 'Veo 3.1 Fast', duration: '10s', promptCount: 3),
-        'est. 90 credits',
+            model: 'Veo 3.1 Fast', duration: '10s', quality: '720p', promptCount: 3),
+        'est. 60 credits',
       );
+      expect(creditCostPerVideo('Veo 3.1 Fast', '4s', '720p'), 20);
     });
 
-    test('Veo 3.1 Lite table', () {
-      expect(creditCostPerVideo('Veo 3.1 Lite', '4s'), 7);
-      expect(creditCostPerVideo('Veo 3.1 Lite', '8s'), 12);
+    test('Veo 3.1 Lite is a flat 10', () {
+      expect(creditCostPerVideo('Veo 3.1 Lite', '4s', '720p'), 10);
+      expect(creditCostPerVideo('Veo 3.1 Lite', '8s', '720p'), 10);
     });
 
     test('Veo 3.1 Quality is a flat 100 at any duration', () {
-      expect(creditCostPerVideo('Veo 3.1 Quality', '4s'), 100);
-      expect(creditCostPerVideo('Veo 3.1 Quality', '10s'), 100);
+      expect(creditCostPerVideo('Veo 3.1 Quality', '4s', '720p'), 100);
+      expect(creditCostPerVideo('Veo 3.1 Quality', '10s', '720p'), 100);
     });
 
     test('unevidenced combos return NO estimate (never a fake number)', () {
-      expect(creditCostPerVideo('Omni Flash', '12s'), isNull);
-      expect(creditCostPerVideo('Some Future Model', '4s'), isNull);
+      expect(creditCostPerVideo('Omni Flash', '12s', '360p'), isNull);
+      expect(creditCostPerVideo('Some Future Model', '4s', '360p'), isNull);
       expect(
         creditEstimateText(
-            model: 'Some Future Model', duration: '4s', promptCount: 5),
+            model: 'Some Future Model', duration: '4s', quality: '360p', promptCount: 5),
         isNull,
       );
     });
@@ -66,7 +79,7 @@ void main() {
       // zero-prompt edge instead: 0 prompts at a known rate is 0.
       expect(
         creditEstimateText(
-            model: 'Omni Flash', duration: '4s', promptCount: 0),
+            model: 'Omni Flash', duration: '4s', quality: '360p', promptCount: 0),
         'est. 0 credits',
       );
     });

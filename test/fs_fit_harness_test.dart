@@ -491,7 +491,13 @@ void main() {
     await tester.pumpWidget(app());
     await settleReal(1);
     expectNoException('Generate @ 950x650 before popup');
-    await tester.tap(find.text('+ Add Account'));
+    // (Fix list 2026-10-27, item 9): the sidebar Add Account
+    // button is ICON-ONLY now (its tooltip carries the name) —
+    // tap the add icon inside the sidebar.
+    await tester.tap(find.descendant(
+      of: find.byType(SidebarAccounts),
+      matching: find.byIcon(Icons.add),
+    ));
     await tester.pump(const Duration(milliseconds: 400));
     await settleReal(1);
     expectNoException('Add Account popup @ 950x650');

@@ -108,7 +108,18 @@ class SettingsProvider with ChangeNotifier {
         if (data['default_duration'] != null) _settings.duration = data['default_duration'].toString();
         if (data['default_aspect'] != null) _settings.aspectRatio = data['default_aspect'].toString();
         if (data['default_naming'] != null) _settings.namingPattern = data['default_naming'].toString();
-        if (data['download_folder'] != null) {
+        // (Fix list 2026-10-27, item 1): the engine records the
+        // BASE output folder ('download_base_folder') on every run
+        // start. After a project run 'download_folder' points INTO
+        // that project's subfolder — the base is what this app must
+        // keep calling the output folder (project runs join their
+        // name onto it, and History lists its whole tree), so the
+        // base wins whenever the engine has one recorded.
+        if (data['download_base_folder'] != null &&
+            data['download_base_folder'].toString().isNotEmpty) {
+          _settings.outputDirectory =
+              data['download_base_folder'].toString();
+        } else if (data['download_folder'] != null) {
           _settings.outputDirectory = data['download_folder'].toString();
         } else {
           // v2.30.0 (single source of truth): the engine has no
@@ -121,6 +132,7 @@ class SettingsProvider with ChangeNotifier {
           // persists the folder it used; this closes the gap for
           // installs that have not generated yet.)
           AutomationBridge.instance.saveSetting('download_folder', _settings.outputDirectory);
+          AutomationBridge.instance.saveSetting('download_base_folder', _settings.outputDirectory);
         }
         if (data['chrome_path'] != null) _settings.chromePath = data['chrome_path'].toString();
         // v2.22.0 fix: browser visibility is the engine's
@@ -322,6 +334,11 @@ class SettingsProvider with ChangeNotifier {
   void setOutputDirectory(String dir) {
     _settings.outputDirectory = dir;
     AutomationBridge.instance.saveSetting('download_folder', dir);
+    // The picked folder IS the base of the output tree (project
+    // subfolders live inside it) — keep the engine's base record
+    // in step, or History's project listing would root itself at
+    // the previous base.
+    AutomationBridge.instance.saveSetting('download_base_folder', dir);
     notifyListeners();
   }
 

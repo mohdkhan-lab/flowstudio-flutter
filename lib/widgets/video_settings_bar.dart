@@ -16,12 +16,6 @@ import '../services/credit_costs.dart';
 class VideoSettingsBar extends StatelessWidget {
   const VideoSettingsBar({super.key});
 
-  static const LinearGradient _blueGrad = LinearGradient(
-    colors: [Color(0xFF1A94FF), Color(0xFF0066D6)],
-    begin: Alignment.topCenter,
-    end: Alignment.bottomCenter,
-  );
-
   @override
   Widget build(BuildContext context) {
     final settingsProv = context.watch<SettingsProvider>();
@@ -203,7 +197,7 @@ class VideoSettingsBar extends StatelessWidget {
                   height: 38,
                   padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 20),
                   decoration: BoxDecoration(
-                    gradient: _blueGrad,
+                    gradient: AppTheme.accentGrad,
                     borderRadius: BorderRadius.circular(8),
                     boxShadow: const [
                       BoxShadow(

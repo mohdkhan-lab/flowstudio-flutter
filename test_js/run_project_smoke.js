@@ -74,7 +74,7 @@ async function main() {
   try {
     const status = await waitStatus();
     check('bridge boots', !!status, bridgeLog.slice(-400));
-    check('status version is 2.34.0', status && status.version === '2.34.0', JSON.stringify(status));
+    check('status version is 2.36.0', status && status.version === '2.36.0', JSON.stringify(status));
 
     const redoEarly = await req('POST', '/api/generation/redo-missing', {});
     check('redo before any run -> 400', redoEarly.status === 400, JSON.stringify(redoEarly.data));
@@ -138,10 +138,26 @@ async function main() {
     // project folder must be listed with origin "local" (no DB
     // record exists for it; nothing may fabricate one).
     fs.writeFileSync(path.join(projDir, 'stray-local.mp4'), 'not a real video');
+    // (Fix list 2026-10-27, item 1): a file in the BASE folder too —
+    // the listing must cover the whole tree (base + project
+    // subfolders) now that download_folder points INTO the project.
+    fs.writeFileSync(path.join(outDir, 'root-clip.mp4'), 'not a real video');
     const listing = await req('GET', '/api/output-files');
     const stray = (((listing.data || {}).files) || []).find(f => f.name === 'stray-local.mp4');
     check('output-files lists the stray file', !!stray, JSON.stringify(listing.data).slice(0, 300));
     check('stray file origin is local', !!stray && stray.origin === 'local', JSON.stringify(stray));
+    check('project file carries project + rel',
+      !!stray && stray.project === 'My Film' && stray.rel === 'My Film/stray-local.mp4',
+      JSON.stringify(stray));
+    const root = (((listing.data || {}).files) || []).find(f => f.name === 'root-clip.mp4');
+    check('output-files lists base-folder files too',
+      !!root && root.project === '' && root.rel === 'root-clip.mp4', JSON.stringify(root));
+    const rp = await req('POST', '/api/output-file-path', { name: 'My Film/stray-local.mp4' });
+    check('output-file-path resolves a project file',
+      rp.status === 200 && rp.data && rp.data.path === path.join(projDir, 'stray-local.mp4'),
+      JSON.stringify(rp.data));
+    const rpBad = await req('POST', '/api/output-file-path', { name: '../secret.mp4' });
+    check('output-file-path refuses traversal', rpBad.status === 404, JSON.stringify(rpBad.data));
 
     const redo = await req('POST', '/api/generation/redo-missing', { accountIds: [] });
     check('redo answers ok', redo.status === 200 && redo.data && redo.data.ok === true, JSON.stringify(redo.data));

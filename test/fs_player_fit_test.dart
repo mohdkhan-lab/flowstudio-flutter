@@ -89,6 +89,70 @@ void main() {
     });
   });
 
+  // (Fix list 2026-10-27, item 3): the dialog is now shown only
+  // AFTER its aspect has been probed (showInAppPlayer), and its
+  // area is the PlayerArea below. The regression being pinned:
+  // v2.34.0 showed the dialog FIRST, so its first visible frame
+  // was a fixed 420-wide loading card — a landscape-shaped box —
+  // and the dialog then reshaped when the dimensions landed (the
+  // owner's "opens long, then switches to short"). With a probed
+  // aspect, PlayerArea's very first frame must already be the
+  // shaped player, with NO loading card anywhere in the tree.
+  group('PlayerArea (fix list item 3: first frame is already shaped)', () {
+    Future<void> pumpArea(WidgetTester tester, double? aspect) async {
+      tester.view.physicalSize = const Size(1024, 700);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: Center(
+              child: PlayerArea(
+                aspect: aspect,
+                maxWidth: 660,
+                maxHeight: 480,
+                child: const ColoredBox(color: Colors.black),
+              ),
+            ),
+          ),
+        ),
+      );
+      // Exactly ONE pump: this is the first visible frame.
+      expect(tester.takeException(), isNull);
+    }
+
+    testWidgets('a probed 9:16 aspect renders the tall player on frame one',
+        (tester) async {
+      await pumpArea(tester, 9 / 16);
+      expect(find.byType(PlayerLoadingCard), findsNothing,
+          reason: 'a probed aspect must never show the loading card');
+      final box = tester.getSize(find.descendant(
+          of: find.byType(AdaptiveVideoArea),
+          matching: find.byType(ColoredBox)));
+      expect(box.width, closeTo(270, 0.01));
+      expect(box.height, closeTo(480, 0.01));
+    });
+
+    testWidgets('a probed 16:9 aspect renders the wide player on frame one',
+        (tester) async {
+      await pumpArea(tester, 16 / 9);
+      expect(find.byType(PlayerLoadingCard), findsNothing);
+      final box = tester.getSize(find.descendant(
+          of: find.byType(AdaptiveVideoArea),
+          matching: find.byType(ColoredBox)));
+      expect(box.width, closeTo(660, 0.01));
+      expect(box.height, closeTo(371.25, 0.01));
+    });
+
+    testWidgets('an unresolved aspect shows ONLY the neutral card',
+        (tester) async {
+      await pumpArea(tester, null);
+      expect(find.byType(PlayerLoadingCard), findsOneWidget);
+      expect(find.byType(AdaptiveVideoArea), findsNothing,
+          reason: 'no shaped player may exist before the aspect is known');
+    });
+  });
+
   group('AdaptiveVideoArea in a dialog at 1024x700 (FIT LAW)', () {
     // The dialog's own chrome math, mirrored from _PlayerDialog:
     // header ~42 + controls ~56 + the framework's dialog insets.

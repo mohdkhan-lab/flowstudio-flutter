@@ -60,5 +60,16 @@ eq('withOrigins: generated file', listing[0].origin, 'flow');
 eq('withOrigins: foreign file', listing[1].origin, 'local');
 eq('withOrigins: other fields preserved', listing[0].size, 10);
 
+// (Fix list 2026-10-27, item 1): project-grouped listing entries —
+// the path evidence must be compared inside the project subfolder,
+// not against a same-named file in the base folder.
+const projListing = withOrigins([
+  { name: 'Scene001.mp4', size: 30, mtime: 3, project: 'My Film' },
+  { name: 'holiday.mp4', size: 40, mtime: 4, project: 'My Film' },
+], dir, records);
+eq('withOrigins: project file path-matches its own record', projListing[0].origin, 'flow');
+eq('withOrigins: unknown project file -> local', projListing[1].origin, 'local');
+eq('withOrigins: project field preserved', projListing[0].project, 'My Film');
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 process.exit(failed === 0 ? 0 : 1);

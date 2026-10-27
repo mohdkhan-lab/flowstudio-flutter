@@ -439,36 +439,19 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             ],
           ),
 
-          const SizedBox(height: 6),
-
-          // v2.27.0 (design): status line from the REAL counts. (The
-          // "Only run live accounts" toggle that used to sit under this
-          // line moved to Settings → Automation.)
-          Center(
-            // Responsive pass: one line at every sidebar width — the
-            // full text scales down slightly in the compact sidebar
-            // instead of wrapping under the action grid.
-            child: FittedBox(
-              fit: BoxFit.scaleDown,
-              child: Text(
-                allAccounts.isEmpty
-                    ? 'No accounts yet'
-                    : '$liveCount Live · $checkingCount Checking · $failCount Fail — ready to generate',
-                maxLines: 1,
-                softWrap: false,
-                style: TextStyle(
-                  fontSize: 9.5,
-                  color: AppTheme.textFaint,
-                ),
-              ),
-            ),
-          ),
+          // (Fix list 2026-10-27, item 10): the live-counts status
+          // line that used to sit here ("N Live · N Checking · N
+          // Fail — ready to generate") is REMOVED on the owner's
+          // word — the filter boxes above already carry those
+          // counts. Nothing else read the line, so no code goes
+          // with it beyond the widget itself.
 
           const SizedBox(height: 8),
 
           // v2.29.0 (owner final): the sidebar BOTTOM BAR — one row
           // of two equal-width buttons, "⚙ Settings" on the LEFT
-          // and the blue "+ Add Account" on the RIGHT.
+          // and the Add Account button on the RIGHT (icon-only
+          // since fix list item 9).
           _buildBottomBar(context, isGenerate: isGenerate),
         ],
       ),
@@ -525,22 +508,12 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(color: AppTheme.borderSoft),
               ),
-              // One Text widget (two spans) so the label stays a
-              // single accessible/findable string: "+ Add Account".
-              child: Text.rich(
-                TextSpan(
-                  children: [
-                    TextSpan(
-                      text: '+ ',
-                      style: TextStyle(color: AppTheme.accentText),
-                    ),
-                    TextSpan(
-                      text: 'Add Account',
-                      style: TextStyle(color: AppTheme.textMain),
-                    ),
-                  ],
-                ),
-                style: const TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold),
+              // (Fix list 2026-10-27, item 9): ICON ONLY — the
+              // owner wants no text label on this button; the
+              // tooltip keeps its name discoverable.
+              child: Tooltip(
+                message: 'Add Account',
+                child: Icon(Icons.add, size: 16, color: AppTheme.accentText),
               ),
             ),
           ),
@@ -734,7 +707,6 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
   List<Map<String, dynamic>> _profiles = [];
   bool _loadingProfiles = true;
 
-  static const Color _blue = Color(0xFF0A84FF);
   static const List<Color> _cardPalette = [
     Color(0xFF0A84FF),
     Color(0xFF30D158),
@@ -812,7 +784,7 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
   // Route: Chrome Profiles — the design's card grid.
   Widget _buildProfilesTab(BuildContext context) {
     if (_loadingProfiles) {
-      return const Center(child: CircularProgressIndicator(color: _blue));
+      return Center(child: CircularProgressIndicator(color: AppTheme.accentGold));
     }
     final accounts = context.watch<AccountsProvider>().accounts;
 
@@ -881,16 +853,16 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
       },
       borderRadius: BorderRadius.circular(10),
       child: CustomPaint(
-        painter: _DashedBorderPainter(color: _blue.withValues(alpha: 0.7)),
+        painter: _DashedBorderPainter(color: AppTheme.accentGold.withValues(alpha: 0.7)),
         child: Container(
           decoration: BoxDecoration(
-            color: _blue.withValues(alpha: 0.07),
+            color: AppTheme.accentGold.withValues(alpha: 0.07),
             borderRadius: BorderRadius.circular(10),
           ),
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.add, size: 22, color: _blue),
+              Icon(Icons.add, size: 22, color: AppTheme.accentGold),
               const SizedBox(height: 4),
               Text('Add Account', style: TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: AppTheme.textMain)),
               const SizedBox(height: 2),
@@ -981,8 +953,8 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
                 if (context.mounted) Navigator.pop(context);
               },
               style: ElevatedButton.styleFrom(
-                backgroundColor: _blue,
-                foregroundColor: Colors.white,
+                backgroundColor: AppTheme.accentGold,
+                foregroundColor: AppTheme.onAccent,
                 padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
                 visualDensity: VisualDensity.compact,
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),

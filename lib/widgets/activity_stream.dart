@@ -64,7 +64,7 @@ class _ActivityStreamState extends State<ActivityStream> {
         generator.engineSpentToday ?? settingsProv.spentCreditsToday;
 
     // v2.29.1: live status-pill values (see the header's pill).
-    const amber = Color(0xFFF5B301);
+    final amber = AppTheme.activeGold;
     final pillBg = (generator.isRunning || generator.isPaused)
         ? amber.withValues(alpha: 0.15)
         : AppTheme.greenBg;
@@ -158,7 +158,7 @@ class _ActivityStreamState extends State<ActivityStream> {
                 onPressed: () => context.read<SettingsProvider>().setNavView('history'),
                 style: OutlinedButton.styleFrom(
                   foregroundColor: AppTheme.accentText,
-                  side: const BorderSide(color: Color(0x600A84FF)),
+                  side: BorderSide(color: AppTheme.accentGold.withValues(alpha: 0.38)),
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                   shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
                   visualDensity: VisualDensity.compact,

@@ -2844,35 +2844,59 @@ class FlowAutomationEngine {
   }
 
   /** Resolution wala menu aaye to uska sahi option click karo. */
-  async _nativePickResolution() {
-    const findOption = async () => {
+  async _nativePickResolution(quality) {
+    // (Fix list 2026-10-27, item 7): the Settings quality CHOOSES
+    // the menu item now. Before, the FIRST resolution-looking item
+    // was clicked whatever the setting said — a 1080p request could
+    // silently download the 360p preview whenever it was listed
+    // first. Flow's own model: the generated video downloads at
+    // 360p or 720p ("Original" is the file as generated), and 1080p
+    // is the enhance/upscale option in this same menu. When the
+    // menu does not offer the requested quality, the closest item
+    // is clicked and the substitution is LOGGED, never silent.
+    const want = String(quality || '720p').toLowerCase();
+    const wantTokens = want.includes('1080') ? ['1080p']
+      : want.includes('360') ? ['360p']
+      : ['720p', 'original'];
+    const findOptions = async () => {
       try {
         return await this.page.evaluate(() => {
           const menuItems = Array.from(document.querySelectorAll('.cdk-overlay-pane button, [role="menuitem"], .mat-mdc-menu-panel button'));
-          const origBtn = menuItems.find(b => {
+          const out = [];
+          for (const b of menuItems) {
             const t = (b.innerText || b.textContent || '').trim().toLowerCase();
             const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-            return t.includes('original') || t.includes('720p') || t.includes('1080p') || t.includes('360p') || aria.includes('original');
-          });
-          if (origBtn) {
-            const rect = origBtn.getBoundingClientRect();
+            if (!(t.includes('original') || t.includes('720p') || t.includes('1080p') || t.includes('360p') || aria.includes('original'))) continue;
+            const rect = b.getBoundingClientRect();
             if (rect.width > 0 && rect.height > 0) {
-              return { found: true, x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, text: (origBtn.innerText || origBtn.textContent || '').trim() };
+              out.push({ x: rect.x + rect.width / 2, y: rect.y + rect.height / 2, text: (b.innerText || b.textContent || '').trim() });
             }
           }
-          return { found: false };
+          return out;
         });
       } catch (e) {
-        return { found: false };
+        return [];
       }
     };
-    let optCoords = { found: false };
+    const pickFrom = (options) => {
+      for (const tok of wantTokens) {
+        const hit = options.find(o => o.text.toLowerCase().includes(tok));
+        if (hit) return { opt: hit, exact: true };
+      }
+      return options.length ? { opt: options[0], exact: false } : null;
+    };
+    let options = [];
     for (let r = 0; r < 6; r++) {
-      optCoords = await findOption();
-      if (optCoords.found) break;
+      options = await findOptions();
+      if (options.length) break;
       await sleep(400);
     }
-    if (optCoords.found) {
+    const picked = pickFrom(options);
+    if (picked) {
+      const optCoords = picked.opt;
+      if (!picked.exact) {
+        this.log(`Flow's download menu did not offer ${want.toUpperCase()} — downloading "${optCoords.text}" instead (the closest it offered).`, 'warn');
+      }
       this.log(`Selecting the resolution: "${optCoords.text}"…`, 'info');
       let clickedAt = Date.now();
       await this.page.mouse.click(optCoords.x, optCoords.y);
@@ -2884,11 +2908,12 @@ class FlowAutomationEngine {
       // click karo (kul 3 koshish). Menu band = click lag gaya.
       for (let clickTry = 1; clickTry < 3; clickTry++) {
         await sleep(900);
-        const still = await findOption();
-        if (!still.found) break;
+        const still = await findOptions();
+        if (!still.length) break;
         this.log('The resolution menu stayed open after the click — clicking the option again with fresh coordinates…', 'warn');
+        const again = pickFrom(still);
         clickedAt = Date.now();
-        await this.page.mouse.click(still.x, still.y);
+        await this.page.mouse.click(again.opt.x, again.opt.y);
       }
       return { found: true, clickedAt };
     }
@@ -3175,7 +3200,7 @@ class FlowAutomationEngine {
     this.log(`[Prompt #${n}] Found "Download media" on the editor's top bar (${ctl.how}) — clicking…`, 'info');
     const clickTime = Date.now();
     await this.page.mouse.click(ctl.x, ctl.y);
-    const res = await this._nativePickResolution();
+    const res = await this._nativePickResolution(settings && settings.quality);
     // v2.30.4: editor route ka file-intezaar 90s → 40s. Ye rasta owner
     // ki machine par aaj tak kabhi file nahi laya (v2.8.0, v2.30.3 ke
     // runs) — click lage to 360p ki chhoti file chand seconds me aa
@@ -3313,7 +3338,7 @@ class FlowAutomationEngine {
     this.log(`[Prompt #${n}] Found the Download item inside the menu ("${item.how}") — clicking…`, 'info');
     const clickTime = Date.now();
     await this.page.mouse.click(item.x, item.y);
-    const res = await this._nativePickResolution();
+    const res = await this._nativePickResolution(settings && settings.quality);
     const ok = await this._nativeAwaitAndSave(task, prep, res.clickedAt || clickTime, 90000, downloadFolder, settings);
     attempts.push({ strategy: 'native-menu', ok, note: ok ? 'the file came from the menu\'s Download item' : 'the menu\'s Download item was clicked, but no file arrived' });
     if (!ok) this.log(`[Prompt #${n}] No file came from the menu route either.`, 'warn');

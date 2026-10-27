@@ -166,7 +166,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.34.1';
+const APP_VERSION = '2.36.0';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -426,6 +426,11 @@ async function startBridge() {
           'default_naming', 'default_quality', 'custom_tags', 'download_folder', 'chrome_path',
           'browser_background', 'show_browsers', 'preview_autoplay', 'auto_verify_start', 'auto_check_updates',
           'social_links', 'live_only_accounts', 'history_cleared',
+          // (Fix list 2026-10-27, items 1+2): the recorded BASE
+          // output folder (History's tree root + the app's output
+          // folder truth) and the History page's own list of video
+          // files the owner picked from elsewhere on his PC.
+          'download_base_folder', 'history_local_files',
           // v2.29.0: the sidebar's source-numbering aliases
           // (account id -> { alias, source }) and the persisted
           // parallel-browsers count.
@@ -891,24 +896,90 @@ async function startBridge() {
       // it actually saves into (see /api/generation/start), so this
       // resolver always names the folder the last run used.
       const outputDir = () => dbService.getSetting('download_folder', path.join(process.env.FLOW_LITE_DATA_DIR, 'downloads'));
+      // (Fix list 2026-10-27, item 1): the BASE output folder — the
+      // root of the output tree. 'download_folder' moves into the
+      // latest run's project subfolder (see /api/generation/start),
+      // so the base is recorded separately on every start; installs
+      // that predate the key fall back to the current folder, which
+      // is exactly what History listed before projects existed.
+      const outputBaseDir = () => dbService.getSetting('download_base_folder', '') || outputDir();
       const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm']);
 
+      // (Fix list 2026-10-27, item 1): resolve a caller-supplied
+      // file reference to an absolute path inside the output tree.
+      // Accepts a bare file NAME (the base folder — or, for names
+      // that only exist there, the legacy current folder) or ONE
+      // project-qualified form "Project/file.mp4": the project
+      // segment must survive the project sanitiser unchanged (so it
+      // can only ever name a direct child folder of the base) and
+      // the file segment is basename-confined. Anything else —
+      // deeper paths, traversal, non-video names — returns null.
+      const resolveOutputRef = (raw) => {
+        try {
+          const base = outputBaseDir();
+          const parts = String(raw || '').split(/[\\/]+/).filter(p => p && p !== '.');
+          let dir = null;
+          let name = '';
+          if (parts.length === 1) {
+            name = parts[0];
+            dir = fs.existsSync(path.join(base, name)) ? base : outputDir();
+          } else if (parts.length === 2) {
+            const proj = projectFolder.sanitizeProjectName(parts[0]);
+            if (!proj || proj !== parts[0]) return null;
+            dir = path.join(base, proj);
+            name = parts[1];
+          } else {
+            return null;
+          }
+          name = path.basename(name);
+          if (!name || !VIDEO_EXTS.has(path.extname(name).toLowerCase())) return null;
+          const full = path.join(dir, name);
+          return (fs.existsSync(full) && fs.statSync(full).isFile()) ? full : null;
+        } catch (e) { return null; }
+      };
+
       if (pathname === '/api/output-files' && req.method === 'GET') {
-        const dir = outputDir();
+        const dir = outputBaseDir();
         let files = [];
         try {
           if (fs.existsSync(dir)) {
-            files = fs.readdirSync(dir)
-              .filter(name => VIDEO_EXTS.has(path.extname(name).toLowerCase()))
-              .map(name => {
+            // (Fix list 2026-10-27, item 1): the listing covers the
+            // WHOLE output tree — the base folder's own videos
+            // (project '') plus every immediate subfolder's videos
+            // with their project name — so History can group by
+            // project. Before, only ONE folder was listed (the
+            // base, or whichever project subfolder 'download_folder'
+            // currently pointed into) and the rest of the tree was
+            // invisible on the History page. Each file carries
+            // `project` ('' for base files) and `rel`, the
+            // base-relative reference the path endpoints accept.
+            const scan = (folder, project) => {
+              let names = [];
+              try { names = fs.readdirSync(folder); } catch (e) { return; }
+              for (const name of names) {
+                if (!VIDEO_EXTS.has(path.extname(name).toLowerCase())) continue;
                 try {
-                  const st = fs.statSync(path.join(dir, name));
-                  if (!st.isFile()) return null;
-                  return { name, size: st.size, mtime: st.mtimeMs };
-                } catch (e) { return null; }
-              })
-              .filter(Boolean)
-              .sort((a, b) => b.mtime - a.mtime);
+                  const st = fs.statSync(path.join(folder, name));
+                  if (!st.isFile()) continue;
+                  files.push({
+                    name,
+                    size: st.size,
+                    mtime: st.mtimeMs,
+                    project,
+                    rel: project ? `${project}/${name}` : name,
+                  });
+                } catch (e) {}
+              }
+            };
+            scan(dir, '');
+            let subdirs = [];
+            try {
+              subdirs = fs.readdirSync(dir, { withFileTypes: true })
+                .filter(d => d.isDirectory())
+                .map(d => d.name);
+            } catch (e) {}
+            for (const sub of subdirs) scan(path.join(dir, sub), sub);
+            files.sort((a, b) => b.mtime - a.mtime);
           }
         } catch (e) {}
         // v2.34.0 (Problem 7): every file carries its ORIGIN —
@@ -928,14 +999,11 @@ async function startBridge() {
 
       if (pathname === '/api/open-file' && req.method === 'POST') {
         const body = await readBody();
-        // Path-confined: only a bare file NAME inside the output
-        // folder can be opened — no separators, no traversal.
-        const name = path.basename(String(body.name || ''));
-        if (!name || !VIDEO_EXTS.has(path.extname(name).toLowerCase())) {
-          return sendJson(400, { ok: false, error: 'Invalid file name.' });
-        }
-        const full = path.join(outputDir(), name);
-        if (!fs.existsSync(full)) {
+        // Path-confined: a bare file NAME inside the output folder,
+        // or one project-qualified "Project/name" reference into
+        // the tree — no traversal (see resolveOutputRef).
+        const full = resolveOutputRef(body.name);
+        if (!full) {
           return sendJson(404, { ok: false, error: 'File not found in the output folder.' });
         }
         exec(`start "" "${full.replace(/"/g, '')}"`);
@@ -944,23 +1012,23 @@ async function startBridge() {
 
       // v2.29.0 (in-app player): resolve one output file's absolute
       // path so the app can play it INSIDE FlowStudio. Same strict
-      // confinement as /api/open-file — a bare file NAME inside the
-      // output folder only, never a path from the caller.
+      // confinement as /api/open-file — never an arbitrary path from
+      // the caller (bare names and project-qualified references
+      // only, see resolveOutputRef).
       if (pathname === '/api/output-file-path' && req.method === 'POST') {
         const body = await readBody();
-        const name = path.basename(String(body.name || ''));
-        if (!name || !VIDEO_EXTS.has(path.extname(name).toLowerCase())) {
-          return sendJson(400, { ok: false, error: 'Invalid file name.' });
-        }
-        const full = path.join(outputDir(), name);
-        if (!fs.existsSync(full)) {
+        const full = resolveOutputRef(body.name);
+        if (!full) {
           return sendJson(404, { ok: false, error: 'File not found in the output folder.' });
         }
         return sendJson(200, { ok: true, path: full });
       }
 
       if (pathname === '/api/open-output-folder' && req.method === 'POST') {
-        const dir = outputDir();
+        // The OUTPUT folder is the tree root (the base) — after a
+        // project run 'download_folder' points into that project's
+        // subfolder, which is not what this button promises.
+        const dir = outputBaseDir();
         try {
           if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
         } catch (e) {}
@@ -1026,6 +1094,13 @@ async function startBridge() {
         // /api/open-output-folder enumerate exactly that folder —
         // never a stale setting or the empty fallback again.
         try { dbService.setSetting('download_folder', effectiveDir); } catch (e) {}
+        // (Fix list 2026-10-27, item 1): also record the BASE output
+        // folder — the folder the app sent, before the project
+        // subfolder was joined onto it. History's project listing
+        // needs the tree root: 'download_folder' alone points INTO
+        // the latest project subfolder after a project run, which
+        // hid every other project (and the base files) from History.
+        try { dbService.setSetting('download_base_folder', downloadDir); } catch (e) {}
         if (projectName) {
           broadcastEvent('automation-log', {
             message: `Project folder: "${projectName}" — this run's videos will save into their own folder inside the output folder.`,

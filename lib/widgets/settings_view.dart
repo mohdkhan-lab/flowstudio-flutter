@@ -16,6 +16,11 @@ class SettingsView extends StatefulWidget {
 }
 
 class _SettingsViewState extends State<SettingsView> {
+  // (Fix list 2026-10-27, item 6): ONE vertical rhythm for the
+  // whole page — the gap between every pair of panels (and the
+  // page's own top/bottom padding) is this value, so no section
+  // sits closer or farther than any other.
+  static const double _sectionGap = 12;
   final TextEditingController _customTagController = TextEditingController();
   final TextEditingController _folderController = TextEditingController();
   final TextEditingController _chromeController = TextEditingController();
@@ -174,16 +179,16 @@ class _SettingsViewState extends State<SettingsView> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: running ? const Color(0xFF22A355).withValues(alpha: 0.16) : AppTheme.overlay08,
+                  color: running ? AppTheme.green.withValues(alpha: 0.16) : AppTheme.overlay08,
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: running ? const Color(0xFF22A355) : AppTheme.borderSoft),
+                  border: Border.all(color: running ? AppTheme.green : AppTheme.borderSoft),
                 ),
                 child: Text(
                   running ? '● RUNNING' : '○ STOPPED',
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w800,
-                    color: running ? const Color(0xFF1E7D46) : AppTheme.textFaint,
+                    color: running ? AppTheme.green : AppTheme.textFaint,
                   ),
                 ),
               ),
@@ -274,7 +279,7 @@ class _SettingsViewState extends State<SettingsView> {
               return Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: const Color(0x1A0A84FF),
+                  color: AppTheme.accentGold.withValues(alpha: 0.10),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppTheme.borderSoft),
                 ),
@@ -401,7 +406,15 @@ class _SettingsViewState extends State<SettingsView> {
                       child: _buildDropdown(
                         label: 'QUALITY',
                         value: s.quality,
-                        items: ['720p', '1080p'],
+                        // (Fix list 2026-10-27, item 7): mirror
+                        // Flow — 360p and 720p are the generation
+                        // qualities; 1080p is Flow's ENHANCED
+                        // (upscaled) variant, chosen in the
+                        // download menu, never a generation
+                        // resolution. The engine's native download
+                        // path now honours exactly this split.
+                        items: const ['360p', '720p', '1080p'],
+                        labels: const {'1080p': '1080p (enhanced)'},
                         onChanged: (v) => prov.updateQuality(v!),
                       ),
                     ),
@@ -426,7 +439,16 @@ class _SettingsViewState extends State<SettingsView> {
                   ],
                 ),
 
-                const SizedBox(height: 14),
+                const SizedBox(height: 6),
+                // Item 7: say plainly what the quality choice does,
+                // so the 1080p entry never reads as a generation
+                // resolution it is not.
+                Text(
+                  '360p and 720p download the video as generated; 1080p picks Flow\'s enhanced (upscaled) download when Flow offers it.',
+                  style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+                ),
+
+                const SizedBox(height: _sectionGap),
 
                 // Custom Tags
                 Text(
@@ -442,7 +464,7 @@ class _SettingsViewState extends State<SettingsView> {
                     return Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
-                        color: const Color(0x1A0A84FF),
+                        color: AppTheme.accentGold.withValues(alpha: 0.10),
                         borderRadius: BorderRadius.circular(12),
                         border: Border.all(color: AppTheme.borderSoft),
                       ),
@@ -623,7 +645,7 @@ class _SettingsViewState extends State<SettingsView> {
                     Container(
                       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                       decoration: BoxDecoration(
-                        color: const Color(0x1A0A84FF),
+                        color: AppTheme.accentGold.withValues(alpha: 0.10),
                         borderRadius: BorderRadius.circular(10),
                         border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                       ),
@@ -917,10 +939,49 @@ class _SettingsViewState extends State<SettingsView> {
           );
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: _sectionGap),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
+          // (Fix list 2026-10-27, item 5): a clear way BACK — the
+          // settings page used to be a one-way door (only the
+          // sidebar could leave it). Same chip as History's back
+          // control, returning to the Generate view through the
+          // app's existing view switching.
+          Row(
+            children: [
+              InkWell(
+                onTap: () => prov.setNavView('generate'),
+                borderRadius: BorderRadius.circular(7),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accentGold.withValues(alpha: 0.07),
+                    borderRadius: BorderRadius.circular(7),
+                    border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.55)),
+                  ),
+                  child: Text(
+                    '← Back to Generate',
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.accentText,
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 10),
+              Text(
+                'Settings',
+                style: TextStyle(
+                  fontSize: 15,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textMain,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: _sectionGap),
           // Responsive pass: the two columns stack into ONE column
           // when the content area is narrow (<700) so no panel is
           // ever squeezed; the page scrolls, as it already could.
@@ -962,15 +1023,15 @@ class _SettingsViewState extends State<SettingsView> {
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
                     appearancePanel,
-                    const SizedBox(height: 12),
+                    const SizedBox(height: _sectionGap),
                     defaultsPanel,
-                    const SizedBox(height: 12),
+                    const SizedBox(height: _sectionGap),
                     automationPanel,
-                    const SizedBox(height: 12),
+                    const SizedBox(height: _sectionGap),
                     filesPathsPanel,
-                    const SizedBox(height: 12),
+                    const SizedBox(height: _sectionGap),
                     updatesPanel,
-                    const SizedBox(height: 12),
+                    const SizedBox(height: _sectionGap),
                     mcpPanel,
                   ],
                 );
@@ -979,19 +1040,19 @@ class _SettingsViewState extends State<SettingsView> {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
                   pair(appearancePanel, defaultsPanel),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: _sectionGap),
                   pair(automationPanel, filesPathsPanel),
-                  const SizedBox(height: 12),
+                  const SizedBox(height: _sectionGap),
                   pair(updatesPanel, mcpPanel),
                 ],
               );
             },
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: _sectionGap),
           aboutPanel,
-          const SizedBox(height: 12),
+          const SizedBox(height: _sectionGap),
           createdByPanel,
-          const SizedBox(height: 20),
+          const SizedBox(height: _sectionGap),
         ],
       ),
     );
@@ -1384,7 +1445,7 @@ class _SettingsViewState extends State<SettingsView> {
           child: Switch(
             value: value,
             activeThumbColor: AppTheme.accentGold,
-            activeTrackColor: const Color(0x400A84FF),
+            activeTrackColor: AppTheme.accentGold.withValues(alpha: 0.25),
             inactiveTrackColor: AppTheme.borderSoft,
             materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
             onChanged: onChanged,

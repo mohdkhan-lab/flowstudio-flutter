@@ -4,7 +4,7 @@ class AppSettings {
   String model; // 'Omni Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'
   String duration; // '4s', '6s', '8s', '10s'
   String aspectRatio; // '9:16', '16:9', '1:1'
-  String quality; // '720p', '1080p'
+  String quality; // '360p', '720p', '1080p' (1080p = Flow's enhanced download)
   String namingPattern; // 'tag' (00-01.mp4), 'scene' (scene001.mp4)
   List<String> customTags;
   int parallelBrowsers; // 1, 2, 3, 4
@@ -37,7 +37,7 @@ class AppSettings {
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.currentVersion = 'v2.35.0',
+    this.currentVersion = 'v2.36.0',
     // v2.34.0 (Problem 12): no placeholder social links ship any
     // more — an unconfigured service shows NO icon (top strip /
     // About) instead of an icon that opens a dead page. The owner

@@ -51,11 +51,20 @@ function classifyOrigin(fileName, absPath, records) {
   return nameHit ? 'flow' : 'local';
 }
 
-/** Attach `origin` to a folder listing ({name, size, mtime}[]). */
+/**
+ * Attach `origin` to a folder listing ({name, size, mtime}[]).
+ * A file entry may carry a `project` (the output folder's child
+ * folder it was listed from — History's project groups); its
+ * absolute path is then inside that subfolder, so the PATH
+ * evidence compares against the file's real location.
+ */
 function withOrigins(files, dir, records) {
   return (Array.isArray(files) ? files : []).map(f => ({
     ...f,
-    origin: classifyOrigin(f.name, path.join(dir, f.name), records),
+    origin: classifyOrigin(
+      f.name,
+      f.project ? path.join(dir, f.project, f.name) : path.join(dir, f.name),
+      records),
   }));
 }
 

@@ -108,6 +108,12 @@ class _NotificationOverlayState extends State<NotificationOverlay> {
 
   @override
   Widget build(BuildContext context) {
+    // (Fix list 2026-10-27, item 8): same rebuild gap as the top
+    // strip — this overlay is persistent and watched only its own
+    // provider, so a theme change left its panel and popup on the
+    // old palette. Watching SettingsProvider rebuilds it with the
+    // rest of the app; the value itself is unused.
+    context.watch<SettingsProvider>();
     final notif = context.watch<NotificationsProvider>();
     final popup = notif.popup;
     return Stack(

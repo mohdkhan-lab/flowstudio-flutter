@@ -178,7 +178,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
                   padding: const EdgeInsets.symmetric(horizontal: 8),
                   alignment: Alignment.center,
                   decoration: BoxDecoration(
-                    color: const Color(0x1A0A84FF),
+                    color: AppTheme.accentGold.withValues(alpha: 0.10),
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                   ),
@@ -197,7 +197,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: const Color(0x120A84FF),
+                  color: AppTheme.accentGold.withValues(alpha: 0.07),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                 ),

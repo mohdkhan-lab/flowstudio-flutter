@@ -55,14 +55,14 @@ class ProgressPanel extends StatelessWidget {
     switch (status) {
       case PromptStatus.generating:
       case PromptStatus.downloading:
-        return ('RENDERING', const Color(0xFFF5B301));
+        return ('RENDERING', AppTheme.activeGold);
       case PromptStatus.completed:
-        return ('DONE', const Color(0xFF409CFF));
+        return ('DONE', AppTheme.accentText);
       case PromptStatus.failed:
-        return ('FAILED', const Color(0xFFFF6961));
+        return ('FAILED', AppTheme.red);
       case PromptStatus.pending:
       case PromptStatus.queued:
-        return ('QUEUED', const Color(0xFF9A9AA0));
+        return ('QUEUED', AppTheme.textFaint);
     }
   }
 
@@ -135,11 +135,11 @@ class ProgressPanel extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      _countChip('$rendering Rendering', const Color(0xFFF5B301)),
+                      _countChip('$rendering Rendering', AppTheme.activeGold),
                       const SizedBox(width: 5),
-                      _countChip('$done Done', const Color(0xFF409CFF)),
+                      _countChip('$done Done', AppTheme.accentText),
                       const SizedBox(width: 5),
-                      _countChip('$queued Queued', const Color(0xFF9A9AA0)),
+                      _countChip('$queued Queued', AppTheme.textFaint),
                     ],
                   ),
                 ),
@@ -188,7 +188,7 @@ class ProgressPanel extends StatelessWidget {
         .map((i) => i.label ?? '#${i.index}')
         .join(', ');
     final more = missing.length > 6 ? ' +${missing.length - 6} more' : '';
-    const red = Color(0xFFFF6961);
+    final red = AppTheme.red;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
       decoration: BoxDecoration(
@@ -198,14 +198,14 @@ class ProgressPanel extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Icon(Icons.warning_amber_rounded, size: 14, color: red),
+          Icon(Icons.warning_amber_rounded, size: 14, color: red),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
               'Incomplete — ${missing.length} scene(s) missing: $names$more',
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 10,
                 fontWeight: FontWeight.w700,
                 color: red,
@@ -229,7 +229,7 @@ class ProgressPanel extends StatelessWidget {
               ),
               child: Text(
                 'Redo missing (${missing.length})',
-                style: const TextStyle(
+                style: TextStyle(
                   fontSize: 9.5,
                   fontWeight: FontWeight.w800,
                   color: red,
@@ -360,7 +360,7 @@ class ProgressPanel extends StatelessWidget {
               value: barValue,
               backgroundColor: AppTheme.overlay20,
               valueColor: AlwaysStoppedAnimation(
-                isDone ? const Color(0xFF409CFF) : AppTheme.accentGold,
+                isDone ? AppTheme.accentText : AppTheme.accentGold,
               ),
               minHeight: 5,
             ),
@@ -414,9 +414,9 @@ class ProgressPanel extends StatelessWidget {
               item.error!,
               maxLines: 2,
               overflow: TextOverflow.ellipsis,
-              style: const TextStyle(
+              style: TextStyle(
                 fontSize: 9.5,
-                color: Color(0xFFFF6961),
+                color: AppTheme.red,
                 height: 1.35,
               ),
             ),
@@ -435,7 +435,7 @@ class ProgressPanel extends StatelessWidget {
     bool dimmed = false,
     VoidCallback? onTap,
   }) {
-    final activeColor = accent ? const Color(0xFF409CFF) : AppTheme.textDim;
+    final activeColor = accent ? AppTheme.accentText : AppTheme.textDim;
     final color = enabled ? activeColor : AppTheme.textFaint.withValues(alpha: 0.55);
     return InkWell(
       onTap: enabled ? onTap : null,

@@ -10,6 +10,14 @@ class TopStrip extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    // (Fix list 2026-10-27, item 8): watch SettingsProvider so a
+    // theme or appearance change REBUILDS this strip. It used to
+    // watch only Accounts/Notifications, so after a theme change
+    // the strip kept painting the OLD palette (AppTheme tokens
+    // are read at build time) until an account or notification
+    // event happened to rebuild it — the owner's "the theme does
+    // not change the whole interface". The value itself is unused.
+    context.watch<SettingsProvider>();
     final accounts = context.watch<AccountsProvider>();
     final notif = context.watch<NotificationsProvider>();
 
@@ -112,12 +120,12 @@ class TopStrip extends StatelessWidget {
                 Container(
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
                   decoration: BoxDecoration(
-                    color: const Color(0x1A0A84FF),
+                    color: AppTheme.accentGold.withValues(alpha: 0.10),
                     borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                   ),
                   child: Text(
-                    'v2.35.0',
+                    'v2.36.0',
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,

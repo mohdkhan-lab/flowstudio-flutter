@@ -113,6 +113,76 @@ class PlayerLoadingCard extends StatelessWidget {
   }
 }
 
+// (Fix list 2026-10-27, item 3): the video area of the dialog —
+// the shaped player when the aspect is known, the neutral loading
+// card while it is not. The dialog's FIRST frame is built with the
+// probed aspect (see probeVideoAspect), so the area is in the
+// video's own shape from the moment the dialog becomes visible.
+class PlayerArea extends StatelessWidget {
+  final double? aspect;
+  final double maxWidth;
+  final double maxHeight;
+  final Widget child;
+
+  const PlayerArea({
+    super.key,
+    required this.aspect,
+    required this.maxWidth,
+    required this.maxHeight,
+    required this.child,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final a = aspect;
+    if (a == null) return const PlayerLoadingCard();
+    return AdaptiveVideoArea(
+      aspect: a,
+      maxWidth: maxWidth,
+      maxHeight: maxHeight,
+      child: child,
+    );
+  }
+}
+
+// (Fix list 2026-10-27, item 3): resolve a video's aspect from an
+// ALREADY-OPENING player, before any dialog exists. Opens the
+// media paused on [player] and completes with the first valid
+// width/height pair's aspect — or null after 4 seconds, when the
+// stream never reports dimensions (the dialog then keeps its
+// neutral loading state until they land, as before).
+Future<double?> probeVideoAspect(Player player, String path) async {
+  final completer = Completer<double?>();
+  int? w;
+  int? h;
+  void tryResolve() {
+    final a = aspectFromDimensions(w, h);
+    if (a != null && !completer.isCompleted) completer.complete(a);
+  }
+
+  final widthSub = player.stream.width.listen((v) {
+    w = v;
+    tryResolve();
+  });
+  final heightSub = player.stream.height.listen((v) {
+    h = v;
+    tryResolve();
+  });
+  // Fire-and-forget: the probe's completion signal is the
+  // dimension streams, not open()'s own future.
+  unawaited(player.open(Media(path), play: false).then((_) {},
+      onError: (_) {}));
+  try {
+    return await completer.future.timeout(
+      const Duration(seconds: 4),
+      onTimeout: () => null,
+    );
+  } finally {
+    await widthSub.cancel();
+    await heightSub.cancel();
+  }
+}
+
 // v2.29.0 (in-app player): Play buttons used to hand the file to
 // the OS default player (bridge /api/open-file). Now the video
 // plays INSIDE FlowStudio, in this dialog — modelled on the
@@ -149,11 +219,35 @@ Future<void> showInAppPlayer(
   // it decides whether the preview starts playing on open.
   final autoplay = context.read<SettingsProvider>().settings.previewAutoplay;
   final resolvedPath = path;
+  // (Fix list 2026-10-27, item 3 — ROOT CAUSE of the shape flip
+  // the owner still saw after v2.34.0): the dialog used to be
+  // SHOWN first and resolve the aspect afterwards. Its first
+  // visible frame was therefore the loading state — a dialog
+  // constrained to a fixed 420 width around a 170-tall black card,
+  // i.e. a LANDSCAPE-proportioned box — for every video; when the
+  // dimensions landed a moment later the dialog rebuilt at the
+  // video's real shape (300 wide and tall for a 9:16 video). The
+  // owner saw exactly that: the player "opens in long format,
+  // then switches to short". v2.34.0 had removed the wrong-shaped
+  // VIDEO but left a wrong-shaped DIALOG as the first frame. Now
+  // the player is created and its dimensions are probed BEFORE
+  // showDialog runs, so the dialog's first frame already IS the
+  // video's own shape; the probe is usually a few hundred
+  // milliseconds during which nothing is on screen at all.
+  final player = Player();
+  final controller = VideoController(player);
+  final aspect = await probeVideoAspect(player, resolvedPath);
+  if (!context.mounted) {
+    await player.dispose();
+    return;
+  }
   await showDialog(
     context: context,
     builder: (_) => _PlayerDialog(
       title: title,
-      path: resolvedPath,
+      player: player,
+      controller: controller,
+      initialAspect: aspect,
       autoplay: autoplay,
     ),
   );
@@ -161,12 +255,16 @@ Future<void> showInAppPlayer(
 
 class _PlayerDialog extends StatefulWidget {
   final String title;
-  final String path;
+  final Player player;
+  final VideoController controller;
+  final double? initialAspect;
   final bool autoplay;
 
   const _PlayerDialog({
     required this.title,
-    required this.path,
+    required this.player,
+    required this.controller,
+    required this.initialAspect,
     required this.autoplay,
   });
 
@@ -181,16 +279,18 @@ class _PlayerDialogState extends State<_PlayerDialog> {
   // v2.33.0: the video's REAL aspect, from the player's own width /
   // height streams (media_kit exposes the decoded dimensions — no
   // new dependency).
-  // v2.34.0 (Problem 6): the aspect starts UNRESOLVED (null). The
-  // media is opened paused; the first width/height event resolves
-  // the aspect and ONLY THEN does the shaped player appear (and
-  // autoplay start, when the toggle asks for it). v2.33.0 instead
-  // painted a 16:9 fallback immediately and reshaped when the
-  // metadata landed — the owner saw the player flip shape on every
-  // open. While unresolved, the dialog shows the neutral
-  // PlayerLoadingCard — never a wrong-shaped player. A 4-second
-  // fallback resolves to 16:9 so a stream that never reports
-  // dimensions still opens a player instead of spinning forever.
+  // v2.34.0 (Problem 6): while the aspect is UNRESOLVED (null) the
+  // dialog shows the neutral PlayerLoadingCard — never a
+  // wrong-shaped player — and a 4-second fallback resolves to 16:9
+  // so a stream that never reports dimensions still opens a player
+  // instead of spinning forever.
+  // (Fix list 2026-10-27, item 3): the aspect now normally arrives
+  // RESOLVED — showInAppPlayer probed the dimensions before this
+  // dialog was created, so the first frame is already the video's
+  // shape and autoplay starts at once. The unresolved path below
+  // survives only for the probe-timeout case; the stream listeners
+  // stay either way, so a later dimension correction (rotation
+  // metadata) still reshapes the player honestly.
   double? _aspect;
   int? _videoWidth;
   int? _videoHeight;
@@ -201,8 +301,9 @@ class _PlayerDialogState extends State<_PlayerDialog> {
   @override
   void initState() {
     super.initState();
-    _player = Player();
-    _controller = VideoController(_player);
+    _player = widget.player;
+    _controller = widget.controller;
+    _aspect = widget.initialAspect;
     _widthSub = _player.stream.width.listen((w) {
       _videoWidth = w;
       _updateAspect();
@@ -211,10 +312,13 @@ class _PlayerDialogState extends State<_PlayerDialog> {
       _videoHeight = h;
       _updateAspect();
     });
-    _player.open(Media(widget.path), play: false);
-    _resolveFallback = Timer(const Duration(seconds: 4), () {
-      if (mounted && _aspect == null) _resolveAspect(16 / 9);
-    });
+    if (_aspect != null) {
+      if (widget.autoplay) _player.play();
+    } else {
+      _resolveFallback = Timer(const Duration(seconds: 4), () {
+        if (mounted && _aspect == null) _resolveAspect(16 / 9);
+      });
+    }
   }
 
   void _updateAspect() {
@@ -334,19 +438,16 @@ class _PlayerDialogState extends State<_PlayerDialog> {
               ),
             ),
 
-            // v2.34.0 (Problem 6): while the dimensions resolve,
-            // a neutral loading card — and no shaped player.
-            if (!resolved) ...[
-              const PlayerLoadingCard(),
-              const SizedBox(height: 14),
-            ],
-
+            // (Fix list 2026-10-27, item 3): ONE area for both
+            // states — PlayerArea shows the neutral loading card
+            // only while the aspect is unresolved (the rare
+            // probe-timeout path); with a probed aspect the shaped
+            // player below is the dialog's first frame already.
             // Video area — sized to the video's own aspect (v2.33.0);
             // tap toggles play/pause; the centre button mirrors the
             // sample (pause while playing, play while paused).
-            if (resolved)
-            AdaptiveVideoArea(
-              aspect: _aspect!,
+            PlayerArea(
+              aspect: _aspect,
               maxWidth: maxVideoW,
               maxHeight: maxVideoH,
               child: Container(
@@ -388,6 +489,7 @@ class _PlayerDialogState extends State<_PlayerDialog> {
                 ),
               ),
             ),
+            if (!resolved) const SizedBox(height: 14),
 
             // Control bar (only once the player exists, v2.34.0)
             if (resolved)
@@ -420,8 +522,8 @@ class _PlayerDialogState extends State<_PlayerDialog> {
                                 child: Container(
                                   width: 32,
                                   height: 32,
-                                  decoration: const BoxDecoration(
-                                    color: Color(0xFF0A84FF),
+                                  decoration: BoxDecoration(
+                                    color: AppTheme.accentGold,
                                     shape: BoxShape.circle,
                                   ),
                                   child: Icon(
@@ -438,7 +540,7 @@ class _PlayerDialogState extends State<_PlayerDialog> {
                             child: Slider(
                               value: maxMs > 0 ? posMs.toDouble() : 0,
                               max: maxMs > 0 ? maxMs : 1,
-                              activeColor: const Color(0xFF0A84FF),
+                              activeColor: AppTheme.accentGold,
                               inactiveColor: AppTheme.overlay20,
                               onChanged: (v) {
                                 _player.seek(

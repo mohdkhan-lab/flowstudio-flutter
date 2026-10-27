@@ -15,6 +15,8 @@ const downloadGuard = require('./downloadGuard');
 const tagNaming = require('./tagNaming');
 const fs = require('fs');
 const sequenceReport = require('./sequenceReport');
+const browserMode = require('./browserMode');
+const windowStyle = require('./windowStyle');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -62,6 +64,13 @@ class WorkerPool {
     this.sameAccountBackoffMs = Number.isFinite(sab) ? Math.max(0, sab) : 60000;
     this.maxSameAccountAttempts = Math.max(1, Number(options.maxSameAccountAttempts) || 3);
     this.headless = !!options.headless;
+    // Headless generation (owner's opt-in, 'headless_generation'
+    // setting): a SEPARATE flag from `headless` above — that one is
+    // the historical name for "background" (headed Chrome parked
+    // off-screen), while THIS one means true headless Chrome for
+    // generation workers (no window at all). Engines receive both
+    // and browserMode.launchPlan decides; see engine/browserMode.js.
+    this.headlessGeneration = !!options.headlessGeneration;
     // v2.5.0: "Sirf live accounts chalao" (Accounts page toggle) —
     // when ON, account selection only ever picks accounts whose live
     // status is Ready / Low Credits ("live ready"); every other
@@ -181,11 +190,74 @@ class WorkerPool {
     if (!accountId || !engine) return;
     this.activeBrowsers.set(accountId, engine);
     this._emitActiveBrowsers();
+    // A worker that starts SHOWN (visible-mode launch) joins the
+    // shown set — the equal grid reflows around it.
+    this._reflowShownWindows();
   }
 
   _unregisterActiveBrowser(accountId) {
     if (accountId && this.activeBrowsers.delete(accountId)) {
       this._emitActiveBrowsers();
+      // A stopped worker leaves the shown set — the remaining
+      // shown windows reflow to fill the work area again.
+      this._reflowShownWindows();
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Equal tiling of the SHOWN generation windows (owner's order):
+  // every shown window the SAME size, together filling the screen
+  // work area (browserMode.tileWindowBounds). Parked windows are
+  // never part of the grid, and headless runs have no windows at
+  // all. The pool owns the grid because only it knows every live
+  // engine; each engine only moves its own window. All of this is
+  // best-effort layout — a failure leaves windows as they are and
+  // can never touch generation.
+  // ------------------------------------------------------------------
+
+  /** Live engines whose window is currently SHOWN, in registry order. */
+  _shownEngines() {
+    const out = [];
+    for (const [, engine] of this.activeBrowsers) {
+      if (engine && engine.windowShown === true && !engine.headlessGeneration
+        && engine.browser && engine.page && !engine.page.isClosed()) {
+        out.push(engine);
+      }
+    }
+    return out;
+  }
+
+  /** The screen work area, cached briefly; null when unreadable. */
+  async _workArea() {
+    const now = Date.now();
+    if (this._workAreaCache && now - this._workAreaCache.at < 30000) {
+      return this._workAreaCache.area;
+    }
+    const area = await windowStyle.getWorkArea();
+    if (area) {
+      this._workAreaCache = { at: now, area };
+      return area;
+    }
+    return this._workAreaCache ? this._workAreaCache.area : null;
+  }
+
+  /** Serialized entry point — reflows never overlap. */
+  _reflowShownWindows() {
+    const run = (this._tileChain || Promise.resolve())
+      .then(() => this._reflowShownWindowsNow())
+      .catch(() => {});
+    this._tileChain = run;
+    return run;
+  }
+
+  async _reflowShownWindowsNow() {
+    const shown = this._shownEngines();
+    if (shown.length === 0) return;
+    const area = await this._workArea();
+    if (!area) return;
+    for (let i = 0; i < shown.length; i++) {
+      const bounds = browserMode.tileWindowBounds(i, shown.length, area);
+      await shown[i].applyWindowBounds(bounds).catch(() => {});
     }
   }
 
@@ -216,8 +288,10 @@ class WorkerPool {
   /**
    * Flip one generating account's browser between screen and park.
    * Only bounds move (engine.setBrowserWindowShown) — generation is
-   * never interrupted. Returns { ok, windowShown } or { ok:false,
-   * error } when the account is not generating right now.
+   * never interrupted. Showing lands the window in its cell of the
+   * equal shown-windows grid, and the whole grid reflows. Returns
+   * { ok, windowShown } or { ok:false, error } when the account is
+   * not generating right now.
    */
   async toggleBrowserWindow(accountId) {
     const engine = this.activeBrowsers.get(accountId);
@@ -227,8 +301,33 @@ class WorkerPool {
       if (engine) this.activeBrowsers.delete(accountId);
       return { ok: false, error: 'This account is not generating right now — its browser opens from the Chrome button as usual.' };
     }
-    const done = await engine.setBrowserWindowShown(!(engine.windowShown === true));
+    const target = !(engine.windowShown === true);
+    // When SHOWING, compute this window's cell in the NEW shown
+    // set first, so it lands directly in the equal grid instead of
+    // flashing through the legacy single-window bounds. The set is
+    // the registry order with this engine counted as shown.
+    let shownBounds = null;
+    if (target) {
+      const area = await this._workArea();
+      if (area) {
+        const prospective = [];
+        for (const [, e] of this.activeBrowsers) {
+          if (!e || e.headlessGeneration || !e.browser || !e.page || e.page.isClosed()) continue;
+          if (e === engine || e.windowShown === true) prospective.push(e);
+        }
+        const idx = prospective.indexOf(engine);
+        if (idx >= 0) {
+          shownBounds = browserMode.tileWindowBounds(idx, prospective.length, area);
+        }
+      }
+    }
+    const done = await engine.setBrowserWindowShown(target, shownBounds);
     this._emitActiveBrowsers();
+    // The shown set changed size either way — reflow the grid so
+    // every shown window ends up the same size, filling the area.
+    if (done) {
+      await this._reflowShownWindows();
+    }
     return { ok: done, windowShown: engine.windowShown === true };
   }
 
@@ -398,6 +497,7 @@ class WorkerPool {
         onTaskFailed: () => {}
       }, {
         headless: this.headless,
+        headlessGeneration: this.headlessGeneration,
         workerId: 'recovery',
         creditPort: this._creditPort(),
         // v2.31.3: recovery downloads count in the same ledger.
@@ -596,7 +696,7 @@ class WorkerPool {
       // 1 tha, isliye 1 worker chala, aur app ne wajah kahin nahi
       // dikhayi. Ab seema / live / asal workers teeno har jagah ek
       // jaise shabdon me milte hain (log + Generate status line).
-      this.log(`Queue is starting: ${pendingTasks.length} prompts · Limit (from Settings): ${this.concurrency} · Live available: ${pool.length} · Workers will run: ${actualWorkersCount}`, 'info');
+      this.log(`Queue is starting: ${pendingTasks.length} prompts · Limit (from Settings): ${this.concurrency} · Live available: ${pool.length} · Workers will run: ${actualWorkersCount}${this.headlessGeneration ? ' · Headless mode: ON (no browser windows)' : ''}`, 'info');
       try {
         this.onProgress({
           status: WorkerPool.buildRunStatusText({ total: pendingTasks.length, active: 0, done: 0, failed: 0 }),
@@ -611,7 +711,7 @@ class WorkerPool {
       if (opts && Array.isArray(opts.existingTasks) && opts.existingTasks.length > 0) {
         recordActivity({ category: 'system', level: 'info', message: `Queue resume: ${pendingTasks.length} pending prompt(s) are running again` });
       }
-      recordActivity({ category: 'generation', level: 'info', message: `Generation started: ${pendingTasks.length} prompt(s) · ${actualWorkersCount} worker(s) in parallel` });
+      recordActivity({ category: 'generation', level: 'info', message: `Generation started: ${pendingTasks.length} prompt(s) · ${actualWorkersCount} worker(s) in parallel${this.headlessGeneration ? ' · Headless mode: ON (no browser windows)' : ''}` });
 
       const creditPort = this._creditPort();
       let completedCount = 0;
@@ -1192,6 +1292,7 @@ class WorkerPool {
           }
         }, {
           headless: this.headless,
+        headlessGeneration: this.headlessGeneration,
           workerId,
           creditPort,
           // v2.31.3: persisted download-attempt ledger (3-round cap).
@@ -1276,8 +1377,12 @@ class WorkerPool {
                     // itself would not open while the browser is
                     // hidden, say so plainly and name the one-click
                     // alternative — never leave the owner guessing
-                    // why a hidden-mode run is stuck.
-                    if (this.headless && !attemptError && !definitive) {
+                    // why a hidden-mode run is stuck. Headless
+                    // generation gets the same honesty with its own
+                    // name and its own switch.
+                    if (this.headlessGeneration && !attemptError && !definitive) {
+                      this.log(`Worker #${workerIndex + 1}: Note — Headless mode is ON and Flow could not open on [${workerAccount.name}] (status: ${studioStatus}). If this happens again and again, turn off Headless mode in Settings and try again.`, 'warn');
+                    } else if (this.headless && !attemptError && !definitive) {
                       this.log(`Worker #${workerIndex + 1}: Note — Background mode is ON and Flow could not open on [${workerAccount.name}] (status: ${studioStatus}). If this happens again and again, turn off the hidden-browser option in Generate/Settings and try in Visible mode.`, 'warn');
                     }
                   } else {

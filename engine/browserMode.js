@@ -35,6 +35,19 @@
  *   '1' (or unset / anything but '0') = background ON  (default)
  *   '0'                               = background OFF -> visible
  *
+ * HEADLESS GENERATION (owner's explicit request, 2026-10-27): a
+ * SECOND, separate opt-in — setting 'headless_generation' ('1' =
+ * on, anything else = off, default OFF). With it on, generation
+ * workers launch TRUE headless Chrome ('new'): no window exists at
+ * all (nothing in the taskbar, nothing to park) and the PC carries
+ * less load. The v2.4.0 lesson stands — headless stalled Flow back
+ * then, which is exactly why this is an opt-in the owner turns on
+ * himself, with the warning printed next to its Settings toggle,
+ * and NOT a change to the default background behaviour above. It
+ * governs GENERATION workers only: Sign In windows are a plain
+ * visible spawn, and the credit / cookie checks have their own
+ * launches — none of those read this setting.
+ *
  * This module is the single pure decision point: setting string ->
  * boolean -> launch plan. main.js feeds the pool from it, the engine
  * consumes the plan, and the unit tests pin the mapping here.
@@ -42,6 +55,7 @@
 
 const SETTING_KEY = 'browser_background';
 const DEFAULT_BACKGROUND = true;
+const HEADLESS_SETTING_KEY = 'headless_generation';
 
 // Far outside any realistic monitor arrangement (Windows virtual
 // desktops included) — the window exists in the NORMAL state and
@@ -66,12 +80,39 @@ function resolveBackgroundEnabled(settingValue) {
 }
 
 /**
+ * Headless generation is opt-in and defaults OFF (the opposite
+ * default from background mode): only the exact string '1' turns
+ * it on, so an unset or garbled value can never silently switch a
+ * run to headless.
+ */
+function resolveHeadlessGenerationEnabled(settingValue) {
+  return String(settingValue) === '1';
+}
+
+/**
  * The launch plan for one automation Chrome.
  * background: headed Chrome, off-screen, NORMAL window state (never
  *   minimized — v2.6.0), anti-throttling flags on. NEVER headless.
  * visible: headed Chrome, maximized on screen, as before.
+ * headless generation (second flag, wins over both): TRUE headless
+ *   Chrome — no window exists, so there is no position to park and
+ *   nothing to show or hide; the page still gets the parked
+ *   window's 1366x900 size and the same anti-throttling flags +
+ *   focus emulation that keep Flow's timers honest off-screen.
  */
-function launchPlan(backgroundEnabled) {
+function launchPlan(backgroundEnabled, headlessGenerationEnabled) {
+  if (headlessGenerationEnabled) {
+    return {
+      background: true,
+      headless: 'new',
+      windowMode: 'headless',
+      extraArgs: [OFFSCREEN_SIZE],
+      antiThrottleArgs: [...ANTI_THROTTLE_ARGS],
+      startMaximized: false,
+      minimizeAfterLaunch: false,
+      focusEmulation: true
+    };
+  }
   if (backgroundEnabled) {
     return {
       background: true,
@@ -120,14 +161,50 @@ function parkedWindowBounds(shown) {
   return { left: -32000, top: -32000, width: 1366, height: 900, windowState: 'normal' };
 }
 
+/**
+ * Equal tiling of the SHOWN generation windows over the screen
+ * work area (owner's order, 2026-10-27): every shown window gets
+ * the SAME size and together they fill the work area — 1 shown =
+ * the whole area, 2 = two equal halves, 3 = three cells of a 2x2
+ * grid, 4 = the 2x2 quadrants. [index] is the window's slot in
+ * the shown set (0-based), [count] the size of that set, and
+ * [workArea] { left, top, width, height } the real work area (see
+ * windowStyle.getWorkArea). Cell edges are computed from the
+ * area's far edge, so the last column/row absorbs the rounding
+ * remainder and the grid fills the area exactly. Parked windows
+ * are never part of this — they keep parkedWindowBounds(false).
+ */
+function tileWindowBounds(index, count, workArea) {
+  const total = Math.max(1, Math.floor(Number(count) || 1));
+  const slot = Math.min(Math.max(0, Math.floor(Number(index) || 0)), total - 1);
+  const cols = Math.ceil(Math.sqrt(total));
+  const rows = Math.ceil(total / cols);
+  const col = slot % cols;
+  const row = Math.floor(slot / cols);
+  const x0 = workArea.left + Math.floor((col * workArea.width) / cols);
+  const x1 = workArea.left + Math.floor(((col + 1) * workArea.width) / cols);
+  const y0 = workArea.top + Math.floor((row * workArea.height) / rows);
+  const y1 = workArea.top + Math.floor(((row + 1) * workArea.height) / rows);
+  return {
+    left: x0,
+    top: y0,
+    width: Math.max(1, x1 - x0),
+    height: Math.max(1, y1 - y0),
+    windowState: 'normal'
+  };
+}
+
 module.exports = {
   SETTING_KEY,
   DEFAULT_BACKGROUND,
+  HEADLESS_SETTING_KEY,
   OFFSCREEN_POSITION,
   OFFSCREEN_SIZE,
   ANTI_THROTTLE_ARGS,
   resolveBackgroundEnabled,
+  resolveHeadlessGenerationEnabled,
   launchPlan,
   describeMode,
-  parkedWindowBounds
+  parkedWindowBounds,
+  tileWindowBounds
 };

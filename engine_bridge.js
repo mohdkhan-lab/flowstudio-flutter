@@ -67,6 +67,7 @@ const {
   checkImportedAccount,
 } = require('./engine/cookieImport');
 const { WorkerPool } = require('./engine/workerPool');
+const browserMode = require('./engine/browserMode');
 const promptParser = require('./engine/promptParser');
 const historyOrigin = require('./engine/historyOrigin');
 const projectFolder = require('./engine/projectFolder');
@@ -166,7 +167,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.36.0';
+const APP_VERSION = '2.37.0';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -282,6 +283,13 @@ async function startBridge() {
     return new WorkerPool({
       concurrency: parallelBrowsers || 1,
       headless: backgroundSetting !== '0',
+      // Headless generation (owner's opt-in): TRUE headless Chrome
+      // for generation workers — wins over the background/visible
+      // choice above inside browserMode.launchPlan. Default OFF;
+      // only the exact '1' enables it.
+      headlessGeneration: browserMode.resolveHeadlessGenerationEnabled(
+        dbService.getSetting(browserMode.HEADLESS_SETTING_KEY, '0')
+      ),
       liveOnly: dbService.getSetting('live_only_accounts', '0') === '1',
       // v2.29.0 (checkbox truth): the sidebar's ticked account
       // IDs from the generate request — the pool may use ONLY
@@ -425,6 +433,9 @@ async function startBridge() {
           'appearance', 'theme', 'default_model', 'default_duration', 'default_aspect',
           'default_naming', 'default_quality', 'custom_tags', 'download_folder', 'chrome_path',
           'browser_background', 'show_browsers', 'preview_autoplay', 'auto_verify_start', 'auto_check_updates',
+          // Headless generation opt-in (Settings → Automation) —
+          // the app reads it back so the toggle shows the truth.
+          'headless_generation',
           'social_links', 'live_only_accounts', 'history_cleared',
           // (Fix list 2026-10-27, items 1+2): the recorded BASE
           // output folder (History's tree root + the app's output

@@ -61,6 +61,14 @@ class FlowStudioApp extends StatelessWidget {
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: useDark ? ThemeMode.dark : ThemeMode.light,
+            // Ease ThemeData-driven surfaces (framework widgets,
+            // dialogs, menus — and the Scaffold backdrop, which
+            // reads its colour from Theme.of) between palettes
+            // instead of snapping. The app's own panels read
+            // AppTheme statics at build time and still switch
+            // instantly by design.
+            themeAnimationDuration: const Duration(milliseconds: 250),
+            themeAnimationCurve: Curves.easeInOut,
             home: const MainStudioScreen(),
           );
         },
@@ -195,10 +203,31 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
     }
   }
 
+  /// Switching between the three centre views cross-fades
+  /// (~200ms) instead of hard-cutting. The KeyedSubtree gives
+  /// AnimatedSwitcher a stable identity per view; the sizes and
+  /// layout of every view are untouched.
+  Widget _switchView(String view, Widget child) {
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 200),
+      switchInCurve: Curves.easeOut,
+      switchOutCurve: Curves.easeIn,
+      child: KeyedSubtree(key: ValueKey<String>(view), child: child),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: AppTheme.bgBody,
+      // The backdrop colour comes from ThemeData (whose
+      // scaffoldBackgroundColor IS AppTheme.bgBody) instead of the
+      // static token directly: reading Theme.of registers a
+      // rebuild dependency, so the colour behind the panels
+      // FOLLOWS the palette — the static read left the old
+      // palette's dark bgBody sitting behind fresh light panels
+      // in Light mode — and it cross-fades via the theme
+      // animation set on MaterialApp.
+      backgroundColor: Theme.of(context).scaffoldBackgroundColor,
       body: SafeArea(
         // Notification Center: the bell's popup + panel live in an
         // overlay layer above the untouched Column layout, so no
@@ -235,14 +264,17 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
                       Expanded(
                         child: Consumer<SettingsProvider>(
                           builder: (context, settingsProv, _) {
-                            if (settingsProv.currentView == 'settings') {
-                              return const SettingsView();
+                            final view = settingsProv.currentView;
+                            if (view == 'settings') {
+                              return _switchView(view, const SettingsView());
                             }
                             // v2.27.0: History view (Activity → Previous videos)
-                            if (settingsProv.currentView == 'history') {
-                              return const HistoryView();
+                            if (view == 'history') {
+                              return _switchView(view, const HistoryView());
                             }
-                            return Padding(
+                            return _switchView(
+                              view,
+                              Padding(
                               padding: compact
                                   ? const EdgeInsets.fromLTRB(8, 10, 10, 10)
                                   : const EdgeInsets.fromLTRB(10, 12, 14, 12),
@@ -281,6 +313,7 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
                               // Bottom Activity Console Panel
                               const ActivityStream(),
                             ],
+                          ),
                           ),
                         );
                           },

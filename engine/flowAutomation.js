@@ -11,6 +11,7 @@ const renderProgressWatch = require('./renderProgressWatch');
 const tileState = require('./tileState');
 const plainError = require('./plainError');
 const browserMode = require('./browserMode');
+const windowStyle = require('./windowStyle');
 const networkCapture = require('./networkCapture');
 const failureEvidence = require('./failureEvidence');
 const { FFmpegService } = require('./ffmpegService');
@@ -154,6 +155,11 @@ class FlowAutomationEngine {
     this.windowShown = false;
     this.currentSettings = {};
     this.headless = !!options.headless;
+    // Headless generation (owner's opt-in): TRUE headless Chrome
+    // for this engine's launches — separate from `headless` above,
+    // which is only the background (parked off-screen) flag despite
+    // its name. browserMode.launchPlan combines the two.
+    this.headlessGeneration = !!options.headlessGeneration;
     this.workerId = options.workerId || null;
     this.hasConfiguredSettings = false;
     this.claimedTileIndices = new Set();
@@ -280,8 +286,11 @@ class FlowAutomationEngine {
     // now launches the SAME headed Chrome parked off-screen in the
     // NORMAL window state, with the plan's anti-throttling flags and
     // CDP focus emulation (below), so the page keeps rendering and
-    // timing exactly as if it were focused on screen.
-    const plan = browserMode.launchPlan(this.headless);
+    // timing exactly as if it were focused on screen. The owner's
+    // separate Headless mode opt-in (this.headlessGeneration) is the
+    // ONE case where the plan launches true headless Chrome — no
+    // window exists at all; see browserMode.launchPlan.
+    const plan = browserMode.launchPlan(this.headless, this.headlessGeneration);
     const args = [
       `--user-data-dir=${profilePath}`,
       '--no-first-run',
@@ -447,6 +456,13 @@ class FlowAutomationEngine {
       // v2.25.0: the launch plan decides where the window STARTS —
       // background = parked off-screen, visible = on screen.
       this.windowShown = !plan.background;
+      // A window that starts PARKED also starts WITHOUT a taskbar
+      // button (owner's order): it may reach the screen only
+      // through the app's own Show/Hide button. Best-effort Win32
+      // styling — a failure here changes nothing about the run.
+      if (!this.windowShown && !this.headlessGeneration) {
+        this._applyTaskbarStyle(false);
+      }
       this.log(`Chrome is ready — [${account.name}]'s profile is open.`, 'success');
       return true;
     } catch (err) {
@@ -556,6 +572,77 @@ class FlowAutomationEngine {
   }
 
   /**
+   * This browser's main-process PID (the process that owns the
+   * generation window), or null when it cannot be read.
+   */
+  _browserPid() {
+    try {
+      const proc = this.browser ? this.browser.process() : null;
+      return proc ? proc.pid : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * Taskbar button on/off for this engine's window (windowStyle):
+   * parked windows carry NO taskbar button, shown windows carry
+   * the normal one. Fire-and-forget — the styling is cosmetic OS
+   * dressing and must never delay or fail generation work.
+   */
+  _applyTaskbarStyle(show) {
+    if (this.headlessGeneration) return;
+    const pid = this._browserPid();
+    if (!pid) return;
+    try {
+      const p = windowStyle.setTaskbarButton(pid, show);
+      if (p && typeof p.catch === 'function') p.catch(() => {});
+    } catch (e) {}
+  }
+
+  /**
+   * Move this engine's window to explicit bounds via a throwaway
+   * CDP session (never this.cdpSession — see setBrowserWindowShown).
+   * Pure movement: no shown-state change, no focus change.
+   * Returns true when the bounds were applied.
+   */
+  async _setWindowBounds(bounds) {
+    if (!this.browser || !this.page || this.page.isClosed()) return false;
+    let session = null;
+    try {
+      session = await this.page.target().createCDPSession();
+      const { windowId } = await session.send('Browser.getWindowForTarget');
+      await session.send('Browser.setWindowBounds', { windowId, bounds });
+      return true;
+    } catch (e) {
+      this._lastWindowBoundsError = e;
+      return false;
+    } finally {
+      if (session) {
+        try { await session.detach(); } catch (e) {}
+      }
+    }
+  }
+
+  /**
+   * Equal tiling (pool-driven): resize/reposition this engine's
+   * SHOWN window to [bounds]. The pool owns the grid; the engine
+   * only moves its own window. A parked or headless engine is
+   * never tiled. Returns true when the bounds were applied.
+   */
+  async applyWindowBounds(bounds) {
+    if (this.headlessGeneration) return false;
+    if (!this.windowShown) return false;
+    if (!bounds) return false;
+    const ok = await this._setWindowBounds(bounds);
+    if (!ok) {
+      const name = this.currentAccount ? this.currentAccount.name : 'Account';
+      this.log(`[${name}]'s browser window could not be resized into the shared layout.`, 'warn');
+    }
+    return ok;
+  }
+
+  /**
    * v2.25.0 — PARKED BROWSER Show/Hide (owner-approved design).
    *
    * Moves THIS engine's live generation window between its off-screen
@@ -565,18 +652,35 @@ class FlowAutomationEngine {
    * interrupt generation. A throwaway CDP session is used (never
    * this.cdpSession — the prompt-write chain owns that one and drops
    * it when it dies). Returns true when the bounds were applied.
+   *
+   * [shownBounds] (pool tiling): when showing, the exact bounds to
+   * land on — the window's cell in the equal grid of shown windows.
+   * Omitted, the window lands on the legacy single-window bounds.
+   * Showing also restores the window's taskbar button and parking
+   * removes it (windowStyle), so the app's button is the ONLY way
+   * a generation window ever reaches the screen.
    */
-  async setBrowserWindowShown(shown) {
+  async setBrowserWindowShown(shown, shownBounds) {
     if (!this.browser || !this.page || this.page.isClosed()) return false;
+    // Headless generation: this run has NO window at all — there is
+    // nothing to show or park. Say so plainly and change nothing;
+    // the run itself is never touched by the toggle either way.
+    if (this.headlessGeneration) {
+      const name = this.currentAccount ? this.currentAccount.name : 'Account';
+      this.log(`[${name}] is generating in Headless mode — there is no browser window to show or hide in this run.`, 'info');
+      return false;
+    }
     const target = !!shown;
-    let session = null;
     try {
-      session = await this.page.target().createCDPSession();
-      const { windowId } = await session.send('Browser.getWindowForTarget');
-      await session.send('Browser.setWindowBounds', {
-        windowId,
-        bounds: browserMode.parkedWindowBounds(target)
-      });
+      const bounds = target
+        ? (shownBounds || browserMode.parkedWindowBounds(true))
+        : browserMode.parkedWindowBounds(false);
+      const applied = await this._setWindowBounds(bounds);
+      if (!applied) {
+        const t = plainError.translateError(this._lastWindowBoundsError || new Error('window bounds failed'));
+        this.log(`The browser window could not be ${target ? 'shown' : 'hidden'} — ${t.plain}.`, 'warn', { rawError: t.raw });
+        return false;
+      }
       if (target) {
         // Make this window the focused one on screen; harmless for a
         // parked window, and the page's focus emulation (background
@@ -584,6 +688,7 @@ class FlowAutomationEngine {
         try { await this.page.bringToFront(); } catch (e) {}
       }
       this.windowShown = target;
+      this._applyTaskbarStyle(target);
       const name = this.currentAccount ? this.currentAccount.name : 'Account';
       this.log(target
         ? `[${name}]'s browser is now ON screen — generation continues.`
@@ -593,10 +698,6 @@ class FlowAutomationEngine {
       const t = plainError.translateError(e);
       this.log(`The browser window could not be ${target ? 'shown' : 'hidden'} — ${t.plain}.`, 'warn', { rawError: t.raw });
       return false;
-    } finally {
-      if (session) {
-        try { await session.detach(); } catch (e) {}
-      }
     }
   }
 
@@ -640,7 +741,7 @@ class FlowAutomationEngine {
     // even then the credit service preserves the last known balance.
     if (this.page.url().includes('accounts.google.com')) {
       this.log(`[${this.currentAccount ? this.currentAccount.name : 'Account'}] needs a Google login — the account is not signed in.`, 'warn');
-      if (!this.headless) {
+      if (!this.headless && !this.headlessGeneration) {
         for (let i = 0; i < 10; i++) {
           await sleep(3000);
           if (!this.page.url().includes('accounts.google.com')) {
@@ -4367,7 +4468,7 @@ class FlowAutomationEngine {
                   stuckForSec: progAct.stuckForSec,
                   lastPct: progAct.lastPct,
                   queueHint: progAct.queueHint,
-                  background: !!this.headless
+                  background: !!this.headless || !!this.headlessGeneration
                 });
               } catch (e) {}
             }

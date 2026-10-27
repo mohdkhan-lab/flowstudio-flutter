@@ -22,7 +22,7 @@ const os = require('os');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.36.0';
+const SERVER_VERSION = '2.37.0';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -136,7 +136,7 @@ const SETTING_KEYS = [
   'appearance', 'theme', 'default_model', 'default_duration', 'default_aspect',
   'default_naming', 'default_quality', 'custom_tags', 'download_folder', 'chrome_path',
   'browser_background', 'show_browsers', 'preview_autoplay', 'auto_verify_start',
-  'auto_check_updates', 'social_links', 'live_only_accounts', 'history_cleared',
+  'auto_check_updates', 'social_links', 'live_only_accounts', 'history_cleared', 'headless_generation',
   'account_aliases', 'parallel_browsers', 'mcp_enabled',
 ];
 

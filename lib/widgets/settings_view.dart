@@ -7,6 +7,7 @@ import '../providers/notifications_provider.dart';
 import '../providers/settings_provider.dart';
 import 'package:flutter/services.dart';
 import '../services/automation_bridge.dart';
+import 'panel_entrance.dart';
 
 class SettingsView extends StatefulWidget {
   const SettingsView({super.key});
@@ -330,7 +331,7 @@ class _SettingsViewState extends State<SettingsView> {
     // Appearance | Defaults, Automation | Files & Paths, Updates |
     // MCP Connection, with an About BAR along the bottom — each
     // row's two cards share one height and one heading style.
-    final appearancePanel = _buildPanel(
+    final appearancePanel = PanelEntrance(index: 0, child: _buildPanel(
             title: '🎨 APPEARANCE',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -355,9 +356,10 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
               ],
             ),
-          );
+          ),
+    );
 
-    final defaultsPanel = _buildPanel(
+    final defaultsPanel = PanelEntrance(index: 1, child: _buildPanel(
             title: '⚙ DEFAULTS',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -542,12 +544,13 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
               ],
             ),
-          );
+          ),
+    );
 
     // v2.34.0 (Problem 13, Sample A): the two path pickers move out
     // of Defaults into their own Files & Paths card, paired with
     // Automation in the grid.
-    final filesPathsPanel = _buildPanel(
+    final filesPathsPanel = PanelEntrance(index: 3, child: _buildPanel(
             title: '🗂 FILES & PATHS',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -578,15 +581,26 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
               ],
             ),
-          );
+          ),
+    );
 
-    // The four Automation toggles, stacked in the half-width panel
+    // The Automation toggles, stacked in the half-width panel
     // (Sample A's grid pairs Automation with Files & Paths).
     final tglShowBrowsers = _buildToggleRow(
       title: 'Show Browsers',
       subtitle: 'ON = browsers open on screen while generating, so you can watch the work. OFF = they work hidden in the background.',
       value: s.showBrowsers,
       onChanged: (v) => prov.toggleShowBrowsers(v),
+    );
+    // Headless generation (owner's opt-in): no window exists at
+    // all for generation workers. The warning stays honest — this
+    // mode is OFF by default and is not the same as the parked
+    // background mode above.
+    final tglHeadlessGeneration = _buildToggleRow(
+      title: 'Headless mode',
+      subtitle: 'No browser windows at all while generating, so the PC carries less load. Google may refuse sign-in in headless mode on some accounts — if a run fails in headless, turn it off.',
+      value: s.headlessGeneration,
+      onChanged: (v) => prov.toggleHeadlessGeneration(v),
     );
     final tglPreviewAutoplay = _buildToggleRow(
       title: 'Preview autoplay',
@@ -618,11 +632,13 @@ class _SettingsViewState extends State<SettingsView> {
       onChanged: (v) => notifProv.setEnabled(v),
     );
 
-    final automationPanel = _buildPanel(
+    final automationPanel = PanelEntrance(index: 2, child: _buildPanel(
             title: '🤖 AUTOMATION',
             child: Column(
               children: [
                 tglShowBrowsers,
+                Divider(color: AppTheme.borderSoft, height: 16),
+                tglHeadlessGeneration,
                 Divider(color: AppTheme.borderSoft, height: 16),
                 tglPreviewAutoplay,
                 Divider(color: AppTheme.borderSoft, height: 16),
@@ -633,9 +649,10 @@ class _SettingsViewState extends State<SettingsView> {
                 tglNotifications,
               ],
             ),
-          );
+          ),
+    );
 
-    final updatesPanel = _buildPanel(
+    final updatesPanel = PanelEntrance(index: 4, child: _buildPanel(
             title: '🔔 UPDATES',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -750,16 +767,17 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
               ],
             ),
-          );
+          ),
+    );
 
-    final mcpPanel = _buildMcpPanel();
+    final mcpPanel = PanelEntrance(index: 5, child: _buildMcpPanel());
 
     // v2.34.0 (Problem 13, Sample A): About is a full-width BAR
     // along the bottom — logo + version on the left, the account /
     // video stats and the social icons on the right — not another
     // tall card. (The old card's "Design" row is gone: themes live
     // in the Appearance card directly above.)
-    final aboutPanel = Container(
+    final aboutPanel = PanelEntrance(index: 6, child: Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: AppTheme.surface,
@@ -868,9 +886,10 @@ class _SettingsViewState extends State<SettingsView> {
           ),
         ],
       ),
+    ),
     );
 
-    final createdByPanel = _buildPanel(
+    final createdByPanel = PanelEntrance(index: 7, child: _buildPanel(
             title: 'CREATED BY',
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -936,7 +955,8 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
               ],
             ),
-          );
+          ),
+    );
 
     return SingleChildScrollView(
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: _sectionGap),

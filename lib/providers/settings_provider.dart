@@ -142,6 +142,13 @@ class SettingsProvider with ChangeNotifier {
         if (data['browser_background'] != null) {
           _settings.showBrowsers = data['browser_background'].toString() == '0';
         }
+        // Headless generation (owner's opt-in): the engine reads
+        // the same key ('headless_generation') when a generation
+        // run starts and launches those workers as true headless
+        // Chrome. Default OFF — only the exact '1' turns it on.
+        if (data['headless_generation'] != null) {
+          _settings.headlessGeneration = data['headless_generation'].toString() == '1';
+        }
         if (data['default_quality'] != null) _settings.quality = data['default_quality'].toString();
         if (data['preview_autoplay'] != null) _settings.previewAutoplay = data['preview_autoplay'] != '0';
         if (data['auto_verify_start'] != null) _settings.autoVerifyOnStart = data['auto_verify_start'] == '1';
@@ -353,6 +360,16 @@ class SettingsProvider with ChangeNotifier {
     // Engine semantics: browser_background '1' = run browsers in the
     // background (hidden, off-screen), '0' = browsers visible.
     AutomationBridge.instance.saveSetting('browser_background', val ? '0' : '1');
+    notifyListeners();
+  }
+
+  // Headless generation (Settings → Automation): generation
+  // workers launch true headless Chrome — no window at all. The
+  // engine reads this key when a run starts; sign-in windows and
+  // account checks are not affected.
+  void toggleHeadlessGeneration(bool val) {
+    _settings.headlessGeneration = val;
+    AutomationBridge.instance.saveSetting('headless_generation', val ? '1' : '0');
     notifyListeners();
   }
 

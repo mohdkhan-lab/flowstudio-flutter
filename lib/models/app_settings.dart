@@ -11,6 +11,7 @@ class AppSettings {
   String outputDirectory;
   String chromePath;
   bool showBrowsers; // Show Puppeteer browsers on screen
+  bool headlessGeneration; // Headless mode: generation workers run true headless Chrome (no window at all)
   bool onlyRunLiveAccounts; // v2.27.0: moved here from the sidebar (Settings → Automation)
   bool previewAutoplay;
   bool autoVerifyOnStart;
@@ -33,11 +34,12 @@ class AppSettings {
     this.outputDirectory = 'C:\\FlowStudio\\Videos',
     this.chromePath = '',
     this.showBrowsers = false,
+    this.headlessGeneration = false,
     this.onlyRunLiveAccounts = false,
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.currentVersion = 'v2.36.0',
+    this.currentVersion = 'v2.37.0',
     // v2.34.0 (Problem 12): no placeholder social links ship any
     // more — an unconfigured service shows NO icon (top strip /
     // About) instead of an icon that opens a dead page. The owner
@@ -61,6 +63,7 @@ class AppSettings {
     String? outputDirectory,
     String? chromePath,
     bool? showBrowsers,
+    bool? headlessGeneration,
     bool? onlyRunLiveAccounts,
     bool? previewAutoplay,
     bool? autoVerifyOnStart,
@@ -83,6 +86,7 @@ class AppSettings {
       outputDirectory: outputDirectory ?? this.outputDirectory,
       chromePath: chromePath ?? this.chromePath,
       showBrowsers: showBrowsers ?? this.showBrowsers,
+      headlessGeneration: headlessGeneration ?? this.headlessGeneration,
       onlyRunLiveAccounts: onlyRunLiveAccounts ?? this.onlyRunLiveAccounts,
       previewAutoplay: previewAutoplay ?? this.previewAutoplay,
       autoVerifyOnStart: autoVerifyOnStart ?? this.autoVerifyOnStart,

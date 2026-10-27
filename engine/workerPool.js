@@ -815,13 +815,23 @@ class WorkerPool {
             reason,
             attempts: (opts.engineTask && opts.engineTask.downloadAttempts) || []
           });
+          // v2.38.0: the first failure's detail now carries the
+          // strategy results too (the download-retry outcome entry
+          // already did) — since v2.38.0 those notes include each
+          // fetch's REAL error (HTTP status / exception), so the
+          // owner-facing record finally names why the file could
+          // not be saved instead of only that it could not.
+          const dlAttemptsFirst = (opts.engineTask && opts.engineTask.downloadAttempts) || [];
+          const dlAttemptsText = dlAttemptsFirst.length > 0
+            ? ` Strategy results: ${dlAttemptsFirst.map(a => `${a.strategy}: ${a.ok ? 'worked' : `failed (${a.note || 'reason not recorded'})`}`).join(' · ')}.`
+            : '';
           recordActivity({
             category: 'generation', level: 'warn', accountId: accountId || null, accountName: accountName || null,
             stage: 'download',
             taskId: rowTask.id,
             promptIndex: rowTask.prompt_index,
             reason,
-            detail: `Prompt #${rowTask.prompt_index + 1}'s video HAD been generated on [${accountName || 'account'}] and credits had been deducted — only its file (download) could not be saved. The task was NOT failed and the prompt will NOT be SUBMITTED AGAIN (zero double charge). Now all download strategies will run again from that same tile in that same account's project. Failover did not happen for this reason: the generated tile exists only in THIS account's project; it does not exist on any other account.`,
+            detail: `Prompt #${rowTask.prompt_index + 1}'s video HAD been generated on [${accountName || 'account'}] and credits had been deducted — only its file (download) could not be saved.${dlAttemptsText} The task was NOT failed and the prompt will NOT be SUBMITTED AGAIN (zero double charge). Now all download strategies will run again from that same tile in that same account's project. Failover did not happen for this reason: the generated tile exists only in THIS account's project; it does not exist on any other account.`,
             message: `Download fail: Prompt #${rowTask.prompt_index + 1} — the video had been generated, only the download will happen again (no new charge)`
           });
           this.log(`Prompt #${rowTask.prompt_index + 1}: the video had been generated — only the download failed. The prompt will NOT be submitted again; only the download will be retried from the same tile (no new charge).`, 'warn');

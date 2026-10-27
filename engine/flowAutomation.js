@@ -18,6 +18,7 @@ const { FFmpegService } = require('./ffmpegService');
 const { sanitizeFilePart } = require('./pathSecurity');
 const tagNaming = require('./tagNaming');
 const downloadGuard = require('./downloadGuard');
+const downloadFetch = require('./downloadFetch');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -179,6 +180,11 @@ class FlowAutomationEngine {
     // file, each overwriting the previous (live-proven 2026-10-26).
     this.savedPathOwners = new Map();
     this.consumedVideoUrls = new Set();
+    // v2.38.0: the browser session's REAL User-Agent, read once per
+    // launch and reused by every direct fetch — the cookies a fetch
+    // carries come from this same session, so the UA must name the
+    // same browser (a hardcoded version string did not).
+    this._browserUA = null;
     this.capturedVideoUrls = [];
     this.capturedVideoBuffers = new Map();
     this.capturedVideoBytes = 0;
@@ -2649,6 +2655,42 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.38.0: per-attempt REAL error record for the direct fetch.
+   * downloadFromCapturedStream used to return a bare boolean — the
+   * HTTP status / exception that decided the outcome died inside
+   * the call, and the Activity detail (built from strategy notes)
+   * could only ever say "(the link may have expired)". Now every
+   * sub-step appends a plain step record to task._lastFetchSteps,
+   * and the strategy notes carry downloadFetch.summarizeFetchSteps'
+   * compact line, so the actual cause survives into the Activity
+   * detail and the download ledger.
+   */
+  _noteFetchStep(task, step) {
+    if (!task) return;
+    if (!Array.isArray(task._lastFetchSteps)) task._lastFetchSteps = [];
+    task._lastFetchSteps.push(step);
+    if (task._lastFetchSteps.length > 16) task._lastFetchSteps.splice(0, task._lastFetchSteps.length - 16);
+  }
+
+  /** Compact summary of the LAST direct-fetch call's failures ('' when none). */
+  _fetchSummary(task) {
+    try { return downloadFetch.summarizeFetchSteps(task && task._lastFetchSteps); } catch (e) { return ''; }
+  }
+
+  /** The browser session's real User-Agent (cached per engine). */
+  async _realUserAgent() {
+    if (this._browserUA) return this._browserUA;
+    let ua = null;
+    try {
+      if (this.page && !this.page.isClosed()) {
+        ua = await downloadGuard.withTimeout(this.page.evaluate(() => navigator.userAgent), 5000, 'user-agent read');
+      }
+    } catch (e) { ua = null; }
+    this._browserUA = downloadFetch.resolveUserAgent(ua);
+    return this._browserUA;
+  }
+
+  /**
    * Download path A: the intercepted CDN stream / direct fetch — but ONLY
    * for the URL extracted from this task's own claimed tile.
    */
@@ -2670,10 +2712,15 @@ class FlowAutomationEngine {
 
     this.log(`[Prompt #${task.promptIndex + 1}] The direct download of the video is running — only from this prompt's own video stream…`, 'info');
 
+    // v2.38.0: this call's own error record starts fresh — the
+    // strategy note written after the call must describe THIS
+    // call's outcome, not an earlier one's.
+    task._lastFetchSteps = [];
     let savedBuffer = null;
 
     if (this.capturedVideoBuffers && this.capturedVideoBuffers.has(targetUrl)) {
       savedBuffer = this.capturedVideoBuffers.get(targetUrl);
+      this._noteFetchStep(task, { step: 'captured-buffer', ok: true });
     }
 
     // Blob URLs can only be materialized inside the page — and only from
@@ -2709,9 +2756,12 @@ class FlowAutomationEngine {
         }, { idx: blobTileIndex }), 45000, 'video data read');
         if (base64 && base64.includes('base64,')) {
           savedBuffer = Buffer.from(base64.split('base64,')[1], 'base64');
+        } else {
+          this._noteFetchStep(task, { step: 'blob-read', ok: false, error: 'the tile\'s blob data could not be read' });
         }
       } catch (e) {
         const t = plainError.translateError(e);
+        this._noteFetchStep(task, { step: 'blob-read', ok: false, error: t.raw || t.plain });
         this.log(`Video data nikalne me ek note: ${t.plain}.`, 'warn', { rawError: t.raw });
       }
     }
@@ -2726,49 +2776,79 @@ class FlowAutomationEngine {
       // yahin mara: "URL apna tha, lekin file ka data nahi ban
       // paya"). Ab dono scopes ke cookies mila kar bhejte hain, aur
       // server ka HTTP status bhi log hota hai — khamoshi khatam.
-      try {
-        const jar = new Map();
-        for (const scope of [null, targetUrl]) {
-          try {
-            const cs = scope ? await this.page.cookies(scope) : await this.page.cookies();
-            for (const c of cs || []) jar.set(`${c.name}@${c.domain || ''}`, c);
-          } catch (e) {}
-        }
-        const cookieHeader = [...jar.values()].map(c => `${c.name}=${c.value}`).join('; ');
-        // v2.30.0: this fetch used to carry NO AbortSignal — a
-        // stalled connection could hold the download step (and the
-        // render monitor behind it) indefinitely. 60s abort now;
-        // the orchestrator-level guard bounds the whole step too.
-        const fetchAbort = new AbortController();
-        const fetchTimer = setTimeout(() => { try { fetchAbort.abort(); } catch (e) {} }, 60000);
-        let resp;
+      // v2.38.0: the direct fetch is now a small RETRY LOOP, not a
+      // single shot. A freshly minted signed (FIFE) link can refuse
+      // the very first GET (HTTP 403/404 while the object is still
+      // propagating) or the connection can reset — and the SAME
+      // account + route then succeeds moments later (the owner's
+      // intermittent "download fail" pattern, incl. the first
+      // headless run on 2026-10-27). Transient failures now retry
+      // inside this call (downloadFetch's schedule) BEFORE the
+      // strategy is allowed to die; final failures fall through to
+      // the in-browser fetch below, exactly as before. Cookies are
+      // rebuilt per attempt and the User-Agent is the browser
+      // session's OWN (the cookies and the UA now always describe
+      // the same browser — previously the UA was a hardcoded
+      // Chrome/133 string). Retrying a FETCH can never resubmit the
+      // prompt: this function only ever GETs an existing file.
+      const maxFetchAttempts = downloadFetch.NODE_FETCH_MAX_ATTEMPTS;
+      for (let fetchTry = 1; fetchTry <= maxFetchAttempts && !savedBuffer && !this.isStopping; fetchTry++) {
+        let retry = false;
         try {
-          resp = await fetch(targetUrl, {
-            headers: {
-              'Cookie': cookieHeader,
-              'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/133.0.0.0 Safari/537.36',
-              'Referer': 'https://flow.google.com/'
-            },
-            redirect: 'follow',
-            signal: fetchAbort.signal
-          });
-        } finally {
-          clearTimeout(fetchTimer);
-        }
-
-        if (resp.ok) {
-          const buf = Buffer.from(await resp.arrayBuffer());
-          if (buf.length >= minSizeDl) {
-            savedBuffer = buf;
-          } else {
-            this.log(`[Prompt #${task.promptIndex + 1}] Direct download: a response came from the server but the data was very small (${buf.length} bytes) — not treated as the actual video.`, 'warn');
+          const jar = new Map();
+          for (const scope of [null, targetUrl]) {
+            try {
+              const cs = scope ? await this.page.cookies(scope) : await this.page.cookies();
+              for (const c of cs || []) jar.set(`${c.name}@${c.domain || ''}`, c);
+            } catch (e) {}
           }
-        } else {
-          this.log(`[Prompt #${task.promptIndex + 1}] Direct download: the server refused (HTTP ${resp.status}) — now a fetch from inside the browser will be tried.`, 'warn');
+          const cookieHeader = [...jar.values()].map(c => `${c.name}=${c.value}`).join('; ');
+          // v2.30.0: this fetch used to carry NO AbortSignal — a
+          // stalled connection could hold the download step (and the
+          // render monitor behind it) indefinitely. 60s abort now;
+          // the orchestrator-level guard bounds the whole step too.
+          const fetchAbort = new AbortController();
+          const fetchTimer = setTimeout(() => { try { fetchAbort.abort(); } catch (e) {} }, 60000);
+          let resp;
+          try {
+            resp = await fetch(targetUrl, {
+              headers: {
+                'Cookie': cookieHeader,
+                'User-Agent': await this._realUserAgent(),
+                'Referer': 'https://flow.google.com/'
+              },
+              redirect: 'follow',
+              signal: fetchAbort.signal
+            });
+          } finally {
+            clearTimeout(fetchTimer);
+          }
+
+          if (resp.ok) {
+            const buf = Buffer.from(await resp.arrayBuffer());
+            if (buf.length >= minSizeDl) {
+              savedBuffer = buf;
+              this._noteFetchStep(task, { step: 'node-fetch', ok: true });
+            } else {
+              this._noteFetchStep(task, { step: 'node-fetch', ok: false, error: `response was only ${buf.length} bytes` });
+              this.log(`[Prompt #${task.promptIndex + 1}] Direct download: a response came from the server but the data was very small (${buf.length} bytes) — not treated as the actual video.`, 'warn');
+            }
+          } else {
+            this._noteFetchStep(task, { step: 'node-fetch', ok: false, status: resp.status });
+            retry = downloadFetch.isRetryableStatus(resp.status);
+            this.log(`[Prompt #${task.promptIndex + 1}] Direct download: the server refused (HTTP ${resp.status})${retry && fetchTry < maxFetchAttempts ? ' — the direct fetch will be tried again in a moment' : ' — now a fetch from inside the browser will be tried'}.`, 'warn');
+          }
+        } catch (e) {
+          const t = plainError.translateError(e);
+          this._noteFetchStep(task, { step: 'node-fetch', ok: false, error: t.raw || t.plain });
+          retry = downloadFetch.isRetryableFetchError(e);
+          this.log(`A problem came up fetching Prompt #${task.promptIndex + 1}'s video file: ${t.plain}.`, 'warn', { rawError: t.raw });
         }
-      } catch (e) {
-        const t = plainError.translateError(e);
-        this.log(`A problem came up fetching Prompt #${task.promptIndex + 1}'s video file: ${t.plain}.`, 'warn', { rawError: t.raw });
+        if (!savedBuffer && retry && fetchTry < maxFetchAttempts && !this.isStopping) {
+          const waitMs = downloadFetch.retryDelayMs(fetchTry);
+          this.log(`[Prompt #${task.promptIndex + 1}] Direct download attempt ${fetchTry} of ${maxFetchAttempts} did not succeed — trying the same link once more (download only)…`, 'info');
+          if (waitMs > 0) await sleep(waitMs);
+        }
       }
     }
 
@@ -2803,27 +2883,44 @@ class FlowAutomationEngine {
           const buf = Buffer.from(got.b64, 'base64');
           if (buf.length >= minSizeDl) {
             savedBuffer = buf;
+            this._noteFetchStep(task, { step: 'page-fetch', ok: true });
             this.log(`[Prompt #${task.promptIndex + 1}] Got the video data from the in-browser fetch (${(buf.length / 1024).toFixed(0)} KB).`, 'info');
           } else {
+            this._noteFetchStep(task, { step: 'page-fetch', ok: false, error: `response was only ${buf.length} bytes` });
             this.log(`[Prompt #${task.promptIndex + 1}] The in-browser fetch also brought very small data (${buf.length} bytes).`, 'warn');
           }
         } else if (got && got.err) {
+          this._noteFetchStep(task, { step: 'page-fetch', ok: false, error: String(got.err) });
           this.log(`[Prompt #${task.promptIndex + 1}] The in-browser fetch also failed: ${got.err}.`, 'warn');
+        } else {
+          this._noteFetchStep(task, { step: 'page-fetch', ok: false, error: 'no data came back from the page' });
         }
       } catch (e) {
         const t = plainError.translateError(e);
+        this._noteFetchStep(task, { step: 'page-fetch', ok: false, error: t.raw || t.plain });
         this.log(`[Prompt #${task.promptIndex + 1}] The in-browser fetch could not run: ${t.plain}.`, 'warn', { rawError: t.raw });
       }
     }
 
     if (savedBuffer && savedBuffer.length > 10000) {
-      return await this._saveBufferForTask(task, downloadFolder, settings, savedBuffer, targetUrl);
+      const savedOk = await this._saveBufferForTask(task, downloadFolder, settings, savedBuffer, targetUrl);
+      if (!savedOk) {
+        // _saveBufferForTask returns false ONLY when the saved
+        // file failed the ffprobe video check (it logs the line
+        // itself) — record it so the strategy note names the real
+        // cause instead of "the data was not received".
+        this._noteFetchStep(task, { step: 'save-verify', ok: false, error: 'the saved file failed the video check (ffprobe)' });
+      }
+      return savedOk;
     }
 
     // v2.7.0: yahan tak aane ka matlab hai URL apna tha lekin file ka
     // data nahi ban paya (buffer nahi mila / fetch fail / data bahut
     // chhota). Wajah saaf likho — khamoshi hi v2.6.0 ka bug thi.
-    this.log(`[Prompt #${task.promptIndex + 1}] The file could not be made from the stream: the video data was not received (no response from the server, or the data was very small).`, 'warn');
+    // v2.38.0: the line now ends with the per-attempt REAL errors
+    // (HTTP status / exception) recorded during this call.
+    const failSummary = this._fetchSummary(task);
+    this.log(`[Prompt #${task.promptIndex + 1}] The file could not be made from the stream: the video data was not received (no response from the server, or the data was very small)${failSummary ? ` — attempts: ${failSummary}` : ''}.`, 'warn');
     return false;
   }
 
@@ -3571,11 +3668,32 @@ class FlowAutomationEngine {
     let ok = false;
     try { ok = await this.downloadFromCapturedStream(task, ctx.downloadFolder, ctx.settings); } catch (e) { ok = false; }
     if (!ok && !task.mediaSaved && !this.isStopping) {
+      // v2.38.0: before the second try, if the server REFUSED the
+      // backend link (HTTP 403/404 — the signature was not servable
+      // yet, or the minted link went stale), do not just re-GET the
+      // same string: ask the task's OWN tile for its current URL
+      // first. The player's currentSrc is re-signed by Flow as the
+      // tile plays, so it is the freshest link available — and it
+      // comes from the task's own fingerprint-resolved tile, so the
+      // identity gate is the strongest one there is. A different
+      // own-URL replaces the fetch target for the second try; the
+      // backend URL stays recorded on the task either way.
+      const refused = (task._lastFetchSteps || []).some(s => s && !s.ok && (s.status === 403 || s.status === 404));
+      if (refused) {
+        try {
+          const fresh = await this._extractTileMediaUrlDetailed(task, task.tileIndex, !!(ctx.settings && ctx.settings.type === 'Image'));
+          if (fresh && fresh.url && fresh.url !== url && this._isTaskOwnUrl(task, fresh.url)) {
+            task.completedVideoUrl = fresh.url;
+            this.log(`[Prompt #${n}] The backend link was refused — retrying with the fresh link from the tile itself (${fresh.via}).`, 'info');
+          }
+        } catch (e) {}
+      }
       await sleep(1500);
       try { ok = await this.downloadFromCapturedStream(task, ctx.downloadFolder, ctx.settings); } catch (e) { ok = false; }
     }
     if (!ok && !task.mediaSaved) {
-      this.log(`[Prompt #${n}] The backend link had been found, but the file could not be made from it (the link may have expired). The remaining routes will be tried.`, 'warn');
+      const failSummary = this._fetchSummary(task);
+      this.log(`[Prompt #${n}] The backend link had been found, but the file could not be made from it${failSummary ? ` (attempts: ${failSummary})` : ' (the link may have expired)'}. The remaining routes will be tried.`, 'warn');
     }
     return !!ok;
   }
@@ -3598,7 +3716,7 @@ class FlowAutomationEngine {
       // discarded, its late result ignored).
       let ok = false;
       try { ok = await downloadGuard.withTimeout(task._backendFetchPromise, 120000, 'immediate backend fetch'); } catch (e) { ok = false; }
-      attempts.push({ strategy: 'backend-fetch', ok: !!ok, note: ok ? 'as soon as the backend link was found, the file was saved by an immediate fetch' : 'the backend link was found, but the immediate fetch could not save the file' });
+      attempts.push({ strategy: 'backend-fetch', ok: !!ok, note: ok ? 'as soon as the backend link was found, the file was saved by an immediate fetch' : `the backend link was found, but the immediate fetch could not save the file${this._fetchSummary(task) ? ` — ${this._fetchSummary(task)}` : ''}` });
       if (ok || task.mediaSaved) return true;
       // Turant fetch fail hua — ek baar phir, taze bandhan ke saath.
       task._backendFetchPromise = null;
@@ -3614,7 +3732,7 @@ class FlowAutomationEngine {
       if (key) this._captureTasks.set(key, task);
       task._backendCtx = { downloadFolder, settings };
       const ok = await this._kickBackendFetch(task, task._backendCtx);
-      attempts.push({ strategy: 'backend-fetch', ok: !!ok, note: ok ? 'the link bound from the backend (network) was fetched directly and saved' : 'the backend link was found, but no file was made from the fetch (the link may have expired)' });
+      attempts.push({ strategy: 'backend-fetch', ok: !!ok, note: ok ? 'the link bound from the backend (network) was fetched directly and saved' : `the backend link was found, but no file was made from the fetch${this._fetchSummary(task) ? ` — ${this._fetchSummary(task)}` : ' (the link may have expired)'}` });
       return !!ok;
     }
     const seen = this.netCapture ? this.netCapture.stats.mediaUrlsSeen : 0;
@@ -3801,7 +3919,7 @@ class FlowAutomationEngine {
       this.log(`[Prompt #${n}] Download strategy: ${crossMatched ? 'the tile\'s URL has been confirmed from the backend (network)' : (fromBuffer ? 'video stream captured in between' : `URL found from the tile's element (${via})`)} — downloading the file…`, 'info');
       let ok = false;
       try { ok = await this.downloadFromCapturedStream(task, downloadFolder, settings); } catch (e) { ok = false; }
-      attempts.push({ strategy: stratName, ok, note: ok ? 'the file was saved by this route' : 'the URL was the task\'s own, but the file data could not be made' });
+      attempts.push({ strategy: stratName, ok, note: ok ? 'the file was saved by this route' : `the URL was the task's own, but the file data could not be made${this._fetchSummary(task) ? ` — ${this._fetchSummary(task)}` : ''}` });
       if (ok) return { ok: true, strategy: stratName, attempts };
     } else {
       this.log(`[Prompt #${n}] No media URL of this task was found on the tile — direct stream download is not possible; now the remaining routes will be tried.`, 'warn');
@@ -3818,7 +3936,7 @@ class FlowAutomationEngine {
         this._captureTasks.set(captureKey, task);
         task._backendCtx = { downloadFolder, settings };
         const ok = await this._kickBackendFetch(task, task._backendCtx);
-        attempts.push({ strategy: 'backend-fetch', ok: !!ok, note: ok ? 'the unbound link found on the backend was treated as this task\'s by sequence order and saved' : 'the backend link bound by sequence could not be fetched' });
+        attempts.push({ strategy: 'backend-fetch', ok: !!ok, note: ok ? 'the unbound link found on the backend was treated as this task\'s by sequence order and saved' : `the backend link bound by sequence could not be fetched${this._fetchSummary(task) ? ` — ${this._fetchSummary(task)}` : ''}` });
         if (ok) return { ok: true, strategy: 'backend-fetch', attempts };
       }
     }

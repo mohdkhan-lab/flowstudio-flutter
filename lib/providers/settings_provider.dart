@@ -198,6 +198,25 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
   }
 
+  // Notification Center: a "View video" action in the notification
+  // panel asks History to open one file's player. The request is a
+  // plain file name, consumed once by the History view after its
+  // list loads — a file that is not in the output folder simply
+  // lands the user on History with nothing opened.
+  String? _pendingHistoryFile;
+  String? get pendingHistoryFile => _pendingHistoryFile;
+
+  void openHistoryFile(String name) {
+    _pendingHistoryFile = name;
+    setNavView('history');
+  }
+
+  String? takePendingHistoryFile() {
+    final name = _pendingHistoryFile;
+    _pendingHistoryFile = null;
+    return name;
+  }
+
   // v2.27.0: "Only run live accounts" toggle (Settings → Automation).
   void toggleOnlyRunLiveAccounts(bool val) {
     _settings.onlyRunLiveAccounts = val;

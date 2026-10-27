@@ -6,8 +6,10 @@ import 'providers/accounts_provider.dart';
 import 'providers/activity_provider.dart';
 import 'providers/settings_provider.dart';
 import 'providers/generator_provider.dart';
+import 'providers/notifications_provider.dart';
 import 'services/automation_bridge.dart';
 import 'widgets/top_strip.dart';
+import 'widgets/notification_center.dart';
 import 'widgets/sidebar_accounts.dart';
 import 'widgets/prompts_editor.dart';
 import 'widgets/video_settings_bar.dart';
@@ -31,6 +33,10 @@ class FlowStudioApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return MultiProvider(
       providers: [
+        // Notification Center: registered first — the other
+        // providers publish events to it through its static
+        // `shared` reference, set in its constructor.
+        ChangeNotifierProvider(create: (_) => NotificationsProvider()),
         ChangeNotifierProvider(create: (_) => AccountsProvider()),
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
         ChangeNotifierProvider(create: (_) => ActivityProvider()),
@@ -194,8 +200,13 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
     return Scaffold(
       backgroundColor: AppTheme.bgBody,
       body: SafeArea(
-        child: Column(
+        // Notification Center: the bell's popup + panel live in an
+        // overlay layer above the untouched Column layout, so no
+        // existing size on the main screen changes.
+        child: Stack(
           children: [
+            Column(
+              children: [
             // Top Strip Header Bar
             const TopStrip(),
 
@@ -280,6 +291,9 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
                 },
               ),
             ),
+              ],
+            ),
+            const Positioned.fill(child: NotificationOverlay()),
           ],
         ),
       ),

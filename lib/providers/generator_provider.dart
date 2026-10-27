@@ -1,11 +1,14 @@
 import 'dart:async';
+import 'dart:io';
 import 'package:flutter/material.dart';
+import '../models/app_notification.dart';
 import '../models/prompt_item.dart';
 import '../models/activity_log.dart';
 import '../services/automation_bridge.dart';
 import '../services/prompt_parser.dart';
 import 'accounts_provider.dart';
 import 'activity_provider.dart';
+import 'notifications_provider.dart';
 import 'settings_provider.dart';
 
 enum GenerationState {
@@ -67,6 +70,12 @@ class GeneratorProvider with ChangeNotifier {
       _stampEngineEvent();
       final item = _matchCompletedItem(data);
       if (item == null) return;
+      // Notification Center: remember the pre-event state so the
+      // hooks below fire on the TRANSITION only — a duplicate
+      // completion event for an already-settled card must not
+      // notify twice.
+      final wasFailed = item.status == PromptStatus.failed;
+      final wasCompleted = item.status == PromptStatus.completed;
       final err = data['error']?.toString();
       final statusStr = data['status']?.toString() ?? '';
       final failed = (err != null && err.isNotEmpty) ||
@@ -91,6 +100,32 @@ class GeneratorProvider with ChangeNotifier {
         item.localFilePath = data['filePath']?.toString();
         _completionTimes.add(DateTime.now());
         _refreshEngineStats();
+      }
+      // Notification Center: the card's real outcome — a failure
+      // the moment it settles failed, a download the moment its
+      // file lands. (The task-updated 'done'/'failed' hooks cover
+      // the paths where THIS event never arrives; the was* guards
+      // keep the two signals from notifying the same outcome
+      // twice.)
+      final notif = NotificationsProvider.shared;
+      if (notif != null) {
+        if (failed && !wasFailed) {
+          notif.add(
+            type: NotificationType.error,
+            title: 'Error — Video #${item.index} failed',
+            message: (item.error != null && item.error!.isNotEmpty)
+                ? item.error!
+                : 'Generation failed',
+            fileName: item.outputFileName,
+          );
+        } else if (!failed && !wasCompleted) {
+          notif.add(
+            type: NotificationType.download,
+            title: 'Download complete',
+            message: _downloadMessage(item),
+            fileName: item.outputFileName,
+          );
+        }
       }
       notifyListeners();
     };
@@ -120,7 +155,14 @@ class GeneratorProvider with ChangeNotifier {
                 : statusStr == 'Stopped'
                     ? 'Stopped by user'
                     : 'Run ended before this prompt finished';
-        _settleRun(reason);
+        // Notification Center: a clean 'Completed' may raise the
+        // "Run complete" success; a user Stop settles silently
+        // (the user pressed the button — no failure spam).
+        _settleRun(
+          reason,
+          completed: statusStr == 'Completed',
+          notifyFailures: statusStr != 'Stopped',
+        );
       }
     };
     // v2.30.1: the engine's per-task updates (WorkerPool.onTaskUpdate)
@@ -158,6 +200,17 @@ class GeneratorProvider with ChangeNotifier {
           if (accName != null && accName.isNotEmpty) item.accountName = accName;
           _completionTimes.add(DateTime.now());
           _refreshEngineStats();
+          // Notification Center: on the recovery / download-retry
+          // paths this 'done' IS the download landing (see the
+          // v2.30.3 note above) — notify it like the
+          // video-completed path does. The status guard above
+          // keeps it to the transition.
+          NotificationsProvider.shared?.add(
+            type: NotificationType.download,
+            title: 'Download complete',
+            message: _downloadMessage(item),
+            fileName: item.outputFileName,
+          );
           notifyListeners();
         }
       } else if (statusStr == 'generating') {
@@ -177,6 +230,15 @@ class GeneratorProvider with ChangeNotifier {
             item.status == PromptStatus.downloading) {
           item.status = PromptStatus.failed;
           item.error = data['reason']?.toString() ?? 'Generation failed';
+          // Notification Center: the card settled failed here —
+          // notify once; a later video-completed for the same item
+          // sees the failed status and stays silent.
+          NotificationsProvider.shared?.add(
+            type: NotificationType.error,
+            title: 'Error — Video #${item.index} failed',
+            message: item.error ?? 'Generation failed',
+            fileName: item.outputFileName,
+          );
           notifyListeners();
         }
       }
@@ -273,8 +335,17 @@ class GeneratorProvider with ChangeNotifier {
   /// their real outcome), the run state goes idle, and the Progress
   /// header counts — which derive from item statuses — stop claiming
   /// anything is still rendering.
-  void _settleRun(String reason) {
+  void _settleRun(
+    String reason, {
+    bool completed = false,
+    bool notifyFailures = true,
+  }) {
     _disarmRunWatchdog();
+    // Notification Center: capture the run's shape BEFORE the
+    // settle mutates it — was it really running, and which items
+    // does this settle itself fail?
+    final wasRunning = _state == GenerationState.running && _runStarted;
+    final newlyFailed = <PromptItem>[];
     for (final item in _items) {
       if (item.status == PromptStatus.pending ||
           item.status == PromptStatus.queued ||
@@ -282,10 +353,88 @@ class GeneratorProvider with ChangeNotifier {
           item.status == PromptStatus.downloading) {
         item.status = PromptStatus.failed;
         item.error ??= reason;
+        newlyFailed.add(item);
       }
     }
     _state = GenerationState.idle;
+    // Notification Center: run-level outcomes. "Run complete"
+    // only for a genuinely finished run with zero failures (the
+    // per-video failures were already notified one by one); a
+    // settle that fails still-open items raises ONE summary
+    // error instead of one popup per item.
+    final notif = NotificationsProvider.shared;
+    if (notif != null && wasRunning) {
+      if (completed && newlyFailed.isEmpty && _items.isNotEmpty) {
+        final done =
+            _items.where((i) => i.status == PromptStatus.completed).length;
+        final failedTotal =
+            _items.where((i) => i.status == PromptStatus.failed).length;
+        if (done > 0 && failedTotal == 0) {
+          var credits = 0;
+          var creditsKnown = true;
+          for (final i in _items) {
+            if (i.status != PromptStatus.completed) continue;
+            final c = i.creditsUsed;
+            if (c == null) {
+              creditsKnown = false;
+              break;
+            }
+            credits += c;
+          }
+          notif.add(
+            type: NotificationType.success,
+            title: 'Run complete',
+            message:
+                '$done video${done == 1 ? '' : 's'} ready${creditsKnown && credits > 0 ? ' · $credits credits used' : ''}',
+          );
+        }
+      }
+      if (notifyFailures && newlyFailed.isNotEmpty) {
+        if (newlyFailed.length == 1) {
+          notif.add(
+            type: NotificationType.error,
+            title: 'Error — Video #${newlyFailed.first.index} failed',
+            message: reason,
+            fileName: newlyFailed.first.outputFileName,
+          );
+        } else {
+          notif.add(
+            type: NotificationType.error,
+            title: 'Error — ${newlyFailed.length} videos failed',
+            message: reason,
+          );
+        }
+      }
+    }
     notifyListeners();
+  }
+
+  // Notification Center: "<file> saved · <size>" for a landed
+  // download. The size is the real file's, read from disk (this
+  // app and the engine share the owner's PC); when the file or
+  // its size cannot be read, the name alone is the message.
+  String _downloadMessage(PromptItem item) {
+    var name = item.outputFileName ?? '';
+    final fp = item.localFilePath;
+    if (name.isEmpty && fp != null && fp.isNotEmpty) {
+      name = fp.split(RegExp(r'[\\/]')).last;
+    }
+    if (name.isEmpty) name = 'Video #${item.index}';
+    if (fp != null && fp.isNotEmpty) {
+      try {
+        final len = File(fp).lengthSync();
+        if (len > 0) return '$name saved · ${_sizeLabel(len)}';
+      } catch (_) {}
+    }
+    return '$name saved';
+  }
+
+  static String _sizeLabel(int bytes) {
+    if (bytes >= 1024 * 1024) {
+      return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+    }
+    if (bytes >= 1024) return '${(bytes / 1024).toStringAsFixed(0)} KB';
+    return '$bytes B';
   }
 
   PromptItem? _matchCompletedItem(Map<String, dynamic> data) {

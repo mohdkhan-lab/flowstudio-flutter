@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
 import '../providers/accounts_provider.dart';
+import '../providers/notifications_provider.dart';
 import '../providers/settings_provider.dart';
 
 class TopStrip extends StatelessWidget {
@@ -10,6 +11,7 @@ class TopStrip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final accounts = context.watch<AccountsProvider>();
+    final notif = context.watch<NotificationsProvider>();
 
     return Container(
       margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
@@ -115,7 +117,7 @@ class TopStrip extends StatelessWidget {
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                   ),
                   child: Text(
-                    'v2.34.1',
+                    'v2.35.0',
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
@@ -234,11 +236,71 @@ class TopStrip extends StatelessWidget {
           // CREDITS is REMOVED — the top shows only the label and the
           // number. Syncing lives in the sidebar (Sync Selected /
           // Verify All), where it always also worked.
+          const SizedBox(width: 14),
+          // Notification Center: the bell — red badge with the
+          // unread count; tapping toggles the panel overlay
+          // (NotificationOverlay in main.dart).
+          _buildBellButton(notif),
                 ],
               ),
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  // Notification Center: bell button with the unread badge,
+  // same 28px circle language as the social icons.
+  Widget _buildBellButton(NotificationsProvider notif) {
+    final unread = notif.unreadCount;
+    return Tooltip(
+      message: 'Notifications',
+      child: InkWell(
+        onTap: notif.togglePanel,
+        borderRadius: BorderRadius.circular(14),
+        child: Container(
+          width: 28,
+          height: 28,
+          decoration: BoxDecoration(
+            color: AppTheme.overlay10,
+            shape: BoxShape.circle,
+            border: Border.all(color: AppTheme.borderSoft),
+          ),
+          child: Stack(
+            clipBehavior: Clip.none,
+            alignment: Alignment.center,
+            children: [
+              Icon(Icons.notifications_none_rounded,
+                  size: 15, color: AppTheme.textDim),
+              if (unread > 0)
+                Positioned(
+                  top: -6,
+                  right: -6,
+                  child: Container(
+                    constraints: const BoxConstraints(minWidth: 15),
+                    height: 15,
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    decoration: BoxDecoration(
+                      color: AppTheme.red,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Center(
+                      child: Text(
+                        unread > 99 ? '99+' : '$unread',
+                        style: const TextStyle(
+                          fontSize: 8.5,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                          height: 1,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+        ),
       ),
     );
   }

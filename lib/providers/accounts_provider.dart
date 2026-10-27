@@ -3,7 +3,10 @@ import 'package:flutter/material.dart';
 import 'package:file_picker/file_picker.dart';
 import '../models/account.dart';
 import '../models/activity_log.dart';
+import '../models/app_notification.dart';
 import '../services/automation_bridge.dart';
+import '../services/credit_costs.dart';
+import 'notifications_provider.dart';
 
 class AccountsProvider with ChangeNotifier {
   // v2.22.0 fix: NO hard-coded starter account. The old code pre-loaded a
@@ -44,8 +47,73 @@ class AccountsProvider with ChangeNotifier {
   // names/emails are never renamed.
   final Map<String, Map<String, String>> _aliasStore = {};
 
+  // Notification Center: per-account alert bookkeeping. The last
+  // status seen per account id (login alerts fire on the
+  // TRANSITION into a fail state, never on every repeat event),
+  // and the ids already warned about low credits (warned once
+  // until the balance rises back above the threshold).
+  final Map<String, AccountStatus> _alertStatusById = {};
+  final Set<String> _lowCreditWarnedIds = {};
+
   AccountsProvider() {
     _initEngine();
+  }
+
+  /// Notification Center: the name the sidebar shows for an
+  /// account — alias when assigned, else the engine name.
+  String _displayName(GoogleAccount acc) =>
+      acc.alias.isNotEmpty ? acc.alias : acc.name;
+
+  /// Notification Center: evaluate the two account alerts for one
+  /// account from its CURRENT state:
+  ///  - Login problem: the account's status moved INTO error /
+  ///    loginRequired from any other state (a check reported
+  ///    Fail). The first sight of an account only seeds the
+  ///    baseline — a fail state already present at startup or add
+  ///    time is not a fresh event.
+  ///  - Credits low: a READY account's credits fell below the
+  ///    cheapest per-video cost (credit_costs table), so it cannot
+  ///    afford even one more video. Fires once per account; the
+  ///    warning re-arms only when the balance rises back above
+  ///    the threshold.
+  void _evaluateAccountAlerts(GoogleAccount acc) {
+    final prev = _alertStatusById[acc.id];
+    _alertStatusById[acc.id] = acc.status;
+    final cheapest = creditCostPerVideo('Omni Flash', '4s');
+    if (prev == null) {
+      // First sight: seed the low-credit warned state so an
+      // already-low balance does not "newly" warn on load.
+      if (cheapest != null && acc.credits < cheapest) {
+        _lowCreditWarnedIds.add(acc.id);
+      }
+      return;
+    }
+    final notif = NotificationsProvider.shared;
+    final isFail = acc.status == AccountStatus.error ||
+        acc.status == AccountStatus.loginRequired;
+    final wasFail = prev == AccountStatus.error ||
+        prev == AccountStatus.loginRequired;
+    if (notif != null && isFail && !wasFail) {
+      notif.add(
+        type: NotificationType.login,
+        title: 'Login problem — ${_displayName(acc)}',
+        message: 'Account check failed — sign-in is needed.',
+      );
+    }
+    if (cheapest != null) {
+      if (acc.status == AccountStatus.ready && acc.credits < cheapest) {
+        if (_lowCreditWarnedIds.add(acc.id) && notif != null) {
+          notif.add(
+            type: NotificationType.warning,
+            title: 'Credits low — ${_displayName(acc)}',
+            message:
+                'Only ${acc.credits} credits left — not enough for another video.',
+          );
+        }
+      } else if (acc.credits >= cheapest) {
+        _lowCreditWarnedIds.remove(acc.id);
+      }
+    }
   }
 
   /// Push the runtime ACTIVE flags from [_activeShown] onto the
@@ -169,6 +237,12 @@ class AccountsProvider with ChangeNotifier {
     _applyActiveFlags();
     _applyPendingFlags();
     _ensureAliases(hints: hints);
+    // Notification Center: a wholesale refresh (sync / import)
+    // is where fresh credits and check results land — evaluate
+    // the account alerts against the new state.
+    for (final acc in _accounts) {
+      _evaluateAccountAlerts(acc);
+    }
     notifyListeners();
   }
 
@@ -180,6 +254,11 @@ class AccountsProvider with ChangeNotifier {
     if (remoteAccounts.isNotEmpty) {
       _accounts = remoteAccounts;
       _ensureAliases();
+      // Notification Center: seed the alert baselines from the
+      // loaded state — nothing present at startup is a new event.
+      for (final acc in _accounts) {
+        _evaluateAccountAlerts(acc);
+      }
       notifyListeners();
     }
 
@@ -227,6 +306,11 @@ class AccountsProvider with ChangeNotifier {
       _applyPendingFlags();
       // v2.29.0: same for the display alias.
       _ensureAliases();
+      // Notification Center: per-account check results stream in
+      // through this event — evaluate the login / credits alerts
+      // against the account's new state (alias is set by now, so
+      // the notification names the account as the sidebar does).
+      _evaluateAccountAlerts(acc);
       notifyListeners();
     };
   }
@@ -295,6 +379,9 @@ class AccountsProvider with ChangeNotifier {
     // that reuses it, with no check running and no exit.
     _pendingCheckIds.remove(id);
     _checkSeenIds.remove(id);
+    // Notification Center: drop the alert bookkeeping too.
+    _alertStatusById.remove(id);
+    _lowCreditWarnedIds.remove(id);
     _accounts.removeWhere((a) => a.id == id);
     notifyListeners();
     await AutomationBridge.instance.deleteAccount(id);
@@ -317,6 +404,9 @@ class AccountsProvider with ChangeNotifier {
       if (credits <= 0) {
         _accounts[index].status = AccountStatus.outOfCredits;
       }
+      // Notification Center: a direct credit change is evaluated
+      // for the low-credits warning like any other.
+      _evaluateAccountAlerts(_accounts[index]);
       notifyListeners();
     }
   }
@@ -352,6 +442,9 @@ class AccountsProvider with ChangeNotifier {
     // v2.30.3: same pending-set purge as removeAccount.
     _pendingCheckIds.removeAll(selectedIds);
     _checkSeenIds.removeAll(selectedIds);
+    // Notification Center: same alert-bookkeeping purge.
+    _alertStatusById.removeWhere((id, _) => selectedIds.contains(id));
+    _lowCreditWarnedIds.removeAll(selectedIds);
     _accounts.removeWhere((a) => selectedIds.contains(a.id));
     notifyListeners();
 

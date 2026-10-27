@@ -61,6 +61,20 @@ class _HistoryViewState extends State<HistoryView> {
         _files = files;
         _loading = false;
       });
+      // Notification Center: a "View video" action may have asked
+      // for one file's player — open it now the list is in, and
+      // only when the file really is in the output folder.
+      final pending =
+          context.read<SettingsProvider>().takePendingHistoryFile();
+      if (pending != null &&
+          pending.isNotEmpty &&
+          files.any((f) => f['name']?.toString() == pending)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) {
+            showInAppPlayer(context, title: pending, fileName: pending);
+          }
+        });
+      }
     }
   }
 

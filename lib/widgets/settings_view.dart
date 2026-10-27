@@ -3,6 +3,7 @@ import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import '../theme/app_theme.dart';
 import '../models/app_settings.dart';
+import '../providers/notifications_provider.dart';
 import '../providers/settings_provider.dart';
 import 'package:flutter/services.dart';
 import '../services/automation_bridge.dart';
@@ -311,6 +312,9 @@ class _SettingsViewState extends State<SettingsView> {
   @override
   Widget build(BuildContext context) {
     final prov = context.watch<SettingsProvider>();
+    // Notification Center: the ON/OFF toggle lives in the
+    // Automation panel and is owned by NotificationsProvider.
+    final notifProv = context.watch<NotificationsProvider>();
     final s = prov.settings;
 
     // v2.27.0 (design): TWO-COLUMN settings layout — Appearance +
@@ -581,6 +585,16 @@ class _SettingsViewState extends State<SettingsView> {
       value: s.onlyRunLiveAccounts,
       onChanged: (v) => prov.toggleOnlyRunLiveAccounts(v),
     );
+    // Notification Center: master switch for the bell, the popup
+    // and storing — OFF means nothing is shown and nothing is
+    // saved (NotificationsProvider, engine key
+    // 'notifications_enabled').
+    final tglNotifications = _buildToggleRow(
+      title: 'Notifications',
+      subtitle: 'Bell, popup and list for run results, errors, low credits and login problems. OFF = nothing is shown or stored.',
+      value: notifProv.enabled,
+      onChanged: (v) => notifProv.setEnabled(v),
+    );
 
     final automationPanel = _buildPanel(
             title: '🤖 AUTOMATION',
@@ -593,6 +607,8 @@ class _SettingsViewState extends State<SettingsView> {
                 tglAutoVerify,
                 Divider(color: AppTheme.borderSoft, height: 16),
                 tglOnlyLive,
+                Divider(color: AppTheme.borderSoft, height: 16),
+                tglNotifications,
               ],
             ),
           );

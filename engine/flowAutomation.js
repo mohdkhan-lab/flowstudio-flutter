@@ -1032,15 +1032,18 @@ class FlowAutomationEngine {
   async readLiveCreditsFromPage() {
     if (!this.page || this.page.isClosed()) return null;
     try {
-      const isExhaustedBanner = await this.page.evaluate(() => {
-        const banner = document.querySelector('.credit-banner-error, .prompt-warning-button');
-        const bodyText = document.body ? (document.body.innerText || '') : '';
-        return !!(banner || bodyText.includes('out of Google Flow credits') || bodyText.includes('Insufficient credits'));
-      });
-      if (isExhaustedBanner) {
-        return 0;
-      }
-
+      // v2.44.0 (owner's live test 2026-10-29): the OLD order checked
+      // the "exhausted banner" FIRST and returned 0 if a
+      // '.prompt-warning-button' existed ANYWHERE on the page. That
+      // button is not a credits signal — it also appears for unrelated
+      // prompt/tile warnings — so every studio open read "0 credits",
+      // openFlowStudio returned EXHAUSTED, both accounts were retired
+      // before any prompt was submitted, and runs died in seconds
+      // with 0 saved (while the real balance was 50). New order:
+      // scrape the actual NUMBER first and trust it whenever found
+      // (a real "0 credits" text still returns a real 0); only when
+      // NO number can be read may credit-specific banner TEXT (never
+      // the warning button alone) stand in for a zero.
       const liveCredits = await this.page.evaluate(async () => {
         const targetBtn = document.querySelector('.header-user-button, [aria-label*="Account details" i], [aria-label*="account" i], [aria-label*="Google Account" i], .gb_C');
         if (targetBtn) {
@@ -1075,7 +1078,22 @@ class FlowAutomationEngine {
 
         return null;
       });
-      return liveCredits;
+      if (typeof liveCredits === 'number') {
+        return liveCredits;
+      }
+
+      // No number could be read. Only credit-specific banner TEXT may
+      // stand in for a zero — the '.prompt-warning-button' element on
+      // its own must never do so again (v2.44.0 note above).
+      const isExhaustedBanner = await this.page.evaluate(() => {
+        const banner = document.querySelector('.credit-banner-error');
+        const bodyText = document.body ? (document.body.innerText || '') : '';
+        return !!(banner || bodyText.includes('out of Google Flow credits') || bodyText.includes('Insufficient credits'));
+      });
+      if (isExhaustedBanner) {
+        return 0;
+      }
+      return null;
     } catch (e) {
       return null;
     }

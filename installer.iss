@@ -1,6 +1,6 @@
 ; Script generated for FlowStudio Lite Inno Setup Installer
 #define MyAppName "FlowStudio Lite"
-#define MyAppVersion "2.42.0"
+#define MyAppVersion "2.43.0"
 #define MyAppPublisher "MK"
 ; v2.22.0 fix: the Flutter Windows build produces "flutter_flow.exe"
 ; (BINARY_NAME in windows/CMakeLists.txt). The old script pointed the
@@ -33,10 +33,14 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 
 [Tasks]
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"; Flags: unchecked
-; v2.42.0 resilience: start-with-Windows is default ON (no "unchecked"
-; flag) so the app - and with it MK's only remote route - comes back on
-; its own after every reboot/sign-in. The user can untick it here.
-Name: "autostart"; Description: "Start {#MyAppName} when I sign in to Windows"; GroupDescription: "Startup:"
+; v2.43.0 (owner order 2026-10-29): the v2.42.0 "autostart" task is
+; REMOVED again. The owner found the app opening itself at every
+; sign-in put load on his PC and asked for the previous behaviour
+; back: the app starts only when he opens it himself. The MCP server
+; is unchanged - it answers while the app is open, as before v2.42.0.
+; The Run value a v2.42.0 install may have written is deleted by the
+; cleanup entry in [Run] below, so upgrading is enough - the owner
+; does not have to remove anything by hand.
 
 [Files]
 ; Flutter Release Binaries & Assets
@@ -59,46 +63,46 @@ Source: "package.json"; DestDir: "{app}"; Flags: ignoreversion
 ; the build PC, which silently breaks the installer build on any PC
 ; whose Node lives somewhere else.
 Source: "node.exe"; DestDir: "{app}"; Flags: ignoreversion
-; v2.42.0 resilience: self-healing scripts (app relaunch watchdog +
-; its one-time Scheduled Task registration), run from the app folder.
-Source: "tools\watchdog.ps1"; DestDir: "{app}"; Flags: ignoreversion
-Source: "tools\register-watchdog.ps1"; DestDir: "{app}"; Flags: ignoreversion
+; v2.43.0: the v2.42.0 watchdog scripts are no longer shipped (the
+; Scheduled Task a v2.42.0 install registered is removed by the
+; cleanup entry in [Run] below, and copies already sitting in {app}
+; are deleted by [InstallDelete]).
 ; v2.22.0 fix: NO pre-seeded database is shipped any more. The old script
 ; bundled the developer's own data\ folder — including a real account
 ; database — into every installer. The engine creates a fresh database
 ; in %APPDATA%\google-flow-studio-lite on first run instead.
 
-[Registry]
-; v2.42.0 resilience (start with Windows): HKCU Run entry, only when
-; the "autostart" task above is ticked. uninsdeletevalue removes it on
-; uninstall, so no orphan autostart survives a removal.
-Root: HKCU; Subkey: "Software\Microsoft\Windows\CurrentVersion\Run"; ValueType: string; ValueName: "FlowStudio"; ValueData: """{app}\{#MyAppExeName}"""; Tasks: autostart; Flags: uninsdeletevalue
+[InstallDelete]
+; v2.43.0 cleanup: remove the v2.42.0 watchdog scripts if an earlier
+; install left them in the app folder. (Files not listed in [Files]
+; are otherwise never removed by an upgrade.)
+Type: files; Name: "{app}\watchdog.ps1"
+Type: files; Name: "{app}\register-watchdog.ps1"
 
 [Icons]
 Name: "{autoprograms}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\app_icon.ico"; WorkingDir: "{app}"
 Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilename: "{app}\assets\app_icon.ico"; Tasks: desktopicon; WorkingDir: "{app}"
 
 [Run]
-; v2.42.0 resilience (self-relaunch after install): the launch entry
-; deliberately drops "postinstall" and "skipifsilent". The old entry
-; only ran for interactive wizard installs, so a /SILENT install
-; launched by the app's own updater (settings_provider's PowerShell
-; waiter runs Setup /SILENT -Wait and then exits) left the app closed
-; for good - killing MK's only route until someone reopened it by
-; hand. Without those two flags this entry runs at the end of EVERY
-; install, silent or not, exactly once (it replaces the wizard's
-; "launch program" checkbox, which was this same entry - there is no
-; second launch path). runasoriginaluser is a safeguard in case the
-; installer is ever elevated; today PrivilegesRequired=lowest means
-; setup already runs as the installing user.
-Filename: "{app}\{#MyAppExeName}"; Flags: nowait runasoriginaluser
-; v2.42.0 resilience (watchdog registration): registers the per-user
-; Scheduled Task "FlowStudio Watchdog" (see register-watchdog.ps1).
-; Best effort by design: the script swallows every error and exits 0,
-; so a registration failure can never fail the install.
-Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File ""{app}\register-watchdog.ps1"""; Flags: runhidden waituntilterminated
+; v2.43.0 cleanup (owner reversal of v2.42.0): delete the two things a
+; v2.42.0 install put on the PC - the HKCU Run value "FlowStudio"
+; (start-with-Windows) and the Scheduled Task "FlowStudio Watchdog"
+; (reopened the app every 5 minutes). Without this entry a plain
+; revert would leave both behind and the app would keep opening
+; itself. It deliberately has NO skipifsilent flag, so it also runs
+; on /SILENT installs driven by the app's own updater. Best effort:
+; SilentlyContinue covers PCs that never had either artifact, and a
+; failure here can never fail the install.
+Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""Remove-ItemProperty -Path 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Run' -Name 'FlowStudio' -ErrorAction SilentlyContinue; Unregister-ScheduledTask -TaskName 'FlowStudio Watchdog' -Confirm:$false -ErrorAction SilentlyContinue"""; Flags: runhidden waituntilterminated
+; Launch entry restored to the pre-v2.42.0 form (owner order
+; 2026-10-29: previous behaviour back) - the wizard's "launch
+; program" checkbox, interactive installs only; silent installs
+; leave the app closed until the owner opens it himself.
+Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#StringChange(MyAppName, '&', '&&')}}"; Flags: nowait postinstall skipifsilent
 
 [UninstallRun]
-; Remove the watchdog task on uninstall (SilentlyContinue inside the
-; command: the task may not exist if registration was skipped/failed).
+; Legacy cleanup (kept in v2.43.0): remove the v2.42.0-era watchdog
+; task on uninstall, in case an install skipped the [Run] cleanup
+; above (SilentlyContinue inside the command: the task may not
+; exist if registration was skipped/failed).
 Filename: "powershell.exe"; Parameters: "-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -Command ""Unregister-ScheduledTask -TaskName 'FlowStudio Watchdog' -Confirm:$false -ErrorAction SilentlyContinue"""; Flags: runhidden; RunOnceId: "DelFlowStudioWatchdogTask"

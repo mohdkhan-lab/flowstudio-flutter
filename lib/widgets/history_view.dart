@@ -76,7 +76,8 @@ class _HistoryViewState extends State<HistoryView> {
     if (event is! PointerScrollEvent) return;
     final c = _projectsScrollController;
     if (!c.hasClients) return;
-    GestureBinding.instance.pointerSignalResolver.register(event, () {
+    GestureBinding.instance.pointerSignalResolver
+        .register(event, (PointerSignalEvent resolved) {
       if (!c.hasClients) return;
       final max = c.position.maxScrollExtent;
       if (max <= 0) return;

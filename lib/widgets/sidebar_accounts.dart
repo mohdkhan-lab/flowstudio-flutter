@@ -311,7 +311,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                           maxLines: 1,
                                           softWrap: false,
                                           style: TextStyle(
-                                            fontSize: 9,
+                                            fontSize: 10,
                                             fontWeight: FontWeight.bold,
                                             color: AppTheme.textMain,
                                             height: 1.0,
@@ -328,7 +328,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                           maxLines: 1,
                                           softWrap: false,
                                           style: TextStyle(
-                                            fontSize: 9,
+                                            fontSize: 10,
                                             color: AppTheme.textFaint,
                                             height: 1.0,
                                           ),
@@ -350,7 +350,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                                 maxLines: 1,
                                                 softWrap: false,
                                                 style: TextStyle(
-                                                  fontSize: 9,
+                                                  fontSize: 10,
                                                   fontWeight: FontWeight.w800,
                                                   color: AppTheme.activeGold,
                                                   letterSpacing: 0.5,
@@ -395,7 +395,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                         maxLines: 1,
                                         softWrap: false,
                                         style: TextStyle(
-                                          fontSize: 9,
+                                          fontSize: 10,
                                           fontWeight: FontWeight.w700,
                                           color: word.$2,
                                           height: 1.0,

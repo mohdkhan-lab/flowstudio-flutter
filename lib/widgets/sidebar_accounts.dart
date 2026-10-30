@@ -195,7 +195,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                     )
                   : ListView.separated(
                       itemCount: visibleAccounts.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 5),
+                      separatorBuilder: (_, _) => const SizedBox(height: 4),
                       itemBuilder: (context, index) {
                         final acc = visibleAccounts[index];
                         final word = _statusWord(acc);
@@ -215,7 +215,13 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                         // changes.
                         return Container(
                           height: 74,
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 10),
+                          // v2.46.5 (owner ka order): Cookie Line ki
+                          // HEIGHT kam — vertical padding 10 -> 5.
+                          // Chaudai, text ke sizes aur jaghein
+                          // bilkul waisi hi; koi text cut nahi
+                          // hota (neeche wale text boxes apni
+                          // asal height par hain).
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
                           decoration: BoxDecoration(
                             color: AppTheme.overlay08,
                             borderRadius: BorderRadius.circular(8),
@@ -276,7 +282,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                         mainAxisAlignment: MainAxisAlignment.center,
                                         children: [
                                       SizedBox(
-                                        height: 17,
+                                        // v2.46.5: 17 -> 15 (13px font ki
+                                        // line 13 ki hai — 2px slack ke
+                                        // saath, text cut nahi hota).
+                                        height: 15,
                                         child: Text(
                                           // v2.29.0 (B): the row TITLE
                                           // is the source alias
@@ -296,7 +305,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       ),
                                       const SizedBox(height: 2),
                                       SizedBox(
-                                        height: 15,
+                                        // v2.46.5: 15 -> 13 (11px font ki
+                                        // line 11 ki hai — text cut nahi
+                                        // hota, sirf khaali jagah kam).
+                                        height: 13,
                                         child: Text(
                                           _subLineOf(acc),
                                           maxLines: 1,
@@ -310,7 +322,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       ),
                                       const SizedBox(height: 1),
                                       SizedBox(
-                                        height: 16,
+                                        // v2.46.5: 16 -> 13 (ACTIVE ka
+                                        // text 12px hai — pura dikhega,
+                                        // cut nahi hoga).
+                                        height: 13,
                                         // v2.25.0 (parked browser): gold
                                         // ● ACTIVE under the credits —
                                         // ONLY on the account that is

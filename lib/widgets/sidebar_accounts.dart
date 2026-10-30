@@ -341,12 +341,22 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                   // slots and never moves.)
                                   // Right side (sample v3): the status
                                   // as plain coloured TEXT in a
-                                  // FIXED-WIDTH slot (58) — no chip.
+                                  // FIXED-WIDTH slot — no chip.
                                   // Scale-down fitted like the text
                                   // block, so the longest word
-                                  // ("Checking") always fits its slot.
+                                  // always fits its slot.
+                                  // v2.46.2: slot 58 -> 70. v2.46.0 ke
+                                  // naye lafz "Low Credits" / "No
+                                  // Credits" purane sab se lambe lafz
+                                  // ("Checking") se lambe hain — 58 me
+                                  // wo sikud kar credits wali line se
+                                  // takrane lagte the (owner ka
+                                  // screenshot, Cookie 6, 2026-10-30).
+                                  // 70 me dono pure size par padhe
+                                  // jate hain; scale-down hifazat
+                                  // ke tor par barkarar hai.
                                   SizedBox(
-                                    width: 58,
+                                    width: 70,
                                     child: FittedBox(
                                       fit: BoxFit.scaleDown,
                                       child: Text(
@@ -364,43 +374,41 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                     ),
                                   ),
                                   const SizedBox(width: 8),
-                                  // "Chrome" button (sample v3) — an
-                                  // outlined pill replacing the eye
-                                  // icon, with the eye's EXACT
-                                  // behaviour: v2.25.0 (parked
-                                  // browser) Show/Hide toggle for a
-                                  // GENERATING account's working
-                                  // browser, open-Chrome for any
-                                  // other account. While the parked
-                                  // browser is on screen it wears the
-                                  // "on" look (blue border + blue
-                                  // label), mirroring the blue eye.
+                                  // Chrome kholne wala button.
+                                  // v2.46.2 (owner ka order + approved
+                                  // Sample A, 2026-10-30): "Chrome"
+                                  // likhi hui 76px pill (sample v3)
+                                  // khatam — us ki jagah sirf 34px ka
+                                  // GOL button neele ↗ arrow ke
+                                  // saath; naam ki zaroorat nahi aur
+                                  // jagah aadhi se kam (76 -> 34),
+                                  // isiliye credits line aur status
+                                  // lafz ko saans mil gayi. Kaam
+                                  // bilkul wahi: generating account
+                                  // par parked browser ka Show/Hide
+                                  // toggle, baaki par Chrome kholna;
+                                  // parked browser screen par ho to
+                                  // kinara neela ("on" look).
                                   InkWell(
                                     onTap: () => acc.isActive
                                         ? accountsProv.toggleBrowser(acc.id)
                                         : accountsProv.openChrome(acc.id),
-                                    borderRadius: BorderRadius.circular(7),
+                                    customBorder: const CircleBorder(),
                                     child: Container(
-                                      width: 76,
-                                      height: 30,
+                                      width: 34,
+                                      height: 34,
                                       alignment: Alignment.center,
                                       decoration: BoxDecoration(
                                         color: AppTheme.surfaceElevated,
-                                        borderRadius: BorderRadius.circular(7),
+                                        shape: BoxShape.circle,
                                         border: Border.all(
-                                          color: browserOn ? AppTheme.blue : AppTheme.border,
+                                          color: browserOn ? AppTheme.blue : AppTheme.borderSoft,
                                         ),
                                       ),
-                                      child: Text(
-                                        'Chrome',
-                                        maxLines: 1,
-                                        softWrap: false,
-                                        style: TextStyle(
-                                          fontSize: 11,
-                                          fontWeight: FontWeight.w600,
-                                          color: browserOn ? AppTheme.accentText : AppTheme.textMain,
-                                          height: 1.0,
-                                        ),
+                                      child: Icon(
+                                        Icons.north_east,
+                                        size: 16,
+                                        color: AppTheme.accentText,
                                       ),
                                     ),
                                   ),

@@ -37,7 +37,7 @@ class SidebarAccounts extends StatefulWidget {
   // (v2.46.6 se: 285 har size par, wide par 300); 285 default hai.
   final double width;
 
-  const SidebarAccounts({super.key, this.width = 285});
+  const SidebarAccounts({super.key, this.width = 330});
 
   @override
   State<SidebarAccounts> createState() => _SidebarAccountsState();
@@ -195,7 +195,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                     )
                   : ListView.separated(
                       itemCount: visibleAccounts.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 6),
+                      separatorBuilder: (_, _) => const SizedBox(height: 5),
                       itemBuilder: (context, index) {
                         final acc = visibleAccounts[index];
                         final word = _statusWord(acc);
@@ -221,7 +221,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                           // bilkul waisi hi; koi text cut nahi
                           // hota (neeche wale text boxes apni
                           // asal height par hain).
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                           decoration: BoxDecoration(
                             color: AppTheme.overlay08,
                             borderRadius: BorderRadius.circular(8),
@@ -407,8 +407,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                         : accountsProv.openChrome(acc.id),
                                     customBorder: const CircleBorder(),
                                     child: Container(
-                                      width: 34,
-                                      height: 34,
+                                      // v2.46.7 (owner ke tuner
+                                      // numbers): button 34 -> 26.
+                                      width: 26,
+                                      height: 26,
                                       alignment: Alignment.center,
                                       decoration: BoxDecoration(
                                         color: AppTheme.surfaceElevated,
@@ -419,7 +421,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       ),
                                       child: Icon(
                                         Icons.north_east,
-                                        size: 16,
+                                        size: 12,
                                         color: AppTheme.accentText,
                                       ),
                                     ),

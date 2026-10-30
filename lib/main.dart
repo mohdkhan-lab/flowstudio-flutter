@@ -250,22 +250,23 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
 
             // Main Body Content
             // Responsive pass (post-v2.28.0): LayoutBuilder breakpoints
-            // on the WINDOW width — compact <1150, standard 1150–1500,
-            // wide >1500 (the centre panels are all Expanded/flex so
-            // they simply get proportionally more room).
-            // v2.46.3 (owner ka order, 2026-10-30): Cookies wala
-            // section PATLA — har breakpoint par sidebar 25px kam
-            // (215->190, 250->225, 280->255); andar ka saara text
-            // aur us ki jaghein bilkul waisi hi, sirf chaudai kam,
-            // aur Generate hisse ko wohi jagah zyada mili.
+            // on the WINDOW width — compact <1150 (sidebar 215, tighter
+            // centre padding), standard 1150–1500 (sidebar 250, the
+            // tuned 1024×768 fit lives here and is unchanged), wide
+            // >1500 (sidebar 280; the centre panels are all Expanded/
+            // flex so they simply get proportionally more room).
+            // NOTE: v2.46.3 me sidebar 25px patla (190/225/255) kiya
+            // gaya tha — owner ne live dekh kar usi din wapas pehle
+            // jaisa karne ka order diya (v2.46.4). Ye asal sizes hi
+            // final hain.
             Expanded(
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final winW = constraints.maxWidth;
                   final compact = winW < 1150;
                   final sidebarWidth = compact
-                      ? 190.0
-                      : (winW > 1500 ? 255.0 : 225.0);
+                      ? 215.0
+                      : (winW > 1500 ? 280.0 : 250.0);
                   return Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [

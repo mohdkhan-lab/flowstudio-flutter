@@ -34,11 +34,10 @@ bool _isLowCredits(GoogleAccount a) =>
 
 class SidebarAccounts extends StatefulWidget {
   // Responsive pass: the main layout drives the width by breakpoint
-  // (190 compact / 225 standard / 255 wide — v2.46.3 me section
-  // patla hua); 225 stays the default.
+  // (215 compact / 250 standard / 280 wide); 250 stays the default.
   final double width;
 
-  const SidebarAccounts({super.key, this.width = 225});
+  const SidebarAccounts({super.key, this.width = 250});
 
   @override
   State<SidebarAccounts> createState() => _SidebarAccountsState();

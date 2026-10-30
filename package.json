@@ -20,7 +20,7 @@
     "test:ui": "node tests/uitest.js",
     "dist": "electron-builder --win nsis"
   },
-  "version": "2.46.3",
+  "version": "2.46.4",
   "build": {
     "appId": "com.mk.flowstudiolite",
     "productName": "FlowStudio Lite",

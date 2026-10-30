@@ -267,11 +267,12 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
                 builder: (context, constraints) {
                   final winW = constraints.maxWidth;
                   final compact = winW < 1150;
-                  // v2.46.7: owner ne HTML tuner par khud numbers
-                  // chune — section 330 (wide par 350).
+                  // v2.46.10: owner ne screenshot par red line
+                  // kheench kar kaha "sirf itna section chahiye" —
+                  // section 200 (wide par 240).
                   final sidebarWidth = compact
-                      ? 330.0
-                      : (winW > 1500 ? 350.0 : 330.0);
+                      ? 200.0
+                      : (winW > 1500 ? 240.0 : 200.0);
                   return Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [

@@ -37,7 +37,7 @@ class SidebarAccounts extends StatefulWidget {
   // (v2.46.6 se: 285 har size par, wide par 300); 285 default hai.
   final double width;
 
-  const SidebarAccounts({super.key, this.width = 330});
+  const SidebarAccounts({super.key, this.width = 200});
 
   @override
   State<SidebarAccounts> createState() => _SidebarAccountsState();
@@ -207,6 +207,12 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                       itemBuilder: (context, index) {
                         final acc = visibleAccounts[index];
                         final word = _statusWord(acc);
+                        // v2.46.10: word slot bachi hui jagah se —
+                        // canvas - (checkbox 20 + gap 10 + block
+                        // 50 + gap 8 + button 26); 200 wale
+                        // section me 46, bare section me 70 tak.
+                        final wordSlotW =
+                            ((widget.width - 40) - 114).clamp(40.0, 70.0);
                         final browserOn = acc.isActive && acc.browserShown;
 
                         // v2.30.2 (owner-approved sample v3, FINAL):
@@ -252,7 +258,12 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                             // changes position.
                             fit: BoxFit.scaleDown,
                             child: SizedBox(
-                              width: 238,
+                              // v2.46.10: canvas ki chaudai sidebar
+                              // ke hisaab se (width - 40 = card ke
+                              // andar ki asal jagah) — pehle fixed
+                              // 238 tha, 200 wale section me wo row
+                              // ko 0.67 scale kar deta.
+                              width: widget.width - 40,
                               // v2.46.9 (owner: "50x50 karo"): andar
                               // wala hisa 54 -> 50 — Text Block ki
                               // unchaai 50 ke saath barabar.
@@ -386,7 +397,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                   // jate hain; scale-down hifazat
                                   // ke tor par barkarar hai.
                                   SizedBox(
-                                    width: 70,
+                                    width: wordSlotW,
                                     child: FittedBox(
                                       fit: BoxFit.scaleDown,
                                       child: Text(

@@ -300,7 +300,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       SizedBox(
                                         // v2.46.6 (Sample 5): sab text
                                         // ek size = 9; box 11.
-                                        height: 11,
+                                        height: 13,
                                         child: Text(
                                           // v2.29.0 (B): the row TITLE
                                           // is the source alias
@@ -311,7 +311,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                           maxLines: 1,
                                           softWrap: false,
                                           style: TextStyle(
-                                            fontSize: 10,
+                                            fontSize: 12,
                                             fontWeight: FontWeight.bold,
                                             color: AppTheme.textMain,
                                             height: 1.0,
@@ -322,13 +322,13 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       SizedBox(
                                         // v2.46.6 (Sample 5): box 11,
                                         // font 9 (sab text ek size).
-                                        height: 11,
+                                        height: 13,
                                         child: Text(
                                           _subLineOf(acc),
                                           maxLines: 1,
                                           softWrap: false,
                                           style: TextStyle(
-                                            fontSize: 10,
+                                            fontSize: 12,
                                             color: AppTheme.textFaint,
                                             height: 1.0,
                                           ),
@@ -338,7 +338,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       SizedBox(
                                         // v2.46.6 (Sample 5): slot 11,
                                         // font 9 (sab text ek size).
-                                        height: 11,
+                                        height: 13,
                                         // v2.25.0 (parked browser): gold
                                         // ● ACTIVE under the credits —
                                         // ONLY on the account that is
@@ -350,7 +350,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                                 maxLines: 1,
                                                 softWrap: false,
                                                 style: TextStyle(
-                                                  fontSize: 10,
+                                                  fontSize: 12,
                                                   fontWeight: FontWeight.w800,
                                                   color: AppTheme.activeGold,
                                                   letterSpacing: 0.5,
@@ -395,7 +395,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                         maxLines: 1,
                                         softWrap: false,
                                         style: TextStyle(
-                                          fontSize: 10,
+                                          fontSize: 12,
                                           fontWeight: FontWeight.w700,
                                           color: word.$2,
                                           height: 1.0,

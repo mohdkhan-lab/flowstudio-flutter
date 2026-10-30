@@ -39,7 +39,7 @@ class AppSettings {
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.currentVersion = 'v2.47.0',
+    this.currentVersion = 'v2.47.1',
     // v2.34.0 (Problem 12): no placeholder social links ship any
     // more — an unconfigured service shows NO icon (top strip /
     // About) instead of an icon that opens a dead page. The owner

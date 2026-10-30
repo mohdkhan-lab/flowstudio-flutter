@@ -37,7 +37,7 @@ class SidebarAccounts extends StatefulWidget {
   // (v2.46.6 se: 285 har size par, wide par 300); 285 default hai.
   final double width;
 
-  const SidebarAccounts({super.key, this.width = 260});
+  const SidebarAccounts({super.key, this.width = 230});
 
   @override
   State<SidebarAccounts> createState() => _SidebarAccountsState();
@@ -129,7 +129,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             ),
           ),
 
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
 
           // v2.29.0 (owner revision + final spec): the TOP of the
           // sidebar has ONLY this one action — a full-width
@@ -155,7 +155,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             ),
           ),
 
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
 
           // v2.27.0 (design): filter boxes — label on top, big count below.
           Row(
@@ -170,7 +170,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             ],
           ),
 
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
 
           // Accounts List
           // v2.46.8 (owner: "exact tuner jaisa"): list wala hissa
@@ -222,7 +222,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                         // nothing resizes or shifts when a status
                         // changes.
                         return Container(
-                          height: 45,
+                          height: 53,
                           // v2.46.5 (owner ka order): Cookie Line ki
                           // HEIGHT kam — vertical padding 10 -> 5.
                           // Chaudai, text ke sizes aur jaghein
@@ -256,7 +256,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                               // v2.46.9 (owner: "50x50 karo"): andar
                               // wala hisa 54 -> 50 — Text Block ki
                               // unchaai 50 ke saath barabar.
-                              height: 44,
+                              height: 65,
                               child: Row(
                                 children: [
                                   // Square Checkbox
@@ -289,7 +289,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                   // beech ki space neeche wala
                                   // spacer leta hai.
                                   SizedBox(
-                                    width: 109,
+                                    width: 76,
                                     child: FittedBox(
                                       fit: BoxFit.scaleDown,
                                       alignment: Alignment.centerLeft,
@@ -300,7 +300,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       SizedBox(
                                         // v2.46.6 (Sample 5): sab text
                                         // ek size = 9; box 11.
-                                        height: 10,
+                                        height: 11,
                                         child: Text(
                                           // v2.29.0 (B): the row TITLE
                                           // is the source alias
@@ -322,7 +322,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       SizedBox(
                                         // v2.46.6 (Sample 5): box 11,
                                         // font 9 (sab text ek size).
-                                        height: 10,
+                                        height: 11,
                                         child: Text(
                                           _subLineOf(acc),
                                           maxLines: 1,
@@ -338,7 +338,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       SizedBox(
                                         // v2.46.6 (Sample 5): slot 11,
                                         // font 9 (sab text ek size).
-                                        height: 10,
+                                        height: 11,
                                         // v2.25.0 (parked browser): gold
                                         // ● ACTIVE under the credits —
                                         // ONLY on the account that is
@@ -395,7 +395,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                         maxLines: 1,
                                         softWrap: false,
                                         style: TextStyle(
-                                          fontSize: 8,
+                                          fontSize: 9,
                                           fontWeight: FontWeight.w700,
                                           color: word.$2,
                                           height: 1.0,
@@ -454,7 +454,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             ),
           ),
 
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
 
           // (v2.29.0: the old "Add Cookies" button that sat below the
           // accounts list is GONE — the cookie flow lives at the TOP
@@ -513,7 +513,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
           // counts. Nothing else read the line, so no code goes
           // with it beyond the widget itself.
 
-          const SizedBox(height: 8),
+          const SizedBox(height: 4),
 
           // v2.29.0 (owner final): the sidebar BOTTOM BAR — one row
           // of two equal-width buttons, "⚙ Settings" on the LEFT
@@ -540,7 +540,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             onTap: () => context.read<SettingsProvider>().setNavView('settings'),
             borderRadius: BorderRadius.circular(8),
             child: Container(
-              height: 32,
+              height: 31,
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: !isGenerate ? AppTheme.overlay10 : Colors.transparent,
@@ -563,7 +563,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             onTap: () => _showAddAccountDialog(context),
             borderRadius: BorderRadius.circular(8),
             child: Container(
-              height: 32,
+              height: 31,
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 // v2.34.0 (Problem 14, owner-FINAL Sample B): the

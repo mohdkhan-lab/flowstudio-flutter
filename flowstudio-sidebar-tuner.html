@@ -1,0 +1,595 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlowStudio Lite — Full Sidebar Live Tuner</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+    input[type=range] { accent-color: #F5B301; }
+    .custom-scroll::-webkit-scrollbar { width: 5px; }
+    .custom-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.15); border-radius: 4px; }
+  </style>
+</head>
+<body class="bg-[#101012] text-[#E5E5EA] min-h-screen p-3 md:p-5 antialiased">
+  <div class="max-w-[1550px] mx-auto flex flex-col gap-4">
+    
+    <!-- Top Header -->
+    <header class="flex flex-wrap items-center justify-between border-b border-white/10 pb-3 gap-3">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="w-3.5 h-3.5 rounded-full bg-[#F5B301] shadow-[0_0_8px_#F5B301]"></span>
+          <h1 class="text-lg md:text-xl font-bold text-white tracking-wide">FlowStudio Lite — Full Sidebar Live Tuner</h1>
+          <span class="text-xs px-2 py-0.5 rounded bg-red-500/20 text-red-400 font-semibold border border-red-500/30">Red Box Section</span>
+        </div>
+        <p class="text-xs text-white/50 mt-1">Screenshot mein jo pura red box hai — Generate, Add Cookies, Filters, Cookies List, Action Buttons, aur Bottom Bar sab yahan se live adjust karein!</p>
+      </div>
+
+      <!-- Presets -->
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-xs text-white/40 font-medium">Presets:</span>
+        <button onclick="applyPreset('v2470')" class="text-xs px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition font-medium border border-white/10">v2.47.0 (Current)</button>
+        <button onclick="applyPreset('compactAll')" class="text-xs px-2.5 py-1.5 rounded-lg bg-[#F5B301]/20 hover:bg-[#F5B301]/30 text-[#F5B301] transition font-medium border border-[#F5B301]/30">Compact Pro (Fit 10 Accounts)</button>
+        <button onclick="applyPreset('spacious')" class="text-xs px-2.5 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 transition font-medium border border-blue-500/30">Spacious & Tall</button>
+      </div>
+    </header>
+
+    <!-- 2 Column Layout: Controls Left (6 cols), Preview Right (6 cols) -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-5 items-start">
+      
+      <!-- CONTROLS COLUMN (6 cols) -->
+      <div class="lg:col-span-6 bg-[#18181B] border border-white/10 rounded-2xl p-4 md:p-5 shadow-2xl flex flex-col gap-4">
+        
+        <div class="flex items-center justify-between border-b border-white/10 pb-2">
+          <span class="text-xs font-bold text-white/90 uppercase tracking-wider">🎛️ Sidebar Elements Sliders</span>
+          <span id="presetLabel" class="text-xs text-[#F5B301] font-medium">Custom Mode</span>
+        </div>
+
+        <div class="flex flex-col gap-4 custom-scroll overflow-y-auto max-h-[750px] pr-2">
+          
+          <!-- SECTION 1: SIDEBAR CONTAINER & SPACING -->
+          <div class="bg-white/[0.03] p-3.5 rounded-xl border border-white/5 flex flex-col gap-3">
+            <span class="text-xs font-bold text-[#64D2FF] uppercase tracking-wider flex items-center gap-1.5">
+              <span>📐</span> 1. Sidebar Container & Gaps
+            </span>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Sidebar Width</span>
+                  <span id="valSidebarW" class="font-mono text-[#F5B301] font-bold">260 px</span>
+                </div>
+                <input type="range" id="sidebarW" min="230" max="360" value="260" step="5" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Sections Vertical Gap</span>
+                  <span id="valSecGap" class="font-mono text-[#F5B301] font-bold">8 px</span>
+                </div>
+                <input type="range" id="secGap" min="3" max="14" value="8" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+            </div>
+          </div>
+
+          <!-- SECTION 2: TOP NAV & COOKIE PILLS -->
+          <div class="bg-white/[0.03] p-3.5 rounded-xl border border-white/5 flex flex-col gap-3">
+            <span class="text-xs font-bold text-[#64D2FF] uppercase tracking-wider flex items-center gap-1.5">
+              <span>🎬</span> 2. Top Navigation & Add Cookies Buttons
+            </span>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Generate Button Height</span>
+                  <span id="valGenH" class="font-mono text-[#F5B301] font-bold">34 px</span>
+                </div>
+                <input type="range" id="genH" min="26" max="44" value="34" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Generate Font Size</span>
+                  <span id="valGenFont" class="font-mono text-[#F5B301] font-bold">11.5 px</span>
+                </div>
+                <input type="range" id="genFont" min="9" max="14" value="11.5" step="0.5" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Add Cookies Height</span>
+                  <span id="valAddCookH" class="font-mono text-[#F5B301] font-bold">34 px</span>
+                </div>
+                <input type="range" id="addCookH" min="26" max="44" value="34" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Add Cookies Font Size</span>
+                  <span id="valAddCookFont" class="font-mono text-[#F5B301] font-bold">12 px</span>
+                </div>
+                <input type="range" id="addCookFont" min="9" max="14" value="12" step="0.5" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+            </div>
+          </div>
+
+          <!-- SECTION 3: FILTER CHIPS ROW -->
+          <div class="bg-white/[0.03] p-3.5 rounded-xl border border-white/5 flex flex-col gap-3">
+            <span class="text-xs font-bold text-[#64D2FF] uppercase tracking-wider flex items-center gap-1.5">
+              <span>🏷️</span> 3. Filter Boxes (All, Checking, Live, Fail)
+            </span>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Filter Vertical Padding</span>
+                  <span id="valFilterPad" class="font-mono text-[#F5B301] font-bold">5 px</span>
+                </div>
+                <input type="range" id="filterPad" min="2" max="10" value="5" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Count Number Font Size</span>
+                  <span id="valFilterCountFont" class="font-mono text-[#F5B301] font-bold">11 px</span>
+                </div>
+                <input type="range" id="filterCountFont" min="8" max="14" value="11" step="0.5" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+            </div>
+          </div>
+
+          <!-- SECTION 4: COOKIE LINE ITEMS (CARDS) -->
+          <div class="bg-white/[0.03] p-3.5 rounded-xl border border-white/5 flex flex-col gap-3">
+            <span class="text-xs font-bold text-[#64D2FF] uppercase tracking-wider flex items-center gap-1.5">
+              <span>🍪</span> 4. Cookie Account Cards
+            </span>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Card Outer Height</span>
+                  <span id="valCardH" class="font-mono text-[#F5B301] font-bold">45 px</span>
+                </div>
+                <input type="range" id="cardH" min="36" max="75" value="45" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Card Inner Row Height</span>
+                  <span id="valInnerH" class="font-mono text-[#F5B301] font-bold">44 px</span>
+                </div>
+                <input type="range" id="innerH" min="30" max="65" value="44" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Cards Separator Gap</span>
+                  <span id="valCardSep" class="font-mono text-[#F5B301] font-bold">6 px</span>
+                </div>
+                <input type="range" id="cardSep" min="2" max="12" value="6" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Left Text Block Width</span>
+                  <span id="valBlockW" class="font-mono text-[#F5B301] font-bold">109 px</span>
+                </div>
+                <input type="range" id="blockW" min="50" max="130" value="109" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Cookie Text Font Size</span>
+                  <span id="valCardFont" class="font-mono text-[#F5B301] font-bold">8 px</span>
+                </div>
+                <input type="range" id="cardFont" min="7" max="12" value="8" step="0.5" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Chrome Arrow Button Size</span>
+                  <span id="valArrowBtnSize" class="font-mono text-[#F5B301] font-bold">26 px</span>
+                </div>
+                <input type="range" id="arrowBtnSize" min="20" max="34" value="26" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+            </div>
+          </div>
+
+          <!-- SECTION 5: ACTION GRID BUTTONS (2x2) -->
+          <div class="bg-white/[0.03] p-3.5 rounded-xl border border-white/5 flex flex-col gap-3">
+            <span class="text-xs font-bold text-[#64D2FF] uppercase tracking-wider flex items-center gap-1.5">
+              <span>⚡</span> 5. Action Buttons (Sync, Delete, Verify, Clear)
+            </span>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Action Button Height</span>
+                  <span id="valActH" class="font-mono text-[#F5B301] font-bold">30 px</span>
+                </div>
+                <input type="range" id="actH" min="24" max="42" value="30" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Action Font Size</span>
+                  <span id="valActFont" class="font-mono text-[#F5B301] font-bold">10 px</span>
+                </div>
+                <input type="range" id="actFont" min="8" max="13" value="10" step="0.5" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+            </div>
+          </div>
+
+          <!-- SECTION 6: BOTTOM BAR (Settings & Add Account) -->
+          <div class="bg-white/[0.03] p-3.5 rounded-xl border border-white/5 flex flex-col gap-3">
+            <span class="text-xs font-bold text-[#64D2FF] uppercase tracking-wider flex items-center gap-1.5">
+              <span>⚙️</span> 6. Bottom Bar (Settings & + Button)
+            </span>
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Bottom Bar Height</span>
+                  <span id="valBtmH" class="font-mono text-[#F5B301] font-bold">32 px</span>
+                </div>
+                <input type="range" id="btmH" min="24" max="44" value="32" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+              <div>
+                <div class="flex justify-between text-xs mb-1">
+                  <span class="text-white/70">Settings Font Size</span>
+                  <span id="valBtmFont" class="font-mono text-[#F5B301] font-bold">11.5 px</span>
+                </div>
+                <input type="range" id="btmFont" min="9" max="14" value="11.5" step="0.5" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Copy Values Button -->
+        <button onclick="copyAllValues()" class="w-full py-2.5 px-4 rounded-xl bg-[#F5B301] text-black font-bold text-xs hover:bg-[#e0a400] transition flex items-center justify-center gap-2 mt-2">
+          <span>📋 Copy All Chosen Values</span>
+        </button>
+
+      </div>
+
+      <!-- PREVIEW COLUMN (6 cols) -->
+      <div class="lg:col-span-6 flex flex-col gap-3">
+        
+        <div class="bg-[#18181B] border border-white/10 rounded-2xl p-4 shadow-2xl flex flex-col gap-3">
+          <div class="flex items-center justify-between border-b border-white/10 pb-2">
+            <div class="flex items-center gap-2">
+              <span class="text-xs font-bold text-white/90 uppercase tracking-wider">🖥️ Live Sidebar Preview (1:1 Match)</span>
+              <span class="text-[10px] px-2 py-0.5 rounded bg-green-500/10 text-green-400 font-mono border border-green-500/20">Exact Screenshot Layout</span>
+            </div>
+            <span class="text-[11px] text-white/40">Real App Dimensions</span>
+          </div>
+
+          <!-- Preview Frame -->
+          <div class="bg-[#121214] border border-white/5 rounded-xl p-4 flex justify-center items-start overflow-x-auto min-h-[750px]">
+            
+            <!-- THE FLUTTER SIDEBAR (MATCHES SCREENSHOT) -->
+            <div id="sidebarEl" style="width: 260px;" class="bg-[#2C2C2E] border-2 border-red-500 rounded-[13px] p-2 flex flex-col shadow-2xl transition-all duration-75 relative">
+              
+              <!-- Indicator of Screenshot Red Box -->
+              <div class="absolute -top-3 left-3 bg-red-600 text-white text-[9px] font-bold px-1.5 py-0.5 rounded shadow">
+                RED BOX SECTION
+              </div>
+
+              <!-- 1. Generate Nav Button -->
+              <div id="genBtn" style="height: 34px;" class="rounded-lg bg-[#F5B301]/15 border border-[#F5B301]/40 flex items-center justify-center text-[#F5B301] font-bold cursor-default select-none transition-all">
+                <span id="genText" style="font-size: 11.5px;">🎬 Generate</span>
+              </div>
+
+              <!-- Gap -->
+              <div class="sec-gap" style="height: 8px;"></div>
+
+              <!-- 2. + Add Cookies Outline Button -->
+              <div id="addCookBtn" style="height: 34px;" class="rounded-full border border-[#64D2FF]/65 flex items-center justify-center text-[#64D2FF] font-bold cursor-pointer hover:bg-[#64D2FF]/10 select-none transition-all">
+                <span id="addCookText" style="font-size: 12px;">+ Add Cookies</span>
+              </div>
+
+              <!-- Gap -->
+              <div class="sec-gap" style="height: 8px;"></div>
+
+              <!-- 3. Filter Boxes Row -->
+              <div class="grid grid-cols-4 gap-1 select-none">
+                <div class="filter-box bg-[#F5B301]/20 border border-[#F5B301]/40 rounded-lg text-center" style="padding: 5px 2px;">
+                  <div class="filter-lbl text-[9px] text-[#F5B301] leading-tight">All</div>
+                  <div class="filter-cnt font-bold text-white leading-tight" style="font-size: 11px;">10</div>
+                </div>
+                <div class="filter-box bg-white/5 border border-white/10 rounded-lg text-center" style="padding: 5px 2px;">
+                  <div class="filter-lbl text-[9px] text-white/50 leading-tight">Checking</div>
+                  <div class="filter-cnt font-bold text-white leading-tight" style="font-size: 11px;">0</div>
+                </div>
+                <div class="filter-box bg-white/5 border border-white/10 rounded-lg text-center" style="padding: 5px 2px;">
+                  <div class="filter-lbl text-[9px] text-white/50 leading-tight">Live</div>
+                  <div class="filter-cnt font-bold text-white leading-tight" style="font-size: 11px;">9</div>
+                </div>
+                <div class="filter-box bg-white/5 border border-white/10 rounded-lg text-center" style="padding: 5px 2px;">
+                  <div class="filter-lbl text-[9px] text-white/50 leading-tight">Fail</div>
+                  <div class="filter-cnt font-bold text-white leading-tight" style="font-size: 11px;">0</div>
+                </div>
+              </div>
+
+              <!-- Gap -->
+              <div class="sec-gap" style="height: 8px;"></div>
+
+              <!-- 4. ACCOUNTS LIST CONTAINER -->
+              <div class="bg-white/[0.04] border border-white/10 rounded-[9px] p-1 flex flex-col overflow-y-auto max-h-[380px] custom-scroll" id="cardList">
+                
+                <!-- Sample Card 5 (From Screenshot) -->
+                <div class="acc-card border border-white/10 bg-white/[0.04] rounded-lg px-2 flex items-center transition-all" style="height: 45px; padding-top: 0.5px; padding-bottom: 0.5px;">
+                  <div class="card-inner flex items-center w-full" style="height: 44px;">
+                    <div class="w-4 h-4 rounded-[2px] bg-[#2C80FF] flex items-center justify-center flex-shrink-0 mr-2">
+                      <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                    </div>
+                    <div class="card-text-block flex flex-col justify-center flex-shrink-0 overflow-hidden" style="width: 109px;">
+                      <div class="card-alias font-bold text-white truncate leading-none" style="font-size: 8px;">Cookie 5</div>
+                      <div class="h-[1px]"></div>
+                      <div class="card-credits text-white/50 truncate leading-none" style="font-size: 8px;">50 credits</div>
+                    </div>
+                    <div class="flex-grow"></div>
+                    <span class="card-status font-bold text-[#30D158] leading-none text-center flex-shrink-0" style="font-size: 8px; width: 55px;">Live</span>
+                    <div class="w-1.5 flex-shrink-0"></div>
+                    <button class="chrome-btn rounded-full bg-[#3A3A3C] border border-[#64D2FF]/60 flex items-center justify-center text-[#64D2FF] flex-shrink-0" style="width: 26px; height: 26px;">
+                      <span class="arrow-sym font-bold leading-none" style="font-size: 11px;">↗</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="card-sep" style="height: 6px;"></div>
+
+                <!-- Sample Card 6 (From Screenshot: Low Credits) -->
+                <div class="acc-card border border-white/10 bg-white/[0.04] rounded-lg px-2 flex items-center transition-all" style="height: 45px; padding-top: 0.5px; padding-bottom: 0.5px;">
+                  <div class="card-inner flex items-center w-full" style="height: 44px;">
+                    <div class="w-4 h-4 rounded-[2px] bg-[#2C80FF] flex items-center justify-center flex-shrink-0 mr-2">
+                      <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                    </div>
+                    <div class="card-text-block flex flex-col justify-center flex-shrink-0 overflow-hidden" style="width: 109px;">
+                      <div class="card-alias font-bold text-white truncate leading-none" style="font-size: 8px;">Cookie 6</div>
+                      <div class="h-[1px]"></div>
+                      <div class="card-credits text-white/50 truncate leading-none" style="font-size: 8px;">1 credits</div>
+                    </div>
+                    <div class="flex-grow"></div>
+                    <span class="card-status font-bold text-[#FF9F0A] leading-none text-center flex-shrink-0" style="font-size: 8px; width: 55px;">Low Credits</span>
+                    <div class="w-1.5 flex-shrink-0"></div>
+                    <button class="chrome-btn rounded-full bg-[#3A3A3C] border border-white/20 flex items-center justify-center text-[#64D2FF] flex-shrink-0" style="width: 26px; height: 26px;">
+                      <span class="arrow-sym font-bold leading-none" style="font-size: 11px;">↗</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="card-sep" style="height: 6px;"></div>
+
+                <!-- Sample Card 7 (From Screenshot) -->
+                <div class="acc-card border border-white/10 bg-white/[0.04] rounded-lg px-2 flex items-center transition-all" style="height: 45px; padding-top: 0.5px; padding-bottom: 0.5px;">
+                  <div class="card-inner flex items-center w-full" style="height: 44px;">
+                    <div class="w-4 h-4 rounded-[2px] bg-[#2C80FF] flex items-center justify-center flex-shrink-0 mr-2">
+                      <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                    </div>
+                    <div class="card-text-block flex flex-col justify-center flex-shrink-0 overflow-hidden" style="width: 109px;">
+                      <div class="card-alias font-bold text-white truncate leading-none" style="font-size: 8px;">Cookie 7</div>
+                      <div class="h-[1px]"></div>
+                      <div class="card-credits text-white/50 truncate leading-none" style="font-size: 8px;">50 credits</div>
+                    </div>
+                    <div class="flex-grow"></div>
+                    <span class="card-status font-bold text-[#30D158] leading-none text-center flex-shrink-0" style="font-size: 8px; width: 55px;">Live</span>
+                    <div class="w-1.5 flex-shrink-0"></div>
+                    <button class="chrome-btn rounded-full bg-[#3A3A3C] border border-white/20 flex items-center justify-center text-[#64D2FF] flex-shrink-0" style="width: 26px; height: 26px;">
+                      <span class="arrow-sym font-bold leading-none" style="font-size: 11px;">↗</span>
+                    </button>
+                  </div>
+                </div>
+
+                <div class="card-sep" style="height: 6px;"></div>
+
+                <!-- Sample Card 8 (From Screenshot) -->
+                <div class="acc-card border border-white/10 bg-white/[0.04] rounded-lg px-2 flex items-center transition-all" style="height: 45px; padding-top: 0.5px; padding-bottom: 0.5px;">
+                  <div class="card-inner flex items-center w-full" style="height: 44px;">
+                    <div class="w-4 h-4 rounded-[2px] bg-[#2C80FF] flex items-center justify-center flex-shrink-0 mr-2">
+                      <svg class="w-3 h-3 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                    </div>
+                    <div class="card-text-block flex flex-col justify-center flex-shrink-0 overflow-hidden" style="width: 109px;">
+                      <div class="card-alias font-bold text-white truncate leading-none" style="font-size: 8px;">Cookie 8</div>
+                      <div class="h-[1px]"></div>
+                      <div class="card-credits text-white/50 truncate leading-none" style="font-size: 8px;">50 credits</div>
+                    </div>
+                    <div class="flex-grow"></div>
+                    <span class="card-status font-bold text-[#30D158] leading-none text-center flex-shrink-0" style="font-size: 8px; width: 55px;">Live</span>
+                    <div class="w-1.5 flex-shrink-0"></div>
+                    <button class="chrome-btn rounded-full bg-[#3A3A3C] border border-white/20 flex items-center justify-center text-[#64D2FF] flex-shrink-0" style="width: 26px; height: 26px;">
+                      <span class="arrow-sym font-bold leading-none" style="font-size: 11px;">↗</span>
+                    </button>
+                  </div>
+                </div>
+
+              </div>
+
+              <!-- Gap -->
+              <div class="sec-gap" style="height: 8px;"></div>
+
+              <!-- 5. Action Buttons Grid (2x2) -->
+              <div class="flex flex-col gap-1.5 select-none" id="actionGrid">
+                <div class="grid grid-cols-2 gap-1.5">
+                  <div class="act-btn rounded-md bg-white/[0.08] border border-white/15 flex items-center justify-center text-white font-medium hover:bg-white/15 cursor-pointer transition-all" style="height: 30px;">
+                    <span class="act-text leading-none" style="font-size: 10px;">Sync Selected</span>
+                  </div>
+                  <div class="act-btn rounded-md bg-white/[0.08] border border-white/15 flex items-center justify-center text-red-400 font-medium hover:bg-red-500/20 cursor-pointer transition-all" style="height: 30px;">
+                    <span class="act-text leading-none text-red-400" style="font-size: 10px;">Delete Selected</span>
+                  </div>
+                </div>
+                <div class="grid grid-cols-2 gap-1.5">
+                  <div class="act-btn rounded-md bg-white/[0.08] border border-white/15 flex items-center justify-center text-white font-medium hover:bg-white/15 cursor-pointer transition-all" style="height: 30px;">
+                    <span class="act-text leading-none" style="font-size: 10px;">Verify All</span>
+                  </div>
+                  <div class="act-btn rounded-md bg-white/[0.08] border border-white/15 flex items-center justify-center text-white font-medium hover:bg-white/15 cursor-pointer transition-all" style="height: 30px;">
+                    <span class="act-text leading-none" style="font-size: 10px;">Clear Selection</span>
+                  </div>
+                </div>
+              </div>
+
+              <!-- Gap -->
+              <div class="sec-gap" style="height: 8px;"></div>
+
+              <!-- 6. Bottom Bar (Settings & +) -->
+              <div class="grid grid-cols-2 gap-1.5 select-none" id="bottomBar">
+                <div class="btm-btn rounded-lg bg-transparent hover:bg-white/10 border border-transparent flex items-center justify-center text-white/80 font-medium cursor-pointer transition-all" style="height: 32px;">
+                  <span class="btm-text" style="font-size: 11.5px;">⚙ Settings</span>
+                </div>
+                <div class="btm-btn rounded-lg bg-white/[0.08] border border-white/15 flex items-center justify-center text-[#64D2FF] font-bold hover:bg-white/15 cursor-pointer transition-all" style="height: 32px;">
+                  <span style="font-size: 16px;">+</span>
+                </div>
+              </div>
+
+            </div>
+
+          </div>
+
+          <!-- Live Output Summary -->
+          <div class="bg-white/5 rounded-xl p-3 border border-white/5 flex flex-wrap items-center justify-between gap-2 text-xs">
+            <div>
+              <span class="text-white/40">Active Parameters:</span>
+              <span id="outputSummary" class="font-mono text-white/90 ml-1 font-semibold">Width 260 · CardH 45 · InnerH 44 · Block 109 · Font 8 · ActionH 30 · BtmH 32 · Gap 8</span>
+            </div>
+            <div id="copyBadge" class="text-green-400 font-bold hidden">✓ Values Copied!</div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+
+  </div>
+
+  <script>
+    const el = (id) => document.getElementById(id);
+
+    const controls = {
+      sidebarW: el('sidebarW'),
+      secGap: el('secGap'),
+      genH: el('genH'),
+      genFont: el('genFont'),
+      addCookH: el('addCookH'),
+      addCookFont: el('addCookFont'),
+      filterPad: el('filterPad'),
+      filterCountFont: el('filterCountFont'),
+      cardH: el('cardH'),
+      innerH: el('innerH'),
+      cardSep: el('cardSep'),
+      blockW: el('blockW'),
+      cardFont: el('cardFont'),
+      arrowBtnSize: el('arrowBtnSize'),
+      actH: el('actH'),
+      actFont: el('actFont'),
+      btmH: el('btmH'),
+      btmFont: el('btmFont')
+    };
+
+    function update() {
+      const sW = controls.sidebarW.value;
+      const sGap = controls.secGap.value;
+      const gH = controls.genH.value;
+      const gFont = controls.genFont.value;
+      const acH = controls.addCookH.value;
+      const acFont = controls.addCookFont.value;
+      const fPad = controls.filterPad.value;
+      const fCFont = controls.filterCountFont.value;
+      const cH = controls.cardH.value;
+      const inH = controls.innerH.value;
+      const cSep = controls.cardSep.value;
+      const bW = controls.blockW.value;
+      const cFont = controls.cardFont.value;
+      const arrSize = controls.arrowBtnSize.value;
+      const aH = controls.actH.value;
+      const aFont = controls.actFont.value;
+      const bH = controls.btmH.value;
+      const bFont = controls.btmFont.value;
+
+      // Labels
+      el('valSidebarW').innerText = sW + ' px';
+      el('valSecGap').innerText = sGap + ' px';
+      el('valGenH').innerText = gH + ' px';
+      el('valGenFont').innerText = gFont + ' px';
+      el('valAddCookH').innerText = acH + ' px';
+      el('valAddCookFont').innerText = acFont + ' px';
+      el('valFilterPad').innerText = fPad + ' px';
+      el('valFilterCountFont').innerText = fCFont + ' px';
+      el('valCardH').innerText = cH + ' px';
+      el('valInnerH').innerText = inH + ' px';
+      el('valCardSep').innerText = cSep + ' px';
+      el('valBlockW').innerText = bW + ' px';
+      el('valCardFont').innerText = cFont + ' px';
+      el('valArrowBtnSize').innerText = arrSize + ' px';
+      el('valActH').innerText = aH + ' px';
+      el('valActFont').innerText = aFont + ' px';
+      el('valBtmH').innerText = bH + ' px';
+      el('valBtmFont').innerText = bFont + ' px';
+
+      // 1. Sidebar Container Width
+      el('sidebarEl').style.width = sW + 'px';
+
+      // 2. Section Gaps
+      document.querySelectorAll('.sec-gap').forEach(sg => sg.style.height = sGap + 'px');
+
+      // 3. Generate Nav Button
+      el('genBtn').style.height = gH + 'px';
+      el('genText').style.fontSize = gFont + 'px';
+
+      // 4. Add Cookies Button
+      el('addCookBtn').style.height = acH + 'px';
+      el('addCookText').style.fontSize = acFont + 'px';
+
+      // 5. Filter Chips
+      document.querySelectorAll('.filter-box').forEach(fb => {
+        fb.style.paddingTop = fPad + 'px';
+        fb.style.paddingBottom = fPad + 'px';
+      });
+      document.querySelectorAll('.filter-cnt').forEach(fc => fc.style.fontSize = fCFont + 'px');
+
+      // 6. Cookie Cards
+      document.querySelectorAll('.acc-card').forEach(ac => ac.style.height = cH + 'px');
+      document.querySelectorAll('.card-inner').forEach(ci => ci.style.height = inH + 'px');
+      document.querySelectorAll('.card-sep').forEach(cs => cs.style.height = cSep + 'px');
+      document.querySelectorAll('.card-text-block').forEach(tb => tb.style.width = bW + 'px');
+      document.querySelectorAll('.card-alias, .card-credits, .card-status').forEach(t => t.style.fontSize = cFont + 'px');
+      document.querySelectorAll('.chrome-btn').forEach(btn => {
+        btn.style.width = arrSize + 'px';
+        btn.style.height = arrSize + 'px';
+      });
+      document.querySelectorAll('.arrow-sym').forEach(ar => ar.style.fontSize = Math.round(arrSize * 0.44) + 'px');
+
+      // 7. Action Buttons (2x2)
+      document.querySelectorAll('.act-btn').forEach(ab => ab.style.height = aH + 'px');
+      document.querySelectorAll('.act-text').forEach(at => at.style.fontSize = aFont + 'px');
+
+      // 8. Bottom Bar
+      document.querySelectorAll('.btm-btn').forEach(bb => bb.style.height = bH + 'px');
+      document.querySelectorAll('.btm-text').forEach(bt => bt.style.fontSize = bFont + 'px');
+
+      // Summary
+      el('outputSummary').innerText = `Width ${sW} · CardH ${cH} · InnerH ${inH} · Block ${bW} · Font ${cFont} · ActionH ${aH} · BtmH ${bH} · Gap ${sGap}`;
+    }
+
+    Object.values(controls).forEach(inp => {
+      inp.addEventListener('input', () => {
+        el('presetLabel').innerText = 'Custom Settings';
+        update();
+      });
+    });
+
+    const presets = {
+      v2470: { sidebarW: 260, secGap: 8, genH: 34, genFont: 11.5, addCookH: 34, addCookFont: 12, filterPad: 5, filterCountFont: 11, cardH: 45, innerH: 44, cardSep: 6, blockW: 109, cardFont: 8, arrowBtnSize: 26, actH: 30, actFont: 10, btmH: 32, btmFont: 11.5, name: 'v2.47.0 (Current)' },
+      compactAll: { sidebarW: 250, secGap: 5, genH: 28, genFont: 10.5, addCookH: 28, addCookFont: 11, filterPad: 3, filterCountFont: 10, cardH: 38, innerH: 36, cardSep: 4, blockW: 105, cardFont: 7.5, arrowBtnSize: 22, actH: 26, actFont: 9, btmH: 28, btmFont: 10.5, name: 'Compact Pro (Fit 10 Accounts)' },
+      spacious: { sidebarW: 280, secGap: 10, genH: 36, genFont: 12, addCookH: 36, addCookFont: 12.5, filterPad: 6, filterCountFont: 12, cardH: 52, innerH: 48, cardSep: 7, blockW: 115, cardFont: 9, arrowBtnSize: 28, actH: 34, actFont: 11, btmH: 36, btmFont: 12, name: 'Spacious & Tall' }
+    };
+
+    function applyPreset(key) {
+      const p = presets[key];
+      if (!p) return;
+      Object.keys(p).forEach(k => {
+        if (controls[k]) controls[k].value = p[k];
+      });
+      el('presetLabel').innerText = p.name;
+      update();
+    }
+
+    function copyAllValues() {
+      const summary = el('outputSummary').innerText;
+      navigator.clipboard.writeText(summary).then(() => {
+        const badge = el('copyBadge');
+        badge.classList.remove('hidden');
+        setTimeout(() => badge.classList.add('hidden'), 2500);
+      });
+    }
+
+    update();
+  </script>
+</body>
+</html>

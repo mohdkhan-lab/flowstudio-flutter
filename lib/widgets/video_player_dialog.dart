@@ -504,7 +504,22 @@ class _PlayerDialogState extends State<_PlayerDialog> {
                     stream: _player.stream.duration,
                     initialData: Duration.zero,
                     builder: (context, durSnap) {
-                      final duration = durSnap.data ?? Duration.zero;
+                      var duration = durSnap.data ?? Duration.zero;
+                      // v2.46.0: duration wala stream apna number
+                      // ek hi baar bhejta hai — dialog us pal ke
+                      // baad bana ho to wo number chook jata hai
+                      // aur kul waqt hamesha 0:00 raha, jis se
+                      // progress wali line shuru par freeze rehti
+                      // thi (owner ki shikayat 2026-10-30: "sirf
+                      // freeze line hai"). Player ki asal mojooda
+                      // haalat se seedha padh lo — bahar wala
+                      // position builder har tick par dobara banta
+                      // hai, is liye number milte hi line asal me
+                      // badhne lagti hai aur seek bhi chalta hai.
+                      if (duration == Duration.zero) {
+                        final live = _player.state.duration;
+                        if (live > Duration.zero) duration = live;
+                      }
                       final maxMs = duration.inMilliseconds.toDouble();
                       final posMs = position.inMilliseconds
                           .toDouble()

@@ -3,6 +3,10 @@ enum AccountStatus {
   running,
   checking,
   outOfCredits,
+  // v2.46.0: engine ki 'LowCredits' haalat — kuch credits hain
+  // lekin ek video ke liye na-kaafi. outOfCredits (0) se alag
+  // pehchan, taaki screen par dono ka lafz bhi alag ho.
+  lowCredits,
   loginRequired,
   disabled,
   error,

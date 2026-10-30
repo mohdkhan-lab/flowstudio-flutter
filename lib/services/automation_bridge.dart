@@ -201,6 +201,16 @@ class AutomationBridge {
       status = AccountStatus.loginRequired;
     } else if (statusStr.contains('check')) {
       status = AccountStatus.checking;
+    } else if (statusStr.contains('exhaust')) {
+      // v2.46.0: engine ka 'Exhausted' (0 credits) pehle 'ready' me
+      // gir jata tha aur screen use 0 dekh kar FAIL keh deti thi —
+      // ab is ki apni pehchan hai: No Credits, fail nahi.
+      status = AccountStatus.outOfCredits;
+    } else if (statusStr.contains('lowcredit') ||
+        statusStr.contains('low credit')) {
+      // v2.46.0: engine ka 'LowCredits' — credits hain, video ke
+      // liye kam hain. FAIL nahi, Low Credits hai.
+      status = AccountStatus.lowCredits;
     } else if (statusStr.contains('fail') ||
         statusStr.contains('error') ||
         statusStr.contains('dead') ||

@@ -429,7 +429,13 @@ class WorkerPool {
       // expired is eligible again (openFlowStudio live-checks it first).
       if (live.status === 'Cooldown' && accountHealth.isResting(live)) continue;
       const credits = (typeof live.credits === 'number') ? live.credits : null;
-      if (credits !== null && credits < requiredCredits) continue;
+      // v2.46.0: pick ke waqt bhi wahi rule jo pool par laga hai —
+      // balance kam ho YA abhi tak padha hi na gaya ho (null), dono
+      // soorat me account is run ke liye nahi uthaya jayega (null ko
+      // pehle "shayad hoga" samajh kar launch kar diya jata tha aur
+      // waqt studio ke check me zaya hota tha). Image runs
+      // (requiredCredits 0) par credits ka koi sawal hi nahi.
+      if (requiredCredits > 0 && (credits === null || credits < requiredCredits)) continue;
       return live;
     }
     return null;
@@ -682,6 +688,46 @@ class WorkerPool {
         this.log('No Google account is available (all need login). Add an account from the Accounts page and Sign In.', 'error');
         this.onProgress({ status: 'NoAccounts' });
         return;
+      }
+
+      // v2.46.0 (owner ki demand, 2026-10-30): JO ACCOUNT EK VIDEO
+      // KI COST NAHI DE SAKTA, WO RUN ME JAYEGA HI NAHI — na us ka
+      // browser khulega, na us par check ka chakar lagega. Do soorat:
+      // (a) balance maloom hai aur required se kam hai (jaise 1
+      // credit par 7 wala video), (b) balance abhi tak padha hi
+      // nahi gaya (null) — pehle null wale ko bhi utha liya jata
+      // tha aur studio khol kar check karne me run ka waqt zaya
+      // hota tha (owner ka (26) wala waqia, 2026-10-30 subah).
+      // Bahar hue accounts ke naam + wajah ek line me log hoti hai
+      // — khamoshi se gayab koi nahi hota. Sync/Verify se asal
+      // balance padhte hi account agli run me khud andar hai.
+      // Image runs (requiredCredits 0) par ye rule lagu nahi.
+      if (requiredCredits > 0) {
+        const skippedForRun = [];
+        pool = pool.filter(a => {
+          const c = (typeof a.credits === 'number' && Number.isFinite(a.credits)) ? a.credits : null;
+          if (c === null) {
+            skippedForRun.push(`${a.googleName || a.name} (balance has never been checked — Sync/Verify it once)`);
+            return false;
+          }
+          if (c < requiredCredits) {
+            skippedForRun.push(`${a.googleName || a.name} (only ${c} credits — one video needs ${requiredCredits})`);
+            return false;
+          }
+          return true;
+        });
+        if (skippedForRun.length > 0) {
+          this.log(`Not run this time (${skippedForRun.length} account(s) skipped — they will NOT be opened or checked): ${skippedForRun.join('; ')}`, 'warn');
+        }
+        if (pool.length === 0) {
+          const msg = `No account can run right now: every ticked account either has too few credits for one video (${requiredCredits} needed) or its balance has never been checked. Sync/Verify the accounts to read their real balances, then press Generate again.`;
+          this.log(msg, 'error');
+          try {
+            recordActivity({ category: 'credits', level: 'error', message: 'Run stopped: no account with a checked, sufficient balance was available' });
+          } catch (e) {}
+          this.onProgress({ status: `Error: ${msg}` });
+          return;
+        }
       }
 
       // v2.45.0 (Fix List E, item 1): PRE-FLIGHT CREDIT GATE — owner

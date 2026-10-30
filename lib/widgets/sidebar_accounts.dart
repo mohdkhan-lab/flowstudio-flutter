@@ -5,6 +5,32 @@ import '../providers/accounts_provider.dart';
 import '../providers/settings_provider.dart';
 import '../models/account.dart';
 import '../services/automation_bridge.dart';
+import '../services/credit_costs.dart';
+
+// v2.46.0 (status imaandari): sab se saste video ki cost — is se
+// kam credits wala account koi video bana hi nahi sakta, is liye
+// use "Live" kehna jhooth hota. Teen pehchan file bhar me ek hi
+// jagah se banti hain (ginati, filter aur status lafz teeno ke
+// liye): Live = Ready + kam se kam itne credits; No Credits = 0
+// (ya engine ka Exhausted); Low Credits = kuch hain, video ke
+// liye na-kaafi. FAIL in teeno se alag, sirf asal problem hai.
+final int _minVideoCredits = creditCostPerVideo('Omni Flash', '4s', '360p') ?? 4;
+
+bool _isLiveAcc(GoogleAccount a) =>
+    a.status == AccountStatus.running ||
+    (a.status == AccountStatus.ready && a.credits >= _minVideoCredits);
+
+bool _isNoCredits(GoogleAccount a) =>
+    a.status == AccountStatus.outOfCredits ||
+    (a.credits <= 0 &&
+        (a.status == AccountStatus.ready ||
+            a.status == AccountStatus.lowCredits));
+
+bool _isLowCredits(GoogleAccount a) =>
+    (a.status == AccountStatus.lowCredits && a.credits > 0) ||
+    (a.status == AccountStatus.ready &&
+        a.credits > 0 &&
+        a.credits < _minVideoCredits);
 
 class SidebarAccounts extends StatefulWidget {
   // Responsive pass: the main layout drives the width by breakpoint
@@ -31,19 +57,20 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     final allAccounts = accountsProv.accounts;
 
     final checkingCount = allAccounts.where((a) => a.status == AccountStatus.checking).length;
-    final liveCount = allAccounts.where((a) => a.credits > 0 && a.status == AccountStatus.ready).length;
+    // v2.46.0: Live ki ginati bhi file-scope wali asal pehchan se.
+    final liveCount = allAccounts.where(_isLiveAcc).length;
     // v2.29.0: a "Need Login" account is NOT a failure — it is
     // excluded from the Fail count/filter and gets its own amber
     // LOGIN chip (it used to be lumped into FAIL by its 0 credits).
-    bool isFail(GoogleAccount a) =>
-        a.status == AccountStatus.outOfCredits ||
-        a.status == AccountStatus.error ||
-        (a.credits <= 0 && a.status != AccountStatus.loginRequired);
+    // v2.46.0: FAIL ab SIRF asal problem hai (engine ka error) —
+    // credits khatam (outOfCredits) ya kam (lowCredits) FAIL nahi
+    // hain; un ke apne lafz hain (No Credits / Low Credits).
+    bool isFail(GoogleAccount a) => a.status == AccountStatus.error;
     final failCount = allAccounts.where(isFail).length;
 
     final visibleAccounts = allAccounts.where((acc) {
       if (_selectedFilter == 'checking') return acc.status == AccountStatus.checking;
-      if (_selectedFilter == 'live') return acc.credits > 0 && acc.status == AccountStatus.ready;
+      if (_selectedFilter == 'live') return _isLiveAcc(acc);
       if (_selectedFilter == 'fail') return isFail(acc);
       return true;
     }).toList();
@@ -581,9 +608,11 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     if (acc.status == AccountStatus.loginRequired) {
       return ('LOGIN', const Color(0xFFF5B301));
     }
-    final isLive = acc.status == AccountStatus.running ||
-        (acc.status == AccountStatus.ready && acc.credits > 0);
-    if (isLive) return ('LIVE', AppTheme.green);
+    // v2.46.0: credits khatam/kam FAIL nahi hai — apne lafz, apne
+    // rang (grey / amber). FAIL sirf asal problem ke liye bacha.
+    if (_isNoCredits(acc)) return ('NO CREDITS', AppTheme.textDim);
+    if (_isLowCredits(acc)) return ('LOW CREDITS', const Color(0xFFF5B301));
+    if (_isLiveAcc(acc)) return ('LIVE', AppTheme.green);
     return ('FAIL', AppTheme.red);
   }
 
@@ -603,9 +632,11 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     if (acc.status == AccountStatus.loginRequired) {
       return ('Login', const Color(0xFFFF9F0A));
     }
-    final isLive = acc.status == AccountStatus.running ||
-        (acc.status == AccountStatus.ready && acc.credits > 0);
-    if (isLive) return ('Live', AppTheme.green);
+    // v2.46.0: credits wali haalat apne lafz se — Fail sirf asal
+    // problem (cookie/login/error) ke liye.
+    if (_isNoCredits(acc)) return ('No Credits', AppTheme.textDim);
+    if (_isLowCredits(acc)) return ('Low Credits', const Color(0xFFF5B301));
+    if (_isLiveAcc(acc)) return ('Live', AppTheme.green);
     return ('Fail', AppTheme.red);
   }
 

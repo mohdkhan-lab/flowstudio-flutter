@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
@@ -61,6 +62,34 @@ class _HistoryViewState extends State<HistoryView> {
   // Item 1: '' shows everything (grouped); a project name filters
   // the list to that project only.
   String _projectFilter = '';
+
+  // v2.46.0: projects strip ka scroll controller — wheel support
+  // aur dikhai dene wali scrollbar ke liye (neeche strip par).
+  final ScrollController _projectsScrollController = ScrollController();
+
+  // v2.46.0: mouse wheel ko folders wali patti par chalana. Wheel
+  // aam tor par poore page ko upar-neeche karta hai — patti ke
+  // upar wheel ghumaye to wohi din ka kaam patti sarka kar kare;
+  // pointerSignalResolver se page wala scroll is pal nahi chalta
+  // (jo hissa sab se andar hai, usi ki baat pehle mani jati hai).
+  void _onProjectsWheel(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    final c = _projectsScrollController;
+    if (!c.hasClients) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, () {
+      if (!c.hasClients) return;
+      final max = c.position.maxScrollExtent;
+      if (max <= 0) return;
+      final target = (c.offset + event.scrollDelta.dy).clamp(0.0, max);
+      c.jumpTo(target.toDouble());
+    });
+  }
+
+  @override
+  void dispose() {
+    _projectsScrollController.dispose();
+    super.dispose();
+  }
 
   static const List<Color> _tilePalette = [
     Color(0xFF24406B), // navy
@@ -560,25 +589,39 @@ class _HistoryViewState extends State<HistoryView> {
           // "← All videos" chip leads back. (Supersedes the
           // v2.36.0 filter chips.)
           if (!_localMode && projects.isNotEmpty) ...[
-            SingleChildScrollView(
-              scrollDirection: Axis.horizontal,
-              child: Row(
-                children: [
-                  if (activeFilter.isNotEmpty) ...[
-                    _projectChip('← All videos', false,
-                        () => setState(() => _projectFilter = '')),
-                    const SizedBox(width: 6),
-                  ],
-                  for (var i = 0; i < projects.length; i++) ...[
-                    if (i > 0) const SizedBox(width: 6),
-                    _projectCard(
-                      projects[i],
-                      projectCounts[projects[i]] ?? 0,
-                      activeFilter == projects[i],
-                      () => setState(() => _projectFilter = projects[i]),
-                    ),
-                  ],
-                ],
+            // v2.46.0: patti ab asal me istemal ke qaabil hai —
+            // mouse wheel yahin dayein-bayein scroll karta hai aur
+            // neeche ek patli scrollbar hamesha dikhai deti hai,
+            // taaki pata chale ke aage aur folders hain (owner ki
+            // shikayat 2026-10-30: '1project' aadha kata dikhta
+            // tha, aage jane ka koi rasta nazar nahi aata tha).
+            Listener(
+              onPointerSignal: _onProjectsWheel,
+              child: Scrollbar(
+                controller: _projectsScrollController,
+                thumbVisibility: true,
+                child: SingleChildScrollView(
+                  controller: _projectsScrollController,
+                  scrollDirection: Axis.horizontal,
+                  child: Row(
+                    children: [
+                      if (activeFilter.isNotEmpty) ...[
+                        _projectChip('← All videos', false,
+                            () => setState(() => _projectFilter = '')),
+                        const SizedBox(width: 6),
+                      ],
+                      for (var i = 0; i < projects.length; i++) ...[
+                        if (i > 0) const SizedBox(width: 6),
+                        _projectCard(
+                          projects[i],
+                          projectCounts[projects[i]] ?? 0,
+                          activeFilter == projects[i],
+                          () => setState(() => _projectFilter = projects[i]),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
               ),
             ),
             const SizedBox(height: 10),

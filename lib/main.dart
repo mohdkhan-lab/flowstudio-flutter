@@ -257,16 +257,19 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
             // flex so they simply get proportionally more room).
             // NOTE: v2.46.3 me sidebar 25px patla (190/225/255) kiya
             // gaya tha — owner ne live dekh kar usi din wapas pehle
-            // jaisa karne ka order diya (v2.46.4). Ye asal sizes hi
-            // final hain.
+            // jaisa karne ka order diya (v2.46.4).
+            // v2.46.6 (owner-approved Design A / Sample 5): Cookies
+            // section ab 285 hai taaki Cookie Line ke beech me
+            // proper space rahe aur sab text (ek size = 9) apne
+            // pure size par dikhe, koi attach/cut na ho.
             Expanded(
               child: LayoutBuilder(
                 builder: (context, constraints) {
                   final winW = constraints.maxWidth;
                   final compact = winW < 1150;
                   final sidebarWidth = compact
-                      ? 215.0
-                      : (winW > 1500 ? 280.0 : 250.0);
+                      ? 285.0
+                      : (winW > 1500 ? 300.0 : 285.0);
                   return Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [

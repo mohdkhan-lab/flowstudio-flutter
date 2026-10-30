@@ -34,10 +34,10 @@ bool _isLowCredits(GoogleAccount a) =>
 
 class SidebarAccounts extends StatefulWidget {
   // Responsive pass: the main layout drives the width by breakpoint
-  // (215 compact / 250 standard / 280 wide); 250 stays the default.
+  // (v2.46.6 se: 285 har size par, wide par 300); 285 default hai.
   final double width;
 
-  const SidebarAccounts({super.key, this.width = 250});
+  const SidebarAccounts({super.key, this.width = 285});
 
   @override
   State<SidebarAccounts> createState() => _SidebarAccountsState();
@@ -81,7 +81,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
       width: widget.width,
       margin: const EdgeInsets.fromLTRB(14, 12, 0, 12),
       // v2.30.0: 8 (was 10) — two of the pixels the account row's
-      // name column needed at the compact 215px width.
+      // name column needed at the compact width.
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: AppTheme.surface,
@@ -195,7 +195,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                     )
                   : ListView.separated(
                       itemCount: visibleAccounts.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 4),
+                      separatorBuilder: (_, _) => const SizedBox(height: 6),
                       itemBuilder: (context, index) {
                         final acc = visibleAccounts[index];
                         final word = _statusWord(acc);
@@ -221,7 +221,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                           // bilkul waisi hi; koi text cut nahi
                           // hota (neeche wale text boxes apni
                           // asal height par hain).
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 7),
                           decoration: BoxDecoration(
                             color: AppTheme.overlay08,
                             borderRadius: BorderRadius.circular(8),
@@ -282,10 +282,9 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                         mainAxisAlignment: MainAxisAlignment.center,
                                         children: [
                                       SizedBox(
-                                        // v2.46.5: 17 -> 15 (13px font ki
-                                        // line 13 ki hai — 2px slack ke
-                                        // saath, text cut nahi hota).
-                                        height: 15,
+                                        // v2.46.6 (Sample 5): sab text
+                                        // ek size = 9; box 11.
+                                        height: 11,
                                         child: Text(
                                           // v2.29.0 (B): the row TITLE
                                           // is the source alias
@@ -296,36 +295,34 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                           maxLines: 1,
                                           softWrap: false,
                                           style: TextStyle(
-                                            fontSize: 13,
+                                            fontSize: 9,
                                             fontWeight: FontWeight.bold,
                                             color: AppTheme.textMain,
                                             height: 1.0,
                                           ),
                                         ),
                                       ),
-                                      const SizedBox(height: 2),
+                                      const SizedBox(height: 3),
                                       SizedBox(
-                                        // v2.46.5: 15 -> 13 (11px font ki
-                                        // line 11 ki hai — text cut nahi
-                                        // hota, sirf khaali jagah kam).
-                                        height: 13,
+                                        // v2.46.6 (Sample 5): box 11,
+                                        // font 9 (sab text ek size).
+                                        height: 11,
                                         child: Text(
                                           _subLineOf(acc),
                                           maxLines: 1,
                                           softWrap: false,
                                           style: TextStyle(
-                                            fontSize: 11,
+                                            fontSize: 9,
                                             color: AppTheme.textFaint,
                                             height: 1.0,
                                           ),
                                         ),
                                       ),
-                                      const SizedBox(height: 1),
+                                      const SizedBox(height: 3),
                                       SizedBox(
-                                        // v2.46.5: 16 -> 13 (ACTIVE ka
-                                        // text 12px hai — pura dikhega,
-                                        // cut nahi hoga).
-                                        height: 13,
+                                        // v2.46.6 (Sample 5): slot 11,
+                                        // font 9 (sab text ek size).
+                                        height: 11,
                                         // v2.25.0 (parked browser): gold
                                         // ● ACTIVE under the credits —
                                         // ONLY on the account that is
@@ -337,7 +334,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                                 maxLines: 1,
                                                 softWrap: false,
                                                 style: TextStyle(
-                                                  fontSize: 12,
+                                                  fontSize: 9,
                                                   fontWeight: FontWeight.w800,
                                                   color: AppTheme.activeGold,
                                                   letterSpacing: 0.5,
@@ -380,7 +377,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                         maxLines: 1,
                                         softWrap: false,
                                         style: TextStyle(
-                                          fontSize: 11,
+                                          fontSize: 9,
                                           fontWeight: FontWeight.w700,
                                           color: word.$2,
                                           height: 1.0,

@@ -52,6 +52,15 @@ class FlowAutomationEngine {
     this.onVideoCompleted = callbacks.onVideoCompleted || (() => {});
     this.onTaskCompleted = callbacks.onTaskCompleted || (() => {});
     this.onTaskFailed = callbacks.onTaskFailed || (() => {});
+    // v2.45.0 (download defer): render complete hone par, jab queue
+    // me aur prompts baaki hon, monitor download yahin poora karne
+    // ke bajaye task ko is callback se pool ko saunpta hai — pool
+    // use download-only (needs_check) bana kar apne deferred
+    // download drain se niptata hai aur slot agli prompt ke liye
+    // foran khaali ho jata hai. Default no-op: purane callers par
+    // defer kabhi fire hi nahi hota (wo downloadTaskMedia wala
+    // purana inline raasta hi chalate hain).
+    this.onTaskDownloadDeferred = callbacks.onTaskDownloadDeferred || (() => {});
     this.onAccountUpdated = callbacks.onAccountUpdated || (() => {});
     // v2.1.0: fired ONCE when a submitted render's tile stays missing
     // and stall recovery begins (the pool turns it into an Activity
@@ -4963,7 +4972,22 @@ class FlowAutomationEngine {
             // and the task was observed generating or 25s+ elapsed.
             if (bestTile.isReady && (task.wasObservedGenerating || elapsedSec >= 25)) {
               task.completed = true;
-              this.onVideoProgress({ id: task.videoId, percentage: '100%' });
+              // v2.45.0 (progress imaandari): yahan ki purani
+              // "percentage: '100%'" wali emit hata di gayi hai — file
+              // abhi save NAHI hui, isliye 100% kehna jhooth tha
+              // (owner: "progress wali line fake progress dikhati
+              // hai"). Ab sirf asal haalat bheji jati hai:
+              // state 'downloading' — card download ka waqt dikhata
+              // hai, number nahi; 100% sirf tab jab file asal me save
+              // ho jaye (completion event khud progress = 1.0 karta
+              // hai).
+              this.onVideoProgress({
+                id: task.videoId,
+                state: 'downloading',
+                prompt: task.promptText,
+                accountName: this.currentAccount.name,
+                elapsedSec: elapsedSec
+              });
               // v2.8.0: ho sakta hai backend wala turant fetch pehle
               // hi file save kar chuka ho (ya kar raha ho) — pehle
               // use settle hone do; file aa gayi ho to download ki
@@ -4974,14 +4998,39 @@ class FlowAutomationEngine {
                 // leaf awaits hardened above, but the monitor must
                 // never wait on it forever; after 120s the normal
                 // download orchestrator below takes over.
-                try { await downloadGuard.withTimeout(task._backendFetchPromise, 120000, 'immediate backend fetch'); } catch (e) {}
+                // v2.45.0: jab queue me aur prompts baaki hain
+                // (returnOnAnyComplete) to grace sirf 30s hai — us ke
+                // baad download peeche defer ho jata hai (neeche),
+                // agli prompt ka waqt fetch ke intezaar me nahi
+                // kharch hota.
+                const graceMs = returnOnAnyComplete ? 30000 : 120000;
+                try { await downloadGuard.withTimeout(task._backendFetchPromise, graceMs, 'immediate backend fetch'); } catch (e) {}
               }
               if (task.mediaSaved) {
                 this.log(`[Prompt #${task.promptIndex + 1}] The video has already been downloaded from the backend — no need for the remaining download attempts.`, 'success');
                 if (returnOnAnyComplete) return;
                 continue;
               }
-              this.log(`[Prompt #${task.promptIndex + 1}] The video has been generated (100%) on [${this.currentAccount.name}] — now it will be downloaded.`, 'success');
+              // v2.45.0 (download defer): queue me aur prompts baaki
+              // hain to download ki poori line (media-ready intezaar
+              // + saari strategies) yahin chala kar agli prompt ka
+              // waqt NAHI khaya jata. Video ban chuka hai, credits
+              // kat chuke hain — pool task ko download-only
+              // (needs_check) bana kar apne deferred drain se usi
+              // account ke khule browser me file save karega; wo
+              // mauqa na mile to task pending reh kar agle Resume ki
+              // check-only recovery use uthayegi. Prompt DOBARA
+              // submit NAHI hota — ye tartib hai, nakami nahi,
+              // isliye onTaskFailed NAHI bulaya jata.
+              if (returnOnAnyComplete) {
+                task.downloaded = true;
+                task.deferredDownload = true;
+                this.claimedTileIndices.add(bestTile.tileIndex);
+                this.log(`[Prompt #${task.promptIndex + 1}] The video has been generated on [${this.currentAccount.name}] — its download will finish in the background so the next prompt can start right away (the prompt will NOT be submitted again; no new charge).`, 'success');
+                try { this.onTaskDownloadDeferred(task); } catch (e) {}
+                return;
+              }
+              this.log(`[Prompt #${task.promptIndex + 1}] The video has been generated on [${this.currentAccount.name}] — now it will be downloaded.`, 'success');
 
               // v2.8.0: download ab backend-first orchestrator hai
               // (downloadTaskMedia): sabse pehle network capture se

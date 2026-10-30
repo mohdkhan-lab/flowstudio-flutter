@@ -1,5 +1,5 @@
 const { FlowAutomationEngine } = require('./flowAutomation');
-const { getAccounts } = require('./accountStore');
+const { getAccounts, fetchRealCredits } = require('./accountStore');
 const { dbService } = require('./db');
 const { getCreditService } = require('./creditService');
 const { TaskQueue } = require('./taskQueue');
@@ -684,6 +684,45 @@ class WorkerPool {
         return;
       }
 
+      // v2.45.0 (Fix List E, item 1): PRE-FLIGHT CREDIT GATE — owner
+      // ki demand (2026-10-29): "credits khatam hon to pehle hi pata
+      // chal jana chahiye". Run ka kul kharcha (pending prompts ×
+      // asal rate) pool ke maujooda balances se run start hone se
+      // PEHLE tol liya jata hai; kam pade to run start hi nahi hota —
+      // koi adhoora episode, koi beech-me-khatam balance nahi.
+      // Balances wahi stored values hain jo aakhri live read ya
+      // estimated charge se aaye hain; har submission par studio-open
+      // ka live check apni jagah barkarar hai. Jis account ka balance
+      // kabhi padha hi nahi gaya (null) use gate rokta nahi — us par
+      // faisla studio ke live check par rehta hai; gate sirf TAB
+      // rokta hai jab padhe hue balances ka kul yog hi run ke
+      // kharche se kam ho. Terminal signal 'Error: …' hai kyunki
+      // renderer sirf usi pattern par run ko settle karta hai
+      // (v2.30.1) — wajah card par bhi wahi dikhti hai.
+      if (requiredCredits > 0 && pendingTasks.length > 0) {
+        const totalNeeded = requiredCredits * pendingTasks.length;
+        let knownUsable = 0;
+        let knownAccounts = 0;
+        for (const a of pool) {
+          if (typeof a.credits === 'number' && Number.isFinite(a.credits)) {
+            knownUsable += Math.max(0, a.credits);
+            knownAccounts++;
+          }
+        }
+        if (knownAccounts > 0 && knownUsable < totalNeeded) {
+          const msg = `Not enough credits for this run: ${pendingTasks.length} prompt(s) at ${requiredCredits} credits each need ${totalNeeded} credits, but the usable accounts together hold only ${knownUsable}. No prompt was submitted and no credits were spent. Add or refresh an account with enough credits, then press Generate again.`;
+          this.log(msg, 'error');
+          try {
+            recordActivity({ category: 'credits', level: 'error', message: `Credit gate: run stopped before starting — this run needs ${totalNeeded} credits, usable accounts hold ${knownUsable}` });
+          } catch (e) {}
+          this.onProgress({ status: `Error: ${msg}` });
+          return;
+        }
+        if (knownAccounts > 0) {
+          this.log(`Credit check passed: this run needs about ${totalNeeded} credits (${pendingTasks.length} prompts × ${requiredCredits}) and the usable accounts hold ${knownUsable}.`, 'info');
+        }
+      }
+
       const taskQueue = new TaskQueue(pendingTasks);
 
       for (const t of pendingTasks) {
@@ -969,11 +1008,41 @@ class WorkerPool {
       const processDownloadRetries = async (engine) => {
         const mine = deferredDownloadRetries.filter(e => e.owner === engine);
         for (const entry of mine) {
+          // v2.45.0 (hifazati guards — defer ke saath zaroori):
+          // (a) ACCOUNT GUARD: download hamesha USI account ke
+          //     browser se ho jis par video bana tha. Worker agar
+          //     account badal chuka hai to entry list me hi rehne do
+          //     — galat account ke project me tile na milne par task
+          //     jhooth-mooth 'lost-render' fail ho sakta tha. Row
+          //     pending + needs_check hai, agla Resume sahi account
+          //     par wahi download karega.
+          // (b) FETCH-IN-FLIGHT GUARD: backend fetch abhi chal raha
+          //     hai (aur file abhi save nahi hui) to is dafa chhodo —
+          //     fetch khud chand seconds me settle hota hai, agla
+          //     drain use utha lega; beech me strategies chala kar
+          //     usi file ki doहरी koshish ka koi fayda nahi.
+          // Dono guards entry ko list me chhodte hain (splice NAHI).
+          if (entry.accountId && engine.currentAccount
+              && String(entry.accountId) !== String(engine.currentAccount.id)) {
+            continue;
+          }
+          if (entry.engineTask && entry.engineTask._backendFetchPromise
+              && !entry.engineTask.mediaSaved) {
+            continue;
+          }
           const at = deferredDownloadRetries.indexOf(entry);
           if (at >= 0) deferredDownloadRetries.splice(at, 1);
           if (this.isStopping) continue; // row pending + needs_check hai — Resume sambhalega
           const { rowTask, engineTask } = entry;
           if (!engineTask) continue; // engine task ke bagair tile ki pehchan namumkin — Resume check-only karega
+          // v2.45.0 (c) ALREADY-SAVED GUARD: defer aur drain ke
+          // beech backend fetch file save karke row complete kar
+          // chuka ho sakta hai — aisi entry ko dobara niptana
+          // matlab dohra hisaab (usage do baar). Khamoshi se chhodo.
+          try {
+            const freshRow = dbService.getTask(rowTask.id);
+            if (freshRow && freshRow.status === 'completed') continue;
+          } catch (e) {}
           this.log(`Prompt #${rowTask.prompt_index + 1}: download-only retry starting — from the same tile, no new submit/charge…`, 'info');
           let outcome = null;
           for (let round = 1; round <= 2; round++) {
@@ -1205,6 +1274,40 @@ class WorkerPool {
                 reason
               });
             }
+          },
+          onTaskDownloadDeferred: (task) => {
+            // v2.45.0 (download defer): render complete hai, file
+            // abhi save nahi hui — lekin ye NAKAMI nahi hai. Task ko
+            // download-stage fail ke jaise hi needs_check
+            // (download-only) bana kar deferred list me rakha jata
+            // hai; ye worker apne khule browser me window ke baad
+            // sirf is ka download niptayega (processDownloadRetries),
+            // aur browser/account na rahe to agla Resume check-only
+            // recovery wahi karega. Prompt DOBARA submit NAHI hota,
+            // credits dobara NAHI katte — maksad sirf slot ka agli
+            // prompt ke liye foran khaali hona hai.
+            const rowTask = pendingTasks.find(pt => pt.id === task.taskId)
+              || { id: task.taskId, prompt_index: task.promptIndex, prompt_text: task.promptText };
+            try { dbService.updateTaskProgress(rowTask.id, 'pending'); } catch (e) {}
+            try { dbService.setTaskNeedsCheck(rowTask.id, 1); } catch (e) {}
+            deferredDownloadRetries.push({
+              rowTask,
+              engineTask: task,
+              owner: engine,
+              accountId: workerAccount ? workerAccount.id : null,
+              accountName: workerAccount ? workerAccount.name : '',
+              reason: 'Download deferred so the next prompt could start right away',
+              attempts: []
+            });
+            this.onTaskUpdate({
+              taskId: task.taskId,
+              promptIndex: task.promptIndex,
+              promptText: task.promptText,
+              tag: rowTask.prompt_tag || task.tag || '',
+              status: 'pending',
+              reason: 'The video has been generated — its download will finish in the background (no new charge)'
+            });
+            noteTaskSettled(rowTask.id, 'moved');
           },
           onTaskHeartbeat: (task, info) => {
             // v2.4.0: the task's tile STATE changed (absent ->
@@ -1726,6 +1829,41 @@ class WorkerPool {
         workerPromises.push(runWorker(i));
       }
       await Promise.all(workerPromises);
+
+      // v2.45.0 (honest totals — Fix List E item 3 ka dusra hissa):
+      // run ke dauraan har submission ke baad balance padhne ki
+      // koshish hoti hai, lekin Flow apna kata-hua number kabhi
+      // der se dikhata hai — ek beech-run live read purana number
+      // utha laya tha (owner ke (17) par asal 36 ki jagah der tak
+      // 43 dikhta raha). Isliye run khatam hote hi istemal hue har
+      // account ka balance EK baar phir live padha jata hai, taaki
+      // run ke baad dikhne wala kul yog andaza nahi, asal ho. Kisi
+      // account ka check fail ho to us ka purana number hi rehta
+      // hai (aur '~' nishan, agar tha, barkarar) — jhooti taazgi
+      // kabhi nahi dikhayi jati.
+      if (!this.isStopping) {
+        try {
+          const batchIdList = (this.batchIds && this.batchIds.size > 0) ? [...this.batchIds] : [batchId];
+          const usedAccountIds = new Set();
+          for (const id of batchIdList) {
+            if (!id) continue;
+            const rows = dbService.query('SELECT DISTINCT assigned_account_id FROM queue_tasks WHERE batch_id = ?', [id]) || [];
+            for (const r of rows) {
+              if (r && r.assigned_account_id) usedAccountIds.add(String(r.assigned_account_id));
+            }
+          }
+          if (usedAccountIds.size > 0) {
+            this.log(`Run finished — re-checking the real balance of the ${usedAccountIds.size} used account(s), so the totals shown are live, not estimates…`, 'info');
+            for (const accId of usedAccountIds) {
+              try {
+                await fetchRealCredits(accId);
+                const acc = dbService.getAccount(accId);
+                if (acc) this.onAccountUpdated({ account: acc, accounts: getAccounts() });
+              } catch (e) {}
+            }
+          }
+        } catch (e) {}
+      }
 
       // v2.7.0 (FIX 2): run ke aakhir me SACH wali ginati — is run ke
       // jo task video banne ke baad sirf-download ke liye pending

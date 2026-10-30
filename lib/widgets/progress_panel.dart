@@ -278,6 +278,11 @@ class ProgressPanel extends StatelessWidget {
       if (item.progress > 0) {
         percentText = '${(item.progress * 100).round()}%';
         barValue = item.progress;
+      } else if (item.status == PromptStatus.downloading) {
+        // v2.45.0 (progress imaandari): download ka koi asal percent
+        // nahi banta — number ki jagah saaf haalat dikhao.
+        percentText = 'Downloading…';
+        barValue = null;
       } else {
         // The engine does not stream a numeric percent for a rendering
         // task — show the bar as working instead of inventing a number.

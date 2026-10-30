@@ -617,7 +617,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     if ((chip.$1 == 'FAIL' || chip.$1 == 'LOGIN') && acc.reason != null && acc.reason!.trim().isNotEmpty) {
       return acc.reason!.trim();
     }
-    return '${acc.credits} credits';
+    // v2.45.0 (honest totals): an estimated balance wears '~'.
+    return acc.creditsSource == 'estimate'
+        ? '~${acc.credits} credits (estimate)'
+        : '${acc.credits} credits';
   }
 
   // v2.30.2: the row's avatar helpers (_avatarColor / _initialOf /

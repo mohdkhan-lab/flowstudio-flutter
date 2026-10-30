@@ -125,7 +125,7 @@ class TopStrip extends StatelessWidget {
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                   ),
                   child: Text(
-                    'v2.44.0',
+                    'v2.45.0',
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,
@@ -232,7 +232,9 @@ class TopStrip extends StatelessWidget {
           ),
           const SizedBox(width: 8),
           Text(
-            '${accounts.totalCredits}',
+            // v2.45.0 (honest totals): '~' when any balance in the
+            // sum is still an estimate, not a live read.
+            '${accounts.anyEstimateCredits ? '~' : ''}${accounts.totalCredits}',
             style: TextStyle(
               fontSize: 26,
               fontWeight: FontWeight.w900,

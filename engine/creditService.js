@@ -65,6 +65,9 @@ function createCreditService(store) {
       const status = n === 0 ? 'Exhausted' : 'Ready';
       const updated = store.updateAccountFields(id, {
         credits: n,
+        // v2.45.0 (honest totals): ye number Flow ke page se ASAL
+        // me padha gaya hai — source 'live', UI ka '~' nishan hatega.
+        creditsSource: 'live',
         status,
         lastChecked: nowTime(),
         // A confirmed live read resolves every health question (v1.8).
@@ -82,6 +85,8 @@ function createCreditService(store) {
       if (!acc) return { outcome: 'unknown', reason: 'account-not-found' };
       const updated = store.updateAccountFields(id, {
         credits: 0,
+        // v2.45.0: Flow ke apne banner se aaya 0 bhi asal hai.
+        creditsSource: 'live',
         status: 'Exhausted',
         lastChecked: nowTime()
       });
@@ -129,7 +134,11 @@ function createCreditService(store) {
         // Do NOT zero an estimated balance (audit fix #2).
         return { outcome: 'needs-live-check', account: acc };
       }
-      const updated = store.updateAccountFields(id, { credits: estimate });
+      // v2.45.0 (honest totals): ye number sirf ANDAZA hai (purane
+      // balance se kharcha kata hua) — source 'estimate' likha jata
+      // hai taaki UI use '~' ke saath dikhaye aur agla live read use
+      // sach se badal de. Kabhi 'live' sach ban kar nahi dikhega.
+      const updated = store.updateAccountFields(id, { credits: estimate, creditsSource: 'estimate' });
       return { outcome: 'ok', account: updated };
     },
 
@@ -173,6 +182,8 @@ function createCreditService(store) {
       if (identity.googleName) fields.googleName = identity.googleName;
       if (typeof identity.credits === 'number' && Number.isFinite(identity.credits)) {
         fields.credits = identity.credits;
+        // v2.45.0: login ke saath aaya number live padha gaya tha.
+        fields.creditsSource = 'live';
         if (identity.credits === 0) fields.status = 'Exhausted';
       }
       const updated = store.updateAccountFields(id, fields);

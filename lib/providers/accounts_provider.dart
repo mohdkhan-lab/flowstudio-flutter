@@ -324,6 +324,12 @@ class AccountsProvider with ChangeNotifier {
   int get totalCredits =>
       _accounts.fold(0, (sum, a) => sum + a.credits);
 
+  // v2.45.0 (honest totals): true when at least one account's
+  // balance is only an estimate — the header total then wears a
+  // '~' so the sum never poses as fully live-verified.
+  bool get anyEstimateCredits =>
+      _accounts.any((a) => a.creditsSource == 'estimate');
+
   int get activeAccountsCount =>
       _accounts.where((a) => a.isChecked && a.status == AccountStatus.ready).length;
 

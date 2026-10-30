@@ -219,6 +219,9 @@ class AutomationBridge {
       hasCookies: a['hasCookies'] == true,
       chromeProfileDir: a['chromeProfileDir']?.toString() ?? '',
       credits: cr is num ? cr.toInt() : 0,
+      // v2.45.0 (honest totals): carry the engine's source flag so
+      // estimates can be marked with '~' wherever credits show.
+      creditsSource: a['creditsSource']?.toString() ?? 'live',
       status: status,
       isChecked: a['selected'] == true || a['selected'] == 1,
       reason: a['status']?.toString(),

@@ -260,6 +260,18 @@ class GeneratorProvider with ChangeNotifier {
         item.accountName = accName;
         changed = true;
       }
+      // v2.45.0 (progress imaandari): engine ab render complete
+      // hone par nakli '100%' nahi bhejta — wo sirf state
+      // 'downloading' bhejta hai, kyunki file abhi save nahi hui.
+      // Card ko asal haalat par le jao aur render wala number saaf
+      // kar do, taaki download ke dauraan koi jama hua % na dikhe;
+      // 100% sirf completion event (file save) par aayega.
+      if (data['state']?.toString() == 'downloading' &&
+          item.status == PromptStatus.generating) {
+        item.status = PromptStatus.downloading;
+        item.progress = 0;
+        changed = true;
+      }
       final pctRaw = data['percentage']?.toString() ?? '';
       final pct = double.tryParse(pctRaw.replaceAll('%', '').trim());
       if (pct != null &&

@@ -202,6 +202,13 @@ function initSchema() {
   // catch and every read came back false, so the app could not
   // tell a cookie account from a plain one on a fresh engine read.
   addColumnIfMissing('accounts', 'has_cookies INTEGER DEFAULT 0');
+  // v2.45.0 (honest totals): balance ka SOURCE — 'live' jab number
+  // Flow ke page se asal me padha gaya ho, 'estimate' jab wo sirf
+  // ek submission ke baad ka kata-hua andaza ho. UI isi se total par
+  // '~' ka nishan lagata hai taaki andaza kabhi live sach ban kar
+  // na dikhe (owner ki shikayat: kul yog purana number dikhata raha
+  // jabke asal balance badal chuka tha).
+  addColumnIfMissing('accounts', "credits_source TEXT DEFAULT 'live'");
   addColumnIfMissing('queue_tasks', 'needs_check INTEGER DEFAULT 0');
   // v2.31.3 (download fix pack, ADOPT #1 + #3): the persisted
   // per-task DOWNLOAD-attempt ledger. download_attempts counts
@@ -259,7 +266,8 @@ function mapAccountRow(a) {
     signoutStrikes: Number(a.signout_strikes) || 0,
     strikeAt: a.strike_at || '',
     cooldownLevel: Number(a.cooldown_level) || 0,
-    hasCookies: !!a.has_cookies
+    hasCookies: !!a.has_cookies,
+    creditsSource: a.credits_source || 'live'
   };
 }
 
@@ -338,7 +346,8 @@ const dbService = {
       signoutStrikes: 'signout_strikes',
       strikeAt: 'strike_at',
       cooldownLevel: 'cooldown_level',
-      hasCookies: 'has_cookies'
+      hasCookies: 'has_cookies',
+      creditsSource: 'credits_source'
     };
     const sets = [];
     const params = [];

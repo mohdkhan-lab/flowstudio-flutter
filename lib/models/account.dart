@@ -28,6 +28,12 @@ class GoogleAccount {
   final bool hasCookies;
   final String chromeProfileDir;
   int credits;
+  // v2.45.0 (honest totals): where the number came from — 'live'
+  // when the engine actually read it on Flow's page, 'estimate'
+  // when it is only a post-submission guess (last known minus the
+  // charge). The UI marks estimates with '~' so a guess never
+  // poses as a live fact.
+  String creditsSource;
   AccountStatus status;
   bool isChecked;
   // v2.25.0 (parked browser): RUNTIME state only — never persisted.
@@ -52,6 +58,7 @@ class GoogleAccount {
     this.hasCookies = false,
     this.chromeProfileDir = '',
     this.credits = 30,
+    this.creditsSource = 'live',
     this.status = AccountStatus.ready,
     this.isChecked = true,
     this.isActive = false,
@@ -67,6 +74,7 @@ class GoogleAccount {
     String? name,
     String? email,
     int? credits,
+    String? creditsSource,
     AccountStatus? status,
     bool? isChecked,
     bool? isActive,
@@ -83,6 +91,7 @@ class GoogleAccount {
       hasCookies: hasCookies,
       chromeProfileDir: chromeProfileDir,
       credits: credits ?? this.credits,
+      creditsSource: creditsSource ?? this.creditsSource,
       status: status ?? this.status,
       isChecked: isChecked ?? this.isChecked,
       isActive: isActive ?? this.isActive,

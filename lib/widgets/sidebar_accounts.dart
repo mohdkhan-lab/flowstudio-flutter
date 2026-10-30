@@ -253,7 +253,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                             fit: BoxFit.scaleDown,
                             child: SizedBox(
                               width: 238,
-                              height: 54,
+                              // v2.46.9 (owner: "50x50 karo"): andar
+                              // wala hisa 54 -> 50 — Text Block ki
+                              // unchaai 50 ke saath barabar.
+                              height: 50,
                               child: Row(
                                 children: [
                                   // Square Checkbox
@@ -281,7 +284,12 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                   // (the v2.30.0 pattern): its words
                                   // are never cut or ellipsized, in
                                   // any font or sidebar width.
-                                  Expanded(
+                                  // v2.46.9 (owner: "50x50 karo"):
+                                  // Text Block fixed 50 chauda;
+                                  // beech ki space neeche wala
+                                  // spacer leta hai.
+                                  SizedBox(
+                                    width: 50,
                                     child: FittedBox(
                                       fit: BoxFit.scaleDown,
                                       alignment: Alignment.centerLeft,
@@ -355,10 +363,12 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       ),
                                     ),
                                   ),
-                                  // (Sample v3's middle open space is
-                                  // the Expanded's unused share — the
-                                  // right side is pinned by its fixed
-                                  // slots and never moves.)
+                                  // v2.46.9: beech ki khaali space —
+                                  // Text Block 50 par fixed hai, baaki
+                                  // saari darmiyani jagah ye spacer
+                                  // leta hai; dayein taraf (word +
+                                  // button) apni jagah pin rehta hai.
+                                  const Expanded(child: SizedBox.shrink()),
                                   // Right side (sample v3): the status
                                   // as plain coloured TEXT in a
                                   // FIXED-WIDTH slot — no chip.

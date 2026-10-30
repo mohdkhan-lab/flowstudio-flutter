@@ -124,6 +124,32 @@ function summarizeFetchSteps(steps) {
   return parts.join(' · ');
 }
 
+/**
+ * v2.47.4 — FAST-PATH ka faisla (owner-approved): tile ka %
+ * progress indicator GAYA + tile ke apne <video> element par
+ * ghair-khaali src/currentSrc maujood = video ban chuka hai,
+ * fetch TURANT shuru ho sakta hai — network-capture binding ka
+ * intezaar kiye bina. (Ek mukhalif extension ki tezi ka yahi
+ * raaz forensic jaanch me pakka hua tha: wo sirf yahi do
+ * nishan dekh kar download chala deta hai.)
+ *
+ * Ye sirf FAISLA hai — state { pctGone, url } andar, fetch ke
+ * kabil URL ya null bahar:
+ *   - % abhi dikh raha ho           -> null (intezaar jaari)
+ *   - url khaali / ghair-http/blob  -> null (intezaar jaari —
+ *     kabhi chup-chaap skip NAHI, kabhi complete NAHI)
+ * Identity (URL is task ki apni claimed tile ka hai) aur
+ * completion (save + ffprobe ke baad hi) caller ke maujooda
+ * usool se hi bante hain — ye function unme kuch nahi badalta.
+ */
+function fastFetchUrl(state) {
+  if (!state || state.pctGone !== true) return null;
+  const u = state.url;
+  if (typeof u !== 'string' || u.length === 0) return null;
+  if (!(u.startsWith('http') || u.startsWith('blob:'))) return null;
+  return u;
+}
+
 module.exports = {
   NODE_FETCH_MAX_ATTEMPTS,
   NODE_FETCH_RETRY_DELAYS_MS,
@@ -133,5 +159,6 @@ module.exports = {
   isRetryableFetchError,
   FALLBACK_USER_AGENT,
   resolveUserAgent,
-  summarizeFetchSteps
+  summarizeFetchSteps,
+  fastFetchUrl
 };

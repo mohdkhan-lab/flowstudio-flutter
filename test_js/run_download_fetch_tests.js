@@ -18,7 +18,8 @@ const {
   isRetryableFetchError,
   FALLBACK_USER_AGENT,
   resolveUserAgent,
-  summarizeFetchSteps
+  summarizeFetchSteps,
+  fastFetchUrl
 } = require('../engine/downloadFetch');
 
 let passed = 0;
@@ -95,6 +96,25 @@ ok('summary is capped at 3 entries',
 eq('save-verify failure is named',
   summarizeFetchSteps([{ step: 'save-verify', ok: false, error: 'the saved file failed the video check (ffprobe)' }]),
   'save-verify: the saved file failed the video check (ffprobe)');
+
+// --- v2.47.4 fast path: %-gone + the tile's own src -> fetch NOW;
+// anything less -> keep waiting (never a silent skip, never done) ---
+const signedUrl = 'https://lh3.googleusercontent.com/v/abc123=s0-dv';
+eq('pct gone + http src -> immediate fetch of that src',
+  fastFetchUrl({ pctGone: true, url: signedUrl }), signedUrl);
+eq('pct gone + blob src -> immediate fetch of that src',
+  fastFetchUrl({ pctGone: true, url: 'blob:https://flow.google.com/9f2c' }),
+  'blob:https://flow.google.com/9f2c');
+eq('pct still showing + src -> keep waiting',
+  fastFetchUrl({ pctGone: false, url: signedUrl }), null);
+eq('pct gone + EMPTY src -> keep waiting (no silent skip)',
+  fastFetchUrl({ pctGone: true, url: '' }), null);
+eq('pct gone + missing url -> keep waiting',
+  fastFetchUrl({ pctGone: true, url: null }), null);
+eq('pct gone + non-fetchable scheme -> keep waiting',
+  fastFetchUrl({ pctGone: true, url: 'data:video/mp4;base64,AAAA' }), null);
+eq('no state at all -> keep waiting',
+  fastFetchUrl(null), null);
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 process.exit(failed > 0 ? 1 : 0);

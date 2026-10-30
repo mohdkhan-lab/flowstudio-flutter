@@ -2340,6 +2340,51 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.47.4 — FAST-PATH ke liye tile ki EK jhalak me do khabrein:
+   * (a) tile ka % progress indicator gaya ya abhi hai, aur
+   * (b) tile ke <video> element ka src/currentSrc (wahi
+   * extraction jo _extractTileMediaUrlDetailed karti hai).
+   * % ki pehchan canvas read wali hi hai: tile ke chrome text
+   * (us ke apne prompt aria ko hata kar) me 1-2 digit ka "%"
+   * mile to video abhi ban raha hai; na mile to % gaya.
+   * Tile SIRF task ki apni claimed pehchan se locate hoti hai
+   * (_resolveTileIndexForTask — fingerprint-first), kisi aur
+   * tile ki khabar kabhi nahi aati. Lautta hai:
+   * { pctGone, url|null, via|null } ya null (tile/page nahi).
+   */
+  async _readTileMediaState(task, fallbackIdx) {
+    try {
+      const idx = await this._resolveTileIndexForTask(task, fallbackIdx);
+      if (idx < 0) return null;
+      return await this.page.evaluate((tileIdx) => {
+        const containers = Array.from(document.querySelectorAll('flow-grid-tile-container'));
+        const target = containers[tileIdx] || null;
+        if (!target) return null;
+        const aria = (target.getAttribute('aria-label') || '').toLowerCase().trim();
+        const rawText = (target.innerText || '').toLowerCase();
+        const text = aria ? rawText.split(aria).join(' ') : rawText;
+        const pctGone = !/\b(\d{1,2})%/.test(text);
+        const usable = (u) => (u && (u.startsWith('http') || u.startsWith('blob:'))) ? u : null;
+        const vid = target.querySelector('video');
+        if (vid) {
+          const fromSrc = usable(vid.src);
+          if (fromSrc) return { pctGone, url: fromSrc, via: 'video src' };
+          const fromCurrent = usable(vid.currentSrc);
+          if (fromCurrent) return { pctGone, url: fromCurrent, via: 'video currentSrc' };
+        }
+        const srcEl = target.querySelector('source');
+        if (srcEl) {
+          const fromSource = usable(srcEl.src);
+          if (fromSource) return { pctGone, url: fromSource, via: 'source src' };
+        }
+        return { pctGone, url: null, via: null };
+      }, idx);
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
    * v1.8.0 — CHECK-ONLY RECOVERY scan (ZDola logic): find the tile that
    * belongs to a prompt text in the CURRENT project grid, without
    * submitting anything. Scoring is the replica-tested tileIdentity
@@ -3994,6 +4039,18 @@ class FlowAutomationEngine {
    * anyway, exactly as before. And when a captured URL already
    * exists — the normal single-task case — it returns immediately,
    * so those runs do not get slower.
+   *
+   * v2.47.4 (owner-approved FAST PATH): har poll ab tile ki
+   * haalat _readTileMediaState se padhta hai. Jis poll me tile
+   * ka % GAYA ho aur us ka src maujood ho (downloadFetch.
+   * fastFetchUrl ka faisla), ye function { fastUrl, fastVia }
+   * lautata hai — caller usi src se TURANT fetch shuru karta
+   * hai, capture binding/strategy tartib ka intezaar kiye
+   * bina. Capture pehle se bandha ho to wahi purana rasta
+   * (ye function kuch nahi lautata, backend strategy usi
+   * bandhe link ko leti hai) — signed capture link ki
+   * tarjeeh barkarar. Fast-hit na mile to return null aur
+   * sab kuch pehle jaisa.
    */
   async _awaitTileMediaReady(task, tileIndexHint, isImage, captureKey, n) {
     try {
@@ -4015,6 +4072,7 @@ class FlowAutomationEngine {
       this.log(`[Prompt #${n}] The tile's video has not loaded on the page yet — bringing it into view and waiting for its link before trying the download routes…`, 'info');
       let ready = false;
       let viaReady = '';
+      let fastHit = null;
       while (Date.now() - startedAt < WAIT_MS) {
         // Prime the tile: scroll into view, hover, muted play. The
         // player fetching its media is what makes the network
@@ -4042,8 +4100,21 @@ class FlowAutomationEngine {
           try { bound = this.netCapture.urlForKey(captureKey); } catch (e) {}
           if (bound && bound.url) { ready = true; viaReady = 'the backend link was bound'; break; }
         }
-        const got = await this._extractTileMediaUrlDetailed(task, idx, false);
-        if (got && got.url) { ready = true; viaReady = `the tile reports its link (${got.via})`; break; }
+        // v2.47.4: tile ki haalat ki ek jhalak — % gaya + src
+        // maujood = FAST-HIT (caller turant fetch karega);
+        // sirf src maujood (% abhi hai) = purani ready wali
+        // break, rawaj bilkul pehle jaisa.
+        const state = await this._readTileMediaState(task, idx);
+        if (state && state.url) {
+          const fastUrl = downloadFetch.fastFetchUrl(state);
+          if (fastUrl) {
+            fastHit = { fastUrl, fastVia: state.via };
+            ready = true;
+            viaReady = `the tile finished (its % is gone) and reports its link (${state.via})`;
+            break;
+          }
+          ready = true; viaReady = `the tile reports its link (${state.via})`; break;
+        }
         await sleep(1000);
       }
       const waitedSec = Math.max(1, Math.round((Date.now() - startedAt) / 1000));
@@ -4052,6 +4123,10 @@ class FlowAutomationEngine {
       } else {
         this.log(`[Prompt #${n}] The tile's video link did not appear within ${Math.round(WAIT_MS / 1000)}s — trying the download routes anyway.`, 'warn');
       }
+      // v2.47.4: fast-hit ho to caller ko do, warna null
+      // (pehle ye function kuch nahi lautata tha — jin raaston
+      // par fast-hit nahi, un ka natija bilkul wahi hai).
+      return fastHit;
     } catch (e) {
       // Readiness is a primer, never a gate: any failure just means
       // the strategies run exactly as they did before v2.41.0.
@@ -4075,7 +4150,53 @@ class FlowAutomationEngine {
     // from the 2026-10-27 Activity records). Bounded (~25s) inside
     // this round's 120s guard; skipped entirely when a captured URL
     // already exists; never fails the round.
-    await this._awaitTileMediaReady(task, tileIndexHint, isImage, captureKey, n);
+    const readiness = await this._awaitTileMediaReady(task, tileIndexHint, isImage, captureKey, n);
+
+    // --- v2.47.4 FAST PATH (owner-approved): ye sirf ek IZAAFA ---
+    // pehli koshish hai, purani tartib ki JAGAH nahi. Readiness
+    // poll ne tile ka % gaya + us ka apna src maujood dekha to
+    // wahi src yahin, isi pal fetch hota hai — capture binding
+    // aur strategy tartib ke intezaar ke bina. Usool barkarar:
+    // (1) fetch SIRF task ki apni claimed tile ke src se
+    // (_isTaskOwnUrl ka darwaza yahan bhi, aur
+    // downloadFromCapturedStream ke andar bhi);
+    // (2) complete SIRF save + ffprobe verify ke baad (wahi
+    // _saveBufferForTask wala rasta);
+    // (3) capture ka bandha signed link pehle se maujood ho
+    // (backendVideoUrl / turant fetch chal raha ho) to fast
+    // path haath hi nahi lagata — usi ki tarjeeh barkarar;
+    // (4) MANDATORY FALLBACK (owner): fast koshish kisi bhi
+    // mor par fail ho — src bad/empty nikle, fetch error aaye,
+    // file verify na ho — to neeche wali PURANI tartib
+    // (Ranneeti 1-4) bilkul pehle ki tarah chalti hai, aur
+    // park (needs_check) sirf us ke baad hota hai. Prompt
+    // dobara submit KABHI nahi hota — ye sab sirf download hai.
+    if (readiness && readiness.fastUrl && !task.mediaSaved && !task.backendVideoUrl && !task._backendFetchPromise) {
+      const fastUrl = readiness.fastUrl;
+      if (!this._isTaskOwnUrl(task, fastUrl)) {
+        attempts.push({ strategy: 'tile-src-fast', ok: false, note: 'a URL was found on the tile but it was not proven to be this task\'s own (old, or another tile\'s) — stopped for safety; the full existing routes now run as fallback' });
+        this.log(`[Prompt #${n}] The fast route's URL was not proven to be this task's own — it was NOT downloaded, for safety. The full existing routes will run now.`, 'warn');
+      } else {
+        // Cross-match ki kitab-bandhi, Ranneeti 2 wali hi: tile
+        // ka URL network par bhi dekha gaya ho to pehchan dono
+        // taraf se bandh do.
+        let crossMatched = false;
+        if (captureKey && this.netCapture) {
+          try {
+            if (this.netCapture.hasSighting(fastUrl)) {
+              crossMatched = !!this.netCapture.claimByCurrentSrc(captureKey, fastUrl, Date.now());
+            }
+          } catch (e) {}
+        }
+        task.completedVideoUrl = fastUrl;
+        this.log(`[Prompt #${n}] Fast route: the tile's % is gone and its own link is in hand — fetching the file right now${crossMatched ? ' (the link is also confirmed from the backend)' : ''}, without waiting for the binding routes…`, 'info');
+        let okFast = false;
+        try { okFast = await this.downloadFromCapturedStream(task, downloadFolder, settings); } catch (e) { okFast = false; }
+        attempts.push({ strategy: 'tile-src-fast', ok: !!(okFast || task.mediaSaved), note: okFast ? 'the file was saved by the fast route (the tile\'s own src, fetched the moment its % finished)' : `the fast fetch could not save the file${this._fetchSummary(task) ? ` — ${this._fetchSummary(task)}` : ''} — the full existing routes now run as fallback` });
+        if (okFast || task.mediaSaved) return { ok: true, strategy: 'tile-src-fast', attempts };
+        this.log(`[Prompt #${n}] The fast route did not save the file — now running the full existing download routes for the same video (fallback).`, 'warn');
+      }
+    }
 
     // --- Ranneeti 1 (v2.8.0): BACKEND — network se bandha link ---
     try {

@@ -1,6 +1,5 @@
 import 'dart:io';
 
-import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
@@ -63,27 +62,69 @@ class _HistoryViewState extends State<HistoryView> {
   // the list to that project only.
   String _projectFilter = '';
 
-  // v2.46.0: projects strip ka scroll controller — wheel support
-  // aur dikhai dene wali scrollbar ke liye (neeche strip par).
+  // v2.46.1: projects strip ka scroll controller — dono-taraf
+  // wale ‹ › buttons ke liye (owner-approved Sample 2, 2026-10-30).
+  // v2.46.0 ki scrollbar + mouse-wheel wali soorat owner ne REJECT
+  // kar di thi ("scroll nahi dalna tha, ek button dalni thi") —
+  // strip wapas apni saaf soorat me hai, aana-jaana sirf in do
+  // buttons se hota hai.
   final ScrollController _projectsScrollController = ScrollController();
+  bool _stripCanPrev = false;
+  bool _stripCanNext = false;
 
-  // v2.46.0: mouse wheel ko folders wali patti par chalana. Wheel
-  // aam tor par poore page ko upar-neeche karta hai — patti ke
-  // upar wheel ghumaye to wohi din ka kaam patti sarka kar kare;
-  // pointerSignalResolver se page wala scroll is pal nahi chalta
-  // (jo hissa sab se andar hai, usi ki baat pehle mani jati hai).
-  void _onProjectsWheel(PointerSignalEvent event) {
-    if (event is! PointerScrollEvent) return;
+  // Buttons ki haalat asal scroll position se: shuru par ‹ halka
+  // (band), aakhir par › halka. Har scroll/animation par taza.
+  void _syncStripArrows() {
+    final c = _projectsScrollController;
+    if (!c.hasClients || !mounted) return;
+    final pos = c.position;
+    final prev = pos.pixels > 0.5;
+    final next = pos.pixels < pos.maxScrollExtent - 0.5;
+    if (prev != _stripCanPrev || next != _stripCanNext) {
+      setState(() {
+        _stripCanPrev = prev;
+        _stripCanNext = next;
+      });
+    }
+  }
+
+  // Ek click = patti ek screen bhar aage/peeche — agle folders
+  // saamne aa jate hain; click karte raho, folders aate rahenge
+  // (owner ki asal baat, 2026-10-30).
+  void _pageStrip(bool forward) {
     final c = _projectsScrollController;
     if (!c.hasClients) return;
-    GestureBinding.instance.pointerSignalResolver
-        .register(event, (PointerSignalEvent resolved) {
-      if (!c.hasClients) return;
-      final max = c.position.maxScrollExtent;
-      if (max <= 0) return;
-      final target = (c.offset + event.scrollDelta.dy).clamp(0.0, max);
-      c.jumpTo(target.toDouble());
-    });
+    final pos = c.position;
+    final step = pos.viewportDimension;
+    final target =
+        (c.offset + (forward ? step : -step)).clamp(0.0, pos.maxScrollExtent);
+    c.animateTo(target.toDouble(),
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut);
+  }
+
+  Widget _stripArrow(bool left, bool enabled, VoidCallback onTap) {
+    return Opacity(
+      opacity: enabled ? 1 : 0.3,
+      child: InkWell(
+        onTap: enabled ? onTap : null,
+        customBorder: const CircleBorder(),
+        child: Container(
+          width: 34,
+          height: 34,
+          decoration: BoxDecoration(
+            color: AppTheme.surface,
+            shape: BoxShape.circle,
+            border: Border.all(color: AppTheme.borderSoft),
+          ),
+          child: Icon(
+            left ? Icons.chevron_left : Icons.chevron_right,
+            size: 20,
+            color: AppTheme.textMain,
+          ),
+        ),
+      ),
+    );
   }
 
   @override
@@ -106,6 +147,7 @@ class _HistoryViewState extends State<HistoryView> {
   @override
   void initState() {
     super.initState();
+    _projectsScrollController.addListener(_syncStripArrows);
     _load();
     // v2.29.0: refresh the engine usage stats so the spend card
     // below shows the real credits figure, not a stale one.
@@ -590,41 +632,47 @@ class _HistoryViewState extends State<HistoryView> {
           // "← All videos" chip leads back. (Supersedes the
           // v2.36.0 filter chips.)
           if (!_localMode && projects.isNotEmpty) ...[
-            // v2.46.0: patti ab asal me istemal ke qaabil hai —
-            // mouse wheel yahin dayein-bayein scroll karta hai aur
-            // neeche ek patli scrollbar hamesha dikhai deti hai,
-            // taaki pata chale ke aage aur folders hain (owner ki
-            // shikayat 2026-10-30: '1project' aadha kata dikhta
-            // tha, aage jane ka koi rasta nazar nahi aata tha).
-            Listener(
-              onPointerSignal: _onProjectsWheel,
-              child: Scrollbar(
-                controller: _projectsScrollController,
-                thumbVisibility: true,
-                child: SingleChildScrollView(
-                  controller: _projectsScrollController,
-                  scrollDirection: Axis.horizontal,
-                  child: Row(
-                    children: [
-                      if (activeFilter.isNotEmpty) ...[
-                        _projectChip('← All videos', false,
-                            () => setState(() => _projectFilter = '')),
-                        const SizedBox(width: 6),
-                      ],
-                      for (var i = 0; i < projects.length; i++) ...[
-                        if (i > 0) const SizedBox(width: 6),
-                        _projectCard(
-                          projects[i],
-                          projectCounts[projects[i]] ?? 0,
-                          activeFilter == projects[i],
-                          () => setState(() => _projectFilter = projects[i]),
-                        ),
-                      ],
-                    ],
+            // v2.46.1 (owner-approved Sample 2): patti apni saaf
+            // soorat me hai — koi scrollbar, koi wheel nahi. Dono
+            // taraf gol ‹ › button hain; › par click karte raho,
+            // agle folders aate rahenge; ‹ se peeche. Jo taraf
+            // khatam ho jaye, us ka button halka pad jata hai.
+            Builder(builder: (context) {
+              WidgetsBinding.instance
+                  .addPostFrameCallback((_) => _syncStripArrows());
+              return Row(
+                children: [
+                  _stripArrow(true, _stripCanPrev, () => _pageStrip(false)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      controller: _projectsScrollController,
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          if (activeFilter.isNotEmpty) ...[
+                            _projectChip('← All videos', false,
+                                () => setState(() => _projectFilter = '')),
+                            const SizedBox(width: 6),
+                          ],
+                          for (var i = 0; i < projects.length; i++) ...[
+                            if (i > 0) const SizedBox(width: 6),
+                            _projectCard(
+                              projects[i],
+                              projectCounts[projects[i]] ?? 0,
+                              activeFilter == projects[i],
+                              () => setState(() => _projectFilter = projects[i]),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
                   ),
-                ),
-              ),
-            ),
+                  const SizedBox(width: 6),
+                  _stripArrow(false, _stripCanNext, () => _pageStrip(true)),
+                ],
+              );
+            }),
             const SizedBox(height: 10),
           ],
 

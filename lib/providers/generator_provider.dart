@@ -21,7 +21,7 @@ class GeneratorProvider with ChangeNotifier {
   String _promptsRawText = '';
   List<PromptItem> _items = [];
   GenerationState _state = GenerationState.idle;
-  int _currentIndex = 0;
+  final int _currentIndex = 0;
   // v2.30.3 (phantom progress fix): true only once a run has
   // actually been started for the CURRENT item set. The Progress
   // panel renders run cards only while this is set — prompts that

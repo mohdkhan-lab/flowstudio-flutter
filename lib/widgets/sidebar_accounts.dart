@@ -37,7 +37,7 @@ class SidebarAccounts extends StatefulWidget {
   // (v2.46.6 se: 285 har size par, wide par 300); 285 default hai.
   final double width;
 
-  const SidebarAccounts({super.key, this.width = 330});
+  const SidebarAccounts({super.key, this.width = 260});
 
   @override
   State<SidebarAccounts> createState() => _SidebarAccountsState();
@@ -203,7 +203,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                   : ListView.separated(
                       shrinkWrap: true,
                       itemCount: visibleAccounts.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 5),
+                      separatorBuilder: (_, _) => const SizedBox(height: 6),
                       itemBuilder: (context, index) {
                         final acc = visibleAccounts[index];
                         final word = _statusWord(acc);
@@ -222,14 +222,14 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                         // nothing resizes or shifts when a status
                         // changes.
                         return Container(
-                          height: 74,
+                          height: 45,
                           // v2.46.5 (owner ka order): Cookie Line ki
                           // HEIGHT kam — vertical padding 10 -> 5.
                           // Chaudai, text ke sizes aur jaghein
                           // bilkul waisi hi; koi text cut nahi
                           // hota (neeche wale text boxes apni
                           // asal height par hain).
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0.5),
                           decoration: BoxDecoration(
                             color: AppTheme.overlay08,
                             borderRadius: BorderRadius.circular(8),
@@ -252,11 +252,11 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                             // changes position.
                             fit: BoxFit.scaleDown,
                             child: SizedBox(
-                              width: 238,
+                              width: 255,
                               // v2.46.9 (owner: "50x50 karo"): andar
                               // wala hisa 54 -> 50 — Text Block ki
                               // unchaai 50 ke saath barabar.
-                              height: 50,
+                              height: 44,
                               child: Row(
                                 children: [
                                   // Square Checkbox
@@ -289,7 +289,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                   // beech ki space neeche wala
                                   // spacer leta hai.
                                   SizedBox(
-                                    width: 50,
+                                    width: 109,
                                     child: FittedBox(
                                       fit: BoxFit.scaleDown,
                                       alignment: Alignment.centerLeft,
@@ -300,7 +300,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       SizedBox(
                                         // v2.46.6 (Sample 5): sab text
                                         // ek size = 9; box 11.
-                                        height: 11,
+                                        height: 10,
                                         child: Text(
                                           // v2.29.0 (B): the row TITLE
                                           // is the source alias
@@ -318,11 +318,11 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                           ),
                                         ),
                                       ),
-                                      const SizedBox(height: 3),
+                                      const SizedBox(height: 1),
                                       SizedBox(
                                         // v2.46.6 (Sample 5): box 11,
                                         // font 9 (sab text ek size).
-                                        height: 11,
+                                        height: 10,
                                         child: Text(
                                           _subLineOf(acc),
                                           maxLines: 1,
@@ -334,11 +334,11 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                           ),
                                         ),
                                       ),
-                                      const SizedBox(height: 3),
+                                      const SizedBox(height: 1),
                                       SizedBox(
                                         // v2.46.6 (Sample 5): slot 11,
                                         // font 9 (sab text ek size).
-                                        height: 11,
+                                        height: 10,
                                         // v2.25.0 (parked browser): gold
                                         // ● ACTIVE under the credits —
                                         // ONLY on the account that is
@@ -395,7 +395,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                         maxLines: 1,
                                         softWrap: false,
                                         style: TextStyle(
-                                          fontSize: 9,
+                                          fontSize: 8,
                                           fontWeight: FontWeight.w700,
                                           color: word.$2,
                                           height: 1.0,

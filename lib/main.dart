@@ -270,8 +270,8 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
                   // v2.46.7: owner ne HTML tuner par khud numbers
                   // chune — section 330 (wide par 350).
                   final sidebarWidth = compact
-                      ? 330.0
-                      : (winW > 1500 ? 350.0 : 330.0);
+                      ? 260.0
+                      : (winW > 1500 ? 280.0 : 260.0);
                   return Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [

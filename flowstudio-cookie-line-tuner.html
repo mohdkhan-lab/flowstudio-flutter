@@ -1,0 +1,512 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>FlowStudio Lite — Live Cookie Line UI Tuner</title>
+  <script src="https://www.gstatic.com/antigravity/web/dev/tailwindcss.min.js"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap');
+    body { font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif; }
+    input[type=range] {
+      accent-color: #F5B301;
+    }
+    .custom-scroll::-webkit-scrollbar {
+      width: 5px;
+    }
+    .custom-scroll::-webkit-scrollbar-thumb {
+      background: rgba(255,255,255,0.15);
+      border-radius: 4px;
+    }
+  </style>
+</head>
+<body class="bg-[#121214] text-[#E5E5EA] min-h-screen p-4 md:p-6 antialiased">
+  <div class="max-w-7xl mx-auto flex flex-col gap-5">
+    
+    <!-- Top Header -->
+    <header class="flex flex-wrap items-center justify-between border-b border-white/10 pb-4 gap-3">
+      <div>
+        <div class="flex items-center gap-2">
+          <span class="w-3 h-3 rounded-full bg-[#F5B301]"></span>
+          <h1 class="text-xl font-bold text-white tracking-wide">FlowStudio Lite — Live Cookie Line Tuner</h1>
+          <span class="text-xs px-2 py-0.5 rounded bg-white/10 text-white/70 font-mono">v2.46.9</span>
+        </div>
+        <p class="text-xs text-white/50 mt-1">Live sliders ko move karein — neeche preview turant badlega. Jo look pasand aaye uske numbers mujhe batayein!</p>
+      </div>
+
+      <!-- Quick Preset Buttons -->
+      <div class="flex items-center gap-2 flex-wrap">
+        <span class="text-xs text-white/40 font-medium mr-1">Presets:</span>
+        <button onclick="applyPreset('current')" class="text-xs px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition font-medium border border-white/10">Current (v2.46.9)</button>
+        <button onclick="applyPreset('balanced')" class="text-xs px-2.5 py-1.5 rounded-lg bg-[#F5B301]/20 hover:bg-[#F5B301]/30 text-[#F5B301] transition font-medium border border-[#F5B301]/30">Balanced (Recommended)</button>
+        <button onclick="applyPreset('readable')" class="text-xs px-2.5 py-1.5 rounded-lg bg-blue-500/20 hover:bg-blue-500/30 text-blue-400 transition font-medium border border-blue-500/30">Big & Clear</button>
+        <button onclick="applyPreset('ultraslim')" class="text-xs px-2.5 py-1.5 rounded-lg bg-white/10 hover:bg-white/20 transition font-medium border border-white/10">Ultra Slim</button>
+      </div>
+    </header>
+
+    <!-- Main Layout: Controls Left, Live Preview Right -->
+    <div class="grid grid-cols-1 lg:grid-cols-12 gap-6 items-start">
+      
+      <!-- CONTROLS PANEL (5 cols) -->
+      <div class="lg:col-span-5 bg-[#1C1C1E] border border-white/10 rounded-2xl p-5 shadow-2xl flex flex-col gap-4">
+        <h2 class="text-sm font-semibold text-white/90 uppercase tracking-wider flex items-center justify-between">
+          <span>⚙️ Live Sliders</span>
+          <span id="presetLabel" class="text-xs text-[#F5B301] normal-case">Custom Mode</span>
+        </h2>
+
+        <div class="flex flex-col gap-3.5 custom-scroll overflow-y-auto max-h-[620px] pr-1">
+          
+          <!-- Card Height -->
+          <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+            <div class="flex justify-between items-center text-xs mb-1.5">
+              <span class="font-medium text-white/80">Card Outer Height</span>
+              <span id="valCardHeight" class="font-mono text-[#F5B301] font-bold">74 px</span>
+            </div>
+            <input type="range" id="cardHeight" min="40" max="85" value="74" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+            <div class="flex justify-between text-[10px] text-white/30 mt-1"><span>40px (Flat)</span><span>60px (Modern)</span><span>85px (Tall)</span></div>
+          </div>
+
+          <!-- Card Inner Content Height -->
+          <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+            <div class="flex justify-between items-center text-xs mb-1.5">
+              <span class="font-medium text-white/80">Card Inner Content Height</span>
+              <span id="valInnerHeight" class="font-mono text-[#F5B301] font-bold">50 px</span>
+            </div>
+            <input type="range" id="innerHeight" min="30" max="65" value="50" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+          </div>
+
+          <!-- Card Padding (Vertical) -->
+          <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+            <div class="flex justify-between items-center text-xs mb-1.5">
+              <span class="font-medium text-white/80">Card Vertical Padding</span>
+              <span id="valCardPadV" class="font-mono text-[#F5B301] font-bold">3 px</span>
+            </div>
+            <input type="range" id="cardPadV" min="1" max="10" value="3" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+          </div>
+
+          <!-- Cards Between Gap (Separator) -->
+          <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+            <div class="flex justify-between items-center text-xs mb-1.5">
+              <span class="font-medium text-white/80">Cards Gap (Separator)</span>
+              <span id="valCardGap" class="font-mono text-[#F5B301] font-bold">5 px</span>
+            </div>
+            <input type="range" id="cardGap" min="2" max="14" value="5" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+          </div>
+
+          <!-- Text Font Size -->
+          <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+            <div class="flex justify-between items-center text-xs mb-1.5">
+              <span class="font-medium text-white/80">Text Font Size (All elements)</span>
+              <span id="valFontSize" class="font-mono text-[#F5B301] font-bold">9 px</span>
+            </div>
+            <input type="range" id="fontSize" min="8" max="13" value="9" step="0.5" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+            <div class="flex justify-between text-[10px] text-white/30 mt-1"><span>8px</span><span>9.5px</span><span>13px</span></div>
+          </div>
+
+          <!-- Text Block Width -->
+          <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+            <div class="flex justify-between items-center text-xs mb-1.5">
+              <span class="font-medium text-white/80">Text Block Width (Left Column)</span>
+              <span id="valTextBlockW" class="font-mono text-[#F5B301] font-bold">50 px</span>
+            </div>
+            <input type="range" id="textBlockW" min="45" max="120" value="50" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+            <div class="flex justify-between text-[10px] text-white/30 mt-1"><span>50px (Compact)</span><span>80px (Standard)</span><span>120px (Wide)</span></div>
+          </div>
+
+          <!-- Text Lines Gap -->
+          <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+            <div class="flex justify-between items-center text-xs mb-1.5">
+              <span class="font-medium text-white/80">Text Lines Gap (Vertical)</span>
+              <span id="valTextGap" class="font-mono text-[#F5B301] font-bold">3 px</span>
+            </div>
+            <input type="range" id="textGap" min="1" max="6" value="3" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+          </div>
+
+          <!-- Status Slot Width -->
+          <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+            <div class="flex justify-between items-center text-xs mb-1.5">
+              <span class="font-medium text-white/80">Status Word Slot Width</span>
+              <span id="valStatusSlotW" class="font-mono text-[#F5B301] font-bold">70 px</span>
+            </div>
+            <input type="range" id="statusSlotW" min="50" max="95" value="70" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+          </div>
+
+          <!-- Chrome Button Size -->
+          <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+            <div class="flex justify-between items-center text-xs mb-1.5">
+              <span class="font-medium text-white/80">Chrome Button Size</span>
+              <span id="valBtnSize" class="font-mono text-[#F5B301] font-bold">26 px</span>
+            </div>
+            <input type="range" id="btnSize" min="20" max="36" value="26" step="1" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+          </div>
+
+          <!-- Sidebar Overall Width -->
+          <div class="bg-white/5 p-3 rounded-xl border border-white/5">
+            <div class="flex justify-between items-center text-xs mb-1.5">
+              <span class="font-medium text-white/80">Sidebar Total Width</span>
+              <span id="valSidebarW" class="font-mono text-[#F5B301] font-bold">330 px</span>
+            </div>
+            <input type="range" id="sidebarW" min="260" max="380" value="330" step="5" class="w-full h-1.5 bg-white/20 rounded-lg cursor-pointer">
+          </div>
+
+        </div>
+
+        <!-- Copy Values Button -->
+        <button onclick="copyCurrentValues()" class="w-full py-2.5 px-4 rounded-xl bg-[#F5B301] text-black font-bold text-xs hover:bg-[#e0a400] transition flex items-center justify-center gap-2 mt-2">
+          <span>📋 Copy Current Values</span>
+        </button>
+      </div>
+
+      <!-- LIVE PREVIEW AREA (7 cols) -->
+      <div class="lg:col-span-7 flex flex-col gap-4">
+        
+        <div class="bg-[#1C1C1E] border border-white/10 rounded-2xl p-5 shadow-2xl flex flex-col gap-3">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-2">
+              <span class="text-sm font-semibold text-white/90 uppercase tracking-wider">🖥️ Exact Flutter Preview</span>
+              <span class="text-[11px] px-2 py-0.5 rounded bg-green-500/10 text-green-400 font-mono border border-green-500/20">Real Dimensions</span>
+            </div>
+            <span class="text-xs text-white/40">Scale: 100% 1:1 Pixel Match</span>
+          </div>
+
+          <!-- Simulated Window Canvas -->
+          <div class="bg-[#161618] border border-white/5 rounded-xl p-5 flex items-start justify-center overflow-x-auto min-h-[580px]">
+            
+            <!-- THE FLUTTER SIDEBAR CONTAINER -->
+            <div id="flutterSidebar" style="width: 330px;" class="bg-[#2C2C2E] border border-white/10 rounded-[13px] p-2 flex flex-col shadow-xl transition-all duration-75">
+              
+              <!-- 1. Generate Nav Pill -->
+              <div class="h-[34px] rounded-lg bg-[#F5B301]/15 border border-[#F5B301]/40 flex items-center justify-center text-[#F5B301] text-[11.5px] font-bold mb-2 cursor-default">
+                🎬 Generate
+              </div>
+
+              <!-- 2. + Add Cookies Button -->
+              <div class="h-[34px] rounded-full border border-[#64D2FF]/65 flex items-center justify-center text-[#64D2FF] text-[12px] font-bold mb-2 cursor-pointer hover:bg-[#64D2FF]/10 transition">
+                + Add Cookies
+              </div>
+
+              <!-- 3. Filter Boxes Row -->
+              <div class="grid grid-cols-4 gap-1 mb-2">
+                <div class="bg-[#F5B301]/20 border border-[#F5B301]/40 rounded-lg p-1 text-center">
+                  <div class="text-[9px] text-[#F5B301]">All</div>
+                  <div class="text-[11px] font-bold text-white">4</div>
+                </div>
+                <div class="bg-white/5 border border-white/10 rounded-lg p-1 text-center">
+                  <div class="text-[9px] text-white/50">Checking</div>
+                  <div class="text-[11px] font-bold text-white">0</div>
+                </div>
+                <div class="bg-white/5 border border-white/10 rounded-lg p-1 text-center">
+                  <div class="text-[9px] text-white/50">Live</div>
+                  <div class="text-[11px] font-bold text-white">3</div>
+                </div>
+                <div class="bg-white/5 border border-white/10 rounded-lg p-1 text-center">
+                  <div class="text-[9px] text-white/50">Fail</div>
+                  <div class="text-[11px] font-bold text-white">0</div>
+                </div>
+              </div>
+
+              <!-- 4. ACCOUNTS LIST CONTAINER (Flexible with ListView.separated) -->
+              <div class="bg-white/[0.04] border border-white/10 rounded-[9px] p-1 flex flex-col" id="cardsListContainer">
+                
+                <!-- CARD 1: ACTIVE (Parked / Generating) -->
+                <div class="cookie-card border border-[#F5B301] bg-white/[0.04] rounded-lg px-2 flex items-center" style="height: 74px; padding-top: 3px; padding-bottom: 3px;">
+                  <div class="inner-box flex items-center w-full" style="height: 50px;">
+                    <!-- Checkbox -->
+                    <div class="w-[20px] h-[20px] rounded-[2px] bg-[#F5B301] flex items-center justify-center flex-shrink-0 mr-2.5">
+                      <svg class="w-3.5 h-3.5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                    </div>
+
+                    <!-- Text Block (Left) -->
+                    <div class="text-block flex flex-col justify-center flex-shrink-0 overflow-hidden" style="width: 50px;">
+                      <div class="cookie-alias font-bold text-white truncate leading-none" style="font-size: 9px; height: 11px;">Cookie 1</div>
+                      <div class="text-gap" style="height: 3px;"></div>
+                      <div class="cookie-credits text-white/50 truncate leading-none" style="font-size: 9px; height: 11px;">45 credits</div>
+                      <div class="text-gap" style="height: 3px;"></div>
+                      <div class="cookie-active font-extrabold text-[#F5B301] tracking-wider leading-none" style="font-size: 9px; height: 11px;">● ACTIVE</div>
+                    </div>
+
+                    <!-- Spacer -->
+                    <div class="flex-grow"></div>
+
+                    <!-- Status Word -->
+                    <div class="status-slot text-center flex-shrink-0" style="width: 70px;">
+                      <span class="status-text font-bold text-[#30D158] leading-none" style="font-size: 9px;">Ready</span>
+                    </div>
+
+                    <!-- Gap -->
+                    <div class="w-2 flex-shrink-0"></div>
+
+                    <!-- Chrome Arrow Button -->
+                    <button class="chrome-btn rounded-full bg-[#3A3A3C] border border-[#64D2FF] flex items-center justify-center text-[#64D2FF] flex-shrink-0 shadow hover:brightness-110" style="width: 26px; height: 26px;">
+                      <span class="arrow-icon font-bold leading-none" style="font-size: 12px;">↗</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Separator 1 -->
+                <div class="card-separator" style="height: 5px;"></div>
+
+                <!-- CARD 2: Ready Live -->
+                <div class="cookie-card border border-white/10 bg-white/[0.04] rounded-lg px-2 flex items-center" style="height: 74px; padding-top: 3px; padding-bottom: 3px;">
+                  <div class="inner-box flex items-center w-full" style="height: 50px;">
+                    <div class="w-[20px] h-[20px] rounded-[2px] bg-[#F5B301] flex items-center justify-center flex-shrink-0 mr-2.5">
+                      <svg class="w-3.5 h-3.5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                    </div>
+                    <div class="text-block flex flex-col justify-center flex-shrink-0 overflow-hidden" style="width: 50px;">
+                      <div class="cookie-alias font-bold text-white truncate leading-none" style="font-size: 9px; height: 11px;">Cookie 2</div>
+                      <div class="text-gap" style="height: 3px;"></div>
+                      <div class="cookie-credits text-white/50 truncate leading-none" style="font-size: 9px; height: 11px;">32 credits</div>
+                      <div class="text-gap" style="height: 3px;"></div>
+                      <div class="cookie-active leading-none" style="font-size: 9px; height: 11px;"></div>
+                    </div>
+                    <div class="flex-grow"></div>
+                    <div class="status-slot text-center flex-shrink-0" style="width: 70px;">
+                      <span class="status-text font-bold text-[#30D158] leading-none" style="font-size: 9px;">Ready</span>
+                    </div>
+                    <div class="w-2 flex-shrink-0"></div>
+                    <button class="chrome-btn rounded-full bg-[#3A3A3C] border border-white/20 flex items-center justify-center text-[#64D2FF] flex-shrink-0 shadow hover:brightness-110" style="width: 26px; height: 26px;">
+                      <span class="arrow-icon font-bold leading-none" style="font-size: 12px;">↗</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Separator 2 -->
+                <div class="card-separator" style="height: 5px;"></div>
+
+                <!-- CARD 3: Low Credits -->
+                <div class="cookie-card border border-white/10 bg-white/[0.04] rounded-lg px-2 flex items-center" style="height: 74px; padding-top: 3px; padding-bottom: 3px;">
+                  <div class="inner-box flex items-center w-full" style="height: 50px;">
+                    <div class="w-[20px] h-[20px] rounded-[2px] bg-[#F5B301] flex items-center justify-center flex-shrink-0 mr-2.5">
+                      <svg class="w-3.5 h-3.5 text-black" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="3" d="M5 13l4 4L19 7"></path></svg>
+                    </div>
+                    <div class="text-block flex flex-col justify-center flex-shrink-0 overflow-hidden" style="width: 50px;">
+                      <div class="cookie-alias font-bold text-white truncate leading-none" style="font-size: 9px; height: 11px;">Cookie 3</div>
+                      <div class="text-gap" style="height: 3px;"></div>
+                      <div class="cookie-credits text-white/50 truncate leading-none" style="font-size: 9px; height: 11px;">2 credits</div>
+                      <div class="text-gap" style="height: 3px;"></div>
+                      <div class="cookie-active leading-none" style="font-size: 9px; height: 11px;"></div>
+                    </div>
+                    <div class="flex-grow"></div>
+                    <div class="status-slot text-center flex-shrink-0" style="width: 70px;">
+                      <span class="status-text font-bold text-[#FF9F0A] leading-none" style="font-size: 9px;">Low Credits</span>
+                    </div>
+                    <div class="w-2 flex-shrink-0"></div>
+                    <button class="chrome-btn rounded-full bg-[#3A3A3C] border border-white/20 flex items-center justify-center text-[#64D2FF] flex-shrink-0 shadow hover:brightness-110" style="width: 26px; height: 26px;">
+                      <span class="arrow-icon font-bold leading-none" style="font-size: 12px;">↗</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Separator 3 -->
+                <div class="card-separator" style="height: 5px;"></div>
+
+                <!-- CARD 4: No Credits -->
+                <div class="cookie-card border border-white/10 bg-white/[0.04] rounded-lg px-2 flex items-center" style="height: 74px; padding-top: 3px; padding-bottom: 3px;">
+                  <div class="inner-box flex items-center w-full" style="height: 50px;">
+                    <div class="w-[20px] h-[20px] rounded-[2px] border border-white/40 flex items-center justify-center flex-shrink-0 mr-2.5"></div>
+                    <div class="text-block flex flex-col justify-center flex-shrink-0 overflow-hidden" style="width: 50px;">
+                      <div class="cookie-alias font-bold text-white truncate leading-none" style="font-size: 9px; height: 11px;">Cookie 4</div>
+                      <div class="text-gap" style="height: 3px;"></div>
+                      <div class="cookie-credits text-white/50 truncate leading-none" style="font-size: 9px; height: 11px;">0 credits</div>
+                      <div class="text-gap" style="height: 3px;"></div>
+                      <div class="cookie-active leading-none" style="font-size: 9px; height: 11px;"></div>
+                    </div>
+                    <div class="flex-grow"></div>
+                    <div class="status-slot text-center flex-shrink-0" style="width: 70px;">
+                      <span class="status-text font-bold text-[#8E8E93] leading-none" style="font-size: 9px;">No Credits</span>
+                    </div>
+                    <div class="w-2 flex-shrink-0"></div>
+                    <button class="chrome-btn rounded-full bg-[#3A3A3C] border border-white/20 flex items-center justify-center text-[#64D2FF] flex-shrink-0 shadow hover:brightness-110" style="width: 26px; height: 26px;">
+                      <span class="arrow-icon font-bold leading-none" style="font-size: 12px;">↗</span>
+                    </button>
+                  </div>
+                </div>
+
+              </div>
+
+              <!-- 5. Bottom Status / Sync -->
+              <div class="flex items-center justify-between text-[11px] text-white/40 pt-2 px-1">
+                <span>Selected: 3 / 4</span>
+                <span class="text-[#64D2FF] cursor-pointer hover:underline">Sync All</span>
+              </div>
+
+            </div>
+
+          </div>
+
+          <!-- Bottom Summary Box -->
+          <div class="bg-white/5 rounded-xl p-3 border border-white/5 flex flex-wrap items-center justify-between gap-3 text-xs">
+            <div>
+              <span class="text-white/50">Current Parameters:</span>
+              <span id="summaryText" class="font-mono text-white/90 ml-1 font-semibold">Height 74 · Inner 50 · Font 9 · Block 50 · Gap 3 · Separator 5 · Width 330</span>
+            </div>
+            <div id="copyNotice" class="text-green-400 font-medium hidden">✓ Values copied to clipboard!</div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </div>
+
+  </div>
+
+  <script>
+    const el = (id) => document.getElementById(id);
+
+    const inputs = {
+      cardHeight: el('cardHeight'),
+      innerHeight: el('innerHeight'),
+      cardPadV: el('cardPadV'),
+      cardGap: el('cardGap'),
+      fontSize: el('fontSize'),
+      textBlockW: el('textBlockW'),
+      textGap: el('textGap'),
+      statusSlotW: el('statusSlotW'),
+      btnSize: el('btnSize'),
+      sidebarW: el('sidebarW'),
+    };
+
+    const values = {
+      cardHeight: el('valCardHeight'),
+      innerHeight: el('valInnerHeight'),
+      cardPadV: el('valCardPadV'),
+      cardGap: el('valCardGap'),
+      fontSize: el('valFontSize'),
+      textBlockW: el('valTextBlockW'),
+      textGap: el('valTextGap'),
+      statusSlotW: el('valStatusSlotW'),
+      btnSize: el('valBtnSize'),
+      sidebarW: el('valSidebarW'),
+    };
+
+    function update() {
+      const cHeight = inputs.cardHeight.value;
+      const inHeight = inputs.innerHeight.value;
+      const padV = inputs.cardPadV.value;
+      const cGap = inputs.cardGap.value;
+      const fSize = inputs.fontSize.value;
+      const bWidth = inputs.textBlockW.value;
+      const tGap = inputs.textGap.value;
+      const sSlot = inputs.statusSlotW.value;
+      const bSize = inputs.btnSize.value;
+      const sWidth = inputs.sidebarW.value;
+
+      // Update value displays
+      values.cardHeight.innerText = cHeight + ' px';
+      values.innerHeight.innerText = inHeight + ' px';
+      values.cardPadV.innerText = padV + ' px';
+      values.cardGap.innerText = cGap + ' px';
+      values.fontSize.innerText = fSize + ' px';
+      values.textBlockW.innerText = bWidth + ' px';
+      values.textGap.innerText = tGap + ' px';
+      values.statusSlotW.innerText = sSlot + ' px';
+      values.btnSize.innerText = bSize + ' px';
+      values.sidebarW.innerText = sWidth + ' px';
+
+      // Update Sidebar Width
+      el('flutterSidebar').style.width = sWidth + 'px';
+
+      // Update Cards
+      document.querySelectorAll('.cookie-card').forEach(card => {
+        card.style.height = cHeight + 'px';
+        card.style.paddingTop = padV + 'px';
+        card.style.paddingBottom = padV + 'px';
+      });
+
+      // Update Inner Box
+      document.querySelectorAll('.inner-box').forEach(box => {
+        box.style.height = inHeight + 'px';
+      });
+
+      // Update Card Separators
+      document.querySelectorAll('.card-separator').forEach(sep => {
+        sep.style.height = cGap + 'px';
+      });
+
+      // Update Text Block Width
+      document.querySelectorAll('.text-block').forEach(tb => {
+        tb.style.width = bWidth + 'px';
+      });
+
+      // Update Font Sizes & text box heights
+      const boxH = Math.max(11, Math.round(fSize * 1.25));
+      document.querySelectorAll('.cookie-alias, .cookie-credits, .cookie-active').forEach(t => {
+        t.style.fontSize = fSize + 'px';
+        t.style.height = boxH + 'px';
+      });
+
+      document.querySelectorAll('.status-text').forEach(t => {
+        t.style.fontSize = fSize + 'px';
+      });
+
+      // Update text gaps
+      document.querySelectorAll('.text-gap').forEach(tg => {
+        tg.style.height = tGap + 'px';
+      });
+
+      // Update status slot width
+      document.querySelectorAll('.status-slot').forEach(ss => {
+        ss.style.width = sSlot + 'px';
+      });
+
+      // Update button size & icon
+      const iconSize = Math.max(9, Math.round(bSize * 0.46));
+      document.querySelectorAll('.chrome-btn').forEach(btn => {
+        btn.style.width = bSize + 'px';
+        btn.style.height = bSize + 'px';
+      });
+      document.querySelectorAll('.arrow-icon').forEach(icon => {
+        icon.style.fontSize = iconSize + 'px';
+      });
+
+      // Update summary text
+      el('summaryText').innerText = `Height ${cHeight} · Inner ${inHeight} · Font ${fSize} · Block ${bWidth} · Gap ${tGap} · Separator ${cGap} · Width ${sWidth}`;
+    }
+
+    // Attach event listeners
+    Object.values(inputs).forEach(input => {
+      input.addEventListener('input', () => {
+        el('presetLabel').innerText = 'Custom Settings';
+        update();
+      });
+    });
+
+    const presets = {
+      current: { cardHeight: 74, innerHeight: 50, cardPadV: 3, cardGap: 5, fontSize: 9, textBlockW: 50, textGap: 3, statusSlotW: 70, btnSize: 26, sidebarW: 330, name: 'Current (v2.46.9)' },
+      balanced: { cardHeight: 56, innerHeight: 46, cardPadV: 4, cardGap: 5, fontSize: 10, textBlockW: 78, textGap: 2, statusSlotW: 70, btnSize: 26, sidebarW: 330, name: 'Balanced' },
+      readable: { cardHeight: 64, innerHeight: 52, cardPadV: 5, cardGap: 6, fontSize: 11, textBlockW: 88, textGap: 3, statusSlotW: 75, btnSize: 28, sidebarW: 340, name: 'Big & Clear' },
+      ultraslim: { cardHeight: 46, innerHeight: 38, cardPadV: 2, cardGap: 4, fontSize: 8.5, textBlockW: 65, textGap: 1.5, statusSlotW: 65, btnSize: 22, sidebarW: 310, name: 'Ultra Slim' }
+    };
+
+    function applyPreset(key) {
+      const p = presets[key];
+      if (!p) return;
+      inputs.cardHeight.value = p.cardHeight;
+      inputs.innerHeight.value = p.innerHeight;
+      inputs.cardPadV.value = p.cardPadV;
+      inputs.cardGap.value = p.cardGap;
+      inputs.fontSize.value = p.fontSize;
+      inputs.textBlockW.value = p.textBlockW;
+      inputs.textGap.value = p.textGap;
+      inputs.statusSlotW.value = p.statusSlotW;
+      inputs.btnSize.value = p.btnSize;
+      inputs.sidebarW.value = p.sidebarW;
+      el('presetLabel').innerText = p.name;
+      update();
+    }
+
+    function copyCurrentValues() {
+      const text = el('summaryText').innerText;
+      navigator.clipboard.writeText(text).then(() => {
+        const notice = el('copyNotice');
+        notice.classList.remove('hidden');
+        setTimeout(() => notice.classList.add('hidden'), 2500);
+      });
+    }
+
+    // Initial update
+    update();
+  </script>
+</body>
+</html>

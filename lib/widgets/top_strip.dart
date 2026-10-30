@@ -71,7 +71,7 @@ class TopStrip extends StatelessWidget {
                       width: 32,
                       height: 32,
                       fit: BoxFit.contain,
-                      errorBuilder: (_, __, ___) => Center(
+                      errorBuilder: (_, _, _) => Center(
                         child: Icon(
                           Icons.play_arrow_rounded,
                           size: 22,
@@ -125,7 +125,7 @@ class TopStrip extends StatelessWidget {
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                   ),
                   child: Text(
-                    'v2.46.9',
+                    'v2.47.0',
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,

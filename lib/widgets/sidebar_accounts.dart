@@ -173,7 +173,14 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
           const SizedBox(height: 8),
 
           // Accounts List
-          Expanded(
+          // v2.46.8 (owner: "exact tuner jaisa"): list wala hissa
+          // ab lines ke hisaab se sikudta hai (Flexible +
+          // shrinkWrap) — lines khatam, hissa khatam; pehle
+          // Expanded ki wajah se ye hissa poori unchaai tak
+          // phaila rehta tha aur lines ke neeche bari khaali
+          // jagah dikhti thi. Zyada accounts hon to hissa
+          // uplabdh jagah par ruk kar andar scroll karta hai.
+          Flexible(
             child: Container(
               // v2.30.0: 4 (was 6) — more of the row's width budget
               // goes to the account name column (see the row below).
@@ -194,6 +201,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                       ),
                     )
                   : ListView.separated(
+                      shrinkWrap: true,
                       itemCount: visibleAccounts.length,
                       separatorBuilder: (_, _) => const SizedBox(height: 5),
                       itemBuilder: (context, index) {

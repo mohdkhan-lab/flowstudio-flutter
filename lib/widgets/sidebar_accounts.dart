@@ -34,10 +34,11 @@ bool _isLowCredits(GoogleAccount a) =>
 
 class SidebarAccounts extends StatefulWidget {
   // Responsive pass: the main layout drives the width by breakpoint
-  // (215 compact / 250 standard / 280 wide); 250 stays the default.
+  // (190 compact / 225 standard / 255 wide — v2.46.3 me section
+  // patla hua); 225 stays the default.
   final double width;
 
-  const SidebarAccounts({super.key, this.width = 250});
+  const SidebarAccounts({super.key, this.width = 225});
 
   @override
   State<SidebarAccounts> createState() => _SidebarAccountsState();
@@ -656,10 +657,12 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     if ((chip.$1 == 'FAIL' || chip.$1 == 'LOGIN') && acc.reason != null && acc.reason!.trim().isNotEmpty) {
       return acc.reason!.trim();
     }
-    // v2.45.0 (honest totals): an estimated balance wears '~'.
-    return acc.creditsSource == 'estimate'
-        ? '~${acc.credits} credits (estimate)'
-        : '${acc.credits} credits';
+    // v2.46.3 (owner ka order, 2026-10-30): screen par koi
+    // estimate nahi dikhega — na '~', na '(estimate)'. Sirf asal
+    // number. (Andar credits_source ki pehchan apni jagah hai;
+    // live check hote hi number khud asal ho jata hai — sirf
+    // dikhawa saaf kar diya gaya hai.)
+    return '${acc.credits} credits';
   }
 
   // v2.30.2: the row's avatar helpers (_avatarColor / _initialOf /

@@ -1,5 +1,6 @@
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
@@ -127,9 +128,36 @@ class _HistoryViewState extends State<HistoryView> {
     );
   }
 
+  // v2.46.3: videos wali list ka controller — poore page ka
+  // wheel isi ko chalata hai (neeche _onPageWheel dekho).
+  final ScrollController _listScrollController = ScrollController();
+
+  // v2.46.3 (owner ki shikayat, 2026-10-30): pehle wheel sirf
+  // videos wali list ke upar chalta tha — cards/patti/headings
+  // ke upar ghumane se kuch nahi hota tha, kyunki page ka upar
+  // wala hissa fixed hai aur asal scroll area sirf neeche wali
+  // list hai. Ab wheel page par KAHIN se bhi chale, wohi list
+  // scroll hogi — bilkul pehle ki tarah. pointerSignalResolver
+  // ki wajah se jab pointer khud list ke upar ho to list apna
+  // asal scroll khud karti hai (dohra scroll kabhi nahi).
+  void _onPageWheel(PointerSignalEvent event) {
+    if (event is! PointerScrollEvent) return;
+    final c = _listScrollController;
+    if (!c.hasClients) return;
+    GestureBinding.instance.pointerSignalResolver
+        .register(event, (PointerSignalEvent resolved) {
+      if (!c.hasClients) return;
+      final pos = c.position;
+      final target =
+          (pos.pixels + event.scrollDelta.dy).clamp(0.0, pos.maxScrollExtent);
+      c.jumpTo(target.toDouble());
+    });
+  }
+
   @override
   void dispose() {
     _projectsScrollController.dispose();
+    _listScrollController.dispose();
     super.dispose();
   }
 
@@ -431,7 +459,9 @@ class _HistoryViewState extends State<HistoryView> {
     // which invented a figure whenever another model was used.
     final spendToday = settingsProv.spentCreditsToday;
 
-    return Padding(
+    return Listener(
+      onPointerSignal: _onPageWheel,
+      child: Padding(
       padding: const EdgeInsets.fromLTRB(10, 12, 14, 12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -740,6 +770,7 @@ class _HistoryViewState extends State<HistoryView> {
                         ),
                       )
                     : ListView.builder(
+                        controller: _listScrollController,
                         itemCount: entries.length,
                         itemBuilder: (context, index) {
                           final e = entries[index];
@@ -767,6 +798,7 @@ class _HistoryViewState extends State<HistoryView> {
                       ),
           ),
         ],
+      ),
       ),
     );
   }
@@ -834,6 +866,7 @@ class _HistoryViewState extends State<HistoryView> {
       );
     }
     return ListView.builder(
+      controller: _listScrollController,
       itemCount: files.length,
       itemBuilder: (context, index) {
         return Padding(

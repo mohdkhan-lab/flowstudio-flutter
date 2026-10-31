@@ -981,7 +981,7 @@ class _SettingsViewState extends State<SettingsView> {
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.55)),
                   ),
                   child: Text(
-                    '← Back to Generate',
+                    '← Back to Studio',
                     style: TextStyle(
                       fontSize: 11,
                       fontWeight: FontWeight.bold,

@@ -131,28 +131,49 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
 
           const SizedBox(height: 4),
 
-          // v2.29.0 (owner revision + final spec): the TOP of the
-          // sidebar has ONLY this one action — a full-width
-          // OUTLINE PILL "+ Add Cookies" (flat, big-platform
-          // style; the cookie import flow moved up here from
-          // below the account list). "+ Add Account" sits in the
-          // bottom bar instead.
-          InkWell(
-            onTap: () => accountsProv.pickAndImportCookieFiles(),
-            borderRadius: BorderRadius.circular(17),
-            child: Container(
-              height: 34,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: Colors.transparent,
+          // v2.47.5: Option 2 — top row has "+ Add Cookies" pill plus
+          // a circular "(+)" Add Account button beside it.
+          Row(
+            children: [
+              Expanded(
+                child: InkWell(
+                  onTap: () => accountsProv.pickAndImportCookieFiles(),
+                  borderRadius: BorderRadius.circular(17),
+                  child: Container(
+                    height: 34,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: Colors.transparent,
+                      borderRadius: BorderRadius.circular(17),
+                      border: Border.all(color: AppTheme.blue.withValues(alpha: 0.65), width: 1.2),
+                    ),
+                    child: Text(
+                      '+ Add Cookies',
+                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.accentText),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 6),
+              InkWell(
+                onTap: () => _showAddAccountDialog(context),
                 borderRadius: BorderRadius.circular(17),
-                border: Border.all(color: AppTheme.blue.withValues(alpha: 0.65), width: 1.2),
+                child: Container(
+                  width: 34,
+                  height: 34,
+                  alignment: Alignment.center,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: AppTheme.blue.withValues(alpha: 0.12),
+                    border: Border.all(color: AppTheme.blue.withValues(alpha: 0.65), width: 1.2),
+                  ),
+                  child: Tooltip(
+                    message: 'Add Account',
+                    child: Icon(Icons.add, size: 18, color: AppTheme.accentText),
+                  ),
+                ),
               ),
-              child: Text(
-                '+ Add Cookies',
-                style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.accentText),
-              ),
-            ),
+            ],
           ),
 
           const SizedBox(height: 4),
@@ -532,60 +553,28 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // Studio menu item; RIGHT = "+ Add Account"; equal widths.
   // v2.34.0 (Problem 14, Sample B): the right button's loud
   // solid-blue pill became a muted dark face with a blue "+".
+  // v2.47.5: "⚙ Settings" spans full width since Add Account moved to top row.
   Widget _buildBottomBar(BuildContext context, {required bool isGenerate}) {
-    return Row(
-      children: [
-        Expanded(
-          child: InkWell(
-            onTap: () => context.read<SettingsProvider>().setNavView('settings'),
-            borderRadius: BorderRadius.circular(8),
-            child: Container(
-              height: 31,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                color: !isGenerate ? AppTheme.overlay10 : Colors.transparent,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Text(
-                '⚙ Settings',
-                style: TextStyle(
-                  fontSize: 11.5,
-                  fontWeight: !isGenerate ? FontWeight.bold : FontWeight.w600,
-                  color: !isGenerate ? AppTheme.textMain : AppTheme.textDim,
-                ),
-              ),
-            ),
+    return InkWell(
+      onTap: () => context.read<SettingsProvider>().setNavView('settings'),
+      borderRadius: BorderRadius.circular(8),
+      child: Container(
+        height: 31,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: !isGenerate ? AppTheme.overlay10 : AppTheme.overlay08,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(color: AppTheme.borderSoft),
+        ),
+        child: Text(
+          '⚙ Settings',
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: !isGenerate ? FontWeight.bold : FontWeight.w600,
+            color: !isGenerate ? AppTheme.textMain : AppTheme.textDim,
           ),
         ),
-        const SizedBox(width: 6),
-        Expanded(
-          child: InkWell(
-            onTap: () => _showAddAccountDialog(context),
-            borderRadius: BorderRadius.circular(8),
-            child: Container(
-              height: 31,
-              alignment: Alignment.center,
-              decoration: BoxDecoration(
-                // v2.34.0 (Problem 14, owner-FINAL Sample B): the
-                // solid-blue pill is gone — a MUTED dark face from
-                // the sidebar's own button family (translucent
-                // overlay + soft border, like Sync Selected), with
-                // only the "+" keeping the blue accent.
-                color: AppTheme.overlay08,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(color: AppTheme.borderSoft),
-              ),
-              // (Fix list 2026-10-27, item 9): ICON ONLY — the
-              // owner wants no text label on this button; the
-              // tooltip keeps its name discoverable.
-              child: Tooltip(
-                message: 'Add Account',
-                child: Icon(Icons.add, size: 16, color: AppTheme.accentText),
-              ),
-            ),
-          ),
-        ),
-      ],
+      ),
     );
   }
 

@@ -94,42 +94,9 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          // v2.29.0 (owner-approved v3 layout): the top tab row
-          // shows ONLY "Generate" — the Settings tab left the top;
-          // Settings now lives in the bottom bar (see
-          // _buildBottomBar). Tapping Generate from the Settings
-          // view is the way back.
-          InkWell(
-            onTap: () => context.read<SettingsProvider>().setNavView('generate'),
-            borderRadius: BorderRadius.circular(8),
-            child: Container(
-              // v2.34.0 (Problem 14, owner-FINAL Sample B): the
-              // Generate nav button loses its flashy ring — a FLAT
-              // soft blue-tinted fill (accent at 13%) with a THIN
-              // blue border (38%), the same height as the Add
-              // Cookies pill below it. Inactive state unchanged.
-              height: 34,
-              decoration: BoxDecoration(
-                color: isGenerate ? AppTheme.accentGold.withValues(alpha: 0.13) : AppTheme.overlay08,
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: isGenerate ? AppTheme.accentGold.withValues(alpha: 0.38) : AppTheme.borderSoft,
-                ),
-              ),
-              child: Center(
-                child: Text(
-                  '🎬 Generate',
-                  style: TextStyle(
-                    fontSize: 11.5,
-                    fontWeight: isGenerate ? FontWeight.bold : FontWeight.w600,
-                    color: isGenerate ? AppTheme.accentText : AppTheme.textDim,
-                  ),
-                ),
-              ),
-            ),
-          ),
-
-          const SizedBox(height: 4),
+          // v2.47.6 (Design 10: Pure Zero-Tab Architecture): no redundant
+          // "Generate" button cluttering the sidebar top. The sidebar starts
+          // directly with "+ Add Cookies" pill and "(+)" Add Account button.
 
           // v2.47.5: Option 2 — top row has "+ Add Cookies" pill plus
           // a circular "(+)" Add Account button beside it.
@@ -553,25 +520,36 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // Studio menu item; RIGHT = "+ Add Account"; equal widths.
   // v2.34.0 (Problem 14, Sample B): the right button's loud
   // solid-blue pill became a muted dark face with a blue "+".
-  // v2.47.5: "⚙ Settings" spans full width since Add Account moved to top row.
+  // v2.47.6 (Design 10): "⚙ Settings" full-width button. In Studio mode,
+  // it opens Settings; in Settings mode, it displays "← Back to Studio"
+  // allowing instant round-trip toggle from the exact same position.
   Widget _buildBottomBar(BuildContext context, {required bool isGenerate}) {
     return InkWell(
-      onTap: () => context.read<SettingsProvider>().setNavView('settings'),
+      onTap: () {
+        final prov = context.read<SettingsProvider>();
+        if (prov.currentView == 'settings') {
+          prov.setNavView('generate');
+        } else {
+          prov.setNavView('settings');
+        }
+      },
       borderRadius: BorderRadius.circular(8),
       child: Container(
         height: 31,
         alignment: Alignment.center,
         decoration: BoxDecoration(
-          color: !isGenerate ? AppTheme.overlay10 : AppTheme.overlay08,
+          color: !isGenerate ? AppTheme.accentGold.withValues(alpha: 0.14) : AppTheme.overlay08,
           borderRadius: BorderRadius.circular(8),
-          border: Border.all(color: AppTheme.borderSoft),
+          border: Border.all(
+            color: !isGenerate ? AppTheme.accentGold.withValues(alpha: 0.5) : AppTheme.borderSoft,
+          ),
         ),
         child: Text(
-          '⚙ Settings',
+          !isGenerate ? '← Back to Studio' : '⚙ Settings',
           style: TextStyle(
             fontSize: 11.5,
             fontWeight: !isGenerate ? FontWeight.bold : FontWeight.w600,
-            color: !isGenerate ? AppTheme.textMain : AppTheme.textDim,
+            color: !isGenerate ? AppTheme.accentText : AppTheme.textDim,
           ),
         ),
       ),

@@ -84,11 +84,11 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
       // name column needed at the compact width.
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: AppTheme.surface,
+        gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
         boxShadow: const [
-          BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
+          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
         ],
       ),
       child: Column(
@@ -100,45 +100,18 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
 
           // v2.47.5: Option 2 — top row has "+ Add Cookies" pill plus
           // a circular "(+)" Add Account button beside it.
+          // v2.48.2: Soft hover lift and blue glow bloom.
           Row(
             children: [
               Expanded(
-                child: InkWell(
+                child: _HoverPillBtn(
+                  label: '+ Add Cookies',
                   onTap: () => accountsProv.pickAndImportCookieFiles(),
-                  borderRadius: BorderRadius.circular(17),
-                  child: Container(
-                    height: 34,
-                    alignment: Alignment.center,
-                    decoration: BoxDecoration(
-                      color: Colors.transparent,
-                      borderRadius: BorderRadius.circular(17),
-                      border: Border.all(color: AppTheme.blue.withValues(alpha: 0.65), width: 1.2),
-                    ),
-                    child: Text(
-                      '+ Add Cookies',
-                      style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.accentText),
-                    ),
-                  ),
                 ),
               ),
               const SizedBox(width: 6),
-              InkWell(
+              _HoverRoundAddBtn(
                 onTap: () => _showAddAccountDialog(context),
-                borderRadius: BorderRadius.circular(17),
-                child: Container(
-                  width: 34,
-                  height: 34,
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: AppTheme.blue.withValues(alpha: 0.12),
-                    border: Border.all(color: AppTheme.blue.withValues(alpha: 0.65), width: 1.2),
-                  ),
-                  child: Tooltip(
-                    message: 'Add Account',
-                    child: Icon(Icons.add, size: 18, color: AppTheme.accentText),
-                  ),
-                ),
               ),
             ],
           ),
@@ -209,25 +182,9 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                         // height is FIXED (74) for every state, so
                         // nothing resizes or shifts when a status
                         // changes.
-                        return Container(
-                          height: 53,
-                          // v2.46.5 (owner ka order): Cookie Line ki
-                          // HEIGHT kam — vertical padding 10 -> 5.
-                          // Chaudai, text ke sizes aur jaghein
-                          // bilkul waisi hi; koi text cut nahi
-                          // hota (neeche wale text boxes apni
-                          // asal height par hain).
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0.5),
-                          decoration: BoxDecoration(
-                            color: AppTheme.overlay08,
-                            borderRadius: BorderRadius.circular(8),
-                            // v2.25.0 (parked browser): the generating
-                            // account's row carries a gold border.
-                            border: Border.all(
-                              color: acc.isActive ? AppTheme.activeGold : AppTheme.borderSoft,
-                              width: acc.isActive ? 1.2 : 1.0,
-                            ),
-                          ),
+                        return _HoverableAccountCard(
+                          key: ValueKey('acc_${acc.id}'),
+                          isActive: acc.isActive,
                           child: FittedBox(
                             // The row's inner layout is built ONCE
                             // at its full-scale natural width (238 —
@@ -448,22 +405,22 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
           // accounts list is GONE — the cookie flow lives at the TOP
           // of the sidebar now, per the owner's revision.)
 
-          // Action Grid: 2x2
+          // Action Grid: 2x2 with soft hover lift
           Column(
             children: [
               Row(
                 children: [
                   Expanded(
-                    child: _buildActionGridBtn(
-                      'Sync Selected',
+                    child: _HoverActionGridBtn(
+                      label: 'Sync Selected',
                       isDim: selectedCount == 0,
                       onTap: selectedCount > 0 ? () => accountsProv.syncSelected() : null,
                     ),
                   ),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: _buildActionGridBtn(
-                      'Delete Selected',
+                    child: _HoverActionGridBtn(
+                      label: 'Delete Selected',
                       isDim: selectedCount == 0,
                       isRed: true,
                       onTap: selectedCount > 0 ? () => _confirmDeleteSelected(context) : null,
@@ -475,16 +432,16 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
               Row(
                 children: [
                   Expanded(
-                    child: _buildActionGridBtn(
-                      'Verify All',
+                    child: _HoverActionGridBtn(
+                      label: 'Verify All',
                       isDim: false,
                       onTap: () => accountsProv.syncAll(),
                     ),
                   ),
                   const SizedBox(width: 6),
                   Expanded(
-                    child: _buildActionGridBtn(
-                      'Clear Selection',
+                    child: _HoverActionGridBtn(
+                      label: 'Clear Selection',
                       isDim: false,
                       onTap: () => accountsProv.clearSelection(),
                     ),
@@ -524,7 +481,8 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // it opens Settings; in Settings mode, it displays "← Back to Studio"
   // allowing instant round-trip toggle from the exact same position.
   Widget _buildBottomBar(BuildContext context, {required bool isGenerate}) {
-    return InkWell(
+    return _HoverBottomSettingsBtn(
+      isGenerate: isGenerate,
       onTap: () {
         final prov = context.read<SettingsProvider>();
         if (prov.currentView == 'settings') {
@@ -533,26 +491,6 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
           prov.setNavView('settings');
         }
       },
-      borderRadius: BorderRadius.circular(8),
-      child: Container(
-        height: 31,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: !isGenerate ? AppTheme.accentGold.withValues(alpha: 0.14) : AppTheme.overlay08,
-          borderRadius: BorderRadius.circular(8),
-          border: Border.all(
-            color: !isGenerate ? AppTheme.accentGold.withValues(alpha: 0.5) : AppTheme.borderSoft,
-          ),
-        ),
-        child: Text(
-          !isGenerate ? '← Back to Studio' : '⚙ Settings',
-          style: TextStyle(
-            fontSize: 11.5,
-            fontWeight: !isGenerate ? FontWeight.bold : FontWeight.w600,
-            color: !isGenerate ? AppTheme.accentText : AppTheme.textDim,
-          ),
-        ),
-      ),
     );
   }
 
@@ -560,47 +498,11 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // the selected box carries the accent border + a tinted background.
   Widget _buildFilterBtn(String label, int count, String key) {
     final isActive = _selectedFilter == key;
-    return Expanded(
-      child: InkWell(
-        onTap: () => setState(() => _selectedFilter = key),
-        borderRadius: BorderRadius.circular(8),
-        child: Container(
-          padding: const EdgeInsets.symmetric(vertical: 5),
-          alignment: Alignment.center,
-          decoration: BoxDecoration(
-            color: isActive
-                ? AppTheme.accentGold.withValues(alpha: 0.12)
-                : AppTheme.overlay08,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: isActive ? AppTheme.accentGold : AppTheme.borderSoft,
-              width: isActive ? 1.2 : 1.0,
-            ),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 9,
-                  fontWeight: FontWeight.w700,
-                  color: isActive ? AppTheme.accentText : AppTheme.textDim,
-                ),
-              ),
-              const SizedBox(height: 1),
-              Text(
-                '$count',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
-                  color: isActive ? AppTheme.textMain : AppTheme.textDim,
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
+    return _HoverFilterBtn(
+      label: label,
+      count: count,
+      isActive: isActive,
+      onTap: () => setState(() => _selectedFilter = key),
     );
   }
 
@@ -668,32 +570,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // logo before the cookies text"). The Add Account popup keeps its
   // own separate card colour/initial helpers below.
 
-  Widget _buildActionGridBtn(String label, {bool isDim = false, bool isRed = false, VoidCallback? onTap}) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(6),
-      child: Container(
-        height: 30,
-        alignment: Alignment.center,
-        decoration: BoxDecoration(
-          color: AppTheme.overlay08,
-          borderRadius: BorderRadius.circular(6),
-          border: Border.all(color: AppTheme.borderSoft),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w600,
-            color: isRed
-                ? (isDim ? const Color(0x80F87171) : AppTheme.red)
-                : (isDim ? AppTheme.textFaint : AppTheme.textMain),
-          ),
-        ),
-      ),
-    );
-  }
-
+  
   void _confirmDeleteSelected(BuildContext context) {
     showDialog(
       context: context,
@@ -1044,5 +921,421 @@ class _DashedBorderPainter extends CustomPainter {
 
   @override
   bool shouldRepaint(covariant _DashedBorderPainter oldDelegate) => oldDelegate.color != color;
+}
+
+// ---------------------------------------------------------------------------
+// v2.48.2: Luxury Soft Hover Components
+// ---------------------------------------------------------------------------
+
+class _HoverPillBtn extends StatefulWidget {
+  final String label;
+  final VoidCallback onTap;
+
+  const _HoverPillBtn({required this.label, required this.onTap});
+
+  @override
+  State<_HoverPillBtn> createState() => _HoverPillBtnState();
+}
+
+class _HoverPillBtnState extends State<_HoverPillBtn> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          height: 34,
+          alignment: Alignment.center,
+          transform: Matrix4.translationValues(0, _hovered ? -1.0 : 0.0, 0),
+          decoration: BoxDecoration(
+            color: _hovered ? AppTheme.blue.withValues(alpha: 0.16) : Colors.transparent,
+            borderRadius: BorderRadius.circular(17),
+            border: Border.all(
+              color: _hovered ? AppTheme.blue : AppTheme.blue.withValues(alpha: 0.65),
+              width: 1.2,
+            ),
+            boxShadow: _hovered
+                ? [
+                    BoxShadow(
+                      color: AppTheme.blue.withValues(alpha: 0.28),
+                      blurRadius: 8,
+                      offset: const Offset(0, 2),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Text(
+            widget.label,
+            style: TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.bold,
+              color: _hovered ? Colors.white : AppTheme.accentText,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HoverRoundAddBtn extends StatefulWidget {
+  final VoidCallback onTap;
+
+  const _HoverRoundAddBtn({required this.onTap});
+
+  @override
+  State<_HoverRoundAddBtn> createState() => _HoverRoundAddBtnState();
+}
+
+class _HoverRoundAddBtnState extends State<_HoverRoundAddBtn> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      cursor: SystemMouseCursors.click,
+      child: Tooltip(
+        message: 'Add Account',
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            curve: Curves.easeOut,
+            width: 34,
+            height: 34,
+            alignment: Alignment.center,
+            transform: Matrix4.translationValues(0, _hovered ? -1.0 : 0.0, 0),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: _hovered
+                  ? AppTheme.blue.withValues(alpha: 0.25)
+                  : AppTheme.blue.withValues(alpha: 0.12),
+              border: Border.all(
+                color: _hovered ? AppTheme.blue : AppTheme.blue.withValues(alpha: 0.65),
+                width: 1.2,
+              ),
+              boxShadow: _hovered
+                  ? [
+                      BoxShadow(
+                        color: AppTheme.blue.withValues(alpha: 0.32),
+                        blurRadius: 8,
+                        offset: const Offset(0, 2),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Icon(
+              Icons.add,
+              size: 18,
+              color: _hovered ? Colors.white : AppTheme.accentText,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HoverFilterBtn extends StatefulWidget {
+  final String label;
+  final int count;
+  final bool isActive;
+  final VoidCallback onTap;
+
+  const _HoverFilterBtn({
+    required this.label,
+    required this.count,
+    required this.isActive,
+    required this.onTap,
+  });
+
+  @override
+  State<_HoverFilterBtn> createState() => _HoverFilterBtnState();
+}
+
+class _HoverFilterBtnState extends State<_HoverFilterBtn> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final isActive = widget.isActive;
+    return Expanded(
+      child: MouseRegion(
+        onEnter: (_) => setState(() => _hovered = true),
+        onExit: (_) => setState(() => _hovered = false),
+        cursor: SystemMouseCursors.click,
+        child: GestureDetector(
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 150),
+            curve: Curves.easeOut,
+            padding: const EdgeInsets.symmetric(vertical: 5),
+            alignment: Alignment.center,
+            transform: Matrix4.translationValues(0, _hovered ? -0.8 : 0.0, 0),
+            decoration: BoxDecoration(
+              color: isActive
+                  ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.20 : 0.12)
+                  : (_hovered ? AppTheme.blue.withValues(alpha: 0.08) : AppTheme.overlay08),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: isActive
+                    ? AppTheme.accentGold
+                    : (_hovered ? AppTheme.blue.withValues(alpha: 0.5) : AppTheme.borderSoft),
+                width: isActive ? 1.2 : 1.0,
+              ),
+              boxShadow: _hovered
+                  ? [
+                      BoxShadow(
+                        color: isActive
+                            ? AppTheme.accentGold.withValues(alpha: 0.22)
+                            : AppTheme.blue.withValues(alpha: 0.15),
+                        blurRadius: 6,
+                        offset: const Offset(0, 1),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  widget.label,
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                    color: isActive ? AppTheme.accentText : (_hovered ? Colors.white : AppTheme.textDim),
+                  ),
+                ),
+                const SizedBox(height: 1),
+                Text(
+                  '${widget.count}',
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: isActive ? AppTheme.textMain : (_hovered ? Colors.white : AppTheme.textDim),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HoverableAccountCard extends StatefulWidget {
+  final bool isActive;
+  final Widget child;
+
+  const _HoverableAccountCard({
+    super.key,
+    required this.isActive,
+    required this.child,
+  });
+
+  @override
+  State<_HoverableAccountCard> createState() => _HoverableAccountCardState();
+}
+
+class _HoverableAccountCardState extends State<_HoverableAccountCard> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = widget.isActive;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 150),
+        curve: Curves.easeOut,
+        height: 53,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 0.5),
+        transform: Matrix4.translationValues(0, _hovered ? -1.0 : 0.0, 0),
+        decoration: BoxDecoration(
+          gradient: _hovered
+              ? const LinearGradient(
+                  colors: [Color(0xFF252A38), Color(0xFF161922)],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                )
+              : null,
+          color: _hovered ? null : AppTheme.overlay08,
+          borderRadius: BorderRadius.circular(8),
+          border: Border.all(
+            color: active
+                ? AppTheme.activeGold
+                : (_hovered ? AppTheme.blue.withValues(alpha: 0.55) : AppTheme.borderSoft),
+            width: active ? 1.2 : 1.0,
+          ),
+          boxShadow: _hovered
+              ? [
+                  BoxShadow(
+                    color: active
+                        ? AppTheme.activeGold.withValues(alpha: 0.2)
+                        : AppTheme.blue.withValues(alpha: 0.16),
+                    blurRadius: 8,
+                    offset: const Offset(0, 2),
+                  ),
+                ]
+              : null,
+        ),
+        child: widget.child,
+      ),
+    );
+  }
+}
+
+class _HoverActionGridBtn extends StatefulWidget {
+  final String label;
+  final bool isDim;
+  final bool isRed;
+  final VoidCallback? onTap;
+
+  const _HoverActionGridBtn({
+    required this.label,
+    this.isDim = false,
+    this.isRed = false,
+    this.onTap,
+  });
+
+  @override
+  State<_HoverActionGridBtn> createState() => _HoverActionGridBtnState();
+}
+
+class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = widget.onTap != null;
+    return MouseRegion(
+      onEnter: (_) {
+        if (enabled) setState(() => _hovered = true);
+      },
+      onExit: (_) {
+        if (enabled) setState(() => _hovered = false);
+      },
+      cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          height: 30,
+          alignment: Alignment.center,
+          transform: Matrix4.translationValues(0, (_hovered && enabled) ? -0.8 : 0.0, 0),
+          decoration: BoxDecoration(
+            color: _hovered && enabled
+                ? (widget.isRed
+                    ? AppTheme.red.withValues(alpha: 0.12)
+                    : AppTheme.blue.withValues(alpha: 0.12))
+                : AppTheme.overlay08,
+            borderRadius: BorderRadius.circular(6),
+            border: Border.all(
+              color: _hovered && enabled
+                  ? (widget.isRed ? AppTheme.red : AppTheme.blue.withValues(alpha: 0.6))
+                  : AppTheme.borderSoft,
+            ),
+            boxShadow: (_hovered && enabled)
+                ? [
+                    BoxShadow(
+                      color: widget.isRed
+                          ? AppTheme.red.withValues(alpha: 0.2)
+                          : AppTheme.blue.withValues(alpha: 0.2),
+                      blurRadius: 6,
+                      offset: const Offset(0, 1),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Text(
+            widget.label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: widget.isRed
+                  ? (widget.isDim ? const Color(0x80F87171) : AppTheme.red)
+                  : (widget.isDim ? AppTheme.textFaint : AppTheme.textMain),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HoverBottomSettingsBtn extends StatefulWidget {
+  final bool isGenerate;
+  final VoidCallback onTap;
+
+  const _HoverBottomSettingsBtn({required this.isGenerate, required this.onTap});
+
+  @override
+  State<_HoverBottomSettingsBtn> createState() => _HoverBottomSettingsBtnState();
+}
+
+class _HoverBottomSettingsBtnState extends State<_HoverBottomSettingsBtn> {
+  bool _hovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final active = !widget.isGenerate;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovered = true),
+      onExit: (_) => setState(() => _hovered = false),
+      cursor: SystemMouseCursors.click,
+      child: GestureDetector(
+        onTap: widget.onTap,
+        child: AnimatedContainer(
+          duration: const Duration(milliseconds: 150),
+          curve: Curves.easeOut,
+          height: 31,
+          alignment: Alignment.center,
+          transform: Matrix4.translationValues(0, _hovered ? -1.0 : 0.0, 0),
+          decoration: BoxDecoration(
+            color: active
+                ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.22 : 0.14)
+                : (_hovered ? AppTheme.blue.withValues(alpha: 0.12) : AppTheme.overlay08),
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(
+              color: active
+                  ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.8 : 0.5)
+                  : (_hovered ? AppTheme.blue.withValues(alpha: 0.6) : AppTheme.borderSoft),
+            ),
+            boxShadow: _hovered
+                ? [
+                    BoxShadow(
+                      color: active
+                          ? AppTheme.accentGold.withValues(alpha: 0.25)
+                          : AppTheme.blue.withValues(alpha: 0.2),
+                      blurRadius: 6,
+                      offset: const Offset(0, 1),
+                    ),
+                  ]
+                : null,
+          ),
+          child: Text(
+            active ? '← Back to Studio' : '⚙ Settings',
+            style: TextStyle(
+              fontSize: 11.5,
+              fontWeight: active ? FontWeight.bold : FontWeight.w600,
+              color: active ? AppTheme.accentText : (_hovered ? Colors.white : AppTheme.textDim),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }
 

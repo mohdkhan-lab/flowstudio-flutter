@@ -26,6 +26,7 @@ import 'package:flutter_flow/main.dart';
 import 'package:flutter_flow/providers/accounts_provider.dart';
 import 'package:flutter_flow/providers/activity_provider.dart';
 import 'package:flutter_flow/providers/generator_provider.dart';
+import 'package:flutter_flow/providers/notifications_provider.dart';
 import 'package:flutter_flow/providers/settings_provider.dart';
 import 'package:flutter_flow/services/automation_bridge.dart';
 import 'package:flutter_flow/widgets/top_strip.dart';
@@ -188,6 +189,7 @@ void main() {
     Widget app() {
       return MultiProvider(
         providers: [
+          ChangeNotifierProvider(create: (_) => NotificationsProvider()),
           ChangeNotifierProvider.value(value: accounts),
           ChangeNotifierProvider.value(value: settings),
           ChangeNotifierProvider.value(value: activity),
@@ -293,7 +295,7 @@ void main() {
           findsOneWidget);
       expect(find.descendant(of: rowArea, matching: find.text('Login')),
           findsOneWidget);
-      expect(find.descendant(of: rowArea, matching: find.text('Chrome')),
+      expect(find.descendant(of: rowArea, matching: find.byIcon(Icons.north_east)),
           findsNWidgets(3));
       expect(find.descendant(of: rowArea, matching: find.text('● ACTIVE')),
           findsOneWidget);

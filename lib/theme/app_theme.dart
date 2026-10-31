@@ -184,16 +184,16 @@ class AppTheme {
 
   static const AppPalette _macosDark = AppPalette(
     id: 'macos', dark: true,
-    bgBody: Color(0xFF232325), bg2: Color(0xFF2A2A2C),
-    surface: Color(0xFF2C2C2E), surfaceElevated: Color(0xFF3A3A3C),
-    inputBg: Color(0xFF1C1C1E),
-    border: Color(0xFF5A5A5E), borderSoft: Color(0xFF3D3D40),
+    bgBody: Color(0xFF16191F), bg2: Color(0xFF12141A),
+    surface: Color(0xFF191D26), surfaceElevated: Color(0xFF222734),
+    inputBg: Color(0xFF13151C),
+    border: Color(0xFF383F4C), borderSoft: Color(0xFF252A34),
     accentGold: Color(0xFF0A84FF), accentAmber: Color(0xFF409CFF),
     accentText: Color(0xFF409CFF),
     textMain: Color(0xFFFFFFFF), textDim: Color(0xFFD1D1D6),
     textFaint: Color(0xFFA1A1A6),
-    gradStart: Color(0xFF1A94FF), gradEnd: Color(0xFF0066D6),
-    panelTop: Color(0xFF3A3A3C), panelBottom: Color(0xFF2C2C2E),
+    gradStart: Color(0xFF3A98FF), gradEnd: Color(0xFF0066D6),
+    panelTop: Color(0xFF222734), panelBottom: Color(0xFF141720),
   );
 
   static const AppPalette _macosLight = AppPalette(

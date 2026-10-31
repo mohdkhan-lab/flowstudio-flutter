@@ -25,13 +25,13 @@ class TopStrip extends StatelessWidget {
       margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
       decoration: BoxDecoration(
-        color: AppTheme.surface,
+        gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
         boxShadow: const [
           BoxShadow(
-            color: Colors.black26,
-            blurRadius: 10,
+            color: Colors.black38,
+            blurRadius: 12,
             offset: Offset(0, 4),
           ),
         ],
@@ -125,7 +125,7 @@ class TopStrip extends StatelessWidget {
                     border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
                   ),
                   child: Text(
-                    'v2.48.1',
+                    'v2.48.2',
                     style: TextStyle(
                       fontSize: 10,
                       fontWeight: FontWeight.bold,

@@ -86,18 +86,28 @@ class _PromptsEditorState extends State<PromptsEditor> {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppTheme.surface,
+        gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
         boxShadow: const [
-          BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
+          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
         ],
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
           // Header Row (design): PROMPTS | TAG ▾ | + Add Tag | "N prompts"
-          Row(
+          // v2.48.2: LayoutBuilder + FittedBox prevents header row overflows across all breakpoints
+          LayoutBuilder(
+            builder: (context, headerConstraints) {
+              final minW = 460.0;
+              final useW = headerConstraints.maxWidth < minW ? minW : headerConstraints.maxWidth;
+              return FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: SizedBox(
+                  width: useW,
+                  child: Row(
             children: [
               Text(
                 'PROMPTS',
@@ -119,13 +129,13 @@ class _PromptsEditorState extends State<PromptsEditor> {
                 ),
               ),
               const SizedBox(width: 6),
-              // Responsive pass: a long custom tag name can shrink
-              // (loose Flexible + expanded dropdown) instead of
-              // overflowing the header row.
-              Flexible(
+              // v2.48.2: fixed width SizedBox(width: 84) prevents
+              // flex-division collision with Spacer() at 1024 width.
+              SizedBox(
+                width: 84,
                 child: Container(
                   height: 26,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
                   decoration: BoxDecoration(
                     color: AppTheme.inputBg,
                     borderRadius: BorderRadius.circular(6),
@@ -211,6 +221,10 @@ class _PromptsEditorState extends State<PromptsEditor> {
                 ),
               ),
             ],
+          ),
+                ),
+              );
+            },
           ),
 
           const SizedBox(height: 8),
@@ -314,78 +328,91 @@ class _PromptsEditorState extends State<PromptsEditor> {
 
           // v2.27.0 (design): Bulk / Agent Prompt toggle at the
           // BOTTOM-LEFT under the textarea; txt/srt at bottom-right.
-          // v2.29.0: the toggle is REAL — it switches the provider's
-          // parsing mode (Bulk = blank-line blocks; Agent = the
-          // whole text is one prompt) and the count/estimate update
-          // with it. It was a visual-only pill before.
-          Row(
-            children: [
-              // Bulk Prompt Pill
-              InkWell(
-                onTap: () => context.read<GeneratorProvider>().setPromptMode(true),
-                borderRadius: BorderRadius.circular(12),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    gradient: generator.isBulkMode ? AppTheme.accentGrad : null,
-                    color: generator.isBulkMode ? null : AppTheme.overlay08,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    'Bulk Prompt',
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.bold,
-                      color: generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
+          // Responsive pass: LayoutBuilder scales the row cleanly at
+          // compact resolutions (e.g. 950px windows) so it never overflows.
+          LayoutBuilder(
+            builder: (context, constraints) {
+              final w = constraints.maxWidth;
+              return SizedBox(
+                width: w,
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerLeft,
+                  child: SizedBox(
+                    width: w < 390 ? 390 : w,
+                    child: Row(
+                      children: [
+                        // Bulk Prompt Pill
+                        InkWell(
+                          onTap: () => context.read<GeneratorProvider>().setPromptMode(true),
+                          borderRadius: BorderRadius.circular(12),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              gradient: generator.isBulkMode ? AppTheme.accentGrad : null,
+                              color: generator.isBulkMode ? null : AppTheme.overlay08,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              'Bulk Prompt',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                                color: generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        // Agent Prompt Pill
+                        InkWell(
+                          onTap: () => context.read<GeneratorProvider>().setPromptMode(false),
+                          borderRadius: BorderRadius.circular(12),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            decoration: BoxDecoration(
+                              gradient: !generator.isBulkMode ? AppTheme.accentGrad : null,
+                              color: !generator.isBulkMode ? null : AppTheme.overlay08,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Text(
+                              'Agent Prompt',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                                color: !generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
+                              ),
+                            ),
+                          ),
+                        ),
+                        const Spacer(),
+                        // txt/srt import button
+                        InkWell(
+                          onTap: () => _handleFileImport(context),
+                          borderRadius: BorderRadius.circular(6),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            decoration: BoxDecoration(
+                              color: AppTheme.inputBg,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: AppTheme.borderSoft),
+                            ),
+                            child: Text(
+                              'txt/srt',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textMain,
+                              ),
+                            ),
+                          ),
+                        ),
+                      ],
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 6),
-              // Agent Prompt Pill
-              InkWell(
-                onTap: () => context.read<GeneratorProvider>().setPromptMode(false),
-                borderRadius: BorderRadius.circular(12),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  decoration: BoxDecoration(
-                    gradient: !generator.isBulkMode ? AppTheme.accentGrad : null,
-                    color: !generator.isBulkMode ? null : AppTheme.overlay08,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    'Agent Prompt',
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.bold,
-                      color: !generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
-                    ),
-                  ),
-                ),
-              ),
-              const Spacer(),
-              // txt/srt import button
-              InkWell(
-                onTap: () => _handleFileImport(context),
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                  decoration: BoxDecoration(
-                    color: AppTheme.inputBg,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: AppTheme.borderSoft),
-                  ),
-                  child: Text(
-                    'txt/srt',
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.w700,
-                      color: AppTheme.textMain,
-                    ),
-                  ),
-                ),
-              ),
-            ],
+              );
+            },
           ),
         ],
       ),

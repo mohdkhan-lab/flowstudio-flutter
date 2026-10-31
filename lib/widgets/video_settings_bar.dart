@@ -35,11 +35,11 @@ class VideoSettingsBar extends StatelessWidget {
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
-        color: AppTheme.surface,
+        gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
         boxShadow: const [
-          BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
+          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
         ],
       ),
       child: LayoutBuilder(
@@ -48,7 +48,7 @@ class VideoSettingsBar extends StatelessWidget {
           // bar sits in a ~390px pane at 950px windows) — button
           // paddings/gaps tighten so Stop/Pause/Generate always fit
           // inside the bar, in every state (incl. "Running...").
-          final compact = constraints.maxWidth < 430;
+          final compact = constraints.maxWidth < 450;
           return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -203,11 +203,11 @@ class VideoSettingsBar extends StatelessWidget {
                   decoration: BoxDecoration(
                     gradient: AppTheme.accentGrad,
                     borderRadius: BorderRadius.circular(8),
-                    boxShadow: const [
+                    boxShadow: [
                       BoxShadow(
-                        color: Colors.black38,
-                        blurRadius: 4,
-                        offset: Offset(0, 2),
+                        color: AppTheme.blue.withValues(alpha: 0.35),
+                        blurRadius: 12,
+                        offset: const Offset(0, 2),
                       ),
                     ],
                   ),

@@ -21,6 +21,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:provider/provider.dart';
 
 import 'package:flutter_flow/providers/settings_provider.dart';
+import 'package:flutter_flow/providers/notifications_provider.dart';
 import 'package:flutter_flow/widgets/settings_view.dart';
 
 void main() {
@@ -99,8 +100,11 @@ void main() {
     final settings = SettingsProvider();
 
     Widget app() {
-      return ChangeNotifierProvider.value(
-        value: settings,
+      return MultiProvider(
+        providers: [
+          ChangeNotifierProvider(create: (_) => NotificationsProvider()),
+          ChangeNotifierProvider.value(value: settings),
+        ],
         child: const MaterialApp(
           debugShowCheckedModeBanner: false,
           home: Scaffold(body: SettingsView()),

@@ -19,8 +19,13 @@ const {
   FALLBACK_USER_AGENT,
   resolveUserAgent,
   summarizeFetchSteps,
-  fastFetchUrl
+  fastFetchUrl,
+  MONITOR_ROUND_CAP,
+  DRAIN_ROUND_CAP,
+  roundCapForChannel
 } = require('../engine/downloadFetch');
+const failover = require('../engine/failover');
+const renderProgressWatch = require('../engine/renderProgressWatch');
 
 let passed = 0;
 let failed = 0;
@@ -115,6 +120,57 @@ eq('pct gone + non-fetchable scheme -> keep waiting',
   fastFetchUrl({ pctGone: true, url: 'data:video/mp4;base64,AAAA' }), null);
 eq('no state at all -> keep waiting',
   fastFetchUrl(null), null);
+
+// --- v2.48.0 (deep-audit fix #3): SEPARATE round budgets per channel.
+// The monitor's rounds and the drain (download-retry) rounds keep
+// independent persisted counters; the caps are decided by
+// roundCapForChannel so a spent monitor budget can never starve the
+// drain, and the drain is guaranteed at least 2 rounds. ---
+eq('monitor channel cap is 3', roundCapForChannel('monitor'), MONITOR_ROUND_CAP);
+eq('monitor cap constant is 3', MONITOR_ROUND_CAP, 3);
+eq('drain channel cap is 3', roundCapForChannel('drain'), DRAIN_ROUND_CAP);
+ok('drain is guaranteed at least 2 rounds', DRAIN_ROUND_CAP >= 2);
+eq('unknown channel falls back to the monitor cap', roundCapForChannel('bogus'), MONITOR_ROUND_CAP);
+eq('missing channel falls back to the monitor cap', roundCapForChannel(undefined), MONITOR_ROUND_CAP);
+
+// --- v2.48.0 (deep-audit fix #7 in the audit's numbering): UNKNOWN
+// errors get at most 2 account tries; known account-level classes
+// keep 3; 'render-frozen' is a known, eligible generation class. ---
+{
+  const unknown = failover.classifyFailure('some totally unheard-of glitch xyz');
+  eq('unknown failure is eligible', unknown.eligible, true);
+  eq('unknown failure is flagged known:false', unknown.known, false);
+  const t1 = failover.createFailoverTracker();
+  t1.recordTry('task-u', 'acc-1');
+  eq('unknown: 1 try spent, one more allowed', t1.canFailover('task-u', 'some totally unheard-of glitch xyz').ok, true);
+  eq('unknown: verdict cap is 2', t1.canFailover('task-u', 'some totally unheard-of glitch xyz').maxTries, failover.UNKNOWN_MAX_ACCOUNT_TRIES);
+  t1.recordTry('task-u', 'acc-2');
+  eq('unknown: 2 tries spent, no third account', t1.canFailover('task-u', 'some totally unheard-of glitch xyz').ok, false);
+
+  const t2 = failover.createFailoverTracker();
+  t2.recordTry('task-k', 'acc-1');
+  t2.recordTry('task-k', 'acc-2');
+  const knownVerdict = t2.canFailover('task-k', 'Render timed out before the video could be identified');
+  eq('known generation failure keeps the 3-account budget', knownVerdict.ok && knownVerdict.maxTries, 3);
+
+  const frozen = failover.classifyFailure('Render frozen (render-frozen): progress has not moved at all for 6 minutes');
+  eq('render-frozen is failover-eligible', frozen.eligible, true);
+  eq('render-frozen is a known class', frozen.known, true);
+  eq('render-frozen classifies as generation', frozen.kind, 'generation');
+}
+
+// --- v2.48.0 (deep-audit fix #5): frozen-% escalation — warn at the
+// stall budget (3 min), escalate to 'frozen' at 6 min, fire once. ---
+{
+  const task = {};
+  const base = { state: 'generating', percentage: '43%', tileText: '', stallAfterMs: 180000, frozenAfterMs: 360000 };
+  eq('first sighting arms the watch', renderProgressWatch.observeProgress(task, { ...base, now: 0 }).type, 'none');
+  eq('at 3 min the stall warning fires', renderProgressWatch.observeProgress(task, { ...base, now: 180000 }).type, 'stalled');
+  eq('at 6 min the frozen escalation fires', renderProgressWatch.observeProgress(task, { ...base, now: 360000 }).type, 'frozen');
+  eq('frozen fires only once per episode', renderProgressWatch.observeProgress(task, { ...base, now: 420000 }).type, 'none');
+  eq('a % move resets the episode', renderProgressWatch.observeProgress(task, { ...base, percentage: '44%', now: 430000 }).type, 'progress');
+  eq('default frozen budget is 6 minutes', renderProgressWatch.DEFAULT_FROZEN_AFTER_MS, 360000);
+}
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 process.exit(failed > 0 ? 1 : 0);

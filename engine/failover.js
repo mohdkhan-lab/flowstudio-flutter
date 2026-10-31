@@ -35,6 +35,14 @@
 
 const MAX_ACCOUNT_TRIES = 3;
 
+// v2.48.0 (deep-audit fix #7): an UNCLASSIFIED failure (no pattern
+// matched — we honestly do not know what went wrong) gets a smaller
+// budget than a known account-level failure: the first try plus ONE
+// extra account. Blindly re-firing an unknown error on a third
+// account could burn a third charge for what might be a prompt-side
+// problem the classifier simply has no words for yet.
+const UNKNOWN_MAX_ACCOUNT_TRIES = 2;
+
 const PROMPT_LEVEL_PATTERNS = [
   'google safety',          // 'Google Safety / Policy Filter', 'Google Safety Filter: ...'
   'policy filter',
@@ -50,6 +58,7 @@ const ACCOUNT_LEVEL_PATTERNS = [
   { kind: 'download', patterns: ['download failed', 'download timeout', 'download ho nahi paya'] },
   { kind: 'generation', patterns: [
     'render timed out', 'render timeout', 'render monitor', 'generation error',
+    'render-frozen', // v2.48.0: the monitor's frozen-% escalation (tile present, % unmoved for 6 min)
     'tile', // 'Generation tile ... could not be identified (dropped or rejected by Flow)'
     'worker error', 'submit', 'profile busy', 'browser', 'page closed', 'target closed', 'protocol error'
   ] }
@@ -57,20 +66,21 @@ const ACCOUNT_LEVEL_PATTERNS = [
 
 function classifyFailure(reason) {
   const text = String(reason || '').toLowerCase();
-  if (!text.trim()) return { eligible: false, kind: null };
-  if (text.includes('user') && text.includes('stop')) return { eligible: false, kind: null };
-  if (text.includes('stopped by user')) return { eligible: false, kind: null };
+  if (!text.trim()) return { eligible: false, kind: null, known: true };
+  if (text.includes('user') && text.includes('stop')) return { eligible: false, kind: null, known: true };
+  if (text.includes('stopped by user')) return { eligible: false, kind: null, known: true };
   for (const pattern of PROMPT_LEVEL_PATTERNS) {
-    if (text.includes(pattern)) return { eligible: false, kind: 'prompt-policy' };
+    if (text.includes(pattern)) return { eligible: false, kind: 'prompt-policy', known: true };
   }
   for (const group of ACCOUNT_LEVEL_PATTERNS) {
     for (const pattern of group.patterns) {
-      if (text.includes(pattern)) return { eligible: true, kind: group.kind };
+      if (text.includes(pattern)) return { eligible: true, kind: group.kind, known: true };
     }
   }
-  // Unknown worker/monitor failures are treated as generation-level:
-  // one bounded retry on another account, capped by MAX_ACCOUNT_TRIES.
-  return { eligible: true, kind: 'generation' };
+  // Unknown worker/monitor failures are treated as generation-level,
+  // but flagged known:false — canFailover caps those at
+  // UNKNOWN_MAX_ACCOUNT_TRIES (2) instead of MAX_ACCOUNT_TRIES (3).
+  return { eligible: true, kind: 'generation', known: false };
 }
 
 function createFailoverTracker(maxTries = MAX_ACCOUNT_TRIES) {
@@ -166,13 +176,15 @@ function createFailoverTracker(maxTries = MAX_ACCOUNT_TRIES) {
     canFailover(taskId, reason) {
       const cls = classifyFailure(reason);
       const tries = this.tries(taskId);
-      if (!cls.eligible) return { ok: false, kind: cls.kind, tries, maxTries: cap };
-      if (tries >= cap) return { ok: false, kind: cls.kind, tries, maxTries: cap };
-      return { ok: true, kind: cls.kind, tries, maxTries: cap };
+      // v2.48.0: unknown (unclassified) failures get the smaller cap.
+      const effectiveCap = cls.known === false ? Math.min(cap, UNKNOWN_MAX_ACCOUNT_TRIES) : cap;
+      if (!cls.eligible) return { ok: false, kind: cls.kind, tries, maxTries: effectiveCap };
+      if (tries >= effectiveCap) return { ok: false, kind: cls.kind, tries, maxTries: effectiveCap };
+      return { ok: true, kind: cls.kind, tries, maxTries: effectiveCap };
     },
 
     get maxTries() { return cap; }
   };
 }
 
-module.exports = { MAX_ACCOUNT_TRIES, classifyFailure, createFailoverTracker };
+module.exports = { MAX_ACCOUNT_TRIES, UNKNOWN_MAX_ACCOUNT_TRIES, classifyFailure, createFailoverTracker };

@@ -74,7 +74,7 @@ async function main() {
   try {
     const status = await waitStatus();
     check('bridge boots', !!status, bridgeLog.slice(-400));
-    check('status version is 2.40.0', status && status.version === '2.47.5', JSON.stringify(status));
+    check('status version is 2.40.0', status && status.version === '2.48.0', JSON.stringify(status));
 
     const redoEarly = await req('POST', '/api/generation/redo-missing', {});
     check('redo before any run -> 400', redoEarly.status === 400, JSON.stringify(redoEarly.data));
@@ -165,6 +165,15 @@ async function main() {
     await sleep(2500);
     const after = await req('GET', '/api/status');
     check('redo run settled (no active pool)', after.data && after.data.workers === 0, JSON.stringify(after.data));
+
+    // v2.48.0 (deep-audit fix #1): resume with NO active pool and
+    // nothing pending a download-only check must answer honestly —
+    // resumed:false + reason 'nothing-to-resume' — never the old
+    // bare { ok: true } that implied a restart had happened.
+    const resume = await req('POST', '/api/generation/resume', {});
+    check('resume with nothing pending answers honestly',
+      resume.status === 200 && resume.data && resume.data.resumed === false && resume.data.reason === 'nothing-to-resume',
+      JSON.stringify(resume.data));
   } finally {
     child.kill('SIGKILL');
     fs.rmSync(tmp, { recursive: true, force: true });

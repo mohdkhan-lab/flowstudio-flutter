@@ -150,6 +150,26 @@ function fastFetchUrl(state) {
   return u;
 }
 
+// --- v2.48.0 (deep-audit fix #3): SEPARATE download-round budgets ---
+// Before v2.48.0 the monitor's download rounds and the download-retry
+// (drain) rounds drew from ONE persisted 3-round ledger on the task
+// row: a bad first stretch in the monitor could spend the whole
+// budget, leaving the retry — the attempt that runs later, on a
+// settled page, with a fresh link — nothing to spend. The two
+// channels now keep SEPARATE persisted counters (dbService:
+// download_attempts / drain_attempts) and separate caps, decided
+// here so the rule is unit-testable without a browser or a database.
+// The drain is guaranteed at least 2 rounds (DRAIN_ROUND_CAP = 3)
+// no matter how many monitor rounds were already spent.
+const MONITOR_ROUND_CAP = 3;
+const DRAIN_ROUND_CAP = 3;
+
+/** Round cap for one download channel: 'drain' (download-retry) or
+ *  anything else (the monitor's own rounds). */
+function roundCapForChannel(channel) {
+  return channel === 'drain' ? DRAIN_ROUND_CAP : MONITOR_ROUND_CAP;
+}
+
 module.exports = {
   NODE_FETCH_MAX_ATTEMPTS,
   NODE_FETCH_RETRY_DELAYS_MS,
@@ -160,5 +180,8 @@ module.exports = {
   FALLBACK_USER_AGENT,
   resolveUserAgent,
   summarizeFetchSteps,
-  fastFetchUrl
+  fastFetchUrl,
+  MONITOR_ROUND_CAP,
+  DRAIN_ROUND_CAP,
+  roundCapForChannel
 };

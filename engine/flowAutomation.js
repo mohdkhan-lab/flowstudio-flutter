@@ -105,6 +105,11 @@ class FlowAutomationEngine {
     // day does not cry wolf, short enough that a dead render is
     // named while there is still time to act).
     this.progressStallAfterMs = Number(options.progressStallAfterMs) > 0 ? Number(options.progressStallAfterMs) : renderProgressWatch.DEFAULT_STALL_AFTER_MS;
+    // v2.48.0 (deep-audit fix #5): the frozen-% ESCALATION budget —
+    // a tile whose % has not moved for this long (production 6
+    // minutes) is failed as 'render-frozen' (failover-eligible)
+    // instead of waiting silently for the absolute cap.
+    this.progressFrozenAfterMs = Number(options.progressFrozenAfterMs) > 0 ? Number(options.progressFrozenAfterMs) : renderProgressWatch.DEFAULT_FROZEN_AFTER_MS;
     // v2.4.0: heartbeat cadence for long waits (constructor option so
     // tests can shrink it; production 30s — the owner's rule is that
     // the log may never sit silent while a paid render is in flight).
@@ -134,19 +139,26 @@ class FlowAutomationEngine {
     // the 3-round cap can be enforced here, at the one place every
     // download passes through. No-op unless the pool binds it (old
     // callers / tests simply get no cap and no counting).
-    //   attempts(taskId)              -> rounds already spent
-    //   roundSettled(taskId, ok, err) -> persist this round's result
+    //   attempts(taskId, channel)              -> rounds already spent
+    //   roundSettled(taskId, ok, err, channel) -> persist the result
+    // v2.48.0: channel is 'monitor' (default) or 'drain' — the two
+    // channels keep SEPARATE persisted budgets (see downloadFetch
+    // roundCapForChannel); this engine reports its current channel,
+    // which retryDownloadForTask sets to 'drain' for its rounds.
     const noopDownloadPort = {
       attempts: () => 0,
       roundSettled: () => {}
     };
+    this._downloadChannel = 'monitor';
     this.downloadPort = Object.assign({}, noopDownloadPort, options.downloadPort || {});
     // v2.31.3 tuning (constructor options so simulations can shrink
     // the windows; production uses these defaults): one download
-    // ROUND gets 120s (was a 240s guard default), a native browser
+    // ROUND gets 150s (v2.48.0: raised from 120s — the 25s media-
+    // readiness poll plus the four strategies did not fit honestly
+    // inside 120s on a busy page), a native browser
     // download whose file stops growing for 45s is abandoned as
     // stalled, and the post-run watcher sweep fires after 5 minutes.
-    this.downloadRoundTimeoutMs = Number(options.downloadRoundTimeoutMs) > 0 ? Number(options.downloadRoundTimeoutMs) : 120000;
+    this.downloadRoundTimeoutMs = Number(options.downloadRoundTimeoutMs) > 0 ? Number(options.downloadRoundTimeoutMs) : 150000;
     this.nativeDownloadStallMs = Number(options.nativeDownloadStallMs) > 0 ? Number(options.nativeDownloadStallMs) : 45000;
     this.watcherSweepDelayMs = Number(options.watcherSweepDelayMs) > 0 ? Number(options.watcherSweepDelayMs) : 300000;
     this._watcherSweepTimer = null;
@@ -3765,6 +3777,13 @@ class FlowAutomationEngine {
     if (task._backendFetchPromise) return task._backendFetchPromise;
     const p = this._fetchBackendAndSave(task, ctx).catch(() => false);
     task._backendFetchPromise = p;
+    // v2.48.0: an honest IN-FLIGHT flag — the promise object stays
+    // referenced after it settles, so "promise exists" cannot tell
+    // the v2.48.0 defer rule (defer only while a fetch is really
+    // running) what it needs to know.
+    task._backendFetchInFlight = true;
+    const clearInFlight = () => { task._backendFetchInFlight = false; };
+    p.then(clearInFlight, clearInFlight);
     return p;
   }
 
@@ -3947,11 +3966,17 @@ class FlowAutomationEngine {
     // be re-spent here; the guard only ever re-runs downloads).
     // An owner Resume / check-only recovery resets the budget to 0
     // (workerPool), and a successful download resets it too.
-    const ROUND_CAP = 3;
+    // v2.48.0 (deep-audit fix #3): the cap and the counter are PER
+    // CHANNEL — rounds this engine runs for the download-retry
+    // (drain) draw on the drain's own persisted budget, never on
+    // the monitor's, so a spent monitor budget can no longer starve
+    // the retry that runs later on a settled page.
+    const channel = this._downloadChannel === 'drain' ? 'drain' : 'monitor';
+    const ROUND_CAP = downloadFetch.roundCapForChannel(channel);
     const taskId = task && task.taskId;
     let used = 0;
     if (taskId) {
-      try { used = Number(this.downloadPort.attempts(taskId)) || 0; } catch (e) { used = 0; }
+      try { used = Number(this.downloadPort.attempts(taskId, channel)) || 0; } catch (e) { used = 0; }
     }
     if (taskId && used >= ROUND_CAP) {
       this.log(`[Prompt #${n}] This video's download has already been tried ${ROUND_CAP} times — it is parked (pending, check-only) and the run will move on. On the next Resume only its download will be tried again; the prompt will NOT be submitted again.`, 'warn');
@@ -3976,14 +4001,14 @@ class FlowAutomationEngine {
       // under downloadGuard — a hard deadline around a step that
       // used to have NO timeout anywhere, so one stuck await froze
       // the render monitor (and every later video) forever.
-      // v2.31.3: the deadline is now 120s per ROUND and the guard's
+      // v2.31.3: the deadline is now per ROUND (150s since v2.48.0) and the guard's
       // own blind retry is OFF — rounds are governed by the
       // persisted ledger above, so every retry is counted, logged
       // and capped, never silent and never unbounded.
       result = await downloadGuard.attemptDownload(
         () => this._downloadTaskMediaInner(task, downloadFolder, settings, tileIndexHint),
         {
-          timeoutMs: this.downloadRoundTimeoutMs || 120000,
+          timeoutMs: this.downloadRoundTimeoutMs || 150000,
           retries: 0,
           retryDelayMs: 0,
           label: `prompt #${n} download`,
@@ -3996,19 +4021,20 @@ class FlowAutomationEngine {
       task._downloadInProgress = false;
     }
     // Settle the round in the persisted ledger — success resets the
-    // budget to 0, failure records the round and its reason.
+    // budget to 0, failure records the round and its reason (in the
+    // SAME channel the round was spent from, v2.48.0).
     if (taskId) {
       try {
         if (result && result.ok) {
-          this.downloadPort.roundSettled(taskId, true, '');
+          this.downloadPort.roundSettled(taskId, true, '', channel);
         } else {
           const failedNotes = (result && Array.isArray(result.attempts))
             ? result.attempts.filter(a => a && !a.ok && a.note)
             : [];
           const note = result && result.timedOut
-            ? `the download step did not finish within ${Math.round((this.downloadRoundTimeoutMs || 120000) / 1000)}s`
+            ? `the download step did not finish within ${Math.round((this.downloadRoundTimeoutMs || 150000) / 1000)}s`
             : (failedNotes.length > 0 ? String(failedNotes[failedNotes.length - 1].note) : 'the download did not complete');
-          this.downloadPort.roundSettled(taskId, false, note);
+          this.downloadPort.roundSettled(taskId, false, note, channel);
         }
       } catch (e) {}
     }
@@ -4033,8 +4059,8 @@ class FlowAutomationEngine {
    * for the task OR the tile's own element reports a src/currentSrc.
    *
    * Budget: this runs INSIDE _downloadTaskMediaInner, hence inside
-   * the round's 120s downloadGuard deadline — worst case it spends
-   * 25s and leaves at least ~95s for the four strategies. It NEVER
+   * the round's 150s downloadGuard deadline — worst case it spends
+   * 25s and leaves at least ~125s for the four strategies. It NEVER
    * fails the round: on timeout (or any error) the strategies run
    * anyway, exactly as before. And when a captured URL already
    * exists — the normal single-task case — it returns immediately,
@@ -4148,7 +4174,7 @@ class FlowAutomationEngine {
     // multi-task page the tile's media may not have loaded yet, and
     // every strategy below then fails for that one reason (proven
     // from the 2026-10-27 Activity records). Bounded (~25s) inside
-    // this round's 120s guard; skipped entirely when a captured URL
+    // this round's 150s guard; skipped entirely when a captured URL
     // already exists; never fails the round.
     const readiness = await this._awaitTileMediaReady(task, tileIndexHint, isImage, captureKey, n);
 
@@ -4320,12 +4346,21 @@ class FlowAutomationEngine {
       return { status: 'tile-missing', attempts: backendAttempts.concat(task.downloadAttempts || []) };
     }
     this.log(`[Prompt #${n}] Download-retry: the tile was found in the project — now ONLY all the download strategies will run again (no new submit/charge).`, 'info');
-    const dl = await this.downloadTaskMedia(task, downloadFolder, settings, task.tileIndex);
+    // v2.48.0 (deep-audit fix #3): rounds spent from HERE draw on
+    // the DRAIN channel's own persisted budget — never the monitor's.
+    const prevChannel = this._downloadChannel;
+    this._downloadChannel = 'drain';
+    let dl;
+    try {
+      dl = await this.downloadTaskMedia(task, downloadFolder, settings, task.tileIndex);
+    } finally {
+      this._downloadChannel = prevChannel || 'monitor';
+    }
     return dl.ok
       ? { status: 'downloaded', attempts: backendAttempts.concat(dl.attempts) }
-      // v2.31.3: capped = the persisted 3-round download budget is
-      // spent — the pool must not loop another retry this run; the
-      // task simply stays parked (pending + needs_check).
+      // v2.31.3: capped = the persisted download budget (this
+      // channel's) is spent — the pool must not loop another retry
+      // this run; the task simply stays parked (pending + needs_check).
       : { status: 'download-failed', capped: !!dl.capped, attempts: backendAttempts.concat(dl.attempts) };
   }
 
@@ -4382,7 +4417,14 @@ class FlowAutomationEngine {
     // for downloads/sweeps — and any task still unsettled past it
     // is failed with a concrete watchdog reason in the per-task
     // loop, so this monitor ALWAYS returns.
-    const absoluteCapSec = maxWaitSec + (recoveryWindowMs / 1000) + 600;
+    // v2.48.0 (deep-audit fix #6): the stacked budgets are now
+    // themselves capped — no per-task attempt on one account may
+    // exceed 1200s (20 minutes) in total, however the layers add
+    // up. On 31 Oct a single bad window's tasks stretched to the
+    // full stacked ~31 minutes; 20 minutes is still far above any
+    // legitimate render+download path.
+    const stackedCapSec = maxWaitSec + (recoveryWindowMs / 1000) + 600;
+    const absoluteCapSec = Math.min(stackedCapSec, 1200);
     let lastReportedPercentage = {};
     // v1.5.0: when a task ends in failure, free its tile claim so a
     // sibling task is never starved by a dead binding.
@@ -4769,7 +4811,7 @@ class FlowAutomationEngine {
             task.failed = true;
             releaseTileClaim(task);
             stallWatch.clearStall(task);
-            const capReason = `Generation watchdog: this prompt was still unfinished ${stallWatch.formatDuration(elapsedSec)} after it was submitted — past the absolute limit of ${stallWatch.formatDuration(absoluteCapSec)} (render wait + recovery window + slack). It has been marked failed so the queue can end; the video may still exist in the Flow project.`;
+            const capReason = `Generation watchdog: this prompt was still unfinished ${stallWatch.formatDuration(elapsedSec)} after it was submitted — past the absolute per-task limit of ${stallWatch.formatDuration(absoluteCapSec)}. It has been marked failed so the queue can end; the video may still exist in the Flow project.`;
             this.log(`[Prompt #${task.promptIndex + 1}] ${capReason}`, 'warn');
             this.onTaskFailed(task, capReason);
             this.onVideoCompleted({
@@ -4892,8 +4934,38 @@ class FlowAutomationEngine {
               percentage: bestTile ? bestTile.percentage : null,
               tileText: bestTile ? bestTile.text : '',
               now: Date.now(),
-              stallAfterMs: this.progressStallAfterMs
+              stallAfterMs: this.progressStallAfterMs,
+              frozenAfterMs: this.progressFrozenAfterMs
             });
+            if (progAct.type === 'frozen') {
+              // v2.48.0 (deep-audit fix #5): ESCALATION — the tile
+              // exists but its % has not moved for the full frozen
+              // budget (6 min). No more silent waiting: the task is
+              // failed HERE with the distinct 'render-frozen' reason
+              // (failover.js classifies it account-level, so the pool
+              // may try the prompt on another account). The guards
+              // below skip a completed task, so the rest of this
+              // iteration is inert for it.
+              const frozenReason = `Render frozen (render-frozen): this prompt's tile is present in the project, but its progress has not moved at all for ${stallWatch.formatDuration(progAct.stuckForSec)}${progAct.lastPct ? ` (stuck at ${progAct.lastPct})` : ''} — the render is treated as dead on this account and the task has been marked failed instead of waiting silently for the overall limit.`;
+              task.completed = true;
+              task.downloaded = true;
+              task.failed = true;
+              releaseTileClaim(task);
+              stallWatch.clearStall(task);
+              renderProgressWatch.clearProgress(task);
+              this.log(`[Prompt #${task.promptIndex + 1}] ${frozenReason}`, 'warn');
+              this.onTaskFailed(task, frozenReason);
+              this.onVideoCompleted({
+                id: task.videoId,
+                prompt: task.promptText,
+                accountName: this.currentAccount.name,
+                status: 'Failed (Render frozen)',
+                filePath: null,
+                error: 'Render frozen',
+                type: settings.type,
+                timestamp: new Date().toLocaleTimeString()
+              });
+            }
             if (progAct.type === 'stalled') {
               const frozenFor = stallWatch.formatDuration(progAct.stuckForSec);
               const pctNote = progAct.lastPct
@@ -5143,7 +5215,17 @@ class FlowAutomationEngine {
               // check-only recovery use uthayegi. Prompt DOBARA
               // submit NAHI hota — ye tartib hai, nakami nahi,
               // isliye onTaskFailed NAHI bulaya jata.
-              if (returnOnAnyComplete) {
+              // v2.48.0 (deep-audit fix #2): defer AB SIRF TAB jab is
+              // task ka backend fetch asal me CHAL raha ho — wahi
+              // fetch chand seconds me file save kar dega, isliye
+              // monitor ka aage badhna mehfooz hai. Fetch na chal
+              // raha ho (link abhi bandha hi nahi, ya fetch khatam
+              // ho chuka) to defer ka matlab download ko us pal se
+              // hata dena tha jab link SAB SE TAAZA tha — 31 Oct ki
+              // chaaron download-fail isi se park hui. Aisi haalat me
+              // download yahin, monitor me hi, pura hoga (v2.45 se
+              // pehle wala bartav).
+              if (returnOnAnyComplete && task._backendFetchInFlight) {
                 task.downloaded = true;
                 task.deferredDownload = true;
                 this.claimedTileIndices.add(bestTile.tileIndex);

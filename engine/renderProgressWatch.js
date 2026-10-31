@@ -38,6 +38,15 @@
 
 const DEFAULT_STALL_AFTER_MS = 3 * 60 * 1000;
 
+// v2.48.0 (deep-audit fix #5): the ESCALATION budget. The 3-minute
+// 'stalled' warning above stays a warning — but a percentage frozen
+// for a full 6 minutes is no longer treated as "Flow is just slow":
+// observeProgress then returns 'frozen' (once per episode) and the
+// monitor FAILS the task with a failover-eligible 'render-frozen'
+// reason instead of letting it sit until the absolute cap (~31 min
+// in the old stacked budgets).
+const DEFAULT_FROZEN_AFTER_MS = 6 * 60 * 1000;
+
 /**
  * Best-effort: does the tile's own text say Flow is queueing / busy?
  * The canvas read strips the prompt's own text out of `text`, so
@@ -64,20 +73,24 @@ function queueHintFromText(text) {
  * @param {string} [obs.tileText]  the tile's chrome text (queue hint)
  * @param {number} obs.now  Date.now() of this poll
  * @param {number} [obs.stallAfterMs]  freeze budget (default 3 min)
+ * @param {number} [obs.frozenAfterMs]  escalation budget (default 6 min)
  * @returns {{type:string, stuckForSec?:number, lastPct?:string|null,
  *            queueHint?:string|null, elapsedSec?:number}}
  *   'none'     — nothing to report this poll
  *   'progress' — the percentage moved; the episode clock reset
  *   'stalled'  — frozen for the whole budget; warn (once per episode)
+ *   'frozen'   — frozen past the escalation budget; the monitor
+ *                fails the task as 'render-frozen' (once per episode)
  */
 function observeProgress(task, obs) {
   if (!task || typeof task !== 'object' || !obs) return { type: 'none' };
   const nowNum = Number(obs.now);
   const now = Number.isFinite(nowNum) ? nowNum : Date.now();
   const stallAfterMs = Math.max(1000, Number(obs.stallAfterMs) || DEFAULT_STALL_AFTER_MS);
+  const frozenAfterMs = Math.max(stallAfterMs, Number(obs.frozenAfterMs) || DEFAULT_FROZEN_AFTER_MS);
   // lastChangeAt is null (not 0) when idle — 0 is a legitimate clock
   // reading in tests, and a falsy sentinel would restart the clock.
-  const st = task._progress || (task._progress = { lastPct: undefined, lastChangeAt: null, warned: false });
+  const st = task._progress || (task._progress = { lastPct: undefined, lastChangeAt: null, warned: false, frozenWarned: false });
 
   if (obs.state !== 'generating') {
     // Only a bound, rendering tile can freeze. Any other state ends
@@ -85,6 +98,7 @@ function observeProgress(task, obs) {
     st.lastPct = undefined;
     st.lastChangeAt = null;
     st.warned = false;
+    st.frozenWarned = false;
     return { type: 'none' };
   }
 
@@ -95,6 +109,7 @@ function observeProgress(task, obs) {
     st.lastPct = pct;
     st.lastChangeAt = now;
     st.warned = false;
+    st.frozenWarned = false;
     return { type: 'none' };
   }
 
@@ -102,10 +117,23 @@ function observeProgress(task, obs) {
     st.lastPct = pct;
     st.lastChangeAt = now;
     st.warned = false;
+    st.frozenWarned = false;
     return { type: 'progress' };
   }
 
   const frozenMs = now - st.lastChangeAt;
+  // v2.48.0: the escalation is checked FIRST — if a single poll gap
+  // crosses both budgets, the stronger signal wins.
+  if (frozenMs >= frozenAfterMs && !st.frozenWarned) {
+    st.frozenWarned = true;
+    st.warned = true;
+    return {
+      type: 'frozen',
+      stuckForSec: Math.round(frozenMs / 1000),
+      lastPct: st.lastPct,
+      queueHint: queueHintFromText(obs.tileText)
+    };
+  }
   if (frozenMs >= stallAfterMs && !st.warned) {
     st.warned = true;
     return {
@@ -120,7 +148,7 @@ function observeProgress(task, obs) {
 
 /** Drop the progress-watch state (task finished one way or another). */
 function clearProgress(task) {
-  if (task && task._progress) task._progress = { lastPct: undefined, lastChangeAt: null, warned: false };
+  if (task && task._progress) task._progress = { lastPct: undefined, lastChangeAt: null, warned: false, frozenWarned: false };
 }
 
-module.exports = { observeProgress, clearProgress, queueHintFromText, DEFAULT_STALL_AFTER_MS };
+module.exports = { observeProgress, clearProgress, queueHintFromText, DEFAULT_STALL_AFTER_MS, DEFAULT_FROZEN_AFTER_MS };

@@ -340,12 +340,22 @@ class WorkerPool {
    */
   _downloadPort() {
     return {
-      attempts: (taskId) => {
-        try { return dbService.getDownloadAttemptCount(taskId); } catch (e) { return 0; }
+      // v2.48.0 (deep-audit fix #3): the channel argument routes the
+      // count to the right persisted counter — 'drain' rounds (the
+      // download-retry path) never touch the monitor's budget and
+      // vice versa. No channel = the monitor's counter (the
+      // pre-v2.48.0 behaviour for every other caller).
+      attempts: (taskId, channel) => {
+        try {
+          return channel === 'drain'
+            ? dbService.getDrainAttemptCount(taskId)
+            : dbService.getDownloadAttemptCount(taskId);
+        } catch (e) { return 0; }
       },
-      roundSettled: (taskId, ok, errorText) => {
+      roundSettled: (taskId, ok, errorText, channel) => {
         try {
           if (ok) dbService.resetDownloadAttempts(taskId);
+          else if (channel === 'drain') dbService.noteDrainRound(taskId, errorText || 'download failed');
           else dbService.noteDownloadRound(taskId, errorText || 'download failed');
         } catch (e) {}
       }
@@ -447,8 +457,10 @@ class WorkerPool {
    * already have been submitted to Flow). For each affected account the
    * EXISTING Flow project is opened and each prompt's video is looked
    * up by fingerprint: found + downloadable -> completed WITHOUT
-   * spending credits again; found but not downloadable -> failed with
-   * the reason; not found -> failed with the reason (never blindly
+   * spending credits again; found but not downloadable -> stays
+   * pending + needs_check (parked for a download-only retry on a
+   * later Resume — v2.48.0, matching the in-run drain); not found ->
+   * failed with the reason (never blindly
    * re-submitted — that could double-charge credits; the user has
    * per-task Retry). If the project cannot be opened at all, the rows
    * stay pending + flagged for a later Resume.
@@ -541,10 +553,19 @@ class WorkerPool {
           if (res && res.found && res.downloaded) {
             this.log(`Recovery: Prompt #${row.prompt_index + 1}'s video already existed in [${account.name}]'s Flow project — that same one was downloaded. No credits were deducted again.`, 'success');
           } else if (res && res.found) {
-            const reason = 'Recovered after restart: this prompt\'s tile exists in the Flow project but no downloadable video was found (it may still be rendering, or it failed on Flow). It was NOT re-submitted, to avoid a double credit charge — download it from the Flow project, or use Retry.';
-            try { dbService.failTask(row.id, reason); } catch (e) {}
-            this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'failed', reason });
-            this.log(`Recovery: Prompt #${row.prompt_index + 1}'s tile was found in the project, but no downloadable video was found on it. Marked as failed (NOT resubmitted).`, 'warn');
+            // v2.48.0 (deep-audit fix #9): tile FOUND but the download
+            // did not complete — PARK, do not fail. This now matches
+            // the in-run drain's behaviour for the exact same state
+            // (tile exists, download failed -> pending + needs_check):
+            // the video exists and credits were paid; failing it here
+            // threw that away over what may be a transient download
+            // problem. The row stays pending + needs_check, so a
+            // later Resume / Redo Missing retries ONLY the download.
+            // FAIL is now reserved for tile-missing (the else branch).
+            const reason = 'Recovered after restart: this prompt\'s tile exists in the Flow project but its video could not be downloaded this time (it may still be rendering, or the download routes failed). It was NOT re-submitted and NOT failed — it stays pending (check-only); on the next Resume only its download will be tried again, with no new charge.';
+            try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
+            this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
+            this.log(`Recovery: Prompt #${row.prompt_index + 1}'s tile was found in the project, but its download did not complete this time. Kept pending (check-only) for a download-only retry on the next Resume — NOT failed, NOT resubmitted.`, 'warn');
           } else {
             const reason = 'Interrupted by an app close. No matching video was found in the account\'s latest Flow project, so it was NOT auto-resubmitted (that could double-charge credits). Use Retry to run it again.';
             try { dbService.failTask(row.id, reason); } catch (e) {}
@@ -1875,6 +1896,56 @@ class WorkerPool {
         workerPromises.push(runWorker(i));
       }
       await Promise.all(workerPromises);
+
+      // v2.48.0 (deep-audit fix #8): FINAL DRAIN PASS. Deferred
+      // download entries could be left in the list when their worker
+      // rotated to another account mid-run (the drain's account
+      // guard rightly skips them then) — and before v2.48.0 the run
+      // simply ended with a count line, the videos still sitting
+      // undownloaded in their projects. Now, before the run closes:
+      // for every remaining entry, re-open the OWNING account's
+      // project on the entry's own engine (its browser was closed
+      // when its worker finished) and run the drain once for that
+      // account. Download-only as always — no prompt is resubmitted,
+      // no new charge is possible here. Entries that still cannot
+      // complete stay pending + needs_check for the next Resume, and
+      // the count below reports them honestly.
+      if (!this.isStopping && deferredDownloadRetries.length > 0) {
+        try {
+          this.log(`Run ending — one final download-only pass for the ${deferredDownloadRetries.length} video(s) whose download is still remaining…`, 'info');
+          const byEngine = new Map(); // engine -> Set<accountId>
+          for (const e of [...deferredDownloadRetries]) {
+            if (!e.owner) continue;
+            if (!byEngine.has(e.owner)) byEngine.set(e.owner, new Set());
+            byEngine.get(e.owner).add(String(e.accountId || ''));
+          }
+          for (const [engine, accountIds] of byEngine) {
+            for (const accId of accountIds) {
+              if (this.isStopping) break;
+              const account = accId ? dbService.getAccount(accId) : null;
+              if (!account) continue;
+              let opened = false;
+              try {
+                const launched = await engine.launchBrowserForAccount(account, downloadFolder).catch(() => false);
+                if (launched) {
+                  const st = await engine.openFlowStudio({ ...settings, canvasStrategy: 'existing' }).catch(() => null);
+                  opened = (st === 'READY');
+                }
+              } catch (e) {}
+              if (opened) {
+                await processDownloadRetries(engine);
+              }
+              try { await engine.closeBrowser().catch(() => {}); } catch (e) {}
+            }
+          }
+          const leftCount = deferredDownloadRetries.length;
+          if (leftCount > 0) {
+            this.log(`Final download pass done — ${leftCount} video(s) still could not be downloaded in this run. They stay pending (check-only): on the next Resume only their download will happen again, no new charge.`, 'warn');
+          } else {
+            this.log('Final download pass done — every generated video has been downloaded.', 'success');
+          }
+        } catch (e) {}
+      }
 
       // v2.45.0 (honest totals — Fix List E item 3 ka dusra hissa):
       // run ke dauraan har submission ke baad balance padhne ki

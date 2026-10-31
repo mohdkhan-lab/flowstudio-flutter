@@ -218,6 +218,11 @@ function initSchema() {
   // cap (3) and the reset rules (owner Resume / successful download)
   // live in workerPool + flowAutomation; the columns live here.
   addColumnIfMissing('queue_tasks', 'download_attempts INTEGER DEFAULT 0');
+  // v2.48.0 (deep-audit fix #3): the DRAIN (download-retry) channel
+  // keeps its OWN round counter, separate from download_attempts
+  // (the monitor's rounds) — see engine/downloadFetch.js
+  // roundCapForChannel for the caps each channel is allowed.
+  addColumnIfMissing('queue_tasks', 'drain_attempts INTEGER DEFAULT 0');
   addColumnIfMissing('queue_tasks', "last_download_error TEXT DEFAULT ''");
   addColumnIfMissing('queue_tasks', "last_download_attempt_at TEXT DEFAULT ''");
   // v2.3.0: the prompt's TAG (smart parser: `#00-01`, `scene3`, …) —
@@ -485,14 +490,30 @@ const dbService = {
     return this.getDownloadAttemptCount(taskId);
   },
 
+  /** v2.48.0: rounds spent by the DRAIN (download-retry) channel. */
+  getDrainAttemptCount(taskId) {
+    const row = queryOne('SELECT drain_attempts FROM queue_tasks WHERE id = ?', [taskId]);
+    return row ? (Number(row.drain_attempts) || 0) : 0;
+  },
+
+  /** v2.48.0: record one finished DRAIN round. Returns the new count. */
+  noteDrainRound(taskId, errorText) {
+    run(
+      "UPDATE queue_tasks SET drain_attempts = COALESCE(drain_attempts, 0) + 1, last_download_error = ?, last_download_attempt_at = ? WHERE id = ?",
+      [String(errorText || 'download failed').slice(0, 500), new Date().toISOString(), taskId]
+    );
+    return this.getDrainAttemptCount(taskId);
+  },
+
   /**
    * Fresh download budget: an owner Resume / check-only recovery,
    * or a download that finally succeeded. The last-attempt
    * timestamp is kept (it records when the last round happened,
    * not when the budget was refreshed).
+   * v2.48.0: resets BOTH channels' counters (monitor + drain).
    */
   resetDownloadAttempts(taskId) {
-    run("UPDATE queue_tasks SET download_attempts = 0, last_download_error = '' WHERE id = ?", [taskId]);
+    run("UPDATE queue_tasks SET download_attempts = 0, drain_attempts = 0, last_download_error = '' WHERE id = ?", [taskId]);
     return this.getTask(taskId);
   },
 

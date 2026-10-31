@@ -167,7 +167,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.47.5';
+const APP_VERSION = '2.48.0';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -1351,11 +1351,67 @@ async function startBridge() {
       }
 
       if (pathname === '/api/generation/resume' && req.method === 'POST') {
+        const body = await readBody();
         if (activeWorkerPool) {
           activeWorkerPool.resume();
           broadcastEvent('automation-log', { message: 'Generation resumed.', level: 'info' });
+          return sendJson(200, { ok: true, resumed: true, mode: 'live' });
         }
-        return sendJson(200, { ok: true });
+        // v2.48.0 (deep-audit fix #1): NO live pool. The old handler
+        // answered a bare { ok: true } here — the caller believed the
+        // queue had restarted when in fact nothing existed to resume
+        // (the exact trap that left 31 Oct's generated-but-
+        // undownloaded videos parked while "Resume" reported
+        // success). Now the truth: if tasks are still pending +
+        // needs_check (above all download-failed ones whose videos
+        // already exist in Flow), start the same recovery the Redo
+        // Missing route uses — those rows re-enter AS THEMSELVES via
+        // existingTasks, so runQueue's check-only recovery retries
+        // ONLY their downloads; no prompt is resubmitted and no new
+        // charge can happen. If nothing is pending, say so plainly.
+        let recoveryRows = [];
+        let recoveryFolder = '';
+        if (lastRunInfo && Array.isArray(lastRunInfo.taskIds) && lastRunInfo.taskIds.length > 0) {
+          recoveryRows = lastRunInfo.taskIds
+            .map(id => { try { return dbService.getTask(id); } catch (e) { return null; } })
+            .filter(r => r && r.status === 'pending' && r.needs_check);
+          recoveryFolder = lastRunInfo.downloadFolder || '';
+        }
+        if (recoveryRows.length === 0) {
+          // No last-run record (e.g. the bridge restarted): fall back
+          // to the most recent batch that still has check-only rows.
+          try {
+            const all = dbService.query("SELECT * FROM queue_tasks WHERE status = 'pending' AND needs_check = 1 ORDER BY id DESC", []) || [];
+            if (all.length > 0) {
+              const latestBatch = all[0].batch_id;
+              recoveryRows = all.filter(r => r.batch_id === latestBatch).reverse();
+              recoveryFolder = (recoveryRows[0] && recoveryRows[0].download_folder) || '';
+            }
+          } catch (e) { recoveryRows = []; }
+        }
+        if (recoveryRows.length === 0) {
+          broadcastEvent('automation-log', { message: 'Resume pressed, but there is nothing to resume — no run is active and no prompt is waiting for a download-only check.', level: 'info' });
+          return sendJson(200, { ok: true, resumed: false, reason: 'nothing-to-resume' });
+        }
+        const pool = buildPool({
+          parallelBrowsers: body.parallelBrowsers || 1,
+          accountIds: Array.isArray(body.accountIds) ? body.accountIds : null,
+          getSettingsHint: () => lastRunInfo ? lastRunInfo.settings : {}
+        });
+        activeWorkerPool = pool;
+        broadcastEvent('automation-log', {
+          message: `Resume: no run was active, but ${recoveryRows.length} prompt(s) are still waiting for a download-only check — starting that recovery now. Only downloads will be retried; no prompt will be submitted again and no new charge will apply.`,
+          level: 'info'
+        });
+        // Settings null on purpose — same as Redo Missing: runQueue's
+        // resume branch restores them from the tasks' settings_json.
+        pool.runQueue([], null, recoveryFolder, { existingTasks: recoveryRows }).catch(err => {
+          broadcastEvent('automation-log', { message: `Generation error: ${err.message}`, level: 'error' });
+        }).finally(() => {
+          activeWorkerPool = null;
+          broadcastEvent('automation-log', { message: 'Generation queue finished.', level: 'success' });
+        });
+        return sendJson(200, { ok: true, resumed: true, mode: 'recovery', count: recoveryRows.length });
       }
 
       if (pathname === '/api/generation/stop' && req.method === 'POST') {

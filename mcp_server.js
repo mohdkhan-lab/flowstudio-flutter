@@ -22,7 +22,7 @@ const os = require('os');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.47.5';
+const SERVER_VERSION = '2.48.0';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -267,7 +267,7 @@ const TOOLS = [
   },
   {
     name: 'flowstudio_pause_resume',
-    description: 'Pause or resume the active generation queue.',
+    description: 'Pause or resume generation. "resume" un-pauses the active queue when one is running; when NO run is active it instead starts a download-only recovery for any prompts still pending a check (e.g. videos that were generated but whose download failed — only the download is retried, no prompt is resubmitted, no new charge), and when there is truly nothing waiting it honestly reports resumed:false with reason "nothing-to-resume". The result always says which of these happened (mode: "live" | "recovery", or resumed: false).',
     inputSchema: {
       type: 'object',
       properties: { action: { type: 'string', enum: ['pause', 'resume'] } },
@@ -275,8 +275,43 @@ const TOOLS = [
     },
     run: async (args) => {
       if (args.action === 'pause') return bridgeCall('POST', '/api/generation/pause', {});
-      if (args.action === 'resume') return bridgeCall('POST', '/api/generation/resume', {});
+      if (args.action === 'resume') {
+        const res = await bridgeCall('POST', '/api/generation/resume', {});
+        // v2.48.0 (deep-audit fix #1): surface the bridge's REAL
+        // answer in the result — the pre-v2.48.0 bare { ok: true }
+        // let callers believe a queue had restarted when nothing
+        // had. The mode/count/reason fields come from the bridge;
+        // the summary states the outcome in plain words.
+        let summary;
+        if (res && res.mode === 'recovery') summary = `No run was active; a download-only recovery was started for ${res.count} pending prompt(s). Only downloads will be retried — no prompt will be resubmitted and no new charge will apply.`;
+        else if (res && res.mode === 'live') summary = 'The active generation queue was resumed.';
+        else if (res && res.resumed === false) summary = 'Nothing to resume: no run is active and no prompt is waiting for a download-only check.';
+        else summary = 'Resume answered by the app.';
+        return { ...res, summary };
+      }
       throw new Error("action must be 'pause' or 'resume'");
+    },
+  },
+  {
+    // v2.48.0 (deep-audit fix #10): the missing-scene redo, exposed
+    // over MCP. Until now the ONLY way to retry generated-but-
+    // undownloaded scenes (or remake generation-failed ones) was
+    // the app's own Redo Missing button — this tool calls the exact
+    // same bridge route the button uses.
+    name: 'flowstudio_redo_missing',
+    description: 'Redo ONLY the missing scenes of the last generation run (the app\'s Redo Missing). Scenes whose video was generated but whose download failed are downloaded again with NO new charge and NO resubmission; scenes whose generation failed are remade fresh (that part spends Flow credits like a normal run). Refuses while a run is active, and errors when no run has happened yet. The result reports how many scenes were missing and whether the redo started.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        parallelBrowsers: { type: 'number', description: 'Optional parallel browser count for the redo run' },
+        accountIds: { type: 'array', items: { type: 'string' }, description: 'Optional account IDs to restrict the redo run to' },
+      },
+    },
+    run: async (args) => {
+      const body = {};
+      if (Number(args.parallelBrowsers) > 0) body.parallelBrowsers = Math.floor(Number(args.parallelBrowsers));
+      if (Array.isArray(args.accountIds)) body.accountIds = args.accountIds.filter((x) => typeof x === 'string' && x);
+      return bridgeCall('POST', '/api/generation/redo-missing', body);
     },
   },
   {

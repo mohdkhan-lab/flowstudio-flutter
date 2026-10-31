@@ -17,6 +17,7 @@ const fs = require('fs');
 const sequenceReport = require('./sequenceReport');
 const browserMode = require('./browserMode');
 const windowStyle = require('./windowStyle');
+const { sleepBlocker } = require('./sleepBlocker');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -588,6 +589,8 @@ class WorkerPool {
     this.queuePromise = new Promise(resolve => { queueResolver = resolve; });
 
     try {
+      // v2.48.3: prevent Windows sleep/idle during entire generation run
+      sleepBlocker.acquire();
       this.isStopping = false;
       this.isPaused = false;
       this.activeWorkers.clear();
@@ -896,6 +899,104 @@ class WorkerPool {
       // (the browser that still has the account's project open); the
       // worker drains its own entries after each monitor window.
       const deferredDownloadRetries = [];
+
+      // v2.48.3: Dedicated Sequential Background Download Pipeline (FIFO)
+      // Videos are handed off here the moment ANY tile completes rendering.
+      // Downloads proceed one-by-one via Node.js HTTP stream without blocking Flow prompt submission.
+      const downloadPipeline = [];
+      let isDrainingPipeline = false;
+
+      const processPipelineItem = async (item) => {
+        const { rowTask, engineTask, owner, accountId, accountName, downloadFolder, settings } = item;
+        if (!engineTask || engineTask.mediaSaved) return;
+        try {
+          const fresh = dbService.getTask(rowTask.id);
+          if (fresh && fresh.status === 'completed') return;
+        } catch (e) {}
+
+        this.log(`[Download Queue] Starting sequential download for Prompt #${rowTask.prompt_index + 1} (${downloadPipeline.length} remaining in queue)…`, 'info');
+
+        let ok = false;
+        try {
+          ok = await owner.downloadFromCapturedStream(engineTask, downloadFolder, settings);
+        } catch (e) {
+          ok = false;
+        }
+
+        if (ok && engineTask.mediaSaved) {
+          try { dbService.resetDownloadAttempts(rowTask.id); } catch (e) {}
+          try { dbService.setTaskNeedsCheck(rowTask.id, 0); } catch (e) {}
+          try {
+            dbService.completeTask(rowTask.id, {
+              filePath: engineTask.filePath || '',
+              fileName: engineTask.fileName || '',
+              fileSizeMb: engineTask.fileSizeMb || null
+            });
+          } catch (e) {}
+          try { usageStats.recordSaved(dbService, requiredCredits); } catch (e) {}
+          noteTaskSettled(rowTask.id, 'done');
+          this.onTaskUpdate({
+            taskId: rowTask.id,
+            promptIndex: rowTask.prompt_index,
+            promptText: rowTask.prompt_text,
+            tag: rowTask.prompt_tag || '',
+            status: 'done',
+            filePath: engineTask.filePath || null,
+            fileName: engineTask.fileName || null
+          });
+          this.onVideoCompleted({
+            id: rowTask.id,
+            prompt: rowTask.prompt_text,
+            promptIndex: rowTask.prompt_index,
+            accountName: accountName || '',
+            status: 'Completed',
+            filePath: engineTask.filePath || null,
+            fileName: engineTask.fileName || null,
+            error: null,
+            type: settings.type,
+            timestamp: new Date().toLocaleTimeString()
+          });
+          this.log(`[Download Queue] Prompt #${rowTask.prompt_index + 1}: video downloaded and verified (${engineTask.fileName}).`, 'success');
+        } else {
+          // Defer to retry list so browser-based fallback strategies can run if direct fetch didn't catch
+          deferredDownloadRetries.push({
+            rowTask,
+            engineTask,
+            owner,
+            accountId,
+            accountName,
+            reason: 'Background direct stream did not complete — will retry',
+            attempts: (engineTask && engineTask.downloadAttempts) || []
+          });
+        }
+      };
+
+      const kickPipelineDrain = () => {
+        if (isDrainingPipeline) return;
+        (async () => {
+          isDrainingPipeline = true;
+          try {
+            while (downloadPipeline.length > 0 && !this.isStopping) {
+              const item = downloadPipeline.shift();
+              if (!item) break;
+              await processPipelineItem(item);
+            }
+          } finally {
+            isDrainingPipeline = false;
+          }
+        })().catch(() => {});
+      };
+
+      const enqueueDownloadPipeline = (item) => {
+        downloadPipeline.push(item);
+        kickPipelineDrain();
+      };
+
+      const drainDownloadPipeline = async () => {
+        while ((downloadPipeline.length > 0 || isDrainingPipeline) && !this.isStopping) {
+          await sleep(500);
+        }
+      };
       const failTaskOrFailover = (rowTask, reason, accountId, accountName, opts = {}) => {
         if (!rowTask || !rowTask.id) return 'failed';
         // v2.7.0 (FIX 2) — DOWNLOAD STAGE sabse pehle: video BAN gaya
@@ -1342,29 +1443,23 @@ class WorkerPool {
               });
             }
           },
-          onTaskDownloadDeferred: (task) => {
-            // v2.45.0 (download defer): render complete hai, file
-            // abhi save nahi hui — lekin ye NAKAMI nahi hai. Task ko
-            // download-stage fail ke jaise hi needs_check
-            // (download-only) bana kar deferred list me rakha jata
-            // hai; ye worker apne khule browser me window ke baad
-            // sirf is ka download niptayega (processDownloadRetries),
-            // aur browser/account na rahe to agla Resume check-only
-            // recovery wahi karega. Prompt DOBARA submit NAHI hota,
-            // credits dobara NAHI katte — maksad sirf slot ka agli
-            // prompt ke liye foran khaali hona hai.
+          onTaskDownloadDeferred: (task, extra) => {
+            // v2.48.3 (4-slot sliding window): video ban chuka hai —
+            // ise sequential background download queue me bhejte hain,
+            // taaki worker slot foran agle prompt ke liye khali ho jaye!
             const rowTask = pendingTasks.find(pt => pt.id === task.taskId)
               || { id: task.taskId, prompt_index: task.promptIndex, prompt_text: task.promptText };
             try { dbService.updateTaskProgress(rowTask.id, 'pending'); } catch (e) {}
             try { dbService.setTaskNeedsCheck(rowTask.id, 1); } catch (e) {}
-            deferredDownloadRetries.push({
+            enqueueDownloadPipeline({
               rowTask,
               engineTask: task,
               owner: engine,
               accountId: workerAccount ? workerAccount.id : null,
               accountName: workerAccount ? workerAccount.name : '',
-              reason: 'Download deferred so the next prompt could start right away',
-              attempts: []
+              downloadFolder,
+              settings,
+              extra: extra || {}
             });
             this.onTaskUpdate({
               taskId: task.taskId,
@@ -1372,7 +1467,7 @@ class WorkerPool {
               promptText: task.promptText,
               tag: rowTask.prompt_tag || task.tag || '',
               status: 'pending',
-              reason: 'The video has been generated — its download will finish in the background (no new charge)'
+              reason: 'The video has been generated — downloading in sequential background queue (no new charge)'
             });
             noteTaskSettled(rowTask.id, 'moved');
           },
@@ -1808,9 +1903,14 @@ class WorkerPool {
                 continue;
               }
 
-              const remaining = activeWorkerTasks.filter(t => !t.completed && !t.downloaded);
+              const remaining = activeWorkerTasks.filter(t => !t.completed && !t.downloaded && !t.downloadEnqueued);
               activeWorkerTasks.length = 0;
               activeWorkerTasks.push(...remaining);
+
+              // v2.48.3: 1-second DOM safety debounce before submitting next prompt into Flow
+              if (activeWorkerTasks.length < maxBurstConcurrency && taskQueue.size() > 0 && !this.isStopping) {
+                await sleep(1000);
+              }
 
               // v2.7.0 (FIX 2): is window ke download-fail hue tasks ki
               // SIRF-download dobara koshish — browser abhi isi account
@@ -1896,6 +1996,8 @@ class WorkerPool {
         workerPromises.push(runWorker(i));
       }
       await Promise.all(workerPromises);
+      // v2.48.3: Drain any remaining downloads in the sequential background pipeline
+      await drainDownloadPipeline();
 
       // v2.48.0 (deep-audit fix #8): FINAL DRAIN PASS. Deferred
       // download entries could be left in the list when their worker
@@ -2116,6 +2218,7 @@ class WorkerPool {
         }
       }
     } finally {
+      sleepBlocker.release();
       if (queueResolver) queueResolver();
       this.queuePromise = null;
     }

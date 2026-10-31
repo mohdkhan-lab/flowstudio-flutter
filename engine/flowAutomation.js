@@ -2935,14 +2935,18 @@ class FlowAutomationEngine {
       for (let fetchTry = 1; fetchTry <= maxFetchAttempts && !savedBuffer && !this.isStopping; fetchTry++) {
         let retry = false;
         try {
-          const jar = new Map();
-          for (const scope of [null, targetUrl]) {
-            try {
-              const cs = scope ? await this.page.cookies(scope) : await this.page.cookies();
-              for (const c of cs || []) jar.set(`${c.name}@${c.domain || ''}`, c);
-            } catch (e) {}
+          let cookieHeader = task.preCapturedCookieHeader || null;
+          if (!cookieHeader && this.page && !this.page.isClosed()) {
+            const jar = new Map();
+            for (const scope of [null, targetUrl]) {
+              try {
+                const cs = scope ? await this.page.cookies(scope) : await this.page.cookies();
+                for (const c of cs || []) jar.set(`${c.name}@${c.domain || ''}`, c);
+              } catch (e) {}
+            }
+            cookieHeader = [...jar.values()].map(c => `${c.name}=${c.value}`).join('; ');
           }
-          const cookieHeader = [...jar.values()].map(c => `${c.name}=${c.value}`).join('; ');
+          const userAgent = task.preCapturedUserAgent || (await this._realUserAgent());
           // v2.30.0: this fetch used to carry NO AbortSignal — a
           // stalled connection could hold the download step (and the
           // render monitor behind it) indefinitely. 60s abort now;
@@ -2953,8 +2957,8 @@ class FlowAutomationEngine {
           try {
             resp = await fetch(targetUrl, {
               headers: {
-                'Cookie': cookieHeader,
-                'User-Agent': await this._realUserAgent(),
+                'Cookie': cookieHeader || '',
+                'User-Agent': userAgent,
                 'Referer': 'https://flow.google.com/'
               },
               redirect: 'follow',
@@ -5165,15 +5169,6 @@ class FlowAutomationEngine {
             // and the task was observed generating or 25s+ elapsed.
             if (bestTile.isReady && (task.wasObservedGenerating || elapsedSec >= 25)) {
               task.completed = true;
-              // v2.45.0 (progress imaandari): yahan ki purani
-              // "percentage: '100%'" wali emit hata di gayi hai — file
-              // abhi save NAHI hui, isliye 100% kehna jhooth tha
-              // (owner: "progress wali line fake progress dikhati
-              // hai"). Ab sirf asal haalat bheji jati hai:
-              // state 'downloading' — card download ka waqt dikhata
-              // hai, number nahi; 100% sirf tab jab file asal me save
-              // ho jaye (completion event khud progress = 1.0 karta
-              // hai).
               this.onVideoProgress({
                 id: task.videoId,
                 state: 'downloading',
@@ -5181,22 +5176,36 @@ class FlowAutomationEngine {
                 accountName: this.currentAccount.name,
                 elapsedSec: elapsedSec
               });
-              // v2.8.0: ho sakta hai backend wala turant fetch pehle
-              // hi file save kar chuka ho (ya kar raha ho) — pehle
-              // use settle hone do; file aa gayi ho to download ki
-              // baaki ranneetiyan chalti hi nahi.
+
+              // v2.48.3 (4-Slot Sliding Window + Safe Download):
+              // Capture target media URL and session cookies/User-Agent immediately while page is available
+              let targetUrl = task.completedVideoUrl || task.backendVideoUrl || bestTile.mediaUrl || bestTile.videoSrc;
+              if (!targetUrl && this.page && !this.page.isClosed()) {
+                try {
+                  const extracted = await this._extractTileMediaUrlDetailed(task, bestTile.tileIndex, !!(settings && settings.type === 'Image'));
+                  if (extracted && extracted.url) targetUrl = extracted.url;
+                } catch (e) {}
+              }
+              if (targetUrl) {
+                task.completedVideoUrl = targetUrl;
+              }
+
+              if (this.page && !this.page.isClosed()) {
+                try {
+                  const jar = new Map();
+                  for (const scope of [null, targetUrl]) {
+                    try {
+                      const cs = scope ? await this.page.cookies(scope) : await this.page.cookies();
+                      for (const c of cs || []) jar.set(`${c.name}@${c.domain || ''}`, c);
+                    } catch (e) {}
+                  }
+                  task.preCapturedCookieHeader = [...jar.values()].map(c => `${c.name}=${c.value}`).join('; ');
+                  task.preCapturedUserAgent = await this._realUserAgent();
+                } catch (e) {}
+              }
+
               if (task._backendFetchPromise && !task.mediaSaved) {
-                // v2.30.0: this await used to be unbounded — the
-                // immediate backend fetch funnels into the same
-                // leaf awaits hardened above, but the monitor must
-                // never wait on it forever; after 120s the normal
-                // download orchestrator below takes over.
-                // v2.45.0: jab queue me aur prompts baaki hain
-                // (returnOnAnyComplete) to grace sirf 30s hai — us ke
-                // baad download peeche defer ho jata hai (neeche),
-                // agli prompt ka waqt fetch ke intezaar me nahi
-                // kharch hota.
-                const graceMs = returnOnAnyComplete ? 30000 : 120000;
+                const graceMs = returnOnAnyComplete ? 3000 : 120000;
                 try { await downloadGuard.withTimeout(task._backendFetchPromise, graceMs, 'immediate backend fetch'); } catch (e) {}
               }
               if (task.mediaSaved) {
@@ -5204,33 +5213,23 @@ class FlowAutomationEngine {
                 if (returnOnAnyComplete) return;
                 continue;
               }
-              // v2.45.0 (download defer): queue me aur prompts baaki
-              // hain to download ki poori line (media-ready intezaar
-              // + saari strategies) yahin chala kar agli prompt ka
-              // waqt NAHI khaya jata. Video ban chuka hai, credits
-              // kat chuke hain — pool task ko download-only
-              // (needs_check) bana kar apne deferred drain se usi
-              // account ke khule browser me file save karega; wo
-              // mauqa na mile to task pending reh kar agle Resume ki
-              // check-only recovery use uthayegi. Prompt DOBARA
-              // submit NAHI hota — ye tartib hai, nakami nahi,
-              // isliye onTaskFailed NAHI bulaya jata.
-              // v2.48.0 (deep-audit fix #2): defer AB SIRF TAB jab is
-              // task ka backend fetch asal me CHAL raha ho — wahi
-              // fetch chand seconds me file save kar dega, isliye
-              // monitor ka aage badhna mehfooz hai. Fetch na chal
-              // raha ho (link abhi bandha hi nahi, ya fetch khatam
-              // ho chuka) to defer ka matlab download ko us pal se
-              // hata dena tha jab link SAB SE TAAZA tha — 31 Oct ki
-              // chaaron download-fail isi se park hui. Aisi haalat me
-              // download yahin, monitor me hi, pura hoga (v2.45 se
-              // pehle wala bartav).
-              if (returnOnAnyComplete && task._backendFetchInFlight) {
-                task.downloaded = true;
+
+              // v2.48.3: 4-SLOT SLIDING WINDOW PIPELINE
+              // If there are more prompts waiting in queue (returnOnAnyComplete), hand off this completed video
+              // to the sequential background download queue and return immediately so the worker submits the next prompt!
+              if (returnOnAnyComplete) {
+                task.completed = true;
+                task.downloadEnqueued = true;
                 task.deferredDownload = true;
                 this.claimedTileIndices.add(bestTile.tileIndex);
-                this.log(`[Prompt #${task.promptIndex + 1}] The video has been generated on [${this.currentAccount.name}] — its download will finish in the background so the next prompt can start right away (the prompt will NOT be submitted again; no new charge).`, 'success');
-                try { this.onTaskDownloadDeferred(task); } catch (e) {}
+                this.log(`[Prompt #${task.promptIndex + 1}] Video generated on [${this.currentAccount.name}] — enqueued for sequential background download so the next prompt can start immediately!`, 'success');
+                try {
+                  this.onTaskDownloadDeferred(task, {
+                    targetUrl: task.completedVideoUrl,
+                    cookieHeader: task.preCapturedCookieHeader,
+                    userAgent: task.preCapturedUserAgent
+                  });
+                } catch (e) {}
                 return;
               }
               this.log(`[Prompt #${task.promptIndex + 1}] The video has been generated on [${this.currentAccount.name}] — now it will be downloaded.`, 'success');

@@ -34,6 +34,10 @@ class _SettingsViewState extends State<SettingsView> {
   bool _mcpBusy = false;
   String _mcpFeedback = '';
 
+  // v2.48.5: CONNECTION card — live chain status + 1-Click repair.
+  Map<String, dynamic>? _connStatus;
+  bool _repairBusy = false;
+
   @override
   void initState() {
     super.initState();
@@ -83,6 +87,67 @@ class _SettingsViewState extends State<SettingsView> {
   Future<void> _loadMcpStatus() async {
     final st = await AutomationBridge.instance.getMcpStatus();
     if (mounted && st != null) setState(() => _mcpStatus = st);
+    final cs = await AutomationBridge.instance.getConnectionStatus();
+    if (mounted && cs != null) setState(() => _connStatus = cs);
+  }
+
+  /// v2.48.5: the 1-Click Connect / Fix Connection button — one
+  /// repair pass over the whole chain in the engine, then a status
+  /// refresh and a plain-language result line.
+  Future<void> _repairConnection() async {
+    if (_repairBusy) return;
+    setState(() => _repairBusy = true);
+    final res = await AutomationBridge.instance.repairConnection();
+    if (!mounted) return;
+    await _loadMcpStatus();
+    if (!mounted) return;
+    setState(() {
+      _repairBusy = false;
+      if (res == null) {
+        _mcpFeedback = 'Repair could not run — is the engine running?';
+      } else if (res['connected'] == true) {
+        _mcpFeedback = 'Connection repaired and tested — Muse can connect now.';
+      } else {
+        final bad = <String>[];
+        final steps = res['steps'];
+        if (steps is List) {
+          for (final s in steps) {
+            if (s is Map && s['ok'] != true) bad.add('${s['id']}: ${s['detail']}');
+          }
+        }
+        _mcpFeedback = 'Still not fully connected — ${bad.join(' · ')}';
+      }
+    });
+    _mcpSnack(_mcpFeedback);
+  }
+
+  /// v2.48.5: one status row of the CONNECTION card (approved sample
+  /// v2): dot + label on the left, bold state on the right — green
+  /// when healthy, red when broken, faint when unknown.
+  Widget _connRow(String label, String value, bool? ok) {
+    final color = ok == null ? AppTheme.textFaint : (ok ? AppTheme.green : AppTheme.red);
+    return Container(
+      margin: const EdgeInsets.only(bottom: 4),
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(color: AppTheme.overlay08, borderRadius: BorderRadius.circular(6)),
+      child: Row(
+        children: [
+          Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          const SizedBox(width: 8),
+          Text(label, style: TextStyle(fontSize: 11, color: AppTheme.textMain)),
+          const Spacer(),
+          Flexible(
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              textAlign: TextAlign.right,
+              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color),
+            ),
+          ),
+        ],
+      ),
+    );
   }
 
   void _mcpSnack(String msg) {
@@ -165,13 +230,20 @@ class _SettingsViewState extends State<SettingsView> {
     final running = st != null && st['running'] == true;
     final url = st?['url']?.toString() ?? 'http://127.0.0.1:48191/mcp';
     final tokenMasked = st?['tokenMasked']?.toString() ?? '••••••••••••';
+    // v2.48.5: CONNECTION card status rows (approved sample v2).
+    final conn = _connStatus;
+    final chainRaw = conn?['chain'];
+    final chain = chainRaw is Map ? Map<String, dynamic>.from(chainRaw) : null;
+    final engineVersion = conn?['engineVersion']?.toString();
+    final lastRaw = st?['lastConnectedAt'];
+    final lastMs = lastRaw is num ? lastRaw.toInt() : (lastRaw == null ? 0 : int.tryParse(lastRaw.toString()) ?? 0);
     const toolLabels = [
       'Status', 'Accounts', 'Credits', 'History', 'Outputs',
       'Generate', 'Pause / Resume', 'Stop', 'Sync Credits', 'Check Cookies',
       'Update App',
     ];
     return _buildPanel(
-      title: '🔌 MCP CONNECTION',
+      title: '🔌 CONNECTION',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -185,7 +257,7 @@ class _SettingsViewState extends State<SettingsView> {
                   border: Border.all(color: running ? AppTheme.green : AppTheme.borderSoft),
                 ),
                 child: Text(
-                  running ? '● RUNNING' : '○ STOPPED',
+                  running ? '● REMOTE: ON' : '○ REMOTE: OFF',
                   style: TextStyle(
                     fontSize: 10,
                     fontWeight: FontWeight.w800,
@@ -204,6 +276,70 @@ class _SettingsViewState extends State<SettingsView> {
             ],
           ),
           const SizedBox(height: 6),
+          Text(
+            'Claude (MK) remote access — status & repair',
+            style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
+          ),
+          const SizedBox(height: 8),
+          // v2.48.5: live status rows (approved sample v2).
+          Column(
+            children: [
+              _connRow('App version', 'v${AutomationBridge.appVersion}', true),
+              _connRow(
+                'Engine',
+                engineVersion == null
+                    ? '—'
+                    : engineVersion == AutomationBridge.appVersion
+                        ? 'v$engineVersion — running, same version'
+                        : 'v$engineVersion — STALE, restart the app',
+                engineVersion == null ? null : engineVersion == AutomationBridge.appVersion,
+              ),
+              _connRow(
+                'Remote server (MCP)',
+                running ? 'On — port 48191' : (enabled ? 'Stopped' : 'Off'),
+                running,
+              ),
+              _connRow(
+                'Tailscale',
+                chain == null ? '—' : chain['exeFound'] != true ? 'Not found' : chain['backendRunning'] == true ? 'Connected' : 'Not connected',
+                chain == null ? null : chain['backendRunning'] == true,
+              ),
+              _connRow(
+                'Internet route (Funnel)',
+                chain == null ? '—' : chain['funnelAsserted'] == true ? 'On' : 'DOWN — needs repair',
+                chain == null ? null : chain['funnelAsserted'] == true,
+              ),
+              _connRow(
+                'Muse connected',
+                lastMs <= 0 ? 'Not yet' : _mcpLastConnectedText().replaceFirst('Last connected: ', ''),
+                lastMs <= 0 ? null : true,
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          // v2.48.5: the 1-Click Connect / Fix Connection button.
+          SizedBox(
+            width: double.infinity,
+            child: ElevatedButton(
+              onPressed: _repairBusy ? null : _repairConnection,
+              style: ElevatedButton.styleFrom(
+                backgroundColor: AppTheme.blue,
+                foregroundColor: Colors.white,
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+              ),
+              child: Text(
+                _repairBusy ? 'WORKING…' : '1-CLICK CONNECT / FIX CONNECTION',
+                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
+              ),
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            'One click checks everything above and repairs what is broken, then tests the connection itself.',
+            style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+          ),
+          const SizedBox(height: 10),
           _buildToggleRow(
             title: 'Enable MCP Server',
             subtitle: 'Port 48191 · Muse can use 27 tools',

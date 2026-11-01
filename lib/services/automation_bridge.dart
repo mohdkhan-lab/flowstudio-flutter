@@ -14,7 +14,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '2.48.4';
+  static const String appVersion = '2.48.5';
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();
@@ -999,6 +999,43 @@ class AutomationBridge {
       }
     } catch (e) {
       debugPrint('[setMcpEnabled Error] $e');
+    }
+    return null;
+  }
+
+  /// v2.48.5: CONNECTION card data — engine version, MCP state and
+  /// the live Tailscale/Funnel chain state from the bridge.
+  Future<Map<String, dynamic>?> getConnectionStatus() async {
+    try {
+      final res = await http.get(Uri.parse('$baseUrl/api/mcp/connection-status'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true) {
+          return Map<String, dynamic>.from(data as Map);
+        }
+      }
+    } catch (e) {
+      debugPrint('[getConnectionStatus Error] $e');
+    }
+    return null;
+  }
+
+  /// v2.48.5: the 1-Click Connect repair pass — engine, MCP server,
+  /// Tailscale, Funnel and a full self-test. Tailscale commands can
+  /// take a while, so the timeout is generous.
+  Future<Map<String, dynamic>?> repairConnection() async {
+    try {
+      final res = await http
+          .post(Uri.parse('$baseUrl/api/mcp/repair'))
+          .timeout(const Duration(seconds: 90));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true) {
+          return Map<String, dynamic>.from(data as Map);
+        }
+      }
+    } catch (e) {
+      debugPrint('[repairConnection Error] $e');
     }
     return null;
   }

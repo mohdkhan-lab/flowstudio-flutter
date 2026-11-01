@@ -75,7 +75,7 @@ const sequenceReport = require('./engine/sequenceReport');
 const { recordActivity, getActivityStore } = require('./engine/activityStore');
 const mcp = require('./mcp_server');
 const { ensureBridgePort } = require('./engine/portTakeover');
-const { createFunnelKeeper } = require('./engine/funnelKeeper');
+const { createFunnelKeeper, inspectChain, repairChain, selfTestFunnelUrl } = require('./engine/funnelKeeper');
 const { getStats } = require('./engine/usageStats');
 const { parseCookieText } = require('./engine/cookieParser');
 const crypto = require('crypto');
@@ -169,7 +169,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.4';
+const APP_VERSION = '2.48.5';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -567,6 +567,94 @@ async function startBridge() {
             },
           },
         });
+      }
+
+      // 3b2. v2.48.5: CONNECTION card data — this engine's version,
+      // the MCP server state, and the live Tailscale/Funnel chain
+      // state (fresh inspection; tailscale CLI reads take a second
+      // or two, which a Settings screen can afford).
+      if (pathname === '/api/mcp/connection-status' && req.method === 'GET') {
+        let chain;
+        try {
+          chain = funnelKeeper ? await funnelKeeper.refresh() : await inspectChain(mcp.MCP_PORT);
+        } catch (e) {
+          chain = { supported: process.platform === 'win32', exeFound: false, backendRunning: false, funnelAsserted: false, dnsName: '' };
+        }
+        return sendJson(200, {
+          ok: true,
+          appVersion: APP_VERSION,
+          engineVersion: APP_VERSION,
+          mcp: mcp.getStatus(dbService),
+          chain,
+        });
+      }
+
+      // 3b3. v2.48.5: the 1-Click Connect / Fix Connection button.
+      // One pass over the whole chain, in order: MCP server on and
+      // freshly restarted → Tailscale backend up → Funnel asserted →
+      // end-to-end self-test against this PC's own public Funnel URL
+      // with the real token (the exact call Muse makes from
+      // outside). Every step reports { id, ok, detail }; `connected`
+      // is true only when the self-test passed.
+      if (pathname === '/api/mcp/repair' && req.method === 'POST') {
+        const steps = [];
+        steps.push({ id: 'engine', ok: true, detail: `v${APP_VERSION} running` });
+        try {
+          let note = 'restarted';
+          if (!mcp.mcpEnabled(dbService)) {
+            dbService.setSetting('mcp_enabled', '1');
+            note = 'was off — turned on and started';
+          }
+          try { mcp.stopMcpServer(); } catch (e) {}
+          await new Promise((r) => setTimeout(r, 400));
+          mcp.startMcpServer({ dbService, broadcastEvent });
+          await new Promise((r) => setTimeout(r, 700));
+          const running = mcp.getStatus(dbService).running === true;
+          steps.push({ id: 'mcp', ok: running, detail: running ? `on, port ${mcp.MCP_PORT} (${note})` : 'failed to start' });
+        } catch (e) {
+          steps.push({ id: 'mcp', ok: false, detail: e.message });
+        }
+        let chain = null;
+        try {
+          chain = funnelKeeper ? await funnelKeeper.repairNow() : await repairChain(mcp.MCP_PORT);
+          steps.push({
+            id: 'tailscale',
+            ok: !!chain.backendRunning,
+            detail: !chain.supported ? 'not supported on this system' : !chain.exeFound ? 'Tailscale not found on this PC' : chain.backendRunning ? 'connected' : 'could not be connected',
+          });
+          steps.push({
+            id: 'funnel',
+            ok: !!chain.funnelAsserted,
+            detail: chain.funnelAsserted ? `serving port ${mcp.MCP_PORT}` : 'could not be restored',
+          });
+        } catch (e) {
+          steps.push({ id: 'tailscale', ok: false, detail: e.message });
+          steps.push({ id: 'funnel', ok: false, detail: 'skipped' });
+        }
+        let self = { ok: false, detail: 'skipped — no Tailscale name' };
+        if (chain && chain.funnelAsserted && chain.dnsName) {
+          self = await selfTestFunnelUrl(chain.dnsName, mcp.ensureToken(dbService), mcp.MCP_PORT);
+        } else if (chain && !chain.funnelAsserted) {
+          self = { ok: false, detail: 'skipped — route is down' };
+        }
+        steps.push({ id: 'selftest', ok: self.ok, detail: self.detail });
+        const connected = steps.every((s) => s.ok);
+        try {
+          recordActivity({
+            message: connected
+              ? '🌐 1-Click Connect: full chain repaired and self-test passed — Muse can connect now.'
+              : `🌐 1-Click Connect: still not fully connected — ${steps.filter((s) => !s.ok).map((s) => `${s.id}: ${s.detail}`).join(' · ')}`,
+            category: 'system',
+            level: connected ? 'success' : 'warning',
+          });
+        } catch (e) {}
+        try {
+          broadcastEvent('automation-log', {
+            message: connected ? '🌐 Connection repaired — self-test passed' : '🌐 Connection repair finished — some steps still failing (see Settings → Connection)',
+            level: connected ? 'success' : 'warning',
+          });
+        } catch (e) {}
+        return sendJson(200, { ok: true, connected, steps, chain, mcp: mcp.getStatus(dbService) });
       }
 
       // 3c. v2.31.4: app update check + install trigger (MCP tool

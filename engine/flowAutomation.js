@@ -5204,9 +5204,15 @@ class FlowAutomationEngine {
                 } catch (e) {}
               }
 
-              if (task._backendFetchPromise && !task.mediaSaved) {
-                const graceMs = returnOnAnyComplete ? 3000 : 120000;
-                try { await downloadGuard.withTimeout(task._backendFetchPromise, graceMs, 'immediate backend fetch'); } catch (e) {}
+              if (task._backendFetchPromise && !task.mediaSaved && !returnOnAnyComplete) {
+                // v2.48.6: in the sliding-window path the worker no
+                // longer waits here (it used to hold the next
+                // prompt for up to 3s per finished video) — the
+                // background download pipeline gives the in-flight
+                // backend fetch its window there, parallel to the
+                // next render. Only the single-task path still
+                // waits on the worker.
+                try { await downloadGuard.withTimeout(task._backendFetchPromise, 120000, 'immediate backend fetch'); } catch (e) {}
               }
               if (task.mediaSaved) {
                 this.log(`[Prompt #${task.promptIndex + 1}] The video has already been downloaded from the backend — no need for the remaining download attempts.`, 'success');
@@ -5222,7 +5228,7 @@ class FlowAutomationEngine {
                 task.downloadEnqueued = true;
                 task.deferredDownload = true;
                 this.claimedTileIndices.add(bestTile.tileIndex);
-                this.log(`[Prompt #${task.promptIndex + 1}] Video generated on [${this.currentAccount.name}] — enqueued for sequential background download so the next prompt can start immediately!`, 'success');
+                this.log(`[Prompt #${task.promptIndex + 1}] Video generated on [${this.currentAccount.name}] — handed to the background download queue so the next prompt can start immediately!`, 'success');
                 try {
                   this.onTaskDownloadDeferred(task, {
                     targetUrl: task.completedVideoUrl,

@@ -900,11 +900,13 @@ class WorkerPool {
       // worker drains its own entries after each monitor window.
       const deferredDownloadRetries = [];
 
-      // v2.48.3: Dedicated Sequential Background Download Pipeline (FIFO)
+      // v2.48.3: Dedicated Background Download Pipeline (FIFO)
       // Videos are handed off here the moment ANY tile completes rendering.
-      // Downloads proceed one-by-one via Node.js HTTP stream without blocking Flow prompt submission.
+      // Downloads proceed via Node.js HTTP stream without blocking Flow prompt submission.
+      // v2.48.6: up to 3 downloads now run in PARALLEL (see
+      // kickPipelineDrain) — the strictly one-by-one line made every
+      // later video wait for the earlier file's whole transfer.
       const downloadPipeline = [];
-      let isDrainingPipeline = false;
 
       const processPipelineItem = async (item) => {
         const { rowTask, engineTask, owner, accountId, accountName, downloadFolder, settings } = item;
@@ -914,13 +916,28 @@ class WorkerPool {
           if (fresh && fresh.status === 'completed') return;
         } catch (e) {}
 
-        this.log(`[Download Queue] Starting sequential download for Prompt #${rowTask.prompt_index + 1} (${downloadPipeline.length} remaining in queue)…`, 'info');
+        this.log(`[Download Queue] Starting download for Prompt #${rowTask.prompt_index + 1} (${downloadPipeline.length} remaining in queue)…`, 'info');
+
+        // v2.48.6: an immediate backend fetch may already be in
+        // flight for this exact file (started when Flow's servers
+        // first sent the media). Give it a short window to land
+        // HERE — in the background, parallel to the next render —
+        // instead of on the worker, where the same wait used to
+        // hold up the next prompt. If it saved the file, this item
+        // is done without a second fetch.
+        if (engineTask._backendFetchPromise && !engineTask.mediaSaved) {
+          try { await downloadGuard.withTimeout(engineTask._backendFetchPromise, 10000, 'immediate backend fetch'); } catch (e) {}
+        }
 
         let ok = false;
-        try {
-          ok = await owner.downloadFromCapturedStream(engineTask, downloadFolder, settings);
-        } catch (e) {
-          ok = false;
+        if (engineTask.mediaSaved) {
+          ok = true;
+        } else {
+          try {
+            ok = await owner.downloadFromCapturedStream(engineTask, downloadFolder, settings);
+          } catch (e) {
+            ok = false;
+          }
         }
 
         if (ok && engineTask.mediaSaved) {
@@ -971,20 +988,31 @@ class WorkerPool {
         }
       };
 
+      // v2.48.6: downloads are pure file transfers (pre-captured
+      // URL + cookies + user-agent) — they never needed the
+      // browser worker, so up to MAX_PARALLEL_DOWNLOADS now run
+      // side by side instead of strictly one by one. With even a
+      // single browser worker, a finished video's download
+      // overlaps the next render AND the other downloads instead
+      // of queueing behind them — the visible "Downloading…"
+      // wait the owner reported on the 1-parallel setting.
+      const MAX_PARALLEL_DOWNLOADS = 3;
+      let activeDownloadCount = 0;
       const kickPipelineDrain = () => {
-        if (isDrainingPipeline) return;
-        (async () => {
-          isDrainingPipeline = true;
-          try {
-            while (downloadPipeline.length > 0 && !this.isStopping) {
-              const item = downloadPipeline.shift();
-              if (!item) break;
+        while (!this.isStopping && downloadPipeline.length > 0 && activeDownloadCount < MAX_PARALLEL_DOWNLOADS) {
+          const item = downloadPipeline.shift();
+          if (!item) break;
+          activeDownloadCount++;
+          (async () => {
+            try {
               await processPipelineItem(item);
+            } catch (e) {
+            } finally {
+              activeDownloadCount--;
+              kickPipelineDrain();
             }
-          } finally {
-            isDrainingPipeline = false;
-          }
-        })().catch(() => {});
+          })().catch(() => {});
+        }
       };
 
       const enqueueDownloadPipeline = (item) => {
@@ -993,7 +1021,7 @@ class WorkerPool {
       };
 
       const drainDownloadPipeline = async () => {
-        while ((downloadPipeline.length > 0 || isDrainingPipeline) && !this.isStopping) {
+        while ((downloadPipeline.length > 0 || activeDownloadCount > 0) && !this.isStopping) {
           await sleep(500);
         }
       };
@@ -1467,7 +1495,7 @@ class WorkerPool {
               promptText: task.promptText,
               tag: rowTask.prompt_tag || task.tag || '',
               status: 'pending',
-              reason: 'The video has been generated — downloading in sequential background queue (no new charge)'
+              reason: 'The video has been generated — downloading in the background queue (no new charge)'
             });
             noteTaskSettled(rowTask.id, 'moved');
           },

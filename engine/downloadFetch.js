@@ -110,6 +110,26 @@ function resolveUserAgent(pageUA) {
  * output is capped so a note never becomes a paragraph.
  * Example: "node-fetch HTTP 403 · node-fetch HTTP 403 · page-fetch: Failed to fetch"
  */
+/**
+ * v2.48.15 — CONTENT GATE: buffer asal video container hai kya?
+ * TEST492 (2026-11-01) me backend se bandha link asal me tile ka
+ * poster/image nikla — fetch ne use khushi se "video" samajh kar
+ * save kiya aur har file save-verify (ffprobe) par mari (har
+ * koshish ~4s zaaya). Ab save se PEHLE sirf magic bytes dekhe
+ * jate hain: MP4/MOV par offset 4 par 'ftyp', WebM par EBML
+ * header. Image (JPEG/PNG/WebP/GIF) ya koi aur data ho to buffer
+ * wahi reject — save/ffprobe ka cycle hi nahi chalta, aur step
+ * note me wajah saaf likhi jati hai.
+ */
+function looksLikeVideoBuffer(buf) {
+  if (!buf || buf.length < 12) return false;
+  // MP4 / MOV / M4V: size(4) + 'ftyp'
+  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return true;
+  // WebM / Matroska: EBML header 1A 45 DF A3
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return true;
+  return false;
+}
+
 function summarizeFetchSteps(steps) {
   if (!Array.isArray(steps) || steps.length === 0) return '';
   const parts = [];
@@ -214,6 +234,7 @@ module.exports = {
   FALLBACK_USER_AGENT,
   resolveUserAgent,
   summarizeFetchSteps,
+  looksLikeVideoBuffer,
   fastFetchUrl,
   MONITOR_ROUND_CAP,
   DRAIN_ROUND_CAP,

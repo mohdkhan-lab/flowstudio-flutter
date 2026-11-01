@@ -3240,6 +3240,19 @@ class FlowAutomationEngine {
       }
     }
 
+    // v2.48.15: CONTENT GATE — save se pehle magic bytes. Backend
+    // se bandha link kabhi-kabhi asal video nahi hota (TEST492:
+    // tile ka poster image) — aisi file save karke ffprobe par
+    // marne ke bajaye buffer yahin reject hota hai, wajah ke
+    // saath. Sirf video tasks par (image tasks par nahi).
+    if (savedBuffer && savedBuffer.length > 10000
+      && !(settings && settings.type === 'Image')
+      && !downloadFetch.looksLikeVideoBuffer(savedBuffer)) {
+      this._noteFetchStep(task, { step: 'content-check', ok: false, error: 'the fetched data is not a video file (no video header — likely an image or an error page)' });
+      this.log(`[Prompt #${task.promptIndex + 1}] The data fetched from the link is NOT a video file (it has no video header — probably an image) — it was not saved. The remaining routes will be tried.`, 'warn');
+      return false;
+    }
+
     if (savedBuffer && savedBuffer.length > 10000) {
       const savedOk = await this._saveBufferForTask(task, downloadFolder, settings, savedBuffer, targetUrl);
       if (!savedOk) {
@@ -3973,7 +3986,7 @@ class FlowAutomationEngine {
   _startApiPoll(task) {
     const key = task && (task.captureKey || task.videoId) ? (task.captureKey || task.videoId) : null;
     if (!key || this._apiPolls.has(key)) return;
-    const state = { stopped: false, fails: 0, timer: null, startedAt: Date.now(), announced: false };
+    const state = { stopped: false, fails: 0, timer: null, startedAt: Date.now(), announced: false, tplSeen: false };
     this._apiPolls.set(key, state);
     const loop = async () => {
       if (state.stopped) return;
@@ -4004,6 +4017,10 @@ class FlowAutomationEngine {
     let tpl = null;
     try { tpl = this.netCapture.templateForKey(key); } catch (e) {}
     if (!tpl) return; // template abhi nahi — passive capture chal raha hai
+    if (!state.tplSeen) {
+      state.tplSeen = true;
+      this.log(`[Prompt #${(task.promptIndex || 0) + 1}] Direct API check is active — asking Flow's backend directly for this video's link every 1.5s.`, 'info');
+    }
     let res = null;
     try {
       res = await downloadGuard.withTimeout(
@@ -4470,12 +4487,43 @@ class FlowAutomationEngine {
       try { fs.mkdirSync(downloadFolder, { recursive: true }); } catch (e) {}
     }
 
-    // v2.41.0 (Fix list C, item 4): MEDIA READINESS first — on a busy
+    // --- v2.48.15: BACKEND PEHLE — Ranneeti 1 + kram-bandhan ---
+    // TEST492 ki seekh: pehle tartib me 25s ki tile-readiness
+    // sab se pehle jalti thi, halanke backend ka link aksar pehle
+    // se bandha hota hai (ya kram se bandh sakta hai) — aur tile
+    // ka apna link is project roop me aata hi nahi. Ab backend
+    // wale dono raaste SAB SE PEHLE chalte hain; tile wali
+    // readiness sirf tab, jab backend se kuch na bane.
+    try {
+      const okBackend = await this._tryBackendDownload(task, downloadFolder, settings, attempts);
+      if (okBackend) return { ok: true, strategy: 'backend-fetch', attempts };
+    } catch (e) {
+      attempts.push({ strategy: 'backend-fetch', ok: false, note: 'a problem came up in the backend route — the remaining routes will be tried' });
+    }
+    if (task.mediaSaved) return { ok: true, strategy: 'backend-fetch', attempts };
+
+    // --- backend KRAM se bandhan (v2.48.15 se yahan, pehle) ---
+    if (captureKey) {
+      let ord = null;
+      try { ord = this.netCapture.claimByOrder(captureKey, Date.now()); } catch (e) { ord = null; }
+      if (ord && ord.url) {
+        task.backendVideoUrl = ord.url;
+        task.backendUrlVia = 'order';
+        this._captureTasks.set(captureKey, task);
+        task._backendCtx = { downloadFolder, settings };
+        const ok = await this._kickBackendFetch(task, task._backendCtx);
+        attempts.push({ strategy: 'backend-fetch', ok: !!ok, note: ok ? 'the unbound link found on the backend was treated as this task\'s by sequence order and saved' : `the backend link bound by sequence could not be fetched${this._fetchSummary(task) ? ` — ${this._fetchSummary(task)}` : ''}` });
+        if (ok) return { ok: true, strategy: 'backend-fetch', attempts };
+      }
+    }
+
+    // v2.41.0 (Fix list C, item 4): MEDIA READINESS — on a busy
     // multi-task page the tile's media may not have loaded yet, and
     // every strategy below then fails for that one reason (proven
     // from the 2026-10-27 Activity records). Bounded (~25s) inside
     // this round's 150s guard; skipped entirely when a captured URL
-    // already exists; never fails the round.
+    // already exists; never fails the round. (v2.48.15: ab ye
+    // backend raaston ke BAAD chalti hai — upar dekho.)
     const readiness = await this._awaitTileMediaReady(task, tileIndexHint, isImage, captureKey, n);
 
     // --- v2.47.4 FAST PATH (owner-approved): ye sirf ek IZAAFA ---
@@ -4524,16 +4572,9 @@ class FlowAutomationEngine {
       }
     }
 
-    // --- Ranneeti 1 (v2.8.0): BACKEND — network se bandha link ---
-    try {
-      const okBackend = await this._tryBackendDownload(task, downloadFolder, settings, attempts);
-      if (okBackend) return { ok: true, strategy: 'backend-fetch', attempts };
-    } catch (e) {
-      attempts.push({ strategy: 'backend-fetch', ok: false, note: 'a problem came up in the backend route — the remaining routes will be tried' });
-    }
-    if (task.mediaSaved) return { ok: true, strategy: 'backend-fetch', attempts };
-
     // --- Ranneeti 2: apni stream / tile ka src ---
+    // (Ranneeti 1 — backend — v2.48.15 se is function ke AAGHAZ
+    // me chalti hai, tile-readiness se bhi pehle.)
     let url = (task.completedVideoUrl && task.completedVideoUrl !== task.backendVideoUrl && this._isTaskOwnUrl(task, task.completedVideoUrl))
       ? task.completedVideoUrl : null;
     let via = url ? 'stream found earlier' : null;
@@ -4574,22 +4615,8 @@ class FlowAutomationEngine {
       attempts.push({ strategy: 'tile-src', ok: false, note: 'no media URL was found on the tile' });
     }
 
-    // --- Ranneeti 3 (v2.8.0): backend KRAM se bandhan ---
-    if (captureKey) {
-      let ord = null;
-      try { ord = this.netCapture.claimByOrder(captureKey, Date.now()); } catch (e) { ord = null; }
-      if (ord && ord.url) {
-        task.backendVideoUrl = ord.url;
-        task.backendUrlVia = 'order';
-        this._captureTasks.set(captureKey, task);
-        task._backendCtx = { downloadFolder, settings };
-        const ok = await this._kickBackendFetch(task, task._backendCtx);
-        attempts.push({ strategy: 'backend-fetch', ok: !!ok, note: ok ? 'the unbound link found on the backend was treated as this task\'s by sequence order and saved' : `the backend link bound by sequence could not be fetched${this._fetchSummary(task) ? ` — ${this._fetchSummary(task)}` : ''}` });
-        if (ok) return { ok: true, strategy: 'backend-fetch', attempts };
-      }
-    }
-
     // --- Ranneeti 4: native UI ke do roop (⋮ menu → editor) ---
+    // (Kram-bandhan bhi v2.48.15 se aaghaz me chalta hai.)
     const okNative = await this._downloadViaNativeUi(task, downloadFolder, settings, tileIndexHint, attempts);
     if (okNative) {
       const won = attempts.filter(a => a.ok).pop();

@@ -101,7 +101,9 @@ eq('pickReplayHeaders drops empty values', pickReplayHeaders({ 'x-grpc-web': '' 
   ok('latest status template is the fallback', !!fb && fb.url === LIST);
 }
 
-// A template from BEFORE a submission is not offered to it.
+// A template from BEFORE a submission: offered within the 120s
+// shape window (project-load List call, then settings, then
+// submit), but NOT when it is far older than the submission.
 {
   const cap = new NetworkCapture({});
   const listBody = Buffer.from(JSON.stringify({ projectId: 'old' }), 'utf8');
@@ -109,8 +111,28 @@ eq('pickReplayHeaders drops empty values', pickReplayHeaders({ 'x-grpc-web': '' 
     url: LIST, method: 'POST', headers: {},
     postDataText: listBody.toString('utf8'), postDataBuffer: listBody, at: 1000
   });
-  cap.beginSubmission('vid_3000_1', 9000);
-  eq('stale template not offered', cap.templateForKey('vid_3000_1'), null);
+  cap.beginSubmission('vid_3000_1', 61000);
+  ok('template within the 120s window is offered', !!cap.templateForKey('vid_3000_1'));
+  cap.beginSubmission('vid_3000_2', 400000);
+  eq('far-stale template not offered', cap.templateForKey('vid_3000_2'), null);
+}
+
+// v2.48.15: claimByOrder only takes backend-body sightings —
+// a media RESPONSE sighting (the tile's poster/playback URL
+// family) must never be handed out by sequence order (TEST492:
+// all three tasks were given poster-type URLs and every fetch
+// failed the video check).
+{
+  const cap = new NetworkCapture({});
+  cap.beginSubmission('vid_4000_1', 1000);
+  const poster = 'https://lh3.googleusercontent.com/poster-image-abc';
+  cap.ingestResponse({ url: poster, contentType: 'image/jpeg', bodyBuffer: null, at: 1500 });
+  eq('order claim ignores response-url sightings', cap.claimByOrder('vid_4000_1', 1600), null);
+  const realVid = 'https://lh3.googleusercontent.com/videoplayback/real-video-xyz';
+  const apiBody = Buffer.from(JSON.stringify({ media: realVid }), 'utf8');
+  cap.ingestResponse({ url: GW, contentType: 'application/json', bodyBuffer: apiBody, at: 1700 });
+  const claimed = cap.claimByOrder('vid_4000_1', 1800);
+  ok('order claim takes the api-body sighting', !!claimed && claimed.url === realVid && claimed.via === 'order');
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

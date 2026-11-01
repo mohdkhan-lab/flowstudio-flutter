@@ -194,6 +194,20 @@ eq('range min bytes is 1MB', RANGE_MIN_BYTES, 1024 * 1024);
   eq('planRanges big file end', big[big.length - 1].end, 3133672);
 }
 eq('planRanges(0) empty', planRanges(0, 4).length, 0);
+
+// v2.48.15: content gate — magic bytes decide video vs not.
+{
+  const { looksLikeVideoBuffer } = require('../engine/downloadFetch');
+  const mp4 = Buffer.alloc(64); mp4.write('ftyp', 4, 'ascii'); mp4.write('isom', 8, 'ascii');
+  eq('looksLikeVideoBuffer accepts mp4 ftyp', looksLikeVideoBuffer(mp4), true);
+  const webm = Buffer.alloc(64); webm[0] = 0x1a; webm[1] = 0x45; webm[2] = 0xdf; webm[3] = 0xa3;
+  eq('looksLikeVideoBuffer accepts webm ebml', looksLikeVideoBuffer(webm), true);
+  const jpg = Buffer.alloc(64); jpg[0] = 0xff; jpg[1] = 0xd8; jpg[2] = 0xff;
+  eq('looksLikeVideoBuffer rejects jpeg', looksLikeVideoBuffer(jpg), false);
+  const png = Buffer.alloc(64); png[0] = 0x89; png[1] = 0x50; png[2] = 0x4e; png[3] = 0x47;
+  eq('looksLikeVideoBuffer rejects png', looksLikeVideoBuffer(png), false);
+  eq('looksLikeVideoBuffer rejects tiny buffer', looksLikeVideoBuffer(Buffer.alloc(8)), false);
+}
 eq('planRanges tiny total clamps chunks', planRanges(2, 4).length, 2);
 eq('planRanges single chunk', planRanges(500, 1).length, 1);
 

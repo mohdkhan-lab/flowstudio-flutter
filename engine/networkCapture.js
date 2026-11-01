@@ -75,6 +75,11 @@ const CAPTURE_PATTERNS = {
   // fetch par credentials:'include' se khud lagti hai).
   replayHeaderNames: ['content-type', 'x-grpc-web', 'x-user-agent', 'authorization', 'x-goog-api-key', 'x-goog-authuser'],
   maxTemplateBodyBytes: 256 * 1024,
+  // Latest-template fallback kitni purani ho sakti hai (project
+  // khulne ki List call aur submit ke beech settings ka waqt
+  // lagta hai; request ki shakal itni der me nahi badalti —
+  // auth cookies me hoti hai, body me nahi).
+  templateMaxAgeMs: 120000,
   // --- Haddein ---
   idMinLength: 6,
   maxBodyScanBytes: 8 * 1024 * 1024,
@@ -298,7 +303,13 @@ class NetworkCapture {
     if (!page || typeof page.on !== 'function') return false;
     this._page = page;
     this._reqHandler = (req) => {
-      if (!this.armed) return;
+      // v2.48.15: status-shaped API requests ka TEMPLATE armed
+      // hone se pehle bhi record hota hai (project khulte hi page
+      // List/Search calls bhejta hai — wahi direct-API poll ka
+      // beej hain; pehchan ki bandish templates par nahi, URL
+      // bandhne par lagti hai, is liye ye mehfooz hai). Baaki
+      // saari ingestion pehle ki tarah sirf armed par.
+      if (!this.armed && !isStatusApiUrl(req.url(), this.patterns)) return;
       try {
         let post = null;
         try { post = req.postData() || null; } catch (e) {}
@@ -482,7 +493,7 @@ class NetworkCapture {
     if (!sub) return null;
     if (sub.id && this.statusTemplates.has(sub.id)) return this.statusTemplates.get(sub.id);
     if (this.latestStatusTemplate
-      && this.latestStatusTemplate.at >= sub.at - this.patterns.bindSlackMs) {
+      && this.latestStatusTemplate.at >= sub.at - (this.patterns.templateMaxAgeMs || 120000)) {
       return this.latestStatusTemplate;
     }
     return null;
@@ -553,6 +564,16 @@ class NetworkCapture {
     for (const [url, sight] of this.sightings.entries()) {
       if (sight.claimedBy || this.keyByUrl.has(url)) continue;
       if (sight.firstSeenAt < sub.at - this.patterns.bindSlackMs) continue;
+      // v2.48.15: SIRF backend ke jawab ke ANDAR aaye URLs —
+      // 'api-body'/'json-body' wale. Page ke apne media responses
+      // ('response-url') is liye bahar hain: un me tile ke POSTER /
+      // thumbnail images bhi googleusercontent par hi aate hain,
+      // aur TEST492 (2026-11-01) me kram-bandish ne teeno tasks ko
+      // asal video ke bajaye wahi poster-type URLs de diye — fetch
+      // har baar save-verify (ffprobe) par mara, asal file phir
+      // ⋮ menu se aayi. Backend-body wala URL asal media link
+      // hone ka kagzi saboot rakhta hai; poster nahi rakhta.
+      if (sight.source !== 'api-body' && sight.source !== 'json-body') continue;
       if (!best || sight.firstSeenAt < best.sight.firstSeenAt) best = { url, sight };
     }
     if (!best) return null;

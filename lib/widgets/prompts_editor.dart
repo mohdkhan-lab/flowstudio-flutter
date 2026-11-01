@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
 import '../theme/app_theme.dart';
+import 'tactile_components.dart';
 import '../models/activity_log.dart';
 import '../providers/generator_provider.dart';
 import '../providers/activity_provider.dart';
@@ -140,6 +141,13 @@ class _PromptsEditorState extends State<PromptsEditor> {
                     color: AppTheme.inputBg,
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(color: AppTheme.borderSoft),
+                    boxShadow: const [
+                      BoxShadow(
+                        color: Color(0xFF0F172A),
+                        offset: Offset(0, 1.8),
+                        blurRadius: 0,
+                      ),
+                    ],
                   ),
                   child: Consumer<SettingsProvider>(
                     builder: (context, settingsProv, _) {
@@ -180,25 +188,20 @@ class _PromptsEditorState extends State<PromptsEditor> {
                 ),
               ),
               const SizedBox(width: 6),
-              InkWell(
+              // + Add Tag (Tactile 3D Gold)
+              TactileButton(
+                type: TactileType.gold,
+                height: 26,
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                borderRadius: 6,
+                bevelDepth: 2.0,
                 onTap: () => _showAddTagDialog(context),
-                borderRadius: BorderRadius.circular(6),
-                child: Container(
-                  height: 26,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  alignment: Alignment.center,
-                  decoration: BoxDecoration(
-                    color: AppTheme.accentGold.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
-                  ),
-                  child: Text(
-                    '+ Add Tag',
-                    style: TextStyle(
-                      fontSize: 10.5,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.accentText,
-                    ),
+                child: Text(
+                  '+ Add Tag',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.accentText,
                   ),
                 ),
               ),
@@ -210,6 +213,13 @@ class _PromptsEditorState extends State<PromptsEditor> {
                   color: AppTheme.accentGold.withValues(alpha: 0.07),
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0xFF78350F),
+                      offset: Offset(0, 1.5),
+                      blurRadius: 0,
+                    ),
+                  ],
                 ),
                 child: Text(
                   '${generator.totalPrompts} prompts',
@@ -339,71 +349,58 @@ class _PromptsEditorState extends State<PromptsEditor> {
                   fit: BoxFit.scaleDown,
                   alignment: Alignment.centerLeft,
                   child: SizedBox(
-                    width: w < 390 ? 390 : w,
+                    width: w < 410 ? 410 : w,
                     child: Row(
                       children: [
-                        // Bulk Prompt Pill
-                        InkWell(
+                        // Bulk Prompt Pill (Tactile 3D)
+                        TactileButton(
+                          type: TactileType.pill,
+                          isActive: generator.isBulkMode,
+                          borderRadius: 12,
+                          bevelDepth: 2.0,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                           onTap: () => context.read<GeneratorProvider>().setPromptMode(true),
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              gradient: generator.isBulkMode ? AppTheme.accentGrad : null,
-                              color: generator.isBulkMode ? null : AppTheme.overlay08,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              'Bulk Prompt',
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.bold,
-                                color: generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
-                              ),
+                          child: Text(
+                            'Bulk Prompt',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.bold,
+                              color: generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
                             ),
                           ),
                         ),
                         const SizedBox(width: 6),
-                        // Agent Prompt Pill
-                        InkWell(
+                        // Agent Prompt Pill (Tactile 3D)
+                        TactileButton(
+                          type: TactileType.pill,
+                          isActive: !generator.isBulkMode,
+                          borderRadius: 12,
+                          bevelDepth: 2.0,
+                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
                           onTap: () => context.read<GeneratorProvider>().setPromptMode(false),
-                          borderRadius: BorderRadius.circular(12),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            decoration: BoxDecoration(
-                              gradient: !generator.isBulkMode ? AppTheme.accentGrad : null,
-                              color: !generator.isBulkMode ? null : AppTheme.overlay08,
-                              borderRadius: BorderRadius.circular(12),
-                            ),
-                            child: Text(
-                              'Agent Prompt',
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.bold,
-                                color: !generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
-                              ),
+                          child: Text(
+                            'Agent Prompt',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.bold,
+                              color: !generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
                             ),
                           ),
                         ),
                         const Spacer(),
-                        // txt/srt import button
-                        InkWell(
+                        // txt/srt import button (Tactile 3D)
+                        TactileButton(
+                          type: TactileType.secondary,
+                          borderRadius: 6,
+                          bevelDepth: 2.0,
+                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
                           onTap: () => _handleFileImport(context),
-                          borderRadius: BorderRadius.circular(6),
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                            decoration: BoxDecoration(
-                              color: AppTheme.inputBg,
-                              borderRadius: BorderRadius.circular(6),
-                              border: Border.all(color: AppTheme.borderSoft),
-                            ),
-                            child: Text(
-                              'txt/srt',
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.w700,
-                                color: AppTheme.textMain,
-                              ),
+                          child: Text(
+                            'txt/srt',
+                            style: TextStyle(
+                              fontSize: 10.5,
+                              fontWeight: FontWeight.w700,
+                              color: AppTheme.textMain,
                             ),
                           ),
                         ),

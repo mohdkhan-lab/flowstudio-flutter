@@ -39,7 +39,7 @@ async function req(method, p, body) {
     body: body ? JSON.stringify(body) : undefined,
   });
   let data = null;
-  try { data = await res.json(); } catch (e) {}
+  try { data = await res.json(); } catch (e) { }
   return { status: res.status, data };
 }
 
@@ -49,7 +49,7 @@ async function waitStatus(timeoutMs = 20000) {
     try {
       const r = await req('GET', '/api/status');
       if (r.status === 200) return r.data;
-    } catch (e) {}
+    } catch (e) { }
     await sleep(300);
   }
   return null;
@@ -74,7 +74,7 @@ async function main() {
   try {
     const status = await waitStatus();
     check('bridge boots', !!status, bridgeLog.slice(-400));
-    check('status version is 2.40.0', status && status.version === '2.48.9', JSON.stringify(status));
+    check('status version is 2.40.0', status && status.version === '2.48.10', JSON.stringify(status));
 
     const redoEarly = await req('POST', '/api/generation/redo-missing', {});
     check('redo before any run -> 400', redoEarly.status === 400, JSON.stringify(redoEarly.data));

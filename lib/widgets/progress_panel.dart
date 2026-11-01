@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
+import 'tactile_components.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/activity_provider.dart';
 import '../providers/generator_provider.dart';
@@ -214,26 +215,22 @@ class ProgressPanel extends StatelessWidget {
             ),
           ),
           const SizedBox(width: 6),
-          InkWell(
+          TactileButton(
+            type: TactileType.stop,
+            borderRadius: 7,
+            bevelDepth: 2.0,
+            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
             onTap: () => context.read<GeneratorProvider>().redoMissingItems(
                   accounts: context.read<AccountsProvider>(),
                   activity: context.read<ActivityProvider>(),
                   settings: context.read<SettingsProvider>(),
                 ),
-            borderRadius: BorderRadius.circular(7),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(7),
-                border: Border.all(color: red),
-              ),
-              child: Text(
-                'Redo missing (${missing.length})',
-                style: TextStyle(
-                  fontSize: 9.5,
-                  fontWeight: FontWeight.w800,
-                  color: red,
-                ),
+            child: Text(
+              'Redo missing (${missing.length})',
+              style: TextStyle(
+                fontSize: 9.5,
+                fontWeight: FontWeight.w800,
+                color: red,
               ),
             ),
           ),
@@ -302,15 +299,26 @@ class ProgressPanel extends StatelessWidget {
             ? 'waiting for account'
             : '');
 
-    return Container(
+    final cardBorder = isDone
+        ? AppTheme.accentText.withValues(alpha: 0.55)
+        : isGenerating
+            ? AppTheme.accentGold.withValues(alpha: 0.65)
+            : (item.status == PromptStatus.failed
+                ? AppTheme.red.withValues(alpha: 0.65)
+                : AppTheme.borderSoft);
+
+    final cardGlow = isDone
+        ? AppTheme.blue
+        : isGenerating
+            ? AppTheme.accentGold
+            : (item.status == PromptStatus.failed ? AppTheme.red : AppTheme.blue);
+
+    return TactileCard(
       padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        color: AppTheme.inputBg,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(
-          color: isGenerating ? AppTheme.accentGold : AppTheme.borderSoft,
-        ),
-      ),
+      borderRadius: 8,
+      bevelDepth: 2.2,
+      borderColor: cardBorder,
+      glowColor: cardGlow,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -442,22 +450,17 @@ class ProgressPanel extends StatelessWidget {
   }) {
     final activeColor = accent ? AppTheme.accentText : AppTheme.textDim;
     final color = enabled ? activeColor : AppTheme.textFaint.withValues(alpha: 0.55);
-    return InkWell(
+    return TactileButton(
+      type: accent ? TactileType.icon : TactileType.secondary,
+      isActive: accent,
+      enabled: enabled,
+      width: 26,
+      height: 26,
+      borderRadius: 7,
+      bevelDepth: 2.0,
+      padding: EdgeInsets.zero,
       onTap: enabled ? onTap : null,
-      borderRadius: BorderRadius.circular(7),
-      child: Container(
-        width: 26,
-        height: 26,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(7),
-          border: Border.all(
-            color: enabled && accent
-                ? activeColor
-                : AppTheme.borderSoft.withValues(alpha: dimmed ? 0.6 : 1.0),
-          ),
-        ),
-        child: Icon(icon, size: 14, color: color),
-      ),
+      child: Icon(icon, size: 14, color: color),
     );
   }
 }

@@ -74,6 +74,8 @@ const projectFolder = require('./engine/projectFolder');
 const sequenceReport = require('./engine/sequenceReport');
 const { recordActivity, getActivityStore } = require('./engine/activityStore');
 const mcp = require('./mcp_server');
+const { ensureBridgePort } = require('./engine/portTakeover');
+const { createFunnelKeeper } = require('./engine/funnelKeeper');
 const { getStats } = require('./engine/usageStats');
 const { parseCookieText } = require('./engine/cookieParser');
 const crypto = require('crypto');
@@ -167,7 +169,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.3';
+const APP_VERSION = '2.48.4';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -257,6 +259,34 @@ function fetchLatestRelease() {
 async function startBridge() {
   await dbService.ensureInit();
   console.log(`[FlowStudio Engine] Database initialized. Running on port ${PORT}...`);
+
+  // v2.48.4: never let a stale engine of another version keep the
+  // bridge port — the app would adopt it and silently run old code
+  // behind the new window (the 2026-11-01 incident: a v2.30.3 engine
+  // from a second copy of the app answered for days). A healthy
+  // engine of THIS version already serving is fine: exit quietly and
+  // let the app adopt that one, as before.
+  let funnelKeeper = null;
+  let staleEngineNote = null;
+  try {
+    const takeover = await ensureBridgePort({
+      port: PORT,
+      ownVersion: APP_VERSION,
+      log: (m) => console.log(m),
+    });
+    if (takeover.outcome === 'same-version') {
+      console.log(`[FlowStudio Engine] A v${APP_VERSION} engine already serves port ${PORT} — this copy exits.`);
+      process.exit(0);
+    }
+    if (takeover.outcome === 'took-over') {
+      staleEngineNote = `♻️ A stale engine (v${takeover.staleVersion}) was still running and has been replaced — only v${APP_VERSION} runs now.`;
+    } else if (takeover.outcome === 'blocked') {
+      staleEngineNote = `⚠️ A stale engine (v${takeover.staleVersion}) is holding the connection port and could not be replaced automatically.`;
+    }
+  } catch (e) {
+    console.warn('[FlowStudio Engine] Port takeover check failed:', e.message);
+  }
+
   // v2.31.0: start the MCP server at boot when the connector is on.
   try {
     if (mcp.mcpEnabled(dbService)) {
@@ -264,6 +294,31 @@ async function startBridge() {
     }
   } catch (e) {
     console.warn('[FlowStudio MCP] Boot start failed:', e.message);
+  }
+
+  // v2.48.4: record the takeover in the Activity history the owner
+  // sees, and start the in-app Funnel keeper — while the app is open
+  // it re-asserts the Tailscale Funnel for the MCP port whenever that
+  // route silently drops (2026-10-28 / 2026-11-01 failures), so the
+  // remote connection repairs itself instead of dying until someone
+  // retypes a command by hand.
+  if (staleEngineNote) {
+    try { recordActivity({ message: staleEngineNote, category: 'system', level: 'warning' }); } catch (e) {}
+    try { broadcastEvent('automation-log', { message: staleEngineNote, level: 'warning' }); } catch (e) {}
+  }
+  try {
+    if (mcp.mcpEnabled(dbService)) {
+      funnelKeeper = createFunnelKeeper({
+        port: mcp.MCP_PORT,
+        log: (message, level) => {
+          try { recordActivity({ message, category: 'system', level: level || 'info' }); } catch (e) {}
+          try { broadcastEvent('automation-log', { message, level: level || 'info' }); } catch (e) {}
+        },
+      });
+      funnelKeeper.start();
+    }
+  } catch (e) {
+    console.warn('[FlowStudio FunnelKeeper] Start failed:', e.message);
   }
 
   // v2.33.0: ONE pool factory for fresh generation starts AND the
@@ -1456,6 +1511,7 @@ async function startBridge() {
         sendJson(200, { ok: true, note: 'Engine shutting down.' });
         setTimeout(() => {
           try { recordActivity({ message: 'Engine shutting down for an app update.', category: 'system', level: 'info' }); } catch (e) {}
+          try { if (funnelKeeper) funnelKeeper.stop(); } catch (e) {}
           try { mcp.stopMcpServer(); } catch (e) {}
           try { server.close(); } catch (e) {}
           process.exit(0);
@@ -1491,6 +1547,12 @@ async function startBridge() {
     }
   });
 
+  // v2.48.4: a listen failure (port still held, say) must be a logged
+  // error, never an unhandled 'error' event that kills the process
+  // without a trace in the console the app forwards.
+  server.on('error', (e) => {
+    console.error('[FlowStudio Engine] Server error:', e.message);
+  });
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`[FlowStudio Engine Bridge] Listening on http://127.0.0.1:${PORT}`);
   });

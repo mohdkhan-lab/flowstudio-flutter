@@ -10,12 +10,18 @@ import '../models/account.dart';
 class AutomationBridge {
   static const int port = 48190;
   static const String baseUrl = 'http://127.0.0.1:$port';
+
+  // v2.48.4: this app's own engine version — keep in sync with
+  // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
+  // adopting a stale engine left running by an older copy of the app.
+  static const String appVersion = '2.48.4';
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();
 
   Process? _nodeProcess;
   bool _isConnecting = false;
+  bool _copyCheckDone = false;
   StreamSubscription? _sseSubscription;
 
   // Callbacks
@@ -52,14 +58,14 @@ class AutomationBridge {
 
   /// Starts the Node.js bridge server if not already running, and connects to SSE stream
   Future<void> ensureEngineRunning() async {
-    if (await checkHealth()) {
+    if (await _adoptIfHealthy()) {
       _listenToSse();
       return;
     }
     if (_isConnecting) {
       for (int i = 0; i < 20; i++) {
         await Future.delayed(const Duration(milliseconds: 250));
-        if (await checkHealth()) {
+        if (await _adoptIfHealthy()) {
           _listenToSse();
           return;
         }
@@ -68,7 +74,7 @@ class AutomationBridge {
     _isConnecting = true;
 
     try {
-      if (await checkHealth()) {
+      if (await _adoptIfHealthy()) {
         _listenToSse();
         return;
       }
@@ -139,6 +145,103 @@ class AutomationBridge {
     } catch (_) {
       return false;
     }
+  }
+
+  /// v2.48.4: the version of the engine currently answering on the
+  /// bridge port, or null when nothing (readable) answers.
+  Future<String?> _answeringEngineVersion() async {
+    try {
+      final res = await http.get(Uri.parse('$baseUrl/api/status')).timeout(const Duration(seconds: 1));
+      if (res.statusCode != 200) return null;
+      final decoded = jsonDecode(res.body);
+      if (decoded is Map && decoded['version'] != null) {
+        return decoded['version'].toString();
+      }
+    } catch (_) {}
+    return null;
+  }
+
+  /// v2.48.4: true when the answering engine may be adopted — healthy
+  /// AND this app's own version. An answering engine of any OTHER
+  /// version is stale (left running by an older copy of the app, the
+  /// 2026-11-01 v2.30.3 incident): it is shut down and replaced
+  /// instead of adopted, so the window can never again run old code
+  /// behind a new version badge.
+  Future<bool> _adoptIfHealthy() async {
+    if (!await checkHealth()) return false;
+    final version = await _answeringEngineVersion();
+    if (version == null || version == appVersion) return true;
+    await _replaceStaleEngine(version);
+    return false;
+  }
+
+  /// Asks a stale engine to shut down gracefully (its own endpoint,
+  /// the same one the updater uses); if it keeps answering, stops the
+  /// process that owns the bridge port. Best effort throughout — the
+  /// freshly spawned engine repeats the same takeover on its side.
+  Future<void> _replaceStaleEngine(String oldVersion) async {
+    debugPrint('[AutomationBridge] Stale engine v$oldVersion is answering — replacing it with v$appVersion');
+    try {
+      await http
+          .post(Uri.parse('$baseUrl/api/engine/shutdown'))
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {}
+    for (int i = 0; i < 12; i++) {
+      await Future.delayed(const Duration(milliseconds: 250));
+      if (!await checkHealth()) return;
+    }
+    if (Platform.isWindows) {
+      try {
+        await Process.run('powershell', [
+          '-NoProfile',
+          '-ExecutionPolicy',
+          'Bypass',
+          '-Command',
+          r'$c = Get-NetTCPConnection -LocalPort 48190 -State Listen -ErrorAction SilentlyContinue; if ($c) { $c.OwningProcess | Select-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }',
+        ]);
+      } catch (_) {}
+      for (int i = 0; i < 12; i++) {
+        await Future.delayed(const Duration(milliseconds: 250));
+        if (!await checkHealth()) return;
+      }
+    }
+  }
+
+  /// v2.48.4: once per session, note any OTHER copy of the app on
+  /// this PC (an old version in a second folder, say) in the Activity
+  /// history, with its folder — so the stray copy can be found and
+  /// deleted, and only the latest version remains.
+  Future<void> _checkForOtherCopies() async {
+    if (_copyCheckDone) return;
+    _copyCheckDone = true;
+    if (!Platform.isWindows) return;
+    try {
+      final ownExe = File(Platform.resolvedExecutable).path.toLowerCase();
+      final result = await Process.run('powershell', [
+        '-NoProfile',
+        '-Command',
+        "Get-CimInstance Win32_Process -Filter \"Name='flutter_flow.exe'\" | Select-Object -ExpandProperty ExecutablePath",
+      ]);
+      final paths = result.stdout
+          .toString()
+          .split('\n')
+          .map((s) => s.trim().toLowerCase())
+          .where((s) => s.isNotEmpty)
+          .toSet();
+      final others = paths.where((pt) => pt != ownExe).toList();
+      if (others.isEmpty) return;
+      await http
+          .post(
+            Uri.parse('$baseUrl/api/activity/log'),
+            headers: {'Content-Type': 'application/json'},
+            body: jsonEncode({
+              'message':
+                  '⚠️ Another copy of FlowStudio is also on this PC: ${others.join(', ')}. The latest version runs from ${File(Platform.resolvedExecutable).parent.path} — delete the old copy so only this one remains.',
+              'level': 'warning',
+            }),
+          )
+          .timeout(const Duration(seconds: 2));
+    } catch (_) {}
   }
 
   /// v2.41.0 (Fix list C, item 3): shut the Node engine down FOR REAL
@@ -240,6 +343,7 @@ class AutomationBridge {
 
   void _listenToSse() {
     _sseSubscription?.cancel();
+    _checkForOtherCopies();
 
     final client = http.Client();
     final request = http.Request('GET', Uri.parse('$baseUrl/events'));

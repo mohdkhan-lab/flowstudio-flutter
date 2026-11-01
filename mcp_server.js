@@ -22,7 +22,7 @@ const os = require('os');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.48.3';
+const SERVER_VERSION = '2.48.4';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -714,8 +714,26 @@ function startMcpServer({ dbService, broadcastEvent }) {
     }
   });
 
-  mcpServer.on('error', (e) => {
+  // v2.48.4: if a stale MCP server from an older engine still holds
+  // the port, stop that process and take the port over (once) instead
+  // of logging an error and leaving the remote route dead. The
+  // bridge's own port takeover normally clears both ports together;
+  // this covers an MCP orphan outliving its bridge.
+  let listenRetried = false;
+  mcpServer.on('error', async (e) => {
     console.error('[FlowStudio MCP] Server error:', e.message);
+    if (e && e.code === 'EADDRINUSE' && !listenRetried) {
+      listenRetried = true;
+      try {
+        const { killPidOnPort } = require('./engine/portTakeover');
+        const killed = await killPidOnPort(MCP_PORT, process.pid);
+        if (killed) {
+          setTimeout(() => {
+            try { mcpServer.listen(MCP_PORT, '0.0.0.0'); } catch (_) {}
+          }, 700);
+        }
+      } catch (_) {}
+    }
   });
   mcpServer.listen(MCP_PORT, '0.0.0.0', () => {
     console.log(`[FlowStudio MCP] Listening on http://0.0.0.0:${MCP_PORT}/mcp`);

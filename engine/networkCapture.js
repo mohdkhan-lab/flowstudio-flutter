@@ -61,6 +61,20 @@ const CAPTURE_PATTERNS = {
   idFieldNames: ['workflowId', 'workflow_id', 'workflowID'],
   // --- Generic (Flow-specific nahi; har jagah ke media links) ---
   mediaExtensions: ['.mp4', '.webm', '.mov'],
+  // --- v2.48.13: ACTIVE DIRECT-API POLL ke patterns ---
+  // Page khud haal jaanne ke liye jo status-shaped calls karta hai
+  // (GetWorkflow / List* / Search* / BatchGet*), unhi ka ASAL
+  // request (URL + headers + body) capture yaad rakhta hai; engine
+  // phir usi request ko page ke andar se baar-baar replay karke
+  // backend ko SEEDHA poochhta hai — tile/DOM ka intezaar nahi.
+  // Generate wali call (StreamGenerateContent) template KABHI nahi
+  // banti (use replay karna doosri generation fire kar dega).
+  statusMethodHints: ['getworkflow', 'getsceneworkflow', 'batchget', 'listworkflows', 'listuserworkflows', 'listprojectworkflows', 'searchprojectworkflows', 'searchuserworkflows', 'searchworkflows'],
+  generateMethodHints: ['streamgeneratecontent'],
+  // Replay me sirf yahi headers bheje jate hain (cookie page ke
+  // fetch par credentials:'include' se khud lagti hai).
+  replayHeaderNames: ['content-type', 'x-grpc-web', 'x-user-agent', 'authorization', 'x-goog-api-key', 'x-goog-authuser'],
+  maxTemplateBodyBytes: 256 * 1024,
   // --- Haddein ---
   idMinLength: 6,
   maxBodyScanBytes: 8 * 1024 * 1024,
@@ -68,6 +82,40 @@ const CAPTURE_PATTERNS = {
   // sakta hai (ghadi ki chhoti harkat / request pehle nikal jana).
   bindSlackMs: 5000
 };
+
+function urlPathLower(url) {
+  try { return new URL(String(url || '')).pathname.toLowerCase(); } catch (e) { return String(url || '').toLowerCase(); }
+}
+
+/** Generation fire karne wali API call hai kya (template ke liye HARAM). */
+function isGenerateApiUrl(url, patterns = CAPTURE_PATTERNS) {
+  if (!isApiUrl(url, patterns)) return false;
+  const p = urlPathLower(url);
+  return patterns.generateMethodHints.some(h => p.includes(h));
+}
+
+/**
+ * Haal-jaanch (status) wali API call hai kya — GetWorkflow, List,
+ * Search ya BatchGet wali me se koi; generate wali kabhi nahi.
+ */
+function isStatusApiUrl(url, patterns = CAPTURE_PATTERNS) {
+  if (!isApiUrl(url, patterns)) return false;
+  if (isGenerateApiUrl(url, patterns)) return false;
+  const p = urlPathLower(url);
+  return patterns.statusMethodHints.some(h => p.includes(h));
+}
+
+/** Replay ke liye sirf whitelist headers (chhote naam, string values). */
+function pickReplayHeaders(headers, patterns = CAPTURE_PATTERNS) {
+  const out = {};
+  if (!headers || typeof headers !== 'object') return out;
+  const want = new Set(patterns.replayHeaderNames.map(s => s.toLowerCase()));
+  for (const [k, v] of Object.entries(headers)) {
+    const lk = String(k).toLowerCase();
+    if (want.has(lk) && typeof v === 'string' && v) out[lk] = v;
+  }
+  return out;
+}
 
 function hostOf(url) {
   try { return new URL(String(url || '')).hostname.toLowerCase(); } catch (e) { return ''; }
@@ -218,6 +266,9 @@ class NetworkCapture {
     this.urlByKey = new Map();    // taskKey -> { url, via, at }
     this.keyByUrl = new Map();    // url -> taskKey
     this.sightings = new Map();   // url -> { firstSeenAt, source, claimedBy }
+    // v2.48.13: status-request templates (direct-API poll ke liye)
+    this.statusTemplates = new Map(); // workflowId -> { url, method, headers, body, at }
+    this.latestStatusTemplate = null; // sabse taza status template (koi bhi ID)
     // v2.10.0: diagnostics — listener zinda hai ya andha, iska
     // saboot. Owner ke v2.8.0 PC run me mediaUrlsSeen poori run 0
     // raha, lekin ye pata hi nahi chala ki listener ne jawab dekhe
@@ -251,7 +302,16 @@ class NetworkCapture {
       try {
         let post = null;
         try { post = req.postData() || null; } catch (e) {}
-        this.ingestRequest({ url: req.url(), postDataText: post, at: Date.now() });
+        // v2.48.13: asal body bytes (protobuf/binary ke liye
+        // postDataBuffer; na mile to text roop ka Buffer).
+        let postBuf = null;
+        try { postBuf = typeof req.postDataBuffer === 'function' ? req.postDataBuffer() : null; } catch (e) {}
+        if (!postBuf && post) { try { postBuf = Buffer.from(post, 'utf8'); } catch (e) {} }
+        let method = 'GET';
+        try { method = req.method() || 'GET'; } catch (e) {}
+        let headers = {};
+        try { headers = req.headers() || {}; } catch (e) {}
+        this.ingestRequest({ url: req.url(), postDataText: post, postDataBuffer: postBuf, method, headers, at: Date.now() });
       } catch (e) {}
     };
     this._resHandler = async (res) => {
@@ -381,8 +441,51 @@ class NetworkCapture {
         if (isMediaUrl(u, this.patterns)) this._sightUrl(u, 'request', at, [...ids]);
       }
     }
+    // Binary body (protobuf) ka latin1 roop — ID text wahan bhi
+    // aksar plain dikh jata hai.
+    if (evt.postDataBuffer && evt.postDataBuffer.length > 0) {
+      const bodyText = evt.postDataBuffer.toString('latin1');
+      for (const id of extractWorkflowIdsFromText(bodyText, this.patterns)) ids.add(id);
+    }
     for (const id of ids) { this.stats.idsSeen++; this._bindId(id, at); }
-    return { ids: [...ids] };
+    // v2.48.13: STATUS TEMPLATE yaad rakho — status-shaped API
+    // request (asal URL + whitelist headers + asal body bytes).
+    // Engine isay replay karke backend ko seedha poochhta hai.
+    // Generate wali call isStatusApiUrl se khud-bakhud bahar hai.
+    const templateIds = [];
+    if (evt.postDataBuffer && evt.postDataBuffer.length > 0
+      && evt.postDataBuffer.length <= this.patterns.maxTemplateBodyBytes
+      && isStatusApiUrl(evt.url, this.patterns)) {
+      const tpl = {
+        url: evt.url,
+        method: String(evt.method || 'POST').toUpperCase(),
+        headers: pickReplayHeaders(evt.headers, this.patterns),
+        body: Buffer.from(evt.postDataBuffer),
+        at
+      };
+      this.latestStatusTemplate = tpl;
+      for (const id of ids) { this.statusTemplates.set(id, tpl); templateIds.push(id); }
+    }
+    return { ids: [...ids], templateIds };
+  }
+
+  /**
+   * v2.48.13: is task ke liye replay template — pehle usi ke apne
+   * workflowId wala (sabse pakka), warna is submission ke baad ka
+   * sabse taza status template (project ki list-wali call bhi is
+   * task ki video ka link apne jawab me la sakti hai; bandish hamesha
+   * maujood pehchan ke usoolon se hi hoti hai — galat task ko URL
+   * kabhi nahi milta).
+   */
+  templateForKey(key) {
+    const sub = this._submissionForKey(key);
+    if (!sub) return null;
+    if (sub.id && this.statusTemplates.has(sub.id)) return this.statusTemplates.get(sub.id);
+    if (this.latestStatusTemplate
+      && this.latestStatusTemplate.at >= sub.at - this.patterns.bindSlackMs) {
+      return this.latestStatusTemplate;
+    }
+    return null;
   }
 
   /** Ek response ki khabar: URL + (jab mile) body buffer. */
@@ -467,4 +570,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, isApiUrl, isMediaHostUrl, isMediaUrl, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture };

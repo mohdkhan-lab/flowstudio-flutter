@@ -96,6 +96,12 @@ class FlowAutomationEngine {
     // bindings that landed before the task object was registered.
     this._captureTasks = new Map();
     this._earlyBackend = new Map();
+    // v2.48.13: direct-API pollers (videoId -> poll state). Har
+    // submit ke baad ek poller us task ke workflow ki haal-jaanch
+    // wali asal API request ko page ke andar se replay karke
+    // backend ko seedha poochhta rehta hai — link jawab me aate hi
+    // maujood capture-bandish download foran shuru kar deti hai.
+    this._apiPolls = new Map();
     // v2.8.0: the "backend par koi video link nahi dikha" line is
     // spoken ONCE per browser session, not once per task.
     this._backendNoteLogged = false;
@@ -2323,6 +2329,9 @@ class FlowAutomationEngine {
         this.registerBackendTask(submittedTask, this.currentDownloadDir, this.currentSettings);
       }
     } catch (e) {}
+    // v2.48.13: DIRECT-API POLL bhi isi pal se — page ke tile par
+    // nazar rakhne ke bajaye backend ko seedha poochhna shuru.
+    try { this._startApiPoll(submittedTask); } catch (e) {}
     return submittedTask;
   }
 
@@ -3945,6 +3954,97 @@ class FlowAutomationEngine {
    * se bandha link ho to wahi uthaya jata hai aur fetch turant
    * shuru ho jata hai.
    */
+
+  /**
+   * v2.48.13 — DIRECT-API POLL (owner ki demand: "render hote hi
+   * link fetch ho jaye"). Passive capture page ke apne jawabon ka
+   * intezaar karta hai; ye poller us se aage hai: page khud haal
+   * jaanne ke liye jo asal API request bhejta hai (GetWorkflow /
+   * List* — capture use template ke roop me yaad rakhta hai), poller
+   * USI request ko page ke andar se har 1.5s replay karta hai.
+   * Replay ka jawab maujood capture pipeline (ingestResponse) se
+   * guzarta hai — pehchan/bandish ke saare usool waise ke waise;
+   * link bandhte hi _onBackendMediaBound download foran shuru kar
+   * deta hai. Template na mile (page ne abhi koi status call nahi
+   * ki) to poller khamoshi se intezaar karta hai — passive capture
+   * peeche chal hi raha hota hai. 5 lagatar nakam replays par
+   * poller khud band ho jata hai (passive raasta hamesha zinda).
+   */
+  _startApiPoll(task) {
+    const key = task && (task.captureKey || task.videoId) ? (task.captureKey || task.videoId) : null;
+    if (!key || this._apiPolls.has(key)) return;
+    const state = { stopped: false, fails: 0, timer: null, startedAt: Date.now(), announced: false };
+    this._apiPolls.set(key, state);
+    const loop = async () => {
+      if (state.stopped) return;
+      try { await this._apiPollTick(task, key, state); } catch (e) {}
+      if (!state.stopped) state.timer = setTimeout(loop, 1500);
+    };
+    state.timer = setTimeout(loop, 1200);
+  }
+
+  _stopApiPoll(key) {
+    const state = this._apiPolls.get(key);
+    if (!state) return;
+    state.stopped = true;
+    if (state.timer) { try { clearTimeout(state.timer); } catch (e) {} }
+    this._apiPolls.delete(key);
+  }
+
+  async _apiPollTick(task, key, state) {
+    // Band hone ki shartein: engine ruk raha ho, page band ho,
+    // link pehle hi bandh gaya ho, ya task ki 20-minute hadd.
+    if (this.isStopping || !this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) {
+      this._stopApiPoll(key); return;
+    }
+    if (Date.now() - state.startedAt > 20 * 60 * 1000) { this._stopApiPoll(key); return; }
+    let bound = null;
+    try { bound = this.netCapture.urlForKey(key); } catch (e) {}
+    if (bound) { this._stopApiPoll(key); return; }
+    let tpl = null;
+    try { tpl = this.netCapture.templateForKey(key); } catch (e) {}
+    if (!tpl) return; // template abhi nahi — passive capture chal raha hai
+    let res = null;
+    try {
+      res = await downloadGuard.withTimeout(
+        this.page.evaluate(async (u, h, b64) => {
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const r = await fetch(u, { method: 'POST', headers: h, body: bytes, credentials: 'include' });
+          const buf = await r.arrayBuffer();
+          const u8 = new Uint8Array(buf);
+          let s = '';
+          for (let i = 0; i < u8.length; i += 8192) {
+            s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+          }
+          return { status: r.status, b64: btoa(s) };
+        }, tpl.url, tpl.headers, tpl.body.toString('base64')),
+        10000, 'direct-api poll');
+    } catch (e) { res = null; }
+    if (!res || res.status >= 400 || !res.b64) {
+      state.fails++;
+      if (state.fails >= 5) this._stopApiPoll(key);
+      return;
+    }
+    state.fails = 0;
+    try {
+      const buf = Buffer.from(res.b64, 'base64');
+      if (buf.length > 0) {
+        this.netCapture.ingestResponse({ url: tpl.url, contentType: 'application/grpc-web+proto', bodyBuffer: buf, at: Date.now() });
+      }
+    } catch (e) {}
+    try {
+      if (this.netCapture.urlForKey(key)) {
+        if (!state.announced) {
+          state.announced = true;
+          this.log('Direct API check: the video link arrived from the backend — download starting now.', 'info');
+        }
+        this._stopApiPoll(key);
+      }
+    } catch (e) {}
+  }
+
   registerBackendTask(task, downloadFolder, settings) {
     if (!task) return;
     const key = task.captureKey || task.videoId || null;

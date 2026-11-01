@@ -117,6 +117,16 @@ eq('pickReplayHeaders drops empty values', pickReplayHeaders({ 'x-grpc-web': '' 
   eq('far-stale template not offered', cap.templateForKey('vid_3000_2'), null);
 }
 
+// v2.48.18 DIAGNOSTIC-3: batchexecute door + rpcid names.
+{
+  const { isBatchExecuteUrl, rpcidsOf } = require('../engine/networkCapture');
+  eq('batchexecute door recognised', isBatchExecuteUrl('https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=MkEWBc'), true);
+  eq('other flow path is not the door', isBatchExecuteUrl('https://flow.google.com/project/abc'), false);
+  eq('rpcids single', JSON.stringify(rpcidsOf('https://flow.google.com/x?rpcids=MkEWBc')), '["MkEWBc"]');
+  eq('rpcids comma list', JSON.stringify(rpcidsOf('https://flow.google.com/x?rpcids=AA%2CBB')), '["AA","BB"]');
+  eq('rpcids absent', JSON.stringify(rpcidsOf('https://flow.google.com/x')), '[]');
+}
+
 // v2.48.17 DIAGNOSTIC-2: request path keys (host+path, no query).
 {
   const { pathKeyOf } = require('../engine/networkCapture');

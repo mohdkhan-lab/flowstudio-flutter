@@ -156,6 +156,30 @@ function pathKeyOf(url) {
   } catch (e) { return null; }
 }
 
+/**
+ * v2.48.18 DIAGNOSTIC-3: Flow ki maujooda web app apni saari
+ * generation baat-cheet EK hi darwaze se karti hai —
+ * flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute
+ * (TEST495 me ek chhoti run me 36 calls; purani aisandbox API
+ * par 0). Ye helper usi darwaze ko pehchanta hai.
+ */
+const BATCHEXECUTE_PATH = 'flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute';
+function isBatchExecuteUrl(url) {
+  return pathKeyOf(url) === BATCHEXECUTE_PATH;
+}
+
+/**
+ * batchexecute URL ke query se rpcids (kaunsi backend function
+ * bulayi gayi — ye function ke NAAM hain, koi raaz nahi).
+ */
+function rpcidsOf(url) {
+  try {
+    const raw = new URL(url).searchParams.get('rpcids');
+    if (!raw) return [];
+    return raw.split(',').map(s => s.trim()).filter(Boolean).slice(0, 8);
+  } catch (e) { return []; }
+}
+
 function hostOf(url) {
   try { return new URL(String(url || '')).hostname.toLowerCase(); } catch (e) { return ''; }
 }
@@ -341,6 +365,16 @@ class NetworkCapture {
     this.pathCounts = new Map(); // host+path -> count
     this.flowBodyStats = { scanned: 0, mediaHostHits: 0, workflowHits: 0, aisandboxHits: 0 };
     this._cdpClient = null;
+    // v2.48.18 DIAGNOSTIC-3: sirf batchexecute darwaze ka hisaab —
+    // kitni requests gayin (kis rpcid ke saath), kitne jawab aaye,
+    // unke bodies kitne padhe gaye aur kitne kyun chhoote, aur
+    // padhe gaye bodies me kin alfaz ke nishan mile.
+    this.batchStats = {
+      requests: 0, rpcids: {}, responses: 0, bodiesFetched: 0,
+      skipContentType: 0, skipTooBig: 0, skipBuffer: 0, contentTypes: {},
+      withMediaHost: 0, withVideoplayback: 0, withWorkflow: 0,
+      withFife: 0, withDownloadWord: 0
+    };
   }
 
   arm() { this.armed = true; }
@@ -372,6 +406,15 @@ class NetworkCapture {
       try {
         const k = pathKeyOf(req.url());
         if (k) this.pathCounts.set(k, (this.pathCounts.get(k) || 0) + 1);
+      } catch (e) {}
+      // v2.48.18 DIAGNOSTIC-3: batchexecute requests + rpcid naam.
+      try {
+        if (isBatchExecuteUrl(req.url())) {
+          this.batchStats.requests++;
+          for (const r of rpcidsOf(req.url())) {
+            this.batchStats.rpcids[r] = (this.batchStats.rpcids[r] || 0) + 1;
+          }
+        }
       } catch (e) {}
       // v2.48.15: status-shaped API requests ka TEMPLATE armed
       // hone se pehle bhi record hota hai (project khulte hi page
@@ -427,12 +470,28 @@ class NetworkCapture {
         // nahi hota, aur purani shart use hamesha chhod deti thi.
         const isFlowRpc = hostOf(url) === 'flow.google.com'
           && /(grpc|protobuf|octet-stream|text\/plain)/.test(ct);
-        if (!api && !ct.includes('json') && !isFlowRpc) return;
+        // v2.48.18 DIAGNOSTIC-3: batchexecute ke jawab har haal
+        // me padho (content-type jo bhi ho) — aur jo na padha
+        // jaye uski wajah bhi gin lo.
+        const batch = isBatchExecuteUrl(url);
+        if (batch) {
+          this.batchStats.responses++;
+          const ctKey = (ct.split(';')[0] || '(none)').trim();
+          this.batchStats.contentTypes[ctKey] = (this.batchStats.contentTypes[ctKey] || 0) + 1;
+        }
+        if (!api && !ct.includes('json') && !isFlowRpc && !batch) return;
         const declared = parseInt(headers['content-length'] || '', 10);
-        if (Number.isFinite(declared) && declared > this.patterns.maxBodyScanBytes) return;
+        if (Number.isFinite(declared) && declared > this.patterns.maxBodyScanBytes) {
+          if (batch) this.batchStats.skipTooBig++;
+          return;
+        }
         let buf = null;
-        try { buf = await res.buffer(); } catch (e) { return; }
-        if (!buf || buf.length === 0 || buf.length > this.patterns.maxBodyScanBytes) return;
+        try { buf = await res.buffer(); } catch (e) { if (batch) this.batchStats.skipBuffer++; return; }
+        if (!buf || buf.length === 0 || buf.length > this.patterns.maxBodyScanBytes) {
+          if (batch) this.batchStats.skipBuffer++;
+          return;
+        }
+        if (batch) this.batchStats.bodiesFetched++;
         this.ingestResponse({ url, contentType: ct, bodyBuffer: buf, at: Date.now() });
       } catch (e) {}
     };
@@ -642,6 +701,15 @@ class NetworkCapture {
           if (text.includes('googleusercontent')) this.flowBodyStats.mediaHostHits++;
           if (text.includes('workflowId') || text.includes('workflow_id')) this.flowBodyStats.workflowHits++;
           if (text.includes('aisandbox')) this.flowBodyStats.aisandboxHits++;
+          // v2.48.18 DIAGNOSTIC-3: batchexecute bodies ki alag
+          // ginti — link kis roop me aata hai, yehi sawal hai.
+          if (isBatchExecuteUrl(evt.url)) {
+            if (text.includes('googleusercontent')) this.batchStats.withMediaHost++;
+            if (text.includes('videoplayback')) this.batchStats.withVideoplayback++;
+            if (text.toLowerCase().includes('workflow')) this.batchStats.withWorkflow++;
+            if (text.toLowerCase().includes('fife')) this.batchStats.withFife++;
+            if (text.toLowerCase().includes('download')) this.batchStats.withDownloadWord++;
+          }
         } catch (e) {}
       }
       found = scanBodyForCapture(evt.bodyBuffer, this.patterns);
@@ -733,6 +801,11 @@ class NetworkCapture {
       ...this.stats, topHosts, allHosts, topPaths,
       apiRequests: Object.fromEntries(this.apiRequestCounts),
       flowBodies: { ...this.flowBodyStats },
+      batch: {
+        ...this.batchStats,
+        rpcids: { ...this.batchStats.rpcids },
+        contentTypes: { ...this.batchStats.contentTypes }
+      },
       ws: { ...this.wsStats, urls: [...this.wsStats.urls] },
       submissions: this.submissions.length, bound: this.urlByKey.size,
       unclaimed: [...this.sightings.values()].filter(s => !s.claimedBy).length
@@ -740,4 +813,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload };

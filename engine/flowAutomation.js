@@ -4228,6 +4228,11 @@ class FlowAutomationEngine {
         // upar wale [DIAGNOSTIC] me hi aata hai).
         const fb = snap.flowBodies || {};
         diag += ` [DIAGNOSTIC-2 — request paths: ${snap.topPaths || '—'}; flow.google.com bodies scanned: ${fb.scanned || 0}, carrying a media host: ${fb.mediaHostHits || 0}, carrying a workflow id: ${fb.workflowHits || 0}, mentioning aisandbox: ${fb.aisandboxHits || 0}]`;
+        // v2.48.18 DIAGNOSTIC-3: sirf batchexecute darwaze ka
+        // poora hisaab — requests/rpcids, jawab, padhe gaye
+        // bodies, chhoote huon ki wajah, aur andar ke nishan.
+        const b = snap.batch || {};
+        diag += ` [DIAGNOSTIC-3 — batchexecute requests: ${b.requests || 0} (rpcids: ${JSON.stringify(b.rpcids || {})}), responses: ${b.responses || 0} (content-types: ${JSON.stringify(b.contentTypes || {})}), bodies read: ${b.bodiesFetched || 0}, skipped too-big: ${b.skipTooBig || 0}, skipped buffer-fail: ${b.skipBuffer || 0}; bodies carrying: media host ${b.withMediaHost || 0}, videoplayback ${b.withVideoplayback || 0}, workflow word ${b.withWorkflow || 0}, fife word ${b.withFife || 0}, download word ${b.withDownloadWord || 0}]`;
       } catch (e) {}
       this.log(`[Prompt #${n}] No video link was seen on the backend — the UI routes are being tried.${diag}`, 'warn');
     }

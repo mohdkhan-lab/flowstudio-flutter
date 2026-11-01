@@ -1,7 +1,7 @@
 name: flutter_flow
 description: "A new Flutter project."
 publish_to: 'none'
-version: 2.48.10+90
+version: 2.48.11+91
 
 environment:
   sdk: ^3.13.5

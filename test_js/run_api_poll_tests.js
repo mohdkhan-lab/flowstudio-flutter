@@ -117,6 +117,14 @@ eq('pickReplayHeaders drops empty values', pickReplayHeaders({ 'x-grpc-web': '' 
   eq('far-stale template not offered', cap.templateForKey('vid_3000_2'), null);
 }
 
+// v2.48.17 DIAGNOSTIC-2: request path keys (host+path, no query).
+{
+  const { pathKeyOf } = require('../engine/networkCapture');
+  eq('pathKeyOf strips query', pathKeyOf('https://flow.google.com/_/flow/data/batchexecute?rpcids=abc&token=secret'), 'flow.google.com/_/flow/data/batchexecute');
+  eq('pathKeyOf keeps plain path', pathKeyOf('https://aisandbox-pa.googleapis.com/v1/flow/GetWorkflow'), 'aisandbox-pa.googleapis.com/v1/flow/GetWorkflow');
+  eq('pathKeyOf invalid url', pathKeyOf('not a url'), null);
+}
+
 // v2.48.16 DIAGNOSTIC: WebSocket frame scanning (pure helper).
 {
   const { scanFramePayload } = require('../engine/networkCapture');

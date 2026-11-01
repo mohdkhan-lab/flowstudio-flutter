@@ -143,6 +143,19 @@ function scanFramePayload(payload, patterns) {
   return { hasMedia, hasWorkflow };
 }
 
+/**
+ * v2.48.17 DIAGNOSTIC-2: ek URL ki pehchan sirf host+path se
+ * (query kabhi nahi — us me pehchan/token ho sakte hain).
+ * Request paths ki ginti ke liye: kaun sa endpoint asal me
+ * bulaya gaya, yehi sawal hai.
+ */
+function pathKeyOf(url) {
+  try {
+    const u = new URL(url);
+    return u.hostname + u.pathname;
+  } catch (e) { return null; }
+}
+
 function hostOf(url) {
   try { return new URL(String(url || '')).hostname.toLowerCase(); } catch (e) { return ''; }
 }
@@ -320,6 +333,14 @@ class NetworkCapture {
       sockets: 0, urls: [], framesIn: 0, framesOut: 0,
       bytesIn: 0, mediaFrames: 0, workflowFrames: 0
     };
+    // v2.48.17 DIAGNOSTIC-2: har request ka host+path hisaab
+    // (query nahi) aur flow.google.com ke apne jawabon ke andar
+    // ki substring talash. Pehla batayega ke generation ki calls
+    // asal me kin endpoints par gayin (same-host RPC? webchannel?);
+    // dusra batayega ke link un bodies me chhupa to nahi tha.
+    this.pathCounts = new Map(); // host+path -> count
+    this.flowBodyStats = { scanned: 0, mediaHostHits: 0, workflowHits: 0, aisandboxHits: 0 };
+    this._cdpClient = null;
   }
 
   arm() { this.armed = true; }
@@ -346,6 +367,11 @@ class NetworkCapture {
           const m = req.method() || 'GET';
           this.apiRequestCounts.set(m, (this.apiRequestCounts.get(m) || 0) + 1);
         }
+      } catch (e) {}
+      // v2.48.17 DIAGNOSTIC-2: har request ka host+path hisaab.
+      try {
+        const k = pathKeyOf(req.url());
+        if (k) this.pathCounts.set(k, (this.pathCounts.get(k) || 0) + 1);
       } catch (e) {}
       // v2.48.15: status-shaped API requests ka TEMPLATE armed
       // hone se pehle bhi record hota hai (project khulte hi page
@@ -395,7 +421,13 @@ class NetworkCapture {
         if (isMediaUrl(url, this.patterns)) {
           this.ingestResponse({ url, contentType: ct, bodyBuffer: null, at: Date.now() });
         }
-        if (!api && !ct.includes('json')) return;
+        // v2.48.17 DIAGNOSTIC-2: flow.google.com ke gRPC/protobuf
+        // type jawabon ke bodies bhi padho — agar generation ka
+        // data same-host gRPC-web se aata hai to uska body JSON
+        // nahi hota, aur purani shart use hamesha chhod deti thi.
+        const isFlowRpc = hostOf(url) === 'flow.google.com'
+          && /(grpc|protobuf|octet-stream|text\/plain)/.test(ct);
+        if (!api && !ct.includes('json') && !isFlowRpc) return;
         const declared = parseInt(headers['content-length'] || '', 10);
         if (Number.isFinite(declared) && declared > this.patterns.maxBodyScanBytes) return;
         let buf = null;
@@ -406,38 +438,53 @@ class NetworkCapture {
     };
     page.on('request', this._reqHandler);
     page.on('response', this._resHandler);
-    // v2.48.16 DIAGNOSTIC: WebSocket sunna — Flow ki generation
-    // ki khabar (aur shayad media link) ek lambi streaming line
-    // se aati ho to uska saboot yahin milega: socket ka host+path
-    // (query nahi), frames ki ginti, aur frames ke andar media
-    // URL / workflow ID ke nishan. Asal frame data kabhi save
-    // nahi hota.
+    // v2.48.17 DIAGNOSTIC-2: WebSocket nigrani CDP se. (v2.48.16
+    // wala page.on('websocket') Playwright ka tareeka tha —
+    // engine Puppeteer hai, wo listener kabhi chal hi nahi
+    // sakta tha; uska '0 sockets' natija bekaar tha. CDP ke
+    // Network.webSocket* events Puppeteer me asal tareeka hain.)
+    this._attachCdpWebSockets(page);
+    return true;
+  }
+
+  /**
+   * CDP session se WebSocket ka khulna aur frames ginna.
+   * Best-effort: session na bane to baaki capture pehle ki
+   * tarah chalta hai. Frame ka asal data save nahi hota —
+   * sirf scanFramePayload ke haan/na nishan.
+   */
+  async _attachCdpWebSockets(page) {
     try {
-      page.on('websocket', (ws) => {
+      const client = await page.target().createCDPSession();
+      await client.send('Network.enable');
+      this._cdpClient = client;
+      client.on('Network.webSocketCreated', (e) => {
         try {
           this.wsStats.sockets++;
-          let hostPath = 'ws';
-          try { const p = new URL(ws.url()); hostPath = p.hostname + p.pathname; } catch (e) {}
-          if (this.wsStats.urls.length < 5 && !this.wsStats.urls.includes(hostPath)) {
-            this.wsStats.urls.push(hostPath);
+          const k = pathKeyOf(e && e.url);
+          if (k && this.wsStats.urls.length < 5 && !this.wsStats.urls.includes(k)) {
+            this.wsStats.urls.push(k);
           }
-          ws.on('framereceived', (frame) => {
-            try {
-              this.wsStats.framesIn++;
-              const payload = frame && frame.payload;
-              if (payload) {
-                this.wsStats.bytesIn += payload.length || 0;
-                const scan = scanFramePayload(payload, this.patterns);
-                if (scan.hasMedia) this.wsStats.mediaFrames++;
-                if (scan.hasWorkflow) this.wsStats.workflowFrames++;
-              }
-            } catch (e) {}
-          });
-          ws.on('framesent', () => { try { this.wsStats.framesOut++; } catch (e) {} });
-        } catch (e) {}
+        } catch (err) {}
       });
-    } catch (e) {}
-    return true;
+      client.on('Network.webSocketFrameReceived', (e) => {
+        try {
+          this.wsStats.framesIn++;
+          const resp = e && e.response;
+          const data = resp && resp.payloadData;
+          if (typeof data === 'string' && data) {
+            this.wsStats.bytesIn += data.length;
+            const payload = resp.opcode === 2 ? Buffer.from(data, 'base64') : data;
+            const scan = scanFramePayload(payload, this.patterns);
+            if (scan.hasMedia) this.wsStats.mediaFrames++;
+            if (scan.hasWorkflow) this.wsStats.workflowFrames++;
+          }
+        } catch (err) {}
+      });
+      client.on('Network.webSocketFrameSent', () => {
+        try { this.wsStats.framesOut++; } catch (err) {}
+      });
+    } catch (err) {}
   }
 
   /** Listeners saaf band karo — koi leak nahi (har session ke saath). */
@@ -586,6 +633,17 @@ class NetworkCapture {
     let found = { ids: [], mediaUrls: [] };
     if (evt.bodyBuffer && evt.bodyBuffer.length > 0) {
       this.stats.bodiesScanned++;
+      // v2.48.17 DIAGNOSTIC-2: flow.google.com ke jawabon ke
+      // andar ki substring talash (sirf ginti; data save nahi).
+      if (hostOf(evt.url) === 'flow.google.com') {
+        try {
+          const text = evt.bodyBuffer.toString('latin1');
+          this.flowBodyStats.scanned++;
+          if (text.includes('googleusercontent')) this.flowBodyStats.mediaHostHits++;
+          if (text.includes('workflowId') || text.includes('workflow_id')) this.flowBodyStats.workflowHits++;
+          if (text.includes('aisandbox')) this.flowBodyStats.aisandboxHits++;
+        } catch (e) {}
+      }
       found = scanBodyForCapture(evt.bodyBuffer, this.patterns);
       for (const id of found.ids) { this.stats.idsSeen++; this._bindId(id, at); }
       for (const u of found.mediaUrls) {
@@ -666,9 +724,15 @@ class NetworkCapture {
       .sort((a, b) => b[1] - a[1])
       .map(([h, c]) => `${h}×${c}`)
       .join(', ');
+    const topPaths = [...this.pathCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15)
+      .map(([h, c]) => `${h}×${c}`)
+      .join(', ');
     return {
-      ...this.stats, topHosts, allHosts,
+      ...this.stats, topHosts, allHosts, topPaths,
       apiRequests: Object.fromEntries(this.apiRequestCounts),
+      flowBodies: { ...this.flowBodyStats },
       ws: { ...this.wsStats, urls: [...this.wsStats.urls] },
       submissions: this.submissions.length, bound: this.urlByKey.size,
       unclaimed: [...this.sightings.values()].filter(s => !s.claimedBy).length
@@ -676,4 +740,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload };

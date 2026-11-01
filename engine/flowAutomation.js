@@ -4223,6 +4223,11 @@ class FlowAutomationEngine {
         // batayegi ke data asal me kis raaste aata hai.
         const ws = snap.ws || {};
         diag += ` [DIAGNOSTIC — API requests: ${JSON.stringify(snap.apiRequests || {})}; all hosts: ${snap.allHosts || '—'}; WebSockets: ${ws.sockets || 0} opened (${(ws.urls || []).join(', ') || 'none'}), frames in ${ws.framesIn || 0} (${ws.bytesIn || 0} bytes), frames out ${ws.framesOut || 0}, frames carrying a media link: ${ws.mediaFrames || 0}, frames carrying a workflow id: ${ws.workflowFrames || 0}]`;
+        // v2.48.17 DIAGNOSTIC-2: request paths + flow ke apne
+        // jawabon ke andar ki talash (CDP-wala WebSocket hisaab
+        // upar wale [DIAGNOSTIC] me hi aata hai).
+        const fb = snap.flowBodies || {};
+        diag += ` [DIAGNOSTIC-2 — request paths: ${snap.topPaths || '—'}; flow.google.com bodies scanned: ${fb.scanned || 0}, carrying a media host: ${fb.mediaHostHits || 0}, carrying a workflow id: ${fb.workflowHits || 0}, mentioning aisandbox: ${fb.aisandboxHits || 0}]`;
       } catch (e) {}
       this.log(`[Prompt #${n}] No video link was seen on the backend — the UI routes are being tried.${diag}`, 'warn');
     }

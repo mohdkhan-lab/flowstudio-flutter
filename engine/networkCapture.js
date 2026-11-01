@@ -122,6 +122,27 @@ function pickReplayHeaders(headers, patterns = CAPTURE_PATTERNS) {
   return out;
 }
 
+/**
+ * v2.48.16 DIAGNOSTIC: ek WebSocket frame ke payload me media
+ * URL ya workflow ID ka nishan hai kya? Payload string ya Buffer
+ * ho sakta hai; sirf pehle 256KB dekhe jate hain, asal data
+ * kahin save nahi hota — natija sirf do haan/na.
+ */
+function scanFramePayload(payload, patterns) {
+  let text = '';
+  try {
+    if (typeof payload === 'string') text = payload.slice(0, 256 * 1024);
+    else if (payload && typeof payload === 'object' && typeof payload.length === 'number') {
+      text = Buffer.from(payload).toString('utf8', 0, 256 * 1024);
+    }
+  } catch (e) { return { hasMedia: false, hasWorkflow: false }; }
+  if (!text) return { hasMedia: false, hasWorkflow: false };
+  const urls = extractUrlsFromText(text, patterns || CAPTURE_PATTERNS);
+  const hasMedia = urls.some(u => isMediaUrl(u, patterns || CAPTURE_PATTERNS));
+  const hasWorkflow = extractWorkflowIdsFromText(text, patterns || CAPTURE_PATTERNS).length > 0;
+  return { hasMedia, hasWorkflow };
+}
+
 function hostOf(url) {
   try { return new URL(String(url || '')).hostname.toLowerCase(); } catch (e) { return ''; }
 }
@@ -286,6 +307,19 @@ class NetworkCapture {
       mediaUrlsSeen: 0, idsSeen: 0,
       boundById: 0, boundByCurrentSrc: 0, boundByOrder: 0
     };
+    // v2.48.16 DIAGNOSTIC: TEST493 (2026-11-01) me pure run ke
+    // dauraan API responses = 0 mile — Flow ka data shayad ek
+    // lambi streaming line (WebSocket / webchannel) se aata hai
+    // jise ye engine sunta hi nahi tha. Ab: (a) API REQUESTS bhi
+    // gine jate hain (sirf jawab nahi), (b) har WebSocket ka
+    // khulna, uske frames ki ginti, aur frames ke ANDAR media
+    // URL / workflow ID ke nishan gine jate hain (frame ka asal
+    // data kabhi save nahi hota — sirf haan/na aur size).
+    this.apiRequestCounts = new Map(); // method -> count (API hosts par)
+    this.wsStats = {
+      sockets: 0, urls: [], framesIn: 0, framesOut: 0,
+      bytesIn: 0, mediaFrames: 0, workflowFrames: 0
+    };
   }
 
   arm() { this.armed = true; }
@@ -303,6 +337,16 @@ class NetworkCapture {
     if (!page || typeof page.on !== 'function') return false;
     this._page = page;
     this._reqHandler = (req) => {
+      // v2.48.16 DIAGNOSTIC: API requests ki ginti armed hone se
+      // pehle bhi (sirf host+method ka hisaab, koi data nahi) —
+      // TEST493 me API responses 0 the; ab ye bhi pata chalega
+      // ke API requests gaye bhi the ya nahi.
+      try {
+        if (isApiUrl(req.url(), this.patterns)) {
+          const m = req.method() || 'GET';
+          this.apiRequestCounts.set(m, (this.apiRequestCounts.get(m) || 0) + 1);
+        }
+      } catch (e) {}
       // v2.48.15: status-shaped API requests ka TEMPLATE armed
       // hone se pehle bhi record hota hai (project khulte hi page
       // List/Search calls bhejta hai — wahi direct-API poll ka
@@ -362,6 +406,37 @@ class NetworkCapture {
     };
     page.on('request', this._reqHandler);
     page.on('response', this._resHandler);
+    // v2.48.16 DIAGNOSTIC: WebSocket sunna — Flow ki generation
+    // ki khabar (aur shayad media link) ek lambi streaming line
+    // se aati ho to uska saboot yahin milega: socket ka host+path
+    // (query nahi), frames ki ginti, aur frames ke andar media
+    // URL / workflow ID ke nishan. Asal frame data kabhi save
+    // nahi hota.
+    try {
+      page.on('websocket', (ws) => {
+        try {
+          this.wsStats.sockets++;
+          let hostPath = 'ws';
+          try { const p = new URL(ws.url()); hostPath = p.hostname + p.pathname; } catch (e) {}
+          if (this.wsStats.urls.length < 5 && !this.wsStats.urls.includes(hostPath)) {
+            this.wsStats.urls.push(hostPath);
+          }
+          ws.on('framereceived', (frame) => {
+            try {
+              this.wsStats.framesIn++;
+              const payload = frame && frame.payload;
+              if (payload) {
+                this.wsStats.bytesIn += payload.length || 0;
+                const scan = scanFramePayload(payload, this.patterns);
+                if (scan.hasMedia) this.wsStats.mediaFrames++;
+                if (scan.hasWorkflow) this.wsStats.workflowFrames++;
+              }
+            } catch (e) {}
+          });
+          ws.on('framesent', () => { try { this.wsStats.framesOut++; } catch (e) {} });
+        } catch (e) {}
+      });
+    } catch (e) {}
     return true;
   }
 
@@ -587,8 +662,18 @@ class NetworkCapture {
       .slice(0, 5)
       .map(([h, c]) => `${h}×${c}`)
       .join(', ');
-    return { ...this.stats, topHosts, submissions: this.submissions.length, bound: this.urlByKey.size, unclaimed: [...this.sightings.values()].filter(s => !s.claimedBy).length };
+    const allHosts = [...this.hostCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([h, c]) => `${h}×${c}`)
+      .join(', ');
+    return {
+      ...this.stats, topHosts, allHosts,
+      apiRequests: Object.fromEntries(this.apiRequestCounts),
+      ws: { ...this.wsStats, urls: [...this.wsStats.urls] },
+      submissions: this.submissions.length, bound: this.urlByKey.size,
+      unclaimed: [...this.sightings.values()].filter(s => !s.claimedBy).length
+    };
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload };

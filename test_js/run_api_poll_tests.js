@@ -117,6 +117,18 @@ eq('pickReplayHeaders drops empty values', pickReplayHeaders({ 'x-grpc-web': '' 
   eq('far-stale template not offered', cap.templateForKey('vid_3000_2'), null);
 }
 
+// v2.48.16 DIAGNOSTIC: WebSocket frame scanning (pure helper).
+{
+  const { scanFramePayload } = require('../engine/networkCapture');
+  const withMedia = scanFramePayload('{"media":"https://lh3.googleusercontent.com/videoplayback/abc123"}');
+  eq('frame scan finds media link', withMedia.hasMedia, true);
+  eq('frame scan: no workflow id in media-only frame', withMedia.hasWorkflow, false);
+  const withWf = scanFramePayload(Buffer.from('{"workflowId":"3f2b8c1e-1234-4a5b-8c9d-0123456789ab"}', 'utf8'));
+  eq('frame scan finds workflow id in buffer frame', withWf.hasWorkflow, true);
+  const plain = scanFramePayload('{"status":"progress","percent":42}');
+  eq('frame scan: plain frame has neither', plain.hasMedia || plain.hasWorkflow, false);
+}
+
 // v2.48.15: claimByOrder only takes backend-body sightings —
 // a media RESPONSE sighting (the tile's poster/playback URL
 // family) must never be handed out by sequence order (TEST492:

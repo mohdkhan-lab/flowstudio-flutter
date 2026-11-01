@@ -4217,6 +4217,12 @@ class FlowAutomationEngine {
       try {
         const snap = this.netCapture.statsSnapshot();
         diag = ` (Network check: ${snap.responsesSeen} responses came in total, API ${snap.apiResponses}, media responses ${snap.mediaResponsesSeen}; hosts: ${snap.topHosts || '—'})`;
+        // v2.48.16 DIAGNOSTIC: poora census — API requests (sirf
+        // jawab nahi), saare hosts, aur WebSocket ki poori
+        // tafseel. TEST493 me API responses 0 the; ye line
+        // batayegi ke data asal me kis raaste aata hai.
+        const ws = snap.ws || {};
+        diag += ` [DIAGNOSTIC — API requests: ${JSON.stringify(snap.apiRequests || {})}; all hosts: ${snap.allHosts || '—'}; WebSockets: ${ws.sockets || 0} opened (${(ws.urls || []).join(', ') || 'none'}), frames in ${ws.framesIn || 0} (${ws.bytesIn || 0} bytes), frames out ${ws.framesOut || 0}, frames carrying a media link: ${ws.mediaFrames || 0}, frames carrying a workflow id: ${ws.workflowFrames || 0}]`;
       } catch (e) {}
       this.log(`[Prompt #${n}] No video link was seen on the backend — the UI routes are being tried.${diag}`, 'warn');
     }

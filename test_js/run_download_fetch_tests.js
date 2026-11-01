@@ -172,5 +172,31 @@ eq('missing channel falls back to the monitor cap', roundCapForChannel(undefined
   eq('default frozen budget is 6 minutes', renderProgressWatch.DEFAULT_FROZEN_AFTER_MS, 360000);
 }
 
+// --- v2.48.10: parallel range planning ---
+const { RANGE_CHUNK_COUNT, RANGE_MIN_BYTES, planRanges } = require('../engine/downloadFetch');
+eq('range chunk count is 4', RANGE_CHUNK_COUNT, 4);
+eq('range min bytes is 1MB', RANGE_MIN_BYTES, 1024 * 1024);
+{
+  const rs = planRanges(10, 4);
+  eq('planRanges(10,4) count', rs.length, 4);
+  eq('planRanges covers start', rs[0].start, 0);
+  eq('planRanges covers end', rs[rs.length - 1].end, 9);
+  let covered = 0;
+  let contiguous = true;
+  for (let i = 0; i < rs.length; i++) {
+    covered += rs[i].end - rs[i].start + 1;
+    if (i > 0 && rs[i].start !== rs[i - 1].end + 1) contiguous = false;
+  }
+  eq('planRanges covers every byte once', covered, 10);
+  eq('planRanges contiguous', contiguous, true);
+  const big = planRanges(3133673, RANGE_CHUNK_COUNT);
+  eq('planRanges big file count', big.length, 4);
+  eq('planRanges big file end', big[big.length - 1].end, 3133672);
+}
+eq('planRanges(0) empty', planRanges(0, 4).length, 0);
+eq('planRanges tiny total clamps chunks', planRanges(2, 4).length, 2);
+eq('planRanges single chunk', planRanges(500, 1).length, 1);
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 process.exit(failed > 0 ? 1 : 0);
+

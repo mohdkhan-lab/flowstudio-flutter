@@ -2897,6 +2897,69 @@ class FlowAutomationEngine {
     return header;
   }
 
+  /**
+   * v2.48.10: fetch a whole file as PARALLEL byte ranges (the
+   * plan comes from downloadFetch.planRanges). Returns the
+   * assembled Buffer, or null when ranges are not supported /
+   * any chunk fails — the caller then uses the plain GET, so
+   * this can only ever make a download faster, never break one.
+   * A 1-byte probe (Range: bytes=0-0) learns the total size from
+   * Content-Range; chunks then run concurrently because a single
+   * connection to the media edge is measurably throttled
+   * (~1 MB/s in TEST488/TEST489) while the owner's browser
+   * downloads the same file at full speed.
+   */
+  async _fetchBufferRanged(targetUrl, cookieHeader, userAgent) {
+    const baseHeaders = {
+      'Cookie': cookieHeader || '',
+      'User-Agent': userAgent,
+      'Referer': 'https://flow.google.com/'
+    };
+    const getRange = async (range, timeoutMs) => {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => { try { ctrl.abort(); } catch (e) {} }, timeoutMs);
+      try {
+        return await fetch(targetUrl, {
+          headers: { ...baseHeaders, 'Range': range },
+          redirect: 'follow',
+          signal: ctrl.signal
+        });
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    let total = 0;
+    try {
+      const probe = await getRange('bytes=0-0', 15000);
+      if (probe.status !== 206) {
+        try { await probe.arrayBuffer(); } catch (e) {}
+        return null;
+      }
+      const cr = String(probe.headers.get('content-range') || '');
+      const m = /\/(\d+)\s*$/.exec(cr);
+      total = m ? parseInt(m[1], 10) : 0;
+      try { await probe.arrayBuffer(); } catch (e) {}
+    } catch (e) {
+      return null;
+    }
+    if (!total || total < downloadFetch.RANGE_MIN_BYTES) return null;
+    const ranges = downloadFetch.planRanges(total, downloadFetch.RANGE_CHUNK_COUNT);
+    if (ranges.length < 2) return null;
+    const parts = await Promise.all(ranges.map(async (r) => {
+      try {
+        const resp = await getRange(`bytes=${r.start}-${r.end}`, 60000);
+        if (resp.status !== 206) return null;
+        const buf = Buffer.from(await resp.arrayBuffer());
+        return buf.length === (r.end - r.start + 1) ? buf : null;
+      } catch (e) {
+        return null;
+      }
+    }));
+    if (parts.some(p => !p)) return null;
+    const joined = Buffer.concat(parts);
+    return joined.length === total ? joined : null;
+  }
+
   /** The browser session's real User-Agent (cached per engine). */
   async _realUserAgent() {
     if (this._browserUA) return this._browserUA;
@@ -3023,6 +3086,19 @@ class FlowAutomationEngine {
             cookieHeader = await this._sessionCookieHeader(targetUrl);
           }
           const userAgent = task.preCapturedUserAgent || (await this._realUserAgent());
+          // v2.48.10: FIRST attempt only — try the parallel range
+          // download before the plain GET (see _fetchBufferRanged).
+          // Success skips the plain GET entirely; any failure
+          // falls through to it unchanged.
+          if (fetchTry === 1) {
+            const ranged = await this._fetchBufferRanged(targetUrl, cookieHeader, userAgent);
+            if (ranged && ranged.length >= minSizeDl) {
+              savedBuffer = ranged;
+              this._noteFetchStep(task, { step: 'node-fetch-ranged', ok: true });
+              this.log(`[Prompt #${task.promptIndex + 1}] Direct download: the file was fetched in ${downloadFetch.RANGE_CHUNK_COUNT} parallel parts (${(ranged.length / 1048576).toFixed(1)} MB).`, 'info');
+            }
+          }
+          if (savedBuffer) break;
           // v2.30.0: this fetch used to carry NO AbortSignal — a
           // stalled connection could hold the download step (and the
           // render monitor behind it) indefinitely. 60s abort now;
@@ -3936,7 +4012,8 @@ class FlowAutomationEngine {
     }
     task._backendHotFetch = false;
     if (ok) {
-      this.log(`[Prompt #${n}] Backend download finished in ${((Date.now() - fetchStartedAt) / 1000).toFixed(1)}s (file saved + verified).`, 'success');
+      task._backendFetchMs = Date.now() - fetchStartedAt;
+      this.log(`[Prompt #${n}] Backend download finished in ${(task._backendFetchMs / 1000).toFixed(1)}s (file saved + verified).`, 'success');
     }
     return !!ok;
   }

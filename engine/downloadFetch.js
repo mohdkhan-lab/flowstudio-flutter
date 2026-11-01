@@ -170,6 +170,40 @@ function roundCapForChannel(channel) {
   return channel === 'drain' ? DRAIN_ROUND_CAP : MONITOR_ROUND_CAP;
 }
 
+// --- v2.48.10: PARALLEL RANGE DOWNLOAD planning ---
+// Measured on the owner's PC (TEST488/TEST489, 2026-11-01): one
+// plain GET of a 2.6–3.1 MB video took 18–30s from "backend link
+// found" to "file saved" (~1 MB/s effective) even when it was the
+// ONLY download running — the signature of a per-CONNECTION cap
+// on the serving side (Google's media edges commonly throttle a
+// single connection; a browser/download-manager opens several).
+// The fix is the standard one: fetch the file in parallel byte
+// ranges and reassemble. This module only PLANS the ranges (pure,
+// testable); flowAutomation performs the fetches and falls back
+// to the plain GET whenever ranges are not supported.
+const RANGE_CHUNK_COUNT = 4;
+const RANGE_MIN_BYTES = 1024 * 1024;
+
+/** Split `totalBytes` into up to `chunkCount` contiguous,
+ *  non-overlapping [start, end] byte ranges covering the whole
+ *  file exactly once, in order. [] for an empty/invalid total. */
+function planRanges(totalBytes, chunkCount) {
+  const total = Math.floor(Number(totalBytes) || 0);
+  const n = Math.max(1, Math.floor(Number(chunkCount) || 1));
+  if (total <= 0) return [];
+  const count = Math.min(n, total);
+  const base = Math.floor(total / count);
+  const rem = total % count;
+  const out = [];
+  let start = 0;
+  for (let i = 0; i < count; i++) {
+    const len = base + (i < rem ? 1 : 0);
+    out.push({ start, end: start + len - 1 });
+    start += len;
+  }
+  return out;
+}
+
 module.exports = {
   NODE_FETCH_MAX_ATTEMPTS,
   NODE_FETCH_RETRY_DELAYS_MS,
@@ -183,5 +217,8 @@ module.exports = {
   fastFetchUrl,
   MONITOR_ROUND_CAP,
   DRAIN_ROUND_CAP,
-  roundCapForChannel
+  roundCapForChannel,
+  RANGE_CHUNK_COUNT,
+  RANGE_MIN_BYTES,
+  planRanges
 };

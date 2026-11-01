@@ -409,6 +409,50 @@ class WorkerPool {
   }
 
   _findNextAvailableAccount(pool, requiredCredits, unusableAccounts, afterAccountId) {
+    // Eligibility (v2.48.10: factored out, rules unchanged) — the
+    // account's live row, or null when this run may not use it.
+    const eligible = (candidate) => {
+      if (unusableAccounts && unusableAccounts.has(candidate.id)) return null;
+      // v2.29.0 (checkbox truth): even if a caller hands this scan the
+      // FULL account list, an account the owner unticked in the
+      // sidebar can never be picked (or charged) by this run.
+      if (this.allowedAccountIds && !this.allowedAccountIds.has(String(candidate.id))) return null;
+      const live = dbService.getAccount(candidate.id) || candidate;
+      if (this.assignedAccounts.has(candidate.id)) return null;
+      if (live.status === 'Exhausted' || live.status === 'Need Login' || live.status === 'Unconfirmed') return null;
+      // v2.5.0: live-only mode — sirf Live / Ready accounts hi chune
+      // jayenge, baaki sab is run ke liye invisible hain.
+      if (this.liveOnly && !WorkerPool.LIVE_READY_STATUSES.has(live.status)) return null;
+      // v1.8.0: Cooldown is a TIMED rest — an account whose rest has
+      // expired is eligible again (openFlowStudio live-checks it first).
+      if (live.status === 'Cooldown' && accountHealth.isResting(live)) return null;
+      const credits = (typeof live.credits === 'number') ? live.credits : null;
+      // v2.46.0: pick ke waqt bhi wahi rule jo pool par laga hai —
+      // balance kam ho YA abhi tak padha hi na gaya ho (null), dono
+      // soorat me account is run ke liye nahi uthaya jayega (null ko
+      // pehle "shayad hoga" samajh kar launch kar diya jata tha aur
+      // waqt studio ke check me zaya hota tha). Image runs
+      // (requiredCredits 0) par credits ka koi sawal hi nahi.
+      if (requiredCredits > 0 && (credits === null || credits < requiredCredits)) return null;
+      return live;
+    };
+    // v2.48.10: a FRESH binding (no previous account — a worker's
+    // first pick of a run) takes the eligible account with the
+    // MOST credits, so the run starts on the account most likely
+    // to hold it whole (see the credit-plan note). Failover picks
+    // (afterAccountId set) keep the v2.0.0 round-robin scan below
+    // untouched — rotating away from a failed account must never
+    // land back on it just because it is rich.
+    if (!afterAccountId) {
+      let best = null;
+      for (const candidate of pool) {
+        const live = eligible(candidate);
+        if (!live) continue;
+        const c = (typeof live.credits === 'number') ? live.credits : 0;
+        if (!best || c > best.credits) best = { live, credits: c };
+      }
+      if (best) return best.live;
+    }
     // v2.0.0: ROUND-ROBIN scan — the search starts just AFTER the
     // account this worker was last bound to (wrapping around). Before
     // v2.0 the scan always restarted at the pool head, which was safe
@@ -424,30 +468,8 @@ class WorkerPool {
       if (idx >= 0) start = idx + 1;
     }
     for (let k = 0; k < pool.length; k++) {
-      const candidate = pool[(start + k) % pool.length];
-      if (unusableAccounts && unusableAccounts.has(candidate.id)) continue;
-      // v2.29.0 (checkbox truth): even if a caller hands this scan the
-      // FULL account list, an account the owner unticked in the
-      // sidebar can never be picked (or charged) by this run.
-      if (this.allowedAccountIds && !this.allowedAccountIds.has(String(candidate.id))) continue;
-      const live = dbService.getAccount(candidate.id) || candidate;
-      if (this.assignedAccounts.has(candidate.id)) continue;
-      if (live.status === 'Exhausted' || live.status === 'Need Login' || live.status === 'Unconfirmed') continue;
-      // v2.5.0: live-only mode — sirf Live / Ready accounts hi chune
-      // jayenge, baaki sab is run ke liye invisible hain.
-      if (this.liveOnly && !WorkerPool.LIVE_READY_STATUSES.has(live.status)) continue;
-      // v1.8.0: Cooldown is a TIMED rest — an account whose rest has
-      // expired is eligible again (openFlowStudio live-checks it first).
-      if (live.status === 'Cooldown' && accountHealth.isResting(live)) continue;
-      const credits = (typeof live.credits === 'number') ? live.credits : null;
-      // v2.46.0: pick ke waqt bhi wahi rule jo pool par laga hai —
-      // balance kam ho YA abhi tak padha hi na gaya ho (null), dono
-      // soorat me account is run ke liye nahi uthaya jayega (null ko
-      // pehle "shayad hoga" samajh kar launch kar diya jata tha aur
-      // waqt studio ke check me zaya hota tha). Image runs
-      // (requiredCredits 0) par credits ka koi sawal hi nahi.
-      if (requiredCredits > 0 && (credits === null || credits < requiredCredits)) continue;
-      return live;
+      const live = eligible(pool[(start + k) % pool.length]);
+      if (live) return live;
     }
     return null;
   }
@@ -797,17 +819,24 @@ class WorkerPool {
       // when the app already knows a video's exact cost and each
       // account's balance, why is a video that can never fit an
       // account not given to the next account from the START? The
-      // split is now computed BEFORE the run — greedy, in pool
-      // order, the same order workers actually consume accounts —
-      // and written to the log + Activity, so the assignment (and
-      // any mid-run switch it implies) is visible up front instead
-      // of being discovered at the switch. The per-task gate and
-      // live balance re-reads still govern the real submissions;
-      // the plan is the map, they are the road.
+      // split is now computed BEFORE the run and written to the
+      // log + Activity, so the assignment (and any mid-run switch
+      // it implies) is visible up front instead of being
+      // discovered at the switch. The per-task gate and live
+      // balance re-reads still govern the real submissions; the
+      // plan is the map, they are the road.
+      // v2.48.10: the split is FULLEST-FIRST (highest balance
+      // first), matching a worker's fresh binding in
+      // _findNextAvailableAccount — a run that fits one account
+      // stays on it instead of starting on a nearly-empty one
+      // and switching mid-run (TEST489: the run opened on an
+      // 8-credit account, spent its last video's worth, then paid
+      // a ~37s browser switch for the remaining two).
       if (requiredCredits > 0 && pendingTasks.length > 0) {
         let remaining = pendingTasks.length;
         const planParts = [];
-        for (const a of pool) {
+        const fullestFirst = [...pool].sort((x, y) => ((y.credits || 0) - (x.credits || 0)));
+        for (const a of fullestFirst) {
           if (remaining <= 0) break;
           const c = (typeof a.credits === 'number' && Number.isFinite(a.credits)) ? a.credits : 0;
           const fits = Math.floor(Math.max(0, c) / requiredCredits);
@@ -970,12 +999,16 @@ class WorkerPool {
           // only, never the slow in-page route (the download-retry
           // path keeps every route as a last resort).
           engineTask._backendHotFetch = true;
+          const pipelineFetchStartedAt = Date.now();
           try {
             ok = await owner.downloadFromCapturedStream(engineTask, downloadFolder, settings);
           } catch (e) {
             ok = false;
           } finally {
             engineTask._backendHotFetch = false;
+          }
+          if (ok && !engineTask._backendFetchMs) {
+            engineTask._backendFetchMs = Date.now() - pipelineFetchStartedAt;
           }
         }
 
@@ -1469,7 +1502,7 @@ class WorkerPool {
               stage: 'download',
               taskId: task.taskId || null,
               promptIndex: typeof task.promptIndex === 'number' ? task.promptIndex : null,
-              detail: `Prompt #${(task.promptIndex || 0) + 1}'s video was generated and also downloaded. File: ${result.fileName}${result.filePath ? ` · Save location: ${result.filePath}` : ''}${result.fileSizeMb ? ` · Size: ${result.fileSizeMb}` : ''}`,
+              detail: `Prompt #${(task.promptIndex || 0) + 1}'s video was generated and also downloaded. File: ${result.fileName}${result.filePath ? ` · Save location: ${result.filePath}` : ''}${result.fileSizeMb ? ` · Size: ${result.fileSizeMb}` : ''}${task._backendFetchMs ? ` · Download took ${(task._backendFetchMs / 1000).toFixed(1)}s` : ''}`,
               message: `Download complete: ${result.fileName}${task.tag ? ` · Tag ${task.tag}` : ''} · Prompt #${(task.promptIndex || 0) + 1}${workerAccount ? ` · ${workerAccount.name}` : ''}`
             });
             this.onTaskUpdate({

@@ -729,6 +729,37 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.8: wait until Flow's page shows ANY usable signal (a
+   * Google sign-in page, the landing button, the gallery, a
+   * project, or the prompt box) instead of sleeping a fixed
+   * number of seconds. The old fixed sleeps (4s after navigation,
+   * 5s after the landing click, 2.5s after entering the canvas)
+   * were paid IN FULL on every browser open — including every
+   * mid-run account switch — even when the page was ready in one
+   * second. Returns true when a signal was seen before the cap.
+   */
+  async _waitForFlowSignal(capMs) {
+    const deadline = Date.now() + Math.max(0, capMs || 0);
+    while (Date.now() < deadline) {
+      if (!this.page || this.page.isClosed()) return false;
+      try {
+        if (this.page.url().includes('accounts.google.com')) return true;
+        const seen = await this.page.evaluate(() => {
+          if (window.location.pathname.includes('/project/')) return true;
+          const btns = Array.from(document.querySelectorAll('button, a, div[role="button"]'));
+          if (btns.some(b => { const t = (b.innerText || ''); return t.includes('Create with Google Flow') || t.includes('Try in Google Flow') || t.toLowerCase().includes('new project'); })) return true;
+          if (document.querySelector('a[href*="/project/"]')) return true;
+          if (document.querySelector('.ProseMirror, div[contenteditable="true"], div[role="textbox"], flow-grid-tile-container')) return true;
+          return false;
+        });
+        if (seen) return true;
+      } catch (e) {}
+      await sleep(400);
+    }
+    return false;
+  }
+
+  /**
    * Navigate into the Flow project canvas.
    * Returns 'READY' | 'NEED_LOGIN' | 'EXHAUSTED' | 'LOW_CREDITS'.
    */
@@ -742,7 +773,9 @@ class FlowAutomationEngine {
     } catch (e) {
       await this.page.goto('https://labs.google/fx/tools/flow', { waitUntil: 'domcontentloaded', timeout: 60000 });
     }
-    await sleep(4000);
+    // v2.48.8: proceed the moment the page shows anything usable
+    // (was a blind 4-second sleep on every open).
+    await this._waitForFlowSignal(6000);
 
     // 1. Landing page -> enter the app
     const clickedLanding = await this.page.evaluate(() => {
@@ -760,7 +793,9 @@ class FlowAutomationEngine {
 
     if (clickedLanding) {
       this.log('Clicked "Create with Google Flow" — the canvas (work area) is opening…', 'info');
-      await sleep(5000);
+      // v2.48.8: proceed as soon as the gallery/project appears
+      // (was a blind 5-second sleep).
+      await this._waitForFlowSignal(5000);
     }
 
     // 2. Google Account login check — an explicit signin URL is the only
@@ -830,7 +865,7 @@ class FlowAutomationEngine {
           this.log('Going in directly via the project link…', 'info');
           try {
             await this.page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-            await sleep(3000);
+            await this._waitForFlowSignal(3000);
             if (this.page.url().includes('/project/')) {
               enteredCanvas = true;
               break;
@@ -844,7 +879,11 @@ class FlowAutomationEngine {
       }
 
       this.log('The Flow project is open — now at the work area.', 'success');
-      await sleep(2500);
+      // v2.48.8: proceed as soon as tiles or the prompt box are
+      // actually there (was a blind 2.5-second sleep).
+      try {
+        await this.page.waitForSelector('flow-grid-tile-container, .ProseMirror, div[contenteditable="true"]', { timeout: 2500 });
+      } catch (e) {}
     }
 
     // Dismiss tutorial/welcome overlay and clean up stale failed tiles
@@ -912,7 +951,9 @@ class FlowAutomationEngine {
 
     await this.ensureAgentModeDisabled();
 
-    await sleep(1200);
+    // v2.48.8: the workspace is already proven ready above — only
+    // a short settle remains (was a blind 1.2-second sleep).
+    await sleep(300);
     return 'READY';
   }
 
@@ -4535,7 +4576,10 @@ class FlowAutomationEngine {
         }
       }
 
-      await sleep(2000);
+      // v2.48.8: 1-second monitor poll (was 2s) — a finished video
+      // is noticed up to a second sooner; the render wait itself
+      // is Flow's, this only removes the app's own notice lag.
+      await sleep(1000);
 
       if (!this.page || this.page.isClosed()) break;
 

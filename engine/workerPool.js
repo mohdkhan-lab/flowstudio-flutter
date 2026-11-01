@@ -793,6 +793,36 @@ class WorkerPool {
         }
       }
 
+      // v2.48.8: CREDIT PLAN — the owner's question (2026-11-01):
+      // when the app already knows a video's exact cost and each
+      // account's balance, why is a video that can never fit an
+      // account not given to the next account from the START? The
+      // split is now computed BEFORE the run — greedy, in pool
+      // order, the same order workers actually consume accounts —
+      // and written to the log + Activity, so the assignment (and
+      // any mid-run switch it implies) is visible up front instead
+      // of being discovered at the switch. The per-task gate and
+      // live balance re-reads still govern the real submissions;
+      // the plan is the map, they are the road.
+      if (requiredCredits > 0 && pendingTasks.length > 0) {
+        let remaining = pendingTasks.length;
+        const planParts = [];
+        for (const a of pool) {
+          if (remaining <= 0) break;
+          const c = (typeof a.credits === 'number' && Number.isFinite(a.credits)) ? a.credits : 0;
+          const fits = Math.floor(Math.max(0, c) / requiredCredits);
+          if (fits <= 0) continue;
+          const take = Math.min(fits, remaining);
+          planParts.push(`${a.googleName || a.name}: ${take} video(s) (${take * requiredCredits} credits)`);
+          remaining -= take;
+        }
+        if (planParts.length > 0) {
+          const planMsg = `Credit plan for this run: ${pendingTasks.length} video(s) × ${requiredCredits} credits — ${planParts.join(' · ')}${remaining > 0 ? ` · the last ${remaining} video(s) will move to whichever account still has room (balances are re-read live at every studio open)` : ''}.`;
+          this.log(planMsg, 'info');
+          try { recordActivity({ category: 'credits', level: 'info', message: planMsg }); } catch (e) {}
+        }
+      }
+
       const taskQueue = new TaskQueue(pendingTasks);
 
       for (const t of pendingTasks) {

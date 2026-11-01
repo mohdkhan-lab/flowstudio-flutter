@@ -4232,7 +4232,7 @@ class FlowAutomationEngine {
         // poora hisaab — requests/rpcids, jawab, padhe gaye
         // bodies, chhoote huon ki wajah, aur andar ke nishan.
         const b = snap.batch || {};
-        diag += ` [DIAGNOSTIC-3 — batchexecute requests: ${b.requests || 0} (rpcids: ${JSON.stringify(b.rpcids || {})}), responses: ${b.responses || 0} (content-types: ${JSON.stringify(b.contentTypes || {})}), bodies read: ${b.bodiesFetched || 0}, CDP bodies read: ${b.cdpBodies || 0}, skipped too-big: ${b.skipTooBig || 0}, skipped buffer-fail: ${b.skipBuffer || 0}; bodies carrying: media host ${b.withMediaHost || 0}, videoplayback ${b.withVideoplayback || 0}, workflow word ${b.withWorkflow || 0}, fife word ${b.withFife || 0}, download word ${b.withDownloadWord || 0}]`;
+        diag += ` [DIAGNOSTIC-3 — batchexecute requests: ${b.requests || 0} (rpcids: ${JSON.stringify(b.rpcids || {})}), responses: ${b.responses || 0} (content-types: ${JSON.stringify(b.contentTypes || {})}), bodies read: ${b.bodiesFetched || 0}, CDP bodies read: ${b.cdpBodies || 0}, streamed chunks: ${b.streamChunks || 0}, stream-bound: ${b.streamBound || 0}, skipped too-big: ${b.skipTooBig || 0}, skipped buffer-fail: ${b.skipBuffer || 0}; bodies carrying: media host ${b.withMediaHost || 0}, videoplayback ${b.withVideoplayback || 0}, workflow word ${b.withWorkflow || 0}, fife word ${b.withFife || 0}, download word ${b.withDownloadWord || 0}]`;
       } catch (e) {}
       this.log(`[Prompt #${n}] No video link was seen on the backend — the UI routes are being tried.${diag}`, 'warn');
     }

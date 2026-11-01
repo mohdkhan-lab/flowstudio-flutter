@@ -428,9 +428,10 @@ class NetworkCapture {
       requests: 0, rpcids: {}, responses: 0, bodiesFetched: 0,
       skipContentType: 0, skipTooBig: 0, skipBuffer: 0, contentTypes: {},
       withMediaHost: 0, withVideoplayback: 0, withWorkflow: 0,
-      withFife: 0, withDownloadWord: 0, cdpBodies: 0
+      withFife: 0, withDownloadWord: 0, cdpBodies: 0,
+      streamChunks: 0, streamBound: 0
     };
-    this._cdpBatch = new Map(); // CDP requestId -> { rpcids, at }
+    this._cdpBatch = new Map(); // CDP requestId -> { rpcids, at, text, bound }
   }
 
   arm() { this.armed = true; }
@@ -615,6 +616,20 @@ class NetworkCapture {
       client.on('Network.loadingFailed', (e) => {
         try { if (e) this._cdpBatch.delete(e.requestId); } catch (err) {}
       });
+      // v2.48.20: STREAMING jawab ko beech me se padho.
+      // TEST496/497 ka saboot: 31 batchexecute requests ke
+      // muqable sirf 7 jawab 'complete' hote hain — asal status
+      // data ek aise jawab me behta hai jo run ke dauraan kabhi
+      // khatam hi nahi hota, is liye na res.buffer() use pakad
+      // sakta hai na getResponseBody. Network.dataReceived har
+      // tukda (chunk) aate hi de deta hai — usi par scan chalega.
+      client.on('Network.dataReceived', (e) => {
+        try {
+          if (!e || !this._cdpBatch.has(e.requestId) || typeof e.data !== 'string' || !e.data) return;
+          const buf = Buffer.from(e.data, 'base64');
+          if (buf.length) this._ingestStreamChunk(e.requestId, buf, Date.now());
+        } catch (err) {}
+      });
       client.on('Network.loadingFinished', async (e) => {
         try {
           if (!e || !this._cdpBatch.has(e.requestId)) return;
@@ -767,6 +782,30 @@ class NetworkCapture {
       return this.latestStatusTemplate;
     }
     return null;
+  }
+
+  /**
+   * v2.48.20: streaming batchexecute jawab ka ek tukda.
+   * Poora jama-shuda text har tukde par dobara scan hota hai
+   * taaki tukdon ki sarhad par kata URL bhi mil jaye. Pehchan
+   * ke nishan backend ke sach ('api-body') gine jate hain.
+   */
+  _ingestStreamChunk(requestId, chunkBuf, at) {
+    const meta = this._cdpBatch.get(requestId);
+    if (!meta) return [];
+    this.batchStats.streamChunks++;
+    meta.text = (meta.text || '') + chunkBuf.toString('latin1');
+    if (meta.text.length > 2 * 1024 * 1024) meta.text = meta.text.slice(-1024 * 1024);
+    if (!this.armed) return [];
+    const found = scanBatchExecuteBody(Buffer.from(meta.text, 'latin1'), this.patterns);
+    const newly = [];
+    for (const id of found.ids) { const b = this._bindId(id, at); if (b) newly.push(b); }
+    for (const u of found.mediaUrls) {
+      const b = this._sightUrl(u, 'api-body', at, found.ids);
+      if (b) newly.push(b);
+    }
+    if (newly.length && !meta.bound) { meta.bound = true; this.batchStats.streamBound++; }
+    return [...new Set(newly)];
   }
 
   /** Ek response ki khabar: URL + (jab mile) body buffer. */

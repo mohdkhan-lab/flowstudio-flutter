@@ -148,6 +148,26 @@ eq('pickReplayHeaders drops empty values', pickReplayHeaders({ 'x-grpc-web': '' 
   ok('batchexecute body binds the task link end-to-end', !!bound && bound.url === MEDIA && bound.via === 'workflow-id');
 }
 
+// v2.48.20: streaming-chunk scan — a URL split across chunks binds.
+{
+  const { NetworkCapture } = require('../engine/networkCapture');
+  const WF = '3f2b8c1e-1234-4a5b-8c9d-0123456789ab';
+  const MEDIA = 'https://lh3.googleusercontent.com/videoplayback/abc123xyz';
+  const inner = JSON.stringify([MEDIA, WF]);
+  const full = Buffer.from(")]}'\n\n" + JSON.stringify([['wrb.fr', 'jwpduf', inner, null, null, null, 'generic']]), 'utf8');
+  const cut = Math.floor(full.length / 2);
+  const cap = new NetworkCapture({});
+  cap.beginSubmission('vid_6000_1', 1000);
+  cap._cdpBatch.set('req-1', { rpcids: ['jwpduf'], at: 1000 });
+  cap._ingestStreamChunk('req-1', full.subarray(0, cut), 1100);
+  eq('no bind from half a stream', cap.urlForKey('vid_6000_1'), null);
+  cap._ingestStreamChunk('req-1', full.subarray(cut), 1200);
+  const bound = cap.urlForKey('vid_6000_1');
+  ok('stream chunks bind the task link', !!bound && bound.url === MEDIA);
+  eq('stream chunks counted', cap.batchStats.streamChunks, 2);
+  eq('stream bound counted', cap.batchStats.streamBound, 1);
+}
+
 // v2.48.18 DIAGNOSTIC-3: batchexecute door + rpcid names.
 {
   const { isBatchExecuteUrl, rpcidsOf } = require('../engine/networkCapture');

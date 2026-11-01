@@ -4,6 +4,7 @@ import '../theme/app_theme.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/notifications_provider.dart';
 import '../providers/settings_provider.dart';
+import 'tactile_components.dart';
 
 class TopStrip extends StatelessWidget {
   const TopStrip({super.key});
@@ -116,22 +117,14 @@ class TopStrip extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(width: 10),
-                // Version Pill
-                Container(
+                // Version Pill — Tactile 3D
+                TactileChip(
+                  color: AppTheme.accentText,
+                  label: 'v2.48.13',
+                  height: 22,
+                  borderRadius: 11,
+                  bevelDepth: 1.5,
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
-                  decoration: BoxDecoration(
-                    color: AppTheme.accentGold.withValues(alpha: 0.10),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
-                  ),
-                  child: Text(
-                    'v2.48.12',
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.bold,
-                      color: AppTheme.accentText,
-                    ),
-                  ),
                 ),
               ],
             ),
@@ -262,55 +255,51 @@ class TopStrip extends StatelessWidget {
   }
 
   // Notification Center: bell button with the unread badge,
-  // same 28px circle language as the social icons.
+  // tactile 3D 28px circular button.
   Widget _buildBellButton(NotificationsProvider notif) {
     final unread = notif.unreadCount;
     return Tooltip(
       message: 'Notifications',
-      child: InkWell(
+      child: TactileButton(
+        type: TactileType.icon,
+        shape: BoxShape.circle,
+        width: 28,
+        height: 28,
+        bevelDepth: 1.8,
+        padding: EdgeInsets.zero,
         onTap: notif.togglePanel,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          width: 28,
-          height: 28,
-          decoration: BoxDecoration(
-            color: AppTheme.overlay10,
-            shape: BoxShape.circle,
-            border: Border.all(color: AppTheme.borderSoft),
-          ),
-          child: Stack(
-            clipBehavior: Clip.none,
-            alignment: Alignment.center,
-            children: [
-              Icon(Icons.notifications_none_rounded,
-                  size: 15, color: AppTheme.textDim),
-              if (unread > 0)
-                Positioned(
-                  top: -6,
-                  right: -6,
-                  child: Container(
-                    constraints: const BoxConstraints(minWidth: 15),
-                    height: 15,
-                    padding: const EdgeInsets.symmetric(horizontal: 4),
-                    decoration: BoxDecoration(
-                      color: AppTheme.red,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Center(
-                      child: Text(
-                        unread > 99 ? '99+' : '$unread',
-                        style: const TextStyle(
-                          fontSize: 8.5,
-                          fontWeight: FontWeight.w800,
-                          color: Colors.white,
-                          height: 1,
-                        ),
+        child: Stack(
+          clipBehavior: Clip.none,
+          alignment: Alignment.center,
+          children: [
+            Icon(Icons.notifications_none_rounded,
+                size: 15, color: AppTheme.textDim),
+            if (unread > 0)
+              Positioned(
+                top: -4,
+                right: -4,
+                child: Container(
+                  constraints: const BoxConstraints(minWidth: 15),
+                  height: 15,
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(
+                    color: AppTheme.red,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Center(
+                    child: Text(
+                      unread > 99 ? '99+' : '$unread',
+                      style: const TextStyle(
+                        fontSize: 8.5,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
+                        height: 1,
                       ),
                     ),
                   ),
                 ),
-            ],
-          ),
+              ),
+          ],
         ),
       ),
     );
@@ -324,19 +313,15 @@ class TopStrip extends StatelessWidget {
   }) {
     return Tooltip(
       message: tooltip,
-      child: InkWell(
+      child: TactileButton(
+        type: TactileType.icon,
+        shape: BoxShape.circle,
+        width: 28,
+        height: 28,
+        bevelDepth: 1.8,
+        padding: EdgeInsets.zero,
         onTap: onTap,
-        borderRadius: BorderRadius.circular(14),
-        child: Container(
-          width: 28,
-          height: 28,
-          decoration: BoxDecoration(
-            color: AppTheme.overlay10,
-            shape: BoxShape.circle,
-            border: Border.all(color: AppTheme.borderSoft),
-          ),
-          child: Icon(icon, size: 14, color: color),
-        ),
+        child: Icon(icon, size: 14, color: color),
       ),
     );
   }

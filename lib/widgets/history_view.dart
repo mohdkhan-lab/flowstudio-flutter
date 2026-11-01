@@ -8,6 +8,7 @@ import '../theme/app_theme.dart';
 import '../providers/settings_provider.dart';
 import '../services/automation_bridge.dart';
 import 'video_player_dialog.dart';
+import 'tactile_components.dart';
 
 // v2.27.0: the History view from the approved design ("Previous
 // Videos"). DATA IS REAL: the engine's GET /api/output-files lists
@@ -602,47 +603,44 @@ class _HistoryViewState extends State<HistoryView> {
               // fresh scan; the App Videos actions (Clear History,
               // Open Output Folder) belong to the app's own list.
               if (_localMode)
-              OutlinedButton(
-                onPressed: _scanning ? null : _scanPc,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.textMain,
-                  side: BorderSide(color: AppTheme.borderSoft),
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
-                  visualDensity: VisualDensity.compact,
+                TactileButton(
+                  type: TactileType.secondary,
+                  height: 30,
+                  borderRadius: 7,
+                  bevelDepth: 2.0,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  enabled: !_scanning,
+                  onTap: _scanning ? null : _scanPc,
+                  label: 'Rescan',
                 ),
-                child: const Text('Rescan', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
-              ),
               if (!_localMode) ...[
-              OutlinedButton(
-                onPressed: allFiles.isEmpty
-                    ? null
-                    : () {
-                        context.read<SettingsProvider>().clearHistoryRecords(
-                              allFiles.map(_keyOf),
-                            );
-                      },
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.textMain,
-                  side: BorderSide(color: AppTheme.borderSoft),
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
-                  visualDensity: VisualDensity.compact,
+                TactileButton(
+                  type: TactileType.secondary,
+                  height: 30,
+                  borderRadius: 7,
+                  bevelDepth: 2.0,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  enabled: allFiles.isNotEmpty,
+                  onTap: allFiles.isEmpty
+                      ? null
+                      : () {
+                          context.read<SettingsProvider>().clearHistoryRecords(
+                                allFiles.map(_keyOf),
+                              );
+                        },
+                  label: 'Clear History (records only)',
                 ),
-                child: const Text('Clear History (records only)', style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600)),
-              ),
-              const SizedBox(width: 8),
-              ElevatedButton(
-                onPressed: () => AutomationBridge.instance.openOutputFolder(),
-                style: ElevatedButton.styleFrom(
-                  backgroundColor: AppTheme.accentGold,
-                  foregroundColor: AppTheme.onAccent,
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
-                  visualDensity: VisualDensity.compact,
+                const SizedBox(width: 8),
+                TactileButton(
+                  type: TactileType.primary,
+                  height: 30,
+                  borderRadius: 7,
+                  bevelDepth: 2.5,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  onTap: () => AutomationBridge.instance.openOutputFolder(),
+                  icon: Icons.folder_open,
+                  label: 'Open Output Folder',
                 ),
-                        child: const Text('Open Output Folder', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
-                      ),
               ],
                     ],
                   ),
@@ -1207,18 +1205,15 @@ class _HistoryViewState extends State<HistoryView> {
     required VoidCallback onTap,
   }) {
     final color = accent ? AppTheme.accentText : AppTheme.textDim;
-    return InkWell(
+    return TactileButton(
+      type: TactileType.icon,
+      width: 28,
+      height: 28,
+      borderRadius: 7,
+      bevelDepth: 1.8,
+      padding: EdgeInsets.zero,
       onTap: onTap,
-      borderRadius: BorderRadius.circular(7),
-      child: Container(
-        width: 28,
-        height: 28,
-        decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(7),
-          border: Border.all(color: accent ? color : AppTheme.borderSoft),
-        ),
-        child: Icon(icon, size: 15, color: color),
-      ),
+      child: Icon(icon, size: 15, color: color),
     );
   }
 }

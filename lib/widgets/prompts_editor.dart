@@ -206,29 +206,14 @@ class _PromptsEditorState extends State<PromptsEditor> {
                 ),
               ),
               const SizedBox(width: 6),
-              // Count pill (design: "6 prompts")
-              Container(
+              // Count pill (Tactile 3D)
+              TactileChip(
+                label: '${generator.totalPrompts} prompts',
+                color: AppTheme.accentText,
+                height: 26,
+                borderRadius: 12,
+                bevelDepth: 1.5,
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: AppTheme.accentGold.withValues(alpha: 0.07),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
-                  boxShadow: const [
-                    BoxShadow(
-                      color: Color(0xFF78350F),
-                      offset: Offset(0, 1.5),
-                      blurRadius: 0,
-                    ),
-                  ],
-                ),
-                child: Text(
-                  '${generator.totalPrompts} prompts',
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.accentText,
-                  ),
-                ),
               ),
             ],
           ),

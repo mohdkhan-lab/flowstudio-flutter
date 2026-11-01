@@ -240,17 +240,13 @@ class ProgressPanel extends StatelessWidget {
   }
 
   Widget _countChip(String label, Color color) {
-    return Container(
+    return TactileChip(
+      label: label,
+      color: color,
+      height: 22,
+      borderRadius: 9,
+      bevelDepth: 1.5,
       padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
-      decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.14),
-        borderRadius: BorderRadius.circular(9),
-        border: Border.all(color: color.withValues(alpha: 0.45)),
-      ),
-      child: Text(
-        label,
-        style: TextStyle(fontSize: 9.5, fontWeight: FontWeight.w800, color: color),
-      ),
     );
   }
 

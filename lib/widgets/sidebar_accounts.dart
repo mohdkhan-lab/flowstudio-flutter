@@ -943,8 +943,8 @@ class _HoverPillBtnState extends State<_HoverPillBtn> {
 
   @override
   Widget build(BuildContext context) {
-    final double translateY = _pressed ? 1.5 : (_hovered ? -2.0 : 0.0);
-    final double bevel = _pressed ? 0.8 : (_hovered ? 3.2 : 2.2);
+    final double translateY = _pressed ? 1.5 : (_hovered ? -2.5 : 0.0);
+    final double bevel = _pressed ? 0.8 : (_hovered ? 3.7 : 2.5);
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
@@ -959,8 +959,8 @@ class _HoverPillBtnState extends State<_HoverPillBtn> {
         onTapCancel: () => setState(() => _pressed = false),
         onTap: widget.onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 100),
-          curve: Curves.easeOutQuad,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
           height: 34,
           alignment: Alignment.center,
           transform: Matrix4.translationValues(0, translateY, 0),
@@ -968,7 +968,7 @@ class _HoverPillBtnState extends State<_HoverPillBtn> {
             color: _hovered ? AppTheme.blue.withValues(alpha: 0.18) : AppTheme.overlay08,
             borderRadius: BorderRadius.circular(17),
             border: Border.all(
-              color: _hovered ? AppTheme.blue : AppTheme.blue.withValues(alpha: 0.65),
+              color: _hovered ? const Color(0xFF60A5FA) : AppTheme.blue.withValues(alpha: 0.65),
               width: 1.2,
             ),
             boxShadow: [
@@ -981,8 +981,9 @@ class _HoverPillBtnState extends State<_HoverPillBtn> {
               if (_hovered)
                 BoxShadow(
                   color: AppTheme.blue.withValues(alpha: 0.35),
-                  blurRadius: 10,
-                  offset: const Offset(0, 3),
+                  blurRadius: 14,
+                  spreadRadius: 0.5,
+                  offset: const Offset(0, 3.5),
                 ),
             ],
           ),
@@ -1015,8 +1016,8 @@ class _HoverRoundAddBtnState extends State<_HoverRoundAddBtn> {
 
   @override
   Widget build(BuildContext context) {
-    final double translateY = _pressed ? 1.5 : (_hovered ? -2.0 : 0.0);
-    final double bevel = _pressed ? 0.8 : (_hovered ? 3.0 : 2.0);
+    final double translateY = _pressed ? 1.5 : (_hovered ? -2.5 : 0.0);
+    final double bevel = _pressed ? 0.8 : (_hovered ? 3.7 : 2.5);
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
@@ -1033,8 +1034,8 @@ class _HoverRoundAddBtnState extends State<_HoverRoundAddBtn> {
           onTapCancel: () => setState(() => _pressed = false),
           onTap: widget.onTap,
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 100),
-            curve: Curves.easeOutQuad,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
             width: 34,
             height: 34,
             alignment: Alignment.center,
@@ -1045,7 +1046,7 @@ class _HoverRoundAddBtnState extends State<_HoverRoundAddBtn> {
                   ? AppTheme.blue.withValues(alpha: 0.25)
                   : AppTheme.blue.withValues(alpha: 0.12),
               border: Border.all(
-                color: _hovered ? AppTheme.blue : AppTheme.blue.withValues(alpha: 0.65),
+                color: _hovered ? const Color(0xFF60A5FA) : AppTheme.blue.withValues(alpha: 0.65),
                 width: 1.2,
               ),
               boxShadow: [
@@ -1057,8 +1058,9 @@ class _HoverRoundAddBtnState extends State<_HoverRoundAddBtn> {
                 if (_hovered)
                   BoxShadow(
                     color: AppTheme.blue.withValues(alpha: 0.35),
-                    blurRadius: 10,
-                    offset: const Offset(0, 3),
+                    blurRadius: 14,
+                    spreadRadius: 0.5,
+                    offset: const Offset(0, 3.5),
                   ),
               ],
             ),
@@ -1098,9 +1100,9 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
   @override
   Widget build(BuildContext context) {
     final isActive = widget.isActive;
-    final double translateY = _pressed ? 1.2 : (_hovered ? -2.0 : 0.0);
-    final double bevel = _pressed ? 0.8 : (_hovered ? 3.0 : 2.0);
-    final bevelColor = isActive ? const Color(0xFF78350F) : const Color(0xFF0F172A);
+    final double translateY = _pressed ? 1.5 : (_hovered ? -2.5 : 0.0);
+    final double bevel = _pressed ? 0.8 : (_hovered ? 3.7 : 2.5);
+    final bevelColor = isActive ? const Color(0xFF1E3A8A) : const Color(0xFF0F172A);
 
     return Expanded(
       child: MouseRegion(
@@ -1116,20 +1118,20 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
           onTapCancel: () => setState(() => _pressed = false),
           onTap: widget.onTap,
           child: AnimatedContainer(
-            duration: const Duration(milliseconds: 100),
-            curve: Curves.easeOutQuad,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
             padding: const EdgeInsets.symmetric(vertical: 5),
             alignment: Alignment.center,
             transform: Matrix4.translationValues(0, translateY, 0),
             decoration: BoxDecoration(
               color: isActive
-                  ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.22 : 0.14)
-                  : (_hovered ? AppTheme.blue.withValues(alpha: 0.10) : AppTheme.overlay08),
+                  ? AppTheme.blue.withValues(alpha: _hovered ? 0.22 : 0.14)
+                  : (_hovered ? AppTheme.surfaceElevated : AppTheme.overlay08),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
                 color: isActive
-                    ? AppTheme.accentGold
-                    : (_hovered ? AppTheme.blue.withValues(alpha: 0.65) : AppTheme.borderSoft),
+                    ? AppTheme.blue
+                    : (_hovered ? const Color(0xFF60A5FA) : AppTheme.borderSoft),
                 width: isActive ? 1.2 : 1.0,
               ),
               boxShadow: [
@@ -1141,10 +1143,11 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
                 if (_hovered)
                   BoxShadow(
                     color: isActive
-                        ? AppTheme.accentGold.withValues(alpha: 0.30)
-                        : AppTheme.blue.withValues(alpha: 0.25),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
+                        ? AppTheme.blue.withValues(alpha: 0.35)
+                        : const Color(0xFF38BDF8).withValues(alpha: 0.25),
+                    blurRadius: 14,
+                    spreadRadius: 0.5,
+                    offset: const Offset(0, 3.5),
                   ),
               ],
             ),
@@ -1156,7 +1159,7 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
                   style: TextStyle(
                     fontSize: 9,
                     fontWeight: FontWeight.w700,
-                    color: isActive ? AppTheme.accentText : (_hovered ? Colors.white : AppTheme.textDim),
+                    color: isActive ? Colors.white : (_hovered ? Colors.white : AppTheme.textDim),
                   ),
                 ),
                 const SizedBox(height: 1),
@@ -1165,7 +1168,7 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
                   style: TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w800,
-                    color: isActive ? AppTheme.textMain : (_hovered ? Colors.white : AppTheme.textDim),
+                    color: isActive ? AppTheme.accentText : (_hovered ? Colors.white : AppTheme.textDim),
                   ),
                 ),
               ],
@@ -1201,10 +1204,10 @@ class _HoverableAccountCardState extends State<_HoverableAccountCard> {
       onEnter: (_) => setState(() => _hovered = true),
       onExit: (_) => setState(() => _hovered = false),
       child: AnimatedContainer(
-        duration: const Duration(milliseconds: 120),
-        curve: Curves.easeOutQuad,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
         margin: const EdgeInsets.symmetric(vertical: 3),
-        transform: Matrix4.translationValues(0, _hovered ? -2.0 : 0.0, 0),
+        transform: Matrix4.translationValues(0, _hovered ? -2.5 : 0.0, 0),
         decoration: BoxDecoration(
           color: active
               ? AppTheme.blue.withValues(alpha: _hovered ? 0.20 : 0.12)
@@ -1213,22 +1216,23 @@ class _HoverableAccountCardState extends State<_HoverableAccountCard> {
           border: Border.all(
             color: active
                 ? AppTheme.blue
-                : (_hovered ? AppTheme.blue.withValues(alpha: 0.6) : AppTheme.borderSoft),
+                : (_hovered ? const Color(0xFF60A5FA) : AppTheme.borderSoft),
             width: active ? 1.3 : 1.0,
           ),
           boxShadow: [
             BoxShadow(
               color: active ? const Color(0xFF1E3A8A) : const Color(0xFF0F172A),
-              offset: Offset(0, _hovered ? 3.0 : 2.0),
+              offset: Offset(0, _hovered ? 3.4 : 2.2),
               blurRadius: 0,
             ),
             if (_hovered)
               BoxShadow(
                 color: active
-                    ? AppTheme.blue.withValues(alpha: 0.30)
-                    : AppTheme.blue.withValues(alpha: 0.20),
-                blurRadius: 10,
-                offset: const Offset(0, 3),
+                    ? AppTheme.blue.withValues(alpha: 0.35)
+                    : const Color(0xFF38BDF8).withValues(alpha: 0.20),
+                blurRadius: 14,
+                spreadRadius: 0.5,
+                offset: const Offset(0, 3.5),
               ),
           ],
         ),
@@ -1262,9 +1266,10 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
   @override
   Widget build(BuildContext context) {
     final enabled = widget.onTap != null;
-    final double translateY = (_pressed && enabled) ? 1.2 : ((_hovered && enabled) ? -2.0 : 0.0);
-    final double bevel = (_pressed && enabled) ? 0.8 : ((_hovered && enabled) ? 2.8 : 1.8);
-    final bevelColor = widget.isRed ? const Color(0xFF7F1D1D) : const Color(0xFF0F172A);
+    final double translateY = (_pressed && enabled) ? 1.5 : ((_hovered && enabled) ? -2.5 : 0.0);
+    final double bevel = (_pressed && enabled) ? 0.8 : ((_hovered && enabled) ? 3.7 : 2.5);
+    // Dark mechanical bevel across ALL buttons (no red box bevel!)
+    const bevelColor = Color(0xFF0F172A);
 
     return MouseRegion(
       onEnter: (_) {
@@ -1291,21 +1296,18 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
         },
         onTap: widget.onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 100),
-          curve: Curves.easeOutQuad,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
           height: 30,
           alignment: Alignment.center,
           transform: Matrix4.translationValues(0, translateY, 0),
           decoration: BoxDecoration(
-            color: _hovered && enabled
-                ? (widget.isRed
-                    ? AppTheme.red.withValues(alpha: 0.16)
-                    : AppTheme.blue.withValues(alpha: 0.16))
-                : AppTheme.overlay08,
+            // Clean dark slate background — NO red fill brick!
+            color: _hovered && enabled ? AppTheme.surfaceElevated : AppTheme.overlay08,
             borderRadius: BorderRadius.circular(6),
             border: Border.all(
               color: _hovered && enabled
-                  ? (widget.isRed ? AppTheme.red : AppTheme.blue.withValues(alpha: 0.75))
+                  ? (widget.isRed ? const Color(0xFFEF4444) : const Color(0xFF60A5FA))
                   : AppTheme.borderSoft,
             ),
             boxShadow: [
@@ -1317,10 +1319,11 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
               if (_hovered && enabled)
                 BoxShadow(
                   color: widget.isRed
-                      ? AppTheme.red.withValues(alpha: 0.35)
-                      : AppTheme.blue.withValues(alpha: 0.35),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
+                      ? AppTheme.red.withValues(alpha: 0.30)
+                      : const Color(0xFF38BDF8).withValues(alpha: 0.25),
+                  blurRadius: 14,
+                  spreadRadius: 0.5,
+                  offset: const Offset(0, 3.5),
                 ),
             ],
           ),
@@ -1331,7 +1334,7 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
               fontWeight: FontWeight.w600,
               color: widget.isRed
                   ? (widget.isDim ? const Color(0x80F87171) : AppTheme.red)
-                  : (widget.isDim ? AppTheme.textFaint : AppTheme.textMain),
+                  : (widget.isDim ? AppTheme.textFaint : (_hovered ? Colors.white : AppTheme.textMain)),
             ),
           ),
         ),
@@ -1357,8 +1360,8 @@ class _HoverBottomSettingsBtnState extends State<_HoverBottomSettingsBtn> {
   @override
   Widget build(BuildContext context) {
     final active = !widget.isGenerate;
-    final double translateY = _pressed ? 1.5 : (_hovered ? -2.0 : 0.0);
-    final double bevel = _pressed ? 0.8 : (_hovered ? 3.5 : 2.5);
+    final double translateY = _pressed ? 1.5 : (_hovered ? -2.5 : 0.0);
+    final double bevel = _pressed ? 0.8 : (_hovered ? 3.7 : 2.5);
 
     return MouseRegion(
       onEnter: (_) => setState(() => _hovered = true),
@@ -1373,34 +1376,35 @@ class _HoverBottomSettingsBtnState extends State<_HoverBottomSettingsBtn> {
         onTapCancel: () => setState(() => _pressed = false),
         onTap: widget.onTap,
         child: AnimatedContainer(
-          duration: const Duration(milliseconds: 100),
-          curve: Curves.easeOutQuad,
+          duration: const Duration(milliseconds: 180),
+          curve: Curves.easeOutCubic,
           height: 31,
           alignment: Alignment.center,
           transform: Matrix4.translationValues(0, translateY, 0),
           decoration: BoxDecoration(
-            color: active
-                ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.22 : 0.14)
-                : (_hovered ? AppTheme.blue.withValues(alpha: 0.12) : AppTheme.overlay08),
+            // Clean dark slate background — NO brown fill brick!
+            color: _hovered ? AppTheme.surfaceElevated : AppTheme.overlay08,
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
               color: active
                   ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.8 : 0.5)
-                  : (_hovered ? AppTheme.blue.withValues(alpha: 0.6) : AppTheme.borderSoft),
+                  : (_hovered ? const Color(0xFF60A5FA) : AppTheme.borderSoft),
             ),
             boxShadow: [
+              // Clean dark bevel — NO brown shadow (0xFF78350F)!
               BoxShadow(
-                color: const Color(0xFF78350F),
+                color: const Color(0xFF0F172A),
                 offset: Offset(0, bevel),
                 blurRadius: 0,
               ),
               if (_hovered)
                 BoxShadow(
                   color: active
-                      ? AppTheme.accentGold.withValues(alpha: 0.35)
-                      : AppTheme.blue.withValues(alpha: 0.25),
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
+                      ? AppTheme.accentGold.withValues(alpha: 0.30)
+                      : const Color(0xFF38BDF8).withValues(alpha: 0.25),
+                  blurRadius: 14,
+                  spreadRadius: 0.5,
+                  offset: const Offset(0, 3.5),
                 ),
             ],
           ),

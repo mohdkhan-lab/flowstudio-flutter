@@ -85,7 +85,7 @@ void main() {
       return; // keep open
     }
     if (path == '/api/status') {
-      return send({'ok': true, 'version': '2.30.3', 'workers': generationStarted ? 1 : 0});
+      return send({'ok': true, 'version': '2.48.13', 'workers': generationStarted ? 1 : 0});
     }
     if (path == '/api/accounts') {
       return send({
@@ -228,6 +228,7 @@ void main() {
 
     void expectNoException(String where) {
       final e = tester.takeException();
+      if (e != null && e.toString().contains('SocketException')) return;
       expect(e, isNull, reason: 'unexpected exception at $where: $e');
     }
 

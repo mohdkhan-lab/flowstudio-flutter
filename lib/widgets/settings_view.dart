@@ -8,6 +8,7 @@ import '../providers/settings_provider.dart';
 import 'package:flutter/services.dart';
 import '../services/automation_bridge.dart';
 import 'panel_entrance.dart';
+import 'tactile_components.dart';
 
 class SettingsView extends StatefulWidget {
   const SettingsView({super.key});
@@ -317,21 +318,18 @@ class _SettingsViewState extends State<SettingsView> {
             ],
           ),
           const SizedBox(height: 6),
-          // v2.48.5: the 1-Click Connect / Fix Connection button.
-          SizedBox(
+          // v2.48.5: the 1-Click Connect / Fix Connection button (Tactile 3D)
+          TactileButton(
+            type: TactileType.primary,
+            height: 42,
             width: double.infinity,
-            child: ElevatedButton(
-              onPressed: _repairBusy ? null : _repairConnection,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.blue,
-                foregroundColor: Colors.white,
-                padding: const EdgeInsets.symmetric(vertical: 12),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
-              ),
-              child: Text(
-                _repairBusy ? 'WORKING…' : '1-CLICK CONNECT / FIX CONNECTION',
-                style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold),
-              ),
+            borderRadius: 8,
+            bevelDepth: 3.0,
+            enabled: !_repairBusy,
+            onTap: _repairBusy ? null : _repairConnection,
+            child: Text(
+              _repairBusy ? 'WORKING…' : '1-CLICK CONNECT / FIX CONNECTION',
+              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.white),
             ),
           ),
           const SizedBox(height: 4),
@@ -365,17 +363,14 @@ class _SettingsViewState extends State<SettingsView> {
                 ),
               ),
               const SizedBox(width: 8),
-              OutlinedButton(
-                onPressed: _copyMcpUrl,
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.textMain,
-                  backgroundColor: AppTheme.overlay10,
-                  side: BorderSide(color: AppTheme.borderSoft),
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                  visualDensity: VisualDensity.compact,
-                ),
-                child: const Text('Copy', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+              TactileButton(
+                type: TactileType.secondary,
+                height: 32,
+                borderRadius: 6,
+                bevelDepth: 2.0,
+                padding: const EdgeInsets.symmetric(horizontal: 12),
+                onTap: _copyMcpUrl,
+                label: 'Copy',
               ),
             ],
           ),
@@ -397,14 +392,26 @@ class _SettingsViewState extends State<SettingsView> {
                   child: Text(tokenMasked, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: AppTheme.textMain)),
                 ),
               ),
-              const SizedBox(width: 8),
-              TextButton(
-                onPressed: _copyMcpToken,
-                child: Text('Copy Token', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.accentText)),
+              const SizedBox(width: 6),
+              TactileButton(
+                type: TactileType.secondary,
+                height: 32,
+                borderRadius: 6,
+                bevelDepth: 2.0,
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                onTap: _copyMcpToken,
+                label: 'Copy Token',
               ),
-              TextButton(
-                onPressed: _mcpBusy ? null : _regenMcpToken,
-                child: Text('Regenerate', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.accentText)),
+              const SizedBox(width: 5),
+              TactileButton(
+                type: TactileType.secondary,
+                height: 32,
+                borderRadius: 6,
+                bevelDepth: 2.0,
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                enabled: !_mcpBusy,
+                onTap: _mcpBusy ? null : _regenMcpToken,
+                label: 'Regenerate',
               ),
             ],
           ),
@@ -425,19 +432,14 @@ class _SettingsViewState extends State<SettingsView> {
             }).toList(),
           ),
           const SizedBox(height: 12),
-          SizedBox(
+          TactileButton(
+            type: TactileType.gold,
+            height: 36,
             width: double.infinity,
-            child: ElevatedButton(
-              onPressed: _copyMcpConfig,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.accentGold,
-                foregroundColor: Colors.black,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                visualDensity: VisualDensity.compact,
-              ),
-              child: const Text('Copy Muse Config', style: TextStyle(fontSize: 11.5, fontWeight: FontWeight.bold)),
-            ),
+            borderRadius: 6,
+            bevelDepth: 2.5,
+            onTap: _copyMcpConfig,
+            label: 'Copy Muse Config',
           ),
           const SizedBox(height: 8),
           Text(
@@ -655,21 +657,19 @@ class _SettingsViewState extends State<SettingsView> {
                       ),
                     ),
                     const SizedBox(width: 8),
-                    ElevatedButton(
-                      onPressed: () {
+                    TactileButton(
+                      type: TactileType.gold,
+                      height: 32,
+                      borderRadius: 6,
+                      bevelDepth: 2.0,
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      onTap: () {
                         if (_customTagController.text.trim().isNotEmpty) {
                           prov.addCustomTag(_customTagController.text.trim());
                           _customTagController.clear();
                         }
                       },
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.accentGold,
-                        foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      child: const Text('Add', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                      label: 'Add',
                     ),
                   ],
                 ),
@@ -796,7 +796,7 @@ class _SettingsViewState extends State<SettingsView> {
                 Row(
                   children: [
                     Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
                       decoration: BoxDecoration(
                         color: AppTheme.accentGold.withValues(alpha: 0.10),
                         borderRadius: BorderRadius.circular(10),
@@ -807,25 +807,23 @@ class _SettingsViewState extends State<SettingsView> {
                         style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.accentText),
                       ),
                     ),
-                    const SizedBox(width: 8),
+                    const SizedBox(width: 4),
                     // v2.27.0: Flexible instead of Spacer so this row
                     // also fits the narrower two-column panel.
                     Expanded(
-                      child: Text('— current version', overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: AppTheme.textFaint)),
+                      child: Text('— current version', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10, color: AppTheme.textFaint)),
                     ),
-                    ElevatedButton.icon(
-                      onPressed: prov.isCheckingUpdates ? null : () => prov.checkForUpdates(),
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.accentGold,
-                        foregroundColor: Colors.black,
-                        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                        shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      icon: prov.isCheckingUpdates
-                          ? const SizedBox(width: 12, height: 12, child: CircularProgressIndicator(strokeWidth: 2, color: Colors.black))
-                          : const Icon(Icons.refresh, size: 14),
-                      label: const Text('Check for Updates', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                    const SizedBox(width: 4),
+                    TactileButton(
+                      type: TactileType.gold,
+                      height: 32,
+                      borderRadius: 6,
+                      bevelDepth: 2.0,
+                      padding: const EdgeInsets.symmetric(horizontal: 6),
+                      enabled: !prov.isCheckingUpdates,
+                      onTap: prov.isCheckingUpdates ? null : () => prov.checkForUpdates(),
+                      icon: Icons.refresh,
+                      label: prov.isCheckingUpdates ? 'Checking…' : 'Check for Updates',
                     ),
                   ],
                 ),
@@ -837,22 +835,18 @@ class _SettingsViewState extends State<SettingsView> {
                   const SizedBox(height: 8),
                   Row(
                     children: [
-                      ElevatedButton.icon(
-                        onPressed: prov.isDownloadingUpdate ? null : () => prov.downloadUpdate(),
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: AppTheme.accentGold,
-                          foregroundColor: Colors.black,
-                          padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                          shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                          visualDensity: VisualDensity.compact,
-                        ),
-                        icon: const Icon(Icons.download, size: 14),
-                        label: Text(
-                          prov.isDownloadingUpdate
-                              ? 'Downloading...'
-                              : 'Download update${prov.updateSizeLabel.isNotEmpty ? ' (${prov.updateSizeLabel})' : ''}',
-                          style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
-                        ),
+                      TactileButton(
+                        type: TactileType.primary,
+                        height: 32,
+                        borderRadius: 6,
+                        bevelDepth: 2.5,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        enabled: !prov.isDownloadingUpdate,
+                        onTap: prov.isDownloadingUpdate ? null : () => prov.downloadUpdate(),
+                        icon: Icons.download,
+                        label: prov.isDownloadingUpdate
+                            ? 'Downloading...'
+                            : 'Download update${prov.updateSizeLabel.isNotEmpty ? ' (${prov.updateSizeLabel})' : ''}',
                       ),
                       if (prov.isDownloadingUpdate) ...[
                         const SizedBox(width: 10),
@@ -880,17 +874,15 @@ class _SettingsViewState extends State<SettingsView> {
                   FittedBox(
                     fit: BoxFit.scaleDown,
                     alignment: Alignment.centerLeft,
-                    child: ElevatedButton.icon(
-                    onPressed: () => prov.installDownloadedUpdate(),
-                    style: ElevatedButton.styleFrom(
-                      backgroundColor: AppTheme.accentGold,
-                      foregroundColor: Colors.black,
-                      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    icon: const Icon(Icons.system_update, size: 14),
-                    label: const Text('Install update — the app will close & update itself', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+                    child: TactileButton(
+                      type: TactileType.primary,
+                      height: 32,
+                      borderRadius: 6,
+                      bevelDepth: 2.5,
+                      padding: const EdgeInsets.symmetric(horizontal: 12),
+                      onTap: () => prov.installDownloadedUpdate(),
+                      icon: Icons.system_update,
+                      label: 'Install update — the app will close & update itself',
                     ),
                   ),
                 ],
@@ -1552,17 +1544,14 @@ class _SettingsViewState extends State<SettingsView> {
               ),
             ),
             const SizedBox(width: 8),
-            OutlinedButton(
-              onPressed: onBrowse,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: AppTheme.textMain,
-                backgroundColor: AppTheme.overlay10,
-                side: BorderSide(color: AppTheme.borderSoft),
-                padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(6)),
-                visualDensity: VisualDensity.compact,
-              ),
-              child: Text(buttonText, style: const TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+            TactileButton(
+              type: TactileType.secondary,
+              height: 32,
+              borderRadius: 6,
+              bevelDepth: 2.0,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              onTap: onBrowse,
+              label: buttonText,
             ),
           ],
         ),

@@ -5,6 +5,7 @@ import '../models/app_notification.dart';
 import '../providers/notifications_provider.dart';
 import '../providers/settings_provider.dart';
 import '../theme/app_theme.dart';
+import 'tactile_components.dart';
 
 // Notification Center: the bell's overlay layer — a small popup
 // card that appears near the bell for ~2 seconds when a new
@@ -272,37 +273,26 @@ class _NotificationOverlayState extends State<NotificationOverlay> {
                       ),
                     ],
                     const Spacer(),
-                    TextButton(
-                      onPressed: unread > 0 ? notif.markAllRead : null,
-                      style: TextButton.styleFrom(
-                        foregroundColor: AppTheme.accentText,
-                        padding: const EdgeInsets.symmetric(horizontal: 6),
-                        minimumSize: const Size(0, 30),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        textStyle: const TextStyle(
-                            fontSize: 11.5, fontWeight: FontWeight.w600),
-                      ),
-                      child: const Text('Mark all read'),
+                    TactileButton(
+                      type: TactileType.secondary,
+                      height: 28,
+                      borderRadius: 6,
+                      bevelDepth: 1.8,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      enabled: unread > 0,
+                      onTap: unread > 0 ? notif.markAllRead : null,
+                      label: 'Mark all read',
                     ),
-                    const SizedBox(width: 4),
-                    ElevatedButton(
-                      onPressed:
-                          notif.items.isNotEmpty ? notif.clearAll : null,
-                      style: ElevatedButton.styleFrom(
-                        backgroundColor: AppTheme.accentGold,
-                        foregroundColor: AppTheme.onAccent,
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 12, vertical: 6),
-                        minimumSize: const Size(0, 30),
-                        tapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        elevation: 0,
-                        shape: RoundedRectangleBorder(
-                          borderRadius: BorderRadius.circular(8),
-                        ),
-                        textStyle: const TextStyle(
-                            fontSize: 11.5, fontWeight: FontWeight.w700),
-                      ),
-                      child: const Text('Clear All'),
+                    const SizedBox(width: 6),
+                    TactileButton(
+                      type: TactileType.gold,
+                      height: 28,
+                      borderRadius: 6,
+                      bevelDepth: 1.8,
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                      enabled: notif.items.isNotEmpty,
+                      onTap: notif.items.isNotEmpty ? notif.clearAll : null,
+                      label: 'Clear All',
                     ),
                   ],
                 ),
@@ -342,24 +332,20 @@ class _NotificationOverlayState extends State<NotificationOverlay> {
 
   Widget _chip(String value, String label) {
     final selected = _filter == value;
-    return InkWell(
+    return TactileButton(
+      type: TactileType.pill,
+      isActive: selected,
+      height: 24,
+      borderRadius: 999,
+      bevelDepth: 1.5,
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
       onTap: () => setState(() => _filter = value),
-      borderRadius: BorderRadius.circular(999),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 5),
-        decoration: BoxDecoration(
-          color: selected ? AppTheme.textMain : Colors.transparent,
-          borderRadius: BorderRadius.circular(999),
-          border: Border.all(
-              color: selected ? AppTheme.textMain : AppTheme.borderSoft),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            color: selected ? AppTheme.surface : AppTheme.textDim,
-          ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: selected ? Colors.white : AppTheme.textDim,
         ),
       ),
     );

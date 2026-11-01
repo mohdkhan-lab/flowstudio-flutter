@@ -6,6 +6,7 @@ import '../models/activity_log.dart';
 import '../providers/activity_provider.dart';
 import '../providers/generator_provider.dart';
 import '../providers/settings_provider.dart';
+import 'tactile_components.dart';
 
 class ActivityStream extends StatefulWidget {
   const ActivityStream({super.key});
@@ -65,9 +66,6 @@ class _ActivityStreamState extends State<ActivityStream> {
 
     // v2.29.1: live status-pill values (see the header's pill).
     final amber = AppTheme.activeGold;
-    final pillBg = (generator.isRunning || generator.isPaused)
-        ? amber.withValues(alpha: 0.15)
-        : AppTheme.greenBg;
     final pillFg = (generator.isRunning || generator.isPaused)
         ? amber
         : AppTheme.green;
@@ -133,39 +131,31 @@ class _ActivityStreamState extends State<ActivityStream> {
               // header row shifts sideways.
               SizedBox(
                 width: 92,
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                  decoration: BoxDecoration(
-                    color: pillBg,
-                    borderRadius: BorderRadius.circular(12),
-                  ),
-                  child: Text(
-                    pillLabel,
-                    textAlign: TextAlign.center,
-                    style: TextStyle(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w800,
-                      color: pillFg,
-                    ),
-                  ),
+                child: TactileChip(
+                  color: pillFg,
+                  label: pillLabel,
+                  height: 24,
+                  borderRadius: 12,
+                  bevelDepth: 1.8,
                 ),
               ),
               const SizedBox(width: 8),
 
-              // Previous videos button — v2.27.0: opens the History
-              // view (it was an empty onPressed before).
-              OutlinedButton(
-                onPressed: () => context.read<SettingsProvider>().setNavView('history'),
-                style: OutlinedButton.styleFrom(
-                  foregroundColor: AppTheme.accentText,
-                  side: BorderSide(color: AppTheme.accentGold.withValues(alpha: 0.38)),
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-                  visualDensity: VisualDensity.compact,
-                ),
-                child: const Text(
+              // Previous videos button — Tactile 3D
+              TactileButton(
+                type: TactileType.secondary,
+                height: 26,
+                borderRadius: 12,
+                bevelDepth: 2.0,
+                padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 3),
+                onTap: () => context.read<SettingsProvider>().setNavView('history'),
+                child: Text(
                   'Previous videos',
-                  style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold),
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.bold,
+                    color: AppTheme.accentText,
+                  ),
                 ),
               ),
             ],
@@ -320,22 +310,20 @@ class _ActivityStreamState extends State<ActivityStream> {
     required bool isSelected,
     required VoidCallback onTap,
   }) {
-    return InkWell(
+    return TactileButton(
+      type: TactileType.pill,
+      isActive: isSelected,
+      height: 24,
+      borderRadius: 12,
+      bevelDepth: 1.5,
+      padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
       onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-        decoration: BoxDecoration(
-          gradient: isSelected ? AppTheme.accentGrad : null,
-          borderRadius: BorderRadius.circular(12),
-        ),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 10,
-            fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
-            color: isSelected ? AppTheme.onAccent : AppTheme.textDim,
-          ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: isSelected ? FontWeight.w800 : FontWeight.w600,
+          color: isSelected ? AppTheme.onAccent : AppTheme.textDim,
         ),
       ),
     );
@@ -345,18 +333,19 @@ class _ActivityStreamState extends State<ActivityStream> {
     required String label,
     required VoidCallback onTap,
   }) {
-    return InkWell(
+    return TactileButton(
+      type: TactileType.secondary,
+      height: 24,
+      borderRadius: 12,
+      bevelDepth: 1.5,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
       onTap: onTap,
-      borderRadius: BorderRadius.circular(12),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-        child: Text(
-          label,
-          style: TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w600,
-            color: AppTheme.textDim,
-          ),
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: AppTheme.textDim,
         ),
       ),
     );

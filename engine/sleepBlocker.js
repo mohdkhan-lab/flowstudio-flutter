@@ -68,3 +68,4 @@ class SleepBlocker {
 
 const sleepBlocker = new SleepBlocker();
 module.exports = { sleepBlocker, SleepBlocker };
+

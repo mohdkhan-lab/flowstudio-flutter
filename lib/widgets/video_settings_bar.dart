@@ -7,6 +7,7 @@ import '../providers/generator_provider.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/activity_provider.dart';
 import '../services/credit_costs.dart';
+import 'tactile_components.dart';
 
 // v2.27.0 (design): ONE row of four labelled dropdowns
 // (MODEL / DURATION / ASPECT / BROWSERS, labels above), then a row
@@ -124,20 +125,28 @@ class VideoSettingsBar extends StatelessWidget {
           // Actions Row (design): Stop | Pause ... estimate | Generate
           Row(
             children: [
-              // Stop Button
-              _actionButton(
+              // Stop Button (Tactile 3D)
+              TactileButton(
+                type: TactileType.stop,
+                height: 32,
+                padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
+                borderRadius: 7,
+                bevelDepth: 2.5,
+                enabled: isRunning || isPaused,
+                onTap: (isRunning || isPaused) ? () => generator.stopGeneration(activity) : null,
                 icon: Icons.stop,
                 label: 'Stop',
-                compact: compact,
-                onTap: (isRunning || isPaused) ? () => generator.stopGeneration(activity) : null,
               ),
               SizedBox(width: compact ? 6 : 8),
 
-              // Pause / Resume Button
-              _actionButton(
-                icon: isPaused ? Icons.play_arrow : Icons.pause,
-                label: isPaused ? 'Resume' : 'Pause',
-                compact: compact,
+              // Pause / Resume Button (Tactile 3D)
+              TactileButton(
+                type: TactileType.pause,
+                height: 32,
+                padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
+                borderRadius: 7,
+                bevelDepth: 2.5,
+                enabled: isRunning || isPaused,
                 onTap: isRunning
                     ? () => generator.pauseGeneration(activity)
                     : isPaused
@@ -147,6 +156,8 @@ class VideoSettingsBar extends StatelessWidget {
                               settings: settingsProv,
                             )
                         : null,
+                icon: isPaused ? Icons.play_arrow : Icons.pause,
+                label: isPaused ? 'Resume' : 'Pause',
               ),
 
               SizedBox(width: compact ? 6 : 8),
@@ -187,8 +198,14 @@ class VideoSettingsBar extends StatelessWidget {
               ),
               SizedBox(width: compact ? 6 : 8),
 
-              // Generate Button — big BLUE gradient (design)
-              InkWell(
+              // Generate Button — Tactile 3D (Mechanical Bevel + 2.0px Lift)
+              TactileButton(
+                type: TactileType.primary,
+                height: 38,
+                padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 20),
+                borderRadius: 8,
+                bevelDepth: 3.5,
+                enabled: !isRunning,
                 onTap: !isRunning
                     ? () => generator.startGeneration(
                           accounts: accounts,
@@ -196,36 +213,20 @@ class VideoSettingsBar extends StatelessWidget {
                           settings: settingsProv,
                         )
                     : null,
-                borderRadius: BorderRadius.circular(8),
-                child: Container(
-                  height: 38,
-                  padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 20),
-                  decoration: BoxDecoration(
-                    gradient: AppTheme.accentGrad,
-                    borderRadius: BorderRadius.circular(8),
-                    boxShadow: [
-                      BoxShadow(
-                        color: AppTheme.blue.withValues(alpha: 0.35),
-                        blurRadius: 12,
-                        offset: const Offset(0, 2),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    const Icon(Icons.play_arrow, size: 15, color: Colors.white),
+                    const SizedBox(width: 4),
+                    Text(
+                      isRunning ? 'Running...' : 'Generate',
+                      style: const TextStyle(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w800,
+                        color: Colors.white,
                       ),
-                    ],
-                  ),
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      const Icon(Icons.play_arrow, size: 15, color: Colors.white),
-                      const SizedBox(width: 4),
-                      Text(
-                        isRunning ? 'Running...' : 'Generate',
-                        style: const TextStyle(
-                          fontSize: 12.5,
-                          fontWeight: FontWeight.w800,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ],
-                  ),
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -233,38 +234,6 @@ class VideoSettingsBar extends StatelessWidget {
         ],
           );
         },
-      ),
-    );
-  }
-
-  Widget _actionButton({
-    required IconData icon,
-    required String label,
-    required VoidCallback? onTap,
-    bool compact = false,
-  }) {
-    return InkWell(
-      onTap: onTap,
-      borderRadius: BorderRadius.circular(7),
-      child: Container(
-        height: 32,
-        padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
-        decoration: BoxDecoration(
-          color: AppTheme.overlay10,
-          borderRadius: BorderRadius.circular(7),
-          border: Border.all(color: AppTheme.borderSoft),
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Icon(icon, size: 13, color: AppTheme.textMain),
-            SizedBox(width: compact ? 4 : 6),
-            Text(
-              label,
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -296,6 +265,13 @@ class VideoSettingsBar extends StatelessWidget {
             color: AppTheme.inputBg,
             borderRadius: BorderRadius.circular(7),
             border: Border.all(color: AppTheme.borderSoft),
+            boxShadow: const [
+              BoxShadow(
+                color: Color(0xFF0F172A),
+                offset: Offset(0, 2.0),
+                blurRadius: 0,
+              ),
+            ],
           ),
           child: DropdownButtonHideUnderline(
             child: DropdownButton<String>(

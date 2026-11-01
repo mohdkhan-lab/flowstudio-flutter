@@ -925,8 +925,11 @@ class WorkerPool {
         // instead of on the worker, where the same wait used to
         // hold up the next prompt. If it saved the file, this item
         // is done without a second fetch.
+        // v2.48.7: the window is the owner's 5-SECOND RULE — after
+        // 5s the queue stops waiting on that fetch and pulls the
+        // file itself from the captured backend link.
         if (engineTask._backendFetchPromise && !engineTask.mediaSaved) {
-          try { await downloadGuard.withTimeout(engineTask._backendFetchPromise, 10000, 'immediate backend fetch'); } catch (e) {}
+          try { await downloadGuard.withTimeout(engineTask._backendFetchPromise, 5000, 'immediate backend fetch'); } catch (e) {}
         }
 
         let ok = false;

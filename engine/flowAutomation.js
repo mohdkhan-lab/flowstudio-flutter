@@ -5180,6 +5180,7 @@ class FlowAutomationEngine {
               // v2.48.3 (4-Slot Sliding Window + Safe Download):
               // Capture target media URL and session cookies/User-Agent immediately while page is available
               let targetUrl = task.completedVideoUrl || task.backendVideoUrl || bestTile.mediaUrl || bestTile.videoSrc;
+              const urlAlreadyKnown = !!targetUrl;
               if (!targetUrl && this.page && !this.page.isClosed()) {
                 try {
                   const extracted = await this._extractTileMediaUrlDetailed(task, bestTile.tileIndex, !!(settings && settings.type === 'Image'));
@@ -5190,7 +5191,20 @@ class FlowAutomationEngine {
                 task.completedVideoUrl = targetUrl;
               }
 
-              if (this.page && !this.page.isClosed()) {
+              // v2.48.7 — the owner's 5-SECOND RULE: when a video
+              // reaches 100%, its download must start from the
+              // direct backend link within about 5 seconds. So in
+              // the sliding-window (defer) path, when the backend
+              // link is ALREADY captured, hand the task to the
+              // download queue IMMEDIATELY — no cookie/UA
+              // pre-capture round trips on the worker first (the
+              // download reads the session cookies itself at fetch
+              // time if it needs them; the page is still open on
+              // this same browser). Pre-capture still runs when
+              // the URL had to be extracted fresh, and in the
+              // single-task path.
+              const skipPreCapture = returnOnAnyComplete && urlAlreadyKnown;
+              if (!skipPreCapture && this.page && !this.page.isClosed()) {
                 try {
                   const jar = new Map();
                   for (const scope of [null, targetUrl]) {

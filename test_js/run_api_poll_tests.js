@@ -148,6 +148,19 @@ eq('pickReplayHeaders drops empty values', pickReplayHeaders({ 'x-grpc-web': '' 
   ok('batchexecute body binds the task link end-to-end', !!bound && bound.url === MEDIA && bound.via === 'workflow-id');
 }
 
+// v2.48.22: url shapes + magic classification + allUrls census.
+{
+  const { urlShape, scanBatchExecuteBody } = require('../engine/networkCapture');
+  const { classifyBufferMagic } = require('../engine/downloadFetch');
+  eq('shape hides the signed id segment', urlShape('https://lh3.googleusercontent.com/videoplayback/abc123xyzDEF456?q=secret'), 'lh3.googleusercontent.com/videoplayback/*');
+  eq('shape keeps short literal path', urlShape('https://flow.google.com/media/download'), 'flow.google.com/media/download');
+  eq('magic jpeg', classifyBufferMagic(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 1, 2])), 'jpeg');
+  eq('magic png', classifyBufferMagic(Buffer.from([0x89, 0x50, 0x4e, 0x47, 1, 2])), 'png');
+  eq('magic mp4', classifyBufferMagic(Buffer.from([0, 0, 0, 0x18, 0x66, 0x74, 0x79, 0x70, 1, 2])), 'mp4');
+  const r = scanBatchExecuteBody(Buffer.from(JSON.stringify([['wrb.fr', 'x', 'see https://flow.google.com/some/page and https://lh3.googleusercontent.com/videoplayback/abc123xyz']]), 'utf8'));
+  ok('allUrls includes the non-media url too', r.allUrls.some((u) => u.includes('flow.google.com/some/page')));
+}
+
 // v2.48.20: streaming-chunk scan — a URL split across chunks binds.
 {
   const { NetworkCapture } = require('../engine/networkCapture');

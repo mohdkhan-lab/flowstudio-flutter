@@ -130,6 +130,21 @@ function looksLikeVideoBuffer(buf) {
   return false;
 }
 
+/**
+ * v2.48.22: buffer ke pehle bytes se asal format ka naam —
+ * sirf pehchan ke liye (log me), koi data save nahi hota.
+ */
+function classifyBufferMagic(buf) {
+  if (!buf || buf.length < 4) return 'too-small';
+  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return 'mp4';
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return 'webm';
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+  if (buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') return 'webp';
+  if (buf.toString('latin1', 0, 4) === 'GIF8') return 'gif';
+  return 'unknown';
+}
+
 function summarizeFetchSteps(steps) {
   if (!Array.isArray(steps) || steps.length === 0) return '';
   const parts = [];
@@ -235,6 +250,7 @@ module.exports = {
   resolveUserAgent,
   summarizeFetchSteps,
   looksLikeVideoBuffer,
+  classifyBufferMagic,
   fastFetchUrl,
   MONITOR_ROUND_CAP,
   DRAIN_ROUND_CAP,

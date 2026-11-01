@@ -3249,7 +3249,7 @@ class FlowAutomationEngine {
       && !(settings && settings.type === 'Image')
       && !downloadFetch.looksLikeVideoBuffer(savedBuffer)) {
       this._noteFetchStep(task, { step: 'content-check', ok: false, error: 'the fetched data is not a video file (no video header — likely an image or an error page)' });
-      this.log(`[Prompt #${task.promptIndex + 1}] The data fetched from the link is NOT a video file (it has no video header — probably an image) — it was not saved. The remaining routes will be tried.`, 'warn');
+      this.log(`[Prompt #${task.promptIndex + 1}] The data fetched from the link is NOT a video file (it has no video header — probably an image) — it was not saved. The remaining routes will be tried. · fetched: ${savedBuffer.length} bytes, format: ${downloadFetch.classifyBufferMagic(savedBuffer)}`, 'warn');
       return false;
     }
 
@@ -4113,7 +4113,7 @@ class FlowAutomationEngine {
     const viaShabd = task.backendUrlVia === 'workflow-id'
       ? 'bound by workflowId identification'
       : (task.backendUrlVia === 'currentSrc' ? 'confirmed from the tile\'s currentSrc' : 'bound by sequence order');
-    this.log(`[Prompt #${n}] Got a direct link from the backend (${viaShabd}) — downloading, without any button…`, 'info');
+    this.log(`[Prompt #${n}] Got a direct link from the backend (${viaShabd}) — downloading, without any button… · link shape: ${networkCapture.urlShape(url)}`, 'info');
     if (!task._backendNotified) {
       task._backendNotified = true;
       try { this.onBackendMedia(task, { via: task.backendUrlVia || 'workflow-id', host: networkCapture.hostOf(url) }); } catch (e) {}
@@ -4232,7 +4232,7 @@ class FlowAutomationEngine {
         // poora hisaab — requests/rpcids, jawab, padhe gaye
         // bodies, chhoote huon ki wajah, aur andar ke nishan.
         const b = snap.batch || {};
-        diag += ` [DIAGNOSTIC-3 — batchexecute requests: ${b.requests || 0} (rpcids: ${JSON.stringify(b.rpcids || {})}), responses: ${b.responses || 0} (content-types: ${JSON.stringify(b.contentTypes || {})}), bodies read: ${b.bodiesFetched || 0}, CDP bodies read: ${b.cdpBodies || 0}, streamed chunks: ${b.streamChunks || 0}, stream-bound: ${b.streamBound || 0}, skipped too-big: ${b.skipTooBig || 0}, skipped buffer-fail: ${b.skipBuffer || 0}; bodies carrying: media host ${b.withMediaHost || 0}, videoplayback ${b.withVideoplayback || 0}, workflow word ${b.withWorkflow || 0}, fife word ${b.withFife || 0}, download word ${b.withDownloadWord || 0}]`;
+        diag += ` [DIAGNOSTIC-3 — batchexecute requests: ${b.requests || 0} (rpcids: ${JSON.stringify(b.rpcids || {})}), responses: ${b.responses || 0} (content-types: ${JSON.stringify(b.contentTypes || {})}), bodies read: ${b.bodiesFetched || 0}, CDP bodies read: ${b.cdpBodies || 0}, streamed chunks: ${b.streamChunks || 0}, stream-bound: ${b.streamBound || 0}, skipped too-big: ${b.skipTooBig || 0}, skipped buffer-fail: ${b.skipBuffer || 0}; bodies carrying: media host ${b.withMediaHost || 0}, videoplayback ${b.withVideoplayback || 0}, workflow word ${b.withWorkflow || 0}, fife word ${b.withFife || 0}, download word ${b.withDownloadWord || 0}; link shapes inside bodies: ${JSON.stringify(b.urlShapes || {}).slice(0, 500)}]`;
       } catch (e) {}
       this.log(`[Prompt #${n}] No video link was seen on the backend — the UI routes are being tried.${diag}`, 'warn');
     }

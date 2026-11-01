@@ -194,6 +194,7 @@ const BARE_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{1
 function scanBatchExecuteBody(buf, patterns = CAPTURE_PATTERNS) {
   const ids = new Set();
   const mediaUrls = new Set();
+  const allUrls = new Set();
   let text = Buffer.isBuffer(buf) ? buf.toString('latin1') : String(buf || '');
   for (let pass = 0; pass < 4; pass++) {
     try {
@@ -202,6 +203,7 @@ function scanBatchExecuteBody(buf, patterns = CAPTURE_PATTERNS) {
       for (const u of found.mediaUrls) mediaUrls.add(u);
     } catch (e) {}
     for (const u of extractUrlsFromText(text, patterns)) {
+      allUrls.add(u);
       if (isMediaUrl(u, patterns)) mediaUrls.add(u);
     }
     for (const id of extractWorkflowIdsFromText(text, patterns)) ids.add(id);
@@ -210,7 +212,26 @@ function scanBatchExecuteBody(buf, patterns = CAPTURE_PATTERNS) {
     if (next === text) break;
     text = next;
   }
-  return { ids: [...ids], mediaUrls: [...mediaUrls] };
+  return { ids: [...ids], mediaUrls: [...mediaUrls], allUrls: [...allUrls] };
+}
+
+/**
+ * v2.48.22: ek URL ki SAFE shakal — host + aam rasta; lambe/
+ * token-numa hisse '*' ban jate hain, query (signature) kabhi
+ * shamil nahi. Sirf pehchan/ginti ke liye — asal link kabhi
+ * log nahi hota.
+ */
+function urlShape(url) {
+  try {
+    const u = new URL(String(url || ''));
+    const segs = u.pathname.split('/').filter(Boolean).map((s) => {
+      let d = s;
+      try { d = decodeURIComponent(s); } catch (e) {}
+      if (d.length > 14 || (/[0-9]/.test(d) && /[a-zA-Z]/.test(d) && d.length > 8)) return '*';
+      return d;
+    });
+    return u.hostname + '/' + segs.join('/');
+  } catch (e) { return 'unparsable'; }
 }
 
 /**
@@ -429,7 +450,7 @@ class NetworkCapture {
       skipContentType: 0, skipTooBig: 0, skipBuffer: 0, contentTypes: {},
       withMediaHost: 0, withVideoplayback: 0, withWorkflow: 0,
       withFife: 0, withDownloadWord: 0, cdpBodies: 0,
-      streamChunks: 0, streamBound: 0
+      streamChunks: 0, streamBound: 0, urlShapes: {}
     };
     this._cdpBatch = new Map(); // CDP requestId -> { rpcids, at, text, bound }
   }
@@ -850,6 +871,15 @@ class NetworkCapture {
           const extra = scanBatchExecuteBody(evt.bodyBuffer, this.patterns);
           for (const id of extra.ids) if (!found.ids.includes(id)) found.ids.push(id);
           for (const u of extra.mediaUrls) if (!found.mediaUrls.includes(u)) found.mediaUrls.push(u);
+          // v2.48.22: jawab ke ANDAR ke saaray links ki shaklon
+          // ki ginti (asal link kabhi record nahi) — asal video
+          // URL kis shakal me aata hai, ye census batayega.
+          for (const u of (extra.allUrls || [])) {
+            const shape = urlShape(u);
+            if (this.batchStats.urlShapes[shape] !== undefined || Object.keys(this.batchStats.urlShapes).length < 24) {
+              this.batchStats.urlShapes[shape] = (this.batchStats.urlShapes[shape] || 0) + 1;
+            }
+          }
         } catch (e) {}
       }
       for (const id of found.ids) { this.stats.idsSeen++; this._bindId(id, at); }
@@ -952,4 +982,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload };

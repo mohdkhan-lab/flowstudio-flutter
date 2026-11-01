@@ -453,6 +453,8 @@ class NetworkCapture {
       streamChunks: 0, streamBound: 0, urlShapes: {}
     };
     this._cdpBatch = new Map(); // CDP requestId -> { rpcids, at, text, bound }
+    this.downloadCensus = new Map(); // v2.48.24: shape -> { n, bytes } (media-host / asb responses, poori run)
+    this._cdpDlShape = new Map(); // CDP requestId -> shape
   }
 
   arm() { this.armed = true; }
@@ -656,7 +658,20 @@ class NetworkCapture {
         } catch (err) {}
       });
       client.on('Network.loadingFailed', (e) => {
-        try { if (e) this._cdpBatch.delete(e.requestId); } catch (err) {}
+        try { if (e) { this._cdpBatch.delete(e.requestId); this._cdpDlShape.delete(e.requestId); } } catch (err) {}
+      });
+      // v2.48.24: DOWNLOAD CENSUS — media-host / asb wale tamam
+      // responses ki shakal + kul size, poori run (menu wale
+      // download sameet). Asal download link kis khandan ka
+      // hai, yehi batayega.
+      client.on('Network.responseReceived', (e) => {
+        try {
+          if (!e || !e.response || !e.response.url) return;
+          const u = e.response.url;
+          if (isMediaHostUrl(u) || u.includes('/asb/')) {
+            this._cdpDlShape.set(e.requestId, urlShape(u));
+          }
+        } catch (err) {}
       });
       // v2.48.20: STREAMING jawab ko beech me se padho.
       // TEST496/497 ka saboot: 31 batchexecute requests ke
@@ -674,6 +689,10 @@ class NetworkCapture {
       });
       client.on('Network.loadingFinished', async (e) => {
         try {
+          if (e && this._cdpDlShape.has(e.requestId)) {
+            this.recordDownloadResponse(this._cdpDlShape.get(e.requestId), e.encodedDataLength || 0);
+            this._cdpDlShape.delete(e.requestId);
+          }
           if (!e || !this._cdpBatch.has(e.requestId)) return;
           this._cdpBatch.delete(e.requestId);
           if (!this.armed) return;
@@ -824,6 +843,22 @@ class NetworkCapture {
       return this.latestStatusTemplate;
     }
     return null;
+  }
+
+  /** v2.48.24: download census me ek response ka entry. */
+  recordDownloadResponse(shape, bytes) {
+    if (!shape) return;
+    const cur = this.downloadCensus.get(shape) || { n: 0, bytes: 0 };
+    cur.n++;
+    cur.bytes += Math.max(0, bytes | 0);
+    this.downloadCensus.set(shape, cur);
+  }
+
+  /** v2.48.24: census ka chhota khulasa (log ke liye). */
+  downloadCensusSummary() {
+    const out = {};
+    for (const [shape, v] of this.downloadCensus.entries()) out[shape] = `${v.n}x/${v.bytes}B`;
+    return out;
   }
 
   /**

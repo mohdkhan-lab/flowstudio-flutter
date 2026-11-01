@@ -148,6 +148,18 @@ eq('pickReplayHeaders drops empty values', pickReplayHeaders({ 'x-grpc-web': '' 
   ok('batchexecute body binds the task link end-to-end', !!bound && bound.url === MEDIA && bound.via === 'workflow-id');
 }
 
+// v2.48.24: download census bookkeeping.
+{
+  const { NetworkCapture } = require('../engine/networkCapture');
+  const cap = new NetworkCapture({});
+  cap.recordDownloadResponse('lh3.googleusercontent.com/asb/*', 1000);
+  cap.recordDownloadResponse('lh3.googleusercontent.com/asb/*', 500);
+  cap.recordDownloadResponse('flow-content.google.com/*', 2000);
+  const s = cap.downloadCensusSummary();
+  eq('census counts and sums', s['lh3.googleusercontent.com/asb/*'], '2x/1500B');
+  eq('census second shape', s['flow-content.google.com/*'], '1x/2000B');
+}
+
 // v2.48.23: mp4 box census.
 {
   const { findBoxOffsets } = require('../engine/downloadFetch');

@@ -4426,7 +4426,10 @@ class FlowAutomationEngine {
       }
       const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
       if (idx < 0) return; // tile not locatable — the strategies report it, as today
-      const WAIT_MS = 25000;
+      // v2.48.24: 25s -> 8s. TEST499/500 me bandhan ~1s me aa
+      // gaya tha; TEST501 me 25s me bhi nahi aaya — lamba
+      // intezaar sirf menu wale pakke raaste ko der karta hai.
+      const WAIT_MS = 8000;
       const startedAt = Date.now();
       this.log(`[Prompt #${n}] The tile's video has not loaded on the page yet — bringing it into view and waiting for its link before trying the download routes…`, 'info');
       let ready = false;
@@ -4661,6 +4664,11 @@ class FlowAutomationEngine {
     const okNative = await this._downloadViaNativeUi(task, downloadFolder, settings, tileIndexHint, attempts);
     if (okNative) {
       const won = attempts.filter(a => a.ok).pop();
+      // v2.48.24: file UI raaste se aayi — poori run ke media
+      // responses ki ginti is pal sahi hai (asal download sameet).
+      try {
+        this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
+      } catch (e) {}
       return { ok: true, strategy: won ? won.strategy : 'native', attempts };
     }
     return { ok: false, attempts };

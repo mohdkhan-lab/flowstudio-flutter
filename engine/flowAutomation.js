@@ -4542,6 +4542,31 @@ class FlowAutomationEngine {
     // backend raaston ke BAAD chalti hai — upar dekho.)
     const readiness = await this._awaitTileMediaReady(task, tileIndexHint, isImage, captureKey, n);
 
+    // --- v2.48.21: READINESS KE BAAD BACKEND EK AUR BAAR ---
+    // TEST498 (v2.48.20, log-sabit): render-complete wala
+    // batchexecute jawab attempt shuru hone ke ~1 second BAAD
+    // mukammal hota hai — attempt ke pehle backend check ko
+    // 'koi link nahi' milta hai, phir tile-readiness usi
+    // bandhan par ~1s me bahar aati hai ('the backend link was
+    // bound'), lekin tartib aage badh kar tile/menu par chali
+    // jati thi aur bandha hua link kabhi fetch hi nahi hota
+    // tha. Ab readiness ke foran baad backend wala rasta ek
+    // aur baar chalega — bandha link hoga to wahi fetch hoga,
+    // tile/menu sirf tab jab ye bhi na bane.
+    if (!task.mediaSaved && captureKey) {
+      let boundNow = null;
+      try { boundNow = this.netCapture.urlForKey(captureKey); } catch (e) { boundNow = null; }
+      if (boundNow && boundNow.url) {
+        try {
+          const okBackend2 = await this._tryBackendDownload(task, downloadFolder, settings, attempts);
+          if (okBackend2) return { ok: true, strategy: 'backend-fetch', attempts };
+        } catch (e) {
+          attempts.push({ strategy: 'backend-fetch', ok: false, note: 'the backend route retried after the tile wait hit a problem — the remaining routes will be tried' });
+        }
+        if (task.mediaSaved) return { ok: true, strategy: 'backend-fetch', attempts };
+      }
+    }
+
     // --- v2.47.4 FAST PATH (owner-approved): ye sirf ek IZAAFA ---
     // pehli koshish hai, purani tartib ki JAGAH nahi. Readiness
     // poll ne tile ka % gaya + us ka apna src maujood dekha to

@@ -145,6 +145,21 @@ function classifyBufferMagic(buf) {
   return 'unknown';
 }
 
+/**
+ * v2.48.23: MP4 box census — mashhoor box naamon ki pehli
+ * maujoodgi ka offset (na mile to -1). Ek buffer ke andar
+ * video lipte hue hai ya tukdon (segments) me hai, ye batata
+ * hai — bina asal data save kiye.
+ */
+function findBoxOffsets(buf) {
+  const out = {};
+  const names = ['ftyp', 'styp', 'moof', 'mdat', 'moov'];
+  if (!buf || buf.length < 8) { for (const n of names) out[n] = -1; return out; }
+  const text = buf.toString('latin1');
+  for (const n of names) out[n] = text.indexOf(n);
+  return out;
+}
+
 function summarizeFetchSteps(steps) {
   if (!Array.isArray(steps) || steps.length === 0) return '';
   const parts = [];
@@ -251,6 +266,7 @@ module.exports = {
   summarizeFetchSteps,
   looksLikeVideoBuffer,
   classifyBufferMagic,
+  findBoxOffsets,
   fastFetchUrl,
   MONITOR_ROUND_CAP,
   DRAIN_ROUND_CAP,

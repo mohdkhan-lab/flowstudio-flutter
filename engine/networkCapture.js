@@ -492,6 +492,27 @@ class NetworkCapture {
           for (const r of rpcidsOf(req.url())) {
             this.batchStats.rpcids[r] = (this.batchStats.rpcids[r] || 0) + 1;
           }
+          // v2.48.23: REQUEST ke andar ka payload bhi scan karo
+          // (TEST500: jawab-bodies ki link-shapes ginti khaali
+          // aayi, lekin bandhan kahin se to hua — darkhwast ke
+          // payload ek aur jagah hai jahan pehchan ke nishan
+          // ho sakte hain). Sirf armed par; nishan wahi pipeline.
+          if (this.armed) {
+            let post = null;
+            try { post = req.postData() || null; } catch (e) {}
+            if (post) {
+              const extra = scanBatchExecuteBody(Buffer.from(post, 'utf8'), this.patterns);
+              const at = Date.now();
+              for (const id of extra.ids) this._bindId(id, at);
+              for (const u of extra.mediaUrls) this._sightUrl(u, 'api-body', at, extra.ids);
+              for (const u of (extra.allUrls || [])) {
+                const shape = urlShape(u);
+                if (this.batchStats.urlShapes[shape] !== undefined || Object.keys(this.batchStats.urlShapes).length < 24) {
+                  this.batchStats.urlShapes[shape] = (this.batchStats.urlShapes[shape] || 0) + 1;
+                }
+              }
+            }
+          }
         }
       } catch (e) {}
       // v2.48.15: status-shaped API requests ka TEMPLATE armed
@@ -875,6 +896,20 @@ class NetworkCapture {
           // ki ginti (asal link kabhi record nahi) — asal video
           // URL kis shakal me aata hai, ye census batayega.
           for (const u of (extra.allUrls || [])) {
+            const shape = urlShape(u);
+            if (this.batchStats.urlShapes[shape] !== undefined || Object.keys(this.batchStats.urlShapes).length < 24) {
+              this.batchStats.urlShapes[shape] = (this.batchStats.urlShapes[shape] || 0) + 1;
+            }
+          }
+        } catch (e) {}
+      }
+      // v2.48.23: baaki (non-batchexecute) bodies ke links ki
+      // shaklon ki ginti bhi — TEST500 ka bandhan kisi aisi hi
+      // body se hua lagta hai (batchexecute census khaali thi).
+      if (!isBatchExecuteUrl(evt.url)) {
+        try {
+          const rawText = evt.bodyBuffer.toString('latin1');
+          for (const u of extractUrlsFromText(rawText, this.patterns)) {
             const shape = urlShape(u);
             if (this.batchStats.urlShapes[shape] !== undefined || Object.keys(this.batchStats.urlShapes).length < 24) {
               this.batchStats.urlShapes[shape] = (this.batchStats.urlShapes[shape] || 0) + 1;

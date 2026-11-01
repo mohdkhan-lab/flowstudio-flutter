@@ -148,6 +148,16 @@ eq('pickReplayHeaders drops empty values', pickReplayHeaders({ 'x-grpc-web': '' 
   ok('batchexecute body binds the task link end-to-end', !!bound && bound.url === MEDIA && bound.via === 'workflow-id');
 }
 
+// v2.48.23: mp4 box census.
+{
+  const { findBoxOffsets } = require('../engine/downloadFetch');
+  const wrapped = Buffer.concat([Buffer.from('XXXX'), Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), Buffer.from('....mdat....')]);
+  const o = findBoxOffsets(wrapped);
+  eq('ftyp found inside a wrapped buffer', o.ftyp, 8);
+  ok('mdat found too', o.mdat > 8);
+  eq('moof absent', findBoxOffsets(Buffer.from('plain text here')).moof, -1);
+}
+
 // v2.48.22: url shapes + magic classification + allUrls census.
 {
   const { urlShape, scanBatchExecuteBody } = require('../engine/networkCapture');

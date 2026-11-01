@@ -3249,7 +3249,7 @@ class FlowAutomationEngine {
       && !(settings && settings.type === 'Image')
       && !downloadFetch.looksLikeVideoBuffer(savedBuffer)) {
       this._noteFetchStep(task, { step: 'content-check', ok: false, error: 'the fetched data is not a video file (no video header — likely an image or an error page)' });
-      this.log(`[Prompt #${task.promptIndex + 1}] The data fetched from the link is NOT a video file (it has no video header — probably an image) — it was not saved. The remaining routes will be tried. · fetched: ${savedBuffer.length} bytes, format: ${downloadFetch.classifyBufferMagic(savedBuffer)}`, 'warn');
+      this.log(`[Prompt #${task.promptIndex + 1}] The data fetched from the link is NOT a video file (it has no video header — probably an image) — it was not saved. The remaining routes will be tried. · fetched: ${savedBuffer.length} bytes, format: ${downloadFetch.classifyBufferMagic(savedBuffer)}, head: ${savedBuffer.subarray(0, 16).toString('hex')}, boxes: ${JSON.stringify(downloadFetch.findBoxOffsets(savedBuffer))}`, 'warn');
       return false;
     }
 

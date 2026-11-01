@@ -206,6 +206,10 @@ class FlowAutomationEngine {
     // carries come from this same session, so the UA must name the
     // same browser (a hardcoded version string did not).
     this._browserUA = null;
+    // v2.48.9: session cookie header for direct fetches, cached
+    // per launch (see _sessionCookieHeader) — downloads must not
+    // queue behind a busy rendering page for their inputs.
+    this._cookieHeaderCache = null;
     this.capturedVideoUrls = [];
     this.capturedVideoBuffers = new Map();
     this.capturedVideoBytes = 0;
@@ -259,6 +263,10 @@ class FlowAutomationEngine {
     this.cancelDownloadWatcherSweep();
     // Audit fix #5: a fresh browser launch must always re-apply settings.
     this.hasConfiguredSettings = false;
+    // v2.48.9: a fresh launch = a fresh session — drop the cached
+    // fetch inputs (cookies / user-agent) of the previous account.
+    this._cookieHeaderCache = null;
+    this._browserUA = null;
 
     const chromePath = getChromeExecutablePath();
     const profilePath = getAccountProfilePath(account.id);
@@ -2858,6 +2866,37 @@ class FlowAutomationEngine {
     try { return downloadFetch.summarizeFetchSteps(task && task._lastFetchSteps); } catch (e) { return ''; }
   }
 
+  /**
+   * v2.48.9: the session cookie header for direct fetches, cached
+   * per browser launch (45s). downloadFromCapturedStream used to
+   * re-read the page's cookies (two CDP calls) on EVERY download —
+   * while the page was busy rendering several tiles, those calls
+   * queued behind the monitor's own page reads and the download
+   * step visibly crawled (measured on the owner's PC: 19–39s from
+   * "backend link found" to "file saved" for 2.6–4.3 MB files).
+   * Session cookies do not change second-to-second; the cache is
+   * dropped at every launch (new account / new session).
+   */
+  async _sessionCookieHeader(targetUrl) {
+    const now = Date.now();
+    if (this._cookieHeaderCache && (now - this._cookieHeaderCache.at) < 45000) {
+      return this._cookieHeaderCache.header;
+    }
+    let header = null;
+    if (this.page && !this.page.isClosed()) {
+      const jar = new Map();
+      for (const scope of [null, targetUrl]) {
+        try {
+          const cs = scope ? await this.page.cookies(scope) : await this.page.cookies();
+          for (const c of cs || []) jar.set(`${c.name}@${c.domain || ''}`, c);
+        } catch (e) {}
+      }
+      header = [...jar.values()].map(c => `${c.name}=${c.value}`).join('; ');
+    }
+    if (header) this._cookieHeaderCache = { header, at: now };
+    return header;
+  }
+
   /** The browser session's real User-Agent (cached per engine). */
   async _realUserAgent() {
     if (this._browserUA) return this._browserUA;
@@ -2977,15 +3016,11 @@ class FlowAutomationEngine {
         let retry = false;
         try {
           let cookieHeader = task.preCapturedCookieHeader || null;
-          if (!cookieHeader && this.page && !this.page.isClosed()) {
-            const jar = new Map();
-            for (const scope of [null, targetUrl]) {
-              try {
-                const cs = scope ? await this.page.cookies(scope) : await this.page.cookies();
-                for (const c of cs || []) jar.set(`${c.name}@${c.domain || ''}`, c);
-              } catch (e) {}
-            }
-            cookieHeader = [...jar.values()].map(c => `${c.name}=${c.value}`).join('; ');
+          if (!cookieHeader) {
+            // v2.48.9: cached per launch — no fresh page round
+            // trips in the middle of a download (see
+            // _sessionCookieHeader).
+            cookieHeader = await this._sessionCookieHeader(targetUrl);
           }
           const userAgent = task.preCapturedUserAgent || (await this._realUserAgent());
           // v2.30.0: this fetch used to carry NO AbortSignal — a
@@ -3037,7 +3072,13 @@ class FlowAutomationEngine {
       }
     }
 
-    if (!savedBuffer && targetUrl.startsWith('http') && this.page && !this.page.isClosed()) {
+    if (!savedBuffer && targetUrl.startsWith('http') && this.page && !this.page.isClosed() && !task._backendHotFetch) {
+      // v2.48.9: hot paths (backend fetch / background queue) set
+      // _backendHotFetch — they are BACKEND-ONLY by the owner's
+      // order and never take this slow in-page route (the whole
+      // file as base64 through the page). The download-retry path
+      // does not set the flag and keeps this route as a last
+      // resort.
       // v2.10.0: IN-PAGE FETCH — wahi link ab browser ke ANDAR se
       // lao. Page ka apna cookie jar, apna connection, apna referer
       // — jo cheez Node wale haath ke fetch me kabhi pakki nahi mil
@@ -3857,6 +3898,12 @@ class FlowAutomationEngine {
       task._backendNotified = true;
       try { this.onBackendMedia(task, { via: task.backendUrlVia || 'workflow-id', host: networkCapture.hostOf(url) }); } catch (e) {}
     }
+    // v2.48.9: this is the hot path — backend link only (the flag
+    // keeps downloadFromCapturedStream off the slow in-page route;
+    // the background queue / download-retry paths still have
+    // every route if this cannot save the file).
+    task._backendHotFetch = true;
+    const fetchStartedAt = Date.now();
     let ok = false;
     try { ok = await this.downloadFromCapturedStream(task, ctx.downloadFolder, ctx.settings); } catch (e) { ok = false; }
     if (!ok && !task.mediaSaved && !this.isStopping) {
@@ -3886,6 +3933,10 @@ class FlowAutomationEngine {
     if (!ok && !task.mediaSaved) {
       const failSummary = this._fetchSummary(task);
       this.log(`[Prompt #${n}] The backend link had been found, but the file could not be made from it${failSummary ? ` (attempts: ${failSummary})` : ' (the link may have expired)'}. The remaining routes will be tried.`, 'warn');
+    }
+    task._backendHotFetch = false;
+    if (ok) {
+      this.log(`[Prompt #${n}] Backend download finished in ${((Date.now() - fetchStartedAt) / 1000).toFixed(1)}s (file saved + verified).`, 'success');
     }
     return !!ok;
   }

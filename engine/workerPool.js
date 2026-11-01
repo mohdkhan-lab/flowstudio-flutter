@@ -966,10 +966,16 @@ class WorkerPool {
         if (engineTask.mediaSaved) {
           ok = true;
         } else {
+          // v2.48.9: the queue is a hot path too — backend link
+          // only, never the slow in-page route (the download-retry
+          // path keeps every route as a last resort).
+          engineTask._backendHotFetch = true;
           try {
             ok = await owner.downloadFromCapturedStream(engineTask, downloadFolder, settings);
           } catch (e) {
             ok = false;
+          } finally {
+            engineTask._backendHotFetch = false;
           }
         }
 

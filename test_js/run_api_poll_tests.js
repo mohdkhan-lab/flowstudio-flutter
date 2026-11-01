@@ -117,6 +117,37 @@ eq('pickReplayHeaders drops empty values', pickReplayHeaders({ 'x-grpc-web': '' 
   eq('far-stale template not offered', cap.templateForKey('vid_3000_2'), null);
 }
 
+// v2.48.19: batchexecute body scan (lipat-khol) + CDP body decode.
+{
+  const { scanBatchExecuteBody, decodeCdpBody, NetworkCapture } = require('../engine/networkCapture');
+  const WF = '3f2b8c1e-1234-4a5b-8c9d-0123456789ab';
+  const MEDIA = 'https://lh3.googleusercontent.com/videoplayback/abc123xyz';
+  // Envelope: payload is a JSON string nested inside the outer array.
+  const inner = JSON.stringify([MEDIA, WF]);
+  const envelope = Buffer.from(")]}'\n\n" + JSON.stringify([['wrb.fr', 'jwpduf', inner, null, null, null, 'generic']]), 'utf8');
+  const r1 = scanBatchExecuteBody(envelope);
+  ok('batch scan finds workflow id in envelope', r1.ids.includes(WF));
+  ok('batch scan finds media url in envelope', r1.mediaUrls.includes(MEDIA));
+  // Escaped slashes form.
+  const esc = Buffer.from(JSON.stringify([['wrb.fr', 'jwpduf', 'https:\\/\\/lh3.googleusercontent.com\\/videoplayback\\/abc123xyz']]), 'utf8');
+  const r2 = scanBatchExecuteBody(esc);
+  ok('batch scan finds media url behind escaped slashes', r2.mediaUrls.includes(MEDIA));
+  // CDP body decode.
+  eq('decodeCdpBody utf8', decodeCdpBody('hello', false).toString('utf8'), 'hello');
+  eq('decodeCdpBody base64', decodeCdpBody(Buffer.from('world').toString('base64'), true).toString('utf8'), 'world');
+  eq('decodeCdpBody empty', decodeCdpBody('', false), null);
+  // End-to-end: a batchexecute body binds the submission's link.
+  const cap = new NetworkCapture({});
+  cap.beginSubmission('vid_5000_1', 1000);
+  cap.ingestResponse({
+    url: 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute',
+    contentType: 'application/json',
+    bodyBuffer: envelope, at: 1500
+  });
+  const bound = cap.urlForKey('vid_5000_1');
+  ok('batchexecute body binds the task link end-to-end', !!bound && bound.url === MEDIA && bound.via === 'workflow-id');
+}
+
 // v2.48.18 DIAGNOSTIC-3: batchexecute door + rpcid names.
 {
   const { isBatchExecuteUrl, rpcidsOf } = require('../engine/networkCapture');

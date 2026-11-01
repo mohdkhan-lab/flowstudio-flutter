@@ -169,6 +169,61 @@ function isBatchExecuteUrl(url) {
 }
 
 /**
+ * v2.48.19: JSON ke band-lipte (escaped) text ki ek parat kholo.
+ * batchexecute ke jawab dohari lipat me aate hain — andar ka
+ * payload ek JSON string hota hai jiske andar ke quotes/slashes
+ * escaped hote hain. Purana extractor is lipat ko padh hi nahi
+ * sakta tha (local test se sabit: envelope/escaped bodies me
+ * use NA id mili NA media URL).
+ */
+function unescapeJsonText(text) {
+  return String(text)
+    .replace(/\\u([0-9a-fA-F]{4})/g, (m, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\\//g, '/')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
+const BARE_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/**
+ * v2.48.19: batchexecute body ka khaas scan — har parat par
+ * aam scan + URL/ID extraction + bare-UUID pehchan, phir ek
+ * parat khol kar dobara. adhiktam 4 paratein.
+ */
+function scanBatchExecuteBody(buf, patterns = CAPTURE_PATTERNS) {
+  const ids = new Set();
+  const mediaUrls = new Set();
+  let text = Buffer.isBuffer(buf) ? buf.toString('latin1') : String(buf || '');
+  for (let pass = 0; pass < 4; pass++) {
+    try {
+      const found = scanBodyForCapture(Buffer.from(text, 'latin1'), patterns);
+      for (const id of found.ids) ids.add(id);
+      for (const u of found.mediaUrls) mediaUrls.add(u);
+    } catch (e) {}
+    for (const u of extractUrlsFromText(text, patterns)) {
+      if (isMediaUrl(u, patterns)) mediaUrls.add(u);
+    }
+    for (const id of extractWorkflowIdsFromText(text, patterns)) ids.add(id);
+    for (const m of (text.match(BARE_UUID_RE) || [])) ids.add(m);
+    const next = unescapeJsonText(text);
+    if (next === text) break;
+    text = next;
+  }
+  return { ids: [...ids], mediaUrls: [...mediaUrls] };
+}
+
+/**
+ * v2.48.19: CDP Network.getResponseBody ka jawab asal Buffer me.
+ */
+function decodeCdpBody(body, base64Encoded) {
+  if (typeof body !== 'string' || !body) return null;
+  try {
+    return base64Encoded ? Buffer.from(body, 'base64') : Buffer.from(body, 'utf8');
+  } catch (e) { return null; }
+}
+
+/**
  * batchexecute URL ke query se rpcids (kaunsi backend function
  * bulayi gayi — ye function ke NAAM hain, koi raaz nahi).
  */
@@ -373,8 +428,9 @@ class NetworkCapture {
       requests: 0, rpcids: {}, responses: 0, bodiesFetched: 0,
       skipContentType: 0, skipTooBig: 0, skipBuffer: 0, contentTypes: {},
       withMediaHost: 0, withVideoplayback: 0, withWorkflow: 0,
-      withFife: 0, withDownloadWord: 0
+      withFife: 0, withDownloadWord: 0, cdpBodies: 0
     };
+    this._cdpBatch = new Map(); // CDP requestId -> { rpcids, at }
   }
 
   arm() { this.armed = true; }
@@ -542,6 +598,39 @@ class NetworkCapture {
       });
       client.on('Network.webSocketFrameSent', () => {
         try { this.wsStats.framesOut++; } catch (err) {}
+      });
+      // v2.48.19: batchexecute bodies CDP se — Puppeteer ka
+      // res.buffer() streaming/long-poll jawabon par fail hota
+      // hai (TEST496: 2 buffer-fail, kai jawab in-flight reh
+      // gaye). CDP ka Network.getResponseBody loadingFinished
+      // ke baad har jawab ka body de deta hai. Body wahi purani
+      // ingest pipeline me jata hai (pehchan ke usool same).
+      client.on('Network.requestWillBeSent', (e) => {
+        try {
+          if (e && e.request && isBatchExecuteUrl(e.request.url)) {
+            this._cdpBatch.set(e.requestId, { rpcids: rpcidsOf(e.request.url), at: Date.now() });
+          }
+        } catch (err) {}
+      });
+      client.on('Network.loadingFailed', (e) => {
+        try { if (e) this._cdpBatch.delete(e.requestId); } catch (err) {}
+      });
+      client.on('Network.loadingFinished', async (e) => {
+        try {
+          if (!e || !this._cdpBatch.has(e.requestId)) return;
+          this._cdpBatch.delete(e.requestId);
+          if (!this.armed) return;
+          const res = await client.send('Network.getResponseBody', { requestId: e.requestId });
+          const buf = decodeCdpBody(res && res.body, res && res.base64Encoded);
+          if (!buf || buf.length === 0 || buf.length > this.patterns.maxBodyScanBytes * 4) return;
+          this.batchStats.cdpBodies++;
+          this.ingestResponse({
+            url: 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute',
+            contentType: 'application/json',
+            bodyBuffer: buf,
+            at: Date.now()
+          });
+        } catch (err) {}
       });
     } catch (err) {}
   }
@@ -713,9 +802,20 @@ class NetworkCapture {
         } catch (e) {}
       }
       found = scanBodyForCapture(evt.bodyBuffer, this.patterns);
+      // v2.48.19: batchexecute bodies par khaas lipat-khol scan
+      // bhi — aam scan un par andha hai (upar scanBatchExecuteBody
+      // dekho). Is se mile nishan backend ke sach maane jate hain
+      // ('api-body') kyunke ye Flow ke apne backend jawab hain.
+      if (isBatchExecuteUrl(evt.url)) {
+        try {
+          const extra = scanBatchExecuteBody(evt.bodyBuffer, this.patterns);
+          for (const id of extra.ids) if (!found.ids.includes(id)) found.ids.push(id);
+          for (const u of extra.mediaUrls) if (!found.mediaUrls.includes(u)) found.mediaUrls.push(u);
+        } catch (e) {}
+      }
       for (const id of found.ids) { this.stats.idsSeen++; this._bindId(id, at); }
       for (const u of found.mediaUrls) {
-        this._sightUrl(u, api ? 'api-body' : 'json-body', at, found.ids);
+        this._sightUrl(u, (api || isBatchExecuteUrl(evt.url)) ? 'api-body' : 'json-body', at, found.ids);
       }
     }
     return found;
@@ -813,4 +913,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload };

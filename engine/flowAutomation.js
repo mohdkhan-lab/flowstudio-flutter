@@ -210,6 +210,10 @@ class FlowAutomationEngine {
     // per launch (see _sessionCookieHeader) — downloads must not
     // queue behind a busy rendering page for their inputs.
     this._cookieHeaderCache = null;
+    // v2.48.12: the current run's download folder, remembered at
+    // launch so submitPrompt can register each task for backend
+    // capture the moment it is submitted.
+    this.currentDownloadDir = null;
     this.capturedVideoUrls = [];
     this.capturedVideoBuffers = new Map();
     this.capturedVideoBytes = 0;
@@ -267,6 +271,8 @@ class FlowAutomationEngine {
     // fetch inputs (cookies / user-agent) of the previous account.
     this._cookieHeaderCache = null;
     this._browserUA = null;
+    // v2.48.12: remember where this run's files belong.
+    this.currentDownloadDir = downloadDir || null;
 
     const chromePath = getChromeExecutablePath();
     const profilePath = getAccountProfilePath(account.id);
@@ -2285,7 +2291,7 @@ class FlowAutomationEngine {
       this.log(`[Prompt #${promptIndex + 1}] Linked to its render tile (the tile identification/fingerprint matched).`, 'info');
     }
 
-    return {
+    const submittedTask = {
       status: 'SUBMITTED',
       videoId,
       // v2.8.0: network capture isi key se is task ko pehchanta hai
@@ -2303,6 +2309,21 @@ class FlowAutomationEngine {
       completed: false,
       downloaded: false
     };
+    // v2.48.12: register for backend capture NOW — at submit
+    // time, not when the render monitor starts. Until now a task
+    // only entered the capture map inside waitForAccountTasks,
+    // i.e. after the WHOLE burst of prompts had been submitted;
+    // a backend link that arrived in that gap sat in the early
+    // store with no fetch running. Registered from this moment,
+    // the instant Flow's backend sends the media link the
+    // download starts (see _onBackendMediaBound) — the video
+    // does not wait for the monitor to notice anything.
+    try {
+      if (this.currentDownloadDir) {
+        this.registerBackendTask(submittedTask, this.currentDownloadDir, this.currentSettings);
+      }
+    } catch (e) {}
+    return submittedTask;
   }
 
   /**
@@ -3001,7 +3022,13 @@ class FlowAutomationEngine {
     task._lastFetchSteps = [];
     let savedBuffer = null;
 
-    if (this.capturedVideoBuffers && this.capturedVideoBuffers.has(targetUrl)) {
+    // v2.48.12: hot paths (backend fetch / background queue) skip
+    // the captured buffer too — the owner's standing order is
+    // that the file comes from the BACKEND LINK, fetched by the
+    // app itself; the buffer is bytes the page streamed for its
+    // preview, which land only when the page's own stream
+    // finishes. The download-retry path (flag unset) keeps it.
+    if (!task._backendHotFetch && this.capturedVideoBuffers && this.capturedVideoBuffers.has(targetUrl)) {
       savedBuffer = this.capturedVideoBuffers.get(targetUrl);
       this._noteFetchStep(task, { step: 'captured-buffer', ok: true });
     }

@@ -979,16 +979,21 @@ class WorkerPool {
 
         // v2.48.6: an immediate backend fetch may already be in
         // flight for this exact file (started when Flow's servers
-        // first sent the media). Give it a short window to land
-        // HERE — in the background, parallel to the next render —
-        // instead of on the worker, where the same wait used to
-        // hold up the next prompt. If it saved the file, this item
-        // is done without a second fetch.
-        // v2.48.7: the window is the owner's 5-SECOND RULE — after
-        // 5s the queue stops waiting on that fetch and pulls the
-        // file itself from the captured backend link.
-        if (engineTask._backendFetchPromise && !engineTask.mediaSaved) {
-          try { await downloadGuard.withTimeout(engineTask._backendFetchPromise, 5000, 'immediate backend fetch'); } catch (e) {}
+        // first sent the media). Give it a window to land HERE —
+        // in the background, parallel to the next render — instead
+        // of on the worker, where the same wait used to hold up
+        // the next prompt. If it saved the file, this item is done
+        // without a second fetch.
+        // v2.48.12: SINGLE-FLIGHT replaces the v2.48.7 5-second
+        // fuse. The fuse made the queue start a SECOND download of
+        // the same file while the first was still transferring —
+        // two transfers split the owner's bandwidth and both
+        // crawled (measured 60–250 kB/s effective in TEST488/489).
+        // Now the queue waits for THAT SAME transfer to finish
+        // (bounded); it fetches the file itself, once, only when
+        // the immediate fetch ended without saving or never ran.
+        if (engineTask._backendFetchPromise && engineTask._backendFetchInFlight && !engineTask.mediaSaved) {
+          try { await downloadGuard.withTimeout(engineTask._backendFetchPromise, 120000, 'immediate backend fetch'); } catch (e) {}
         }
 
         let ok = false;
@@ -1659,7 +1664,7 @@ class WorkerPool {
               taskId: task.taskId || null,
               promptIndex: typeof task.promptIndex === 'number' ? task.promptIndex : null,
               detail: `Prompt #${(task.promptIndex || 0) + 1}'s video link was found from Flow's back end (backend/network) — ${viaShabd}${info && info.host ? ` · Host: ${info.host}` : ''}. No Download button or menu was pressed: the file is being fetched directly. (It will count as truly complete only when the file is saved + verified.)`,
-              message: `Backend download: Prompt #${(task.promptIndex || 0) + 1}'s link was found from the backend — downloading directly`
+              message: `Download started: Prompt #${(task.promptIndex || 0) + 1}'s video is ready — downloading now from the backend link`
             });
           },
           onAccountUpdated: (data) => {

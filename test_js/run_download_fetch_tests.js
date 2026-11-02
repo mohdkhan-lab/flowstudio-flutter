@@ -377,6 +377,37 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   eq('NET-BIG null headers are safe', headerValueOf(null, 'content-type'), '');
 }
 
+// --- v2.48.27 (NET-BIG window): per-host totals, render→save ---
+{
+  const { summarizeNetBigWindow } = require('../engine/networkCapture');
+  const T0 = 1700000000000;
+  const entries = [
+    { host: 'flow.google.com', bytes: 5000, at: T0 + 100 },
+    { host: 'lh3.googleusercontent.com', bytes: 1200000, at: T0 + 200 },
+    { host: 'flow.google.com', bytes: 7000, at: T0 + 300 },
+    { host: 'www.gstatic.com', bytes: 300000, at: T0 + 400 },
+    { host: 'lh3.googleusercontent.com', bytes: 999999, at: T0 - 5000 } // khidki se pehle — gina NAHI jayega
+  ];
+  // Kul jama + descending kram: sab se bada host sab se pehle.
+  eq('NET-BIG window totals per host, descending',
+    summarizeNetBigWindow(entries, T0),
+    'lh3.googleusercontent.com=1200000 www.gstatic.com=300000 flow.google.com=12000');
+  // sinceMs na ho to saari entries ginati hain.
+  eq('NET-BIG window without a start counts everything',
+    summarizeNetBigWindow(entries, undefined),
+    'lh3.googleusercontent.com=2199999 www.gstatic.com=300000 flow.google.com=12000');
+  // Khaali / bekaar data par khaali line.
+  eq('NET-BIG window empty list is empty', summarizeNetBigWindow([], T0), '');
+  eq('NET-BIG window null list is empty', summarizeNetBigWindow(null, T0), '');
+  eq('NET-BIG window skips zero/hostless entries',
+    summarizeNetBigWindow([{ host: 'a.com', bytes: 0, at: T0 }, { bytes: 500, at: T0 }, { host: 'b.com', bytes: 42, at: T0 }], T0),
+    'b.com=42');
+  // Barabar bytes par pehla-darj host pehle rehta hai (stable).
+  eq('NET-BIG window single host',
+    summarizeNetBigWindow([{ host: 'x.com', bytes: 10, at: T0 }, { host: 'x.com', bytes: 5, at: T0 + 1 }], T0),
+    'x.com=15');
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 process.exit(failed > 0 ? 1 : 0);
 

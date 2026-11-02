@@ -2878,6 +2878,7 @@ class FlowAutomationEngine {
 
     const sizeMb = (buffer.length / (1024 * 1024)).toFixed(2);
     this.log(`Video saved: ${fileName} (${sizeMb} MB).`, 'success');
+    this._logNetBigWindow(task, task.startTime || 0);
 
     task.downloaded = true;
     task.completed = true;
@@ -3580,6 +3581,26 @@ class FlowAutomationEngine {
     } catch (e) { return -1; }
   }
 
+  /**
+   * v2.48.27 (NET-BIG): har download ke aakhir me EK summary
+   * line — render-complete se save tak har host ke KUL bytes
+   * (descending). Click ke baad jo ~1.2MB file taiyaar hoti hai,
+   * uske bytes jis host se aaye honge wo is line me sab se upar
+   * hoga — wahi Flow-server wala channel hai jise agla build
+   * seedha istemal karega. Sirf logging; khidki khaali ho to
+   * koi line nahi.
+   */
+  _logNetBigWindow(task, fallbackSinceMs) {
+    try {
+      if (!this.netCapture || typeof this.netCapture.netBigWindowSummary !== 'function') return;
+      const since = (task && task.renderCompletedAt)
+        || (task && task.startTime)
+        || fallbackSinceMs || 0;
+      const summary = this.netCapture.netBigWindowSummary(since);
+      if (summary) this.log(`[NET-BIG] window render→save: ${summary}`, 'info');
+    } catch (e) {}
+  }
+
   /** CDP download folder taiyaar + maujooda files ka snapshot. */
   async _nativePrepareWatch(downloadFolder) {
     if (!fs.existsSync(downloadFolder)) {
@@ -3832,6 +3853,7 @@ class FlowAutomationEngine {
     const fileStats = fs.statSync(finalSavedFilePath);
     const sizeMb = (fileStats.size / (1024 * 1024)).toFixed(2);
     this.log(`Video saved: ${task.fileName} (${sizeMb} MB).`, 'success');
+    this._logNetBigWindow(task, clickTime);
 
     // v2.48.27: ye save downloadProgress event se bandha tha ya
     // sirf disk-poll se — gap wali [FAST-DL] line ke liye nishaan.

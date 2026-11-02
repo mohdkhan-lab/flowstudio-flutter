@@ -288,6 +288,29 @@ function headerValueOf(headers, name) {
   return '';
 }
 
+/**
+ * v2.48.27 (NET-BIG window): ek waqt-khidki (sinceMs se aage) ke
+ * andar har host ke KUL bytes, ghate kram (descending) me —
+ * 'host=bytes host=bytes …'. Render→save khidki par ye lagane se
+ * wo host sab se upar aata hai jis se file ke asal bytes aaye
+ * honge — wahi Flow-server channel hai jis ka shikar hai.
+ * Khidki khaali ho to '' (koi line nahi banti).
+ */
+function summarizeNetBigWindow(entries, sinceMs) {
+  const totals = new Map();
+  if (Array.isArray(entries)) {
+    for (const e of entries) {
+      if (!e || !e.host || !(e.bytes > 0)) continue;
+      if (Number.isFinite(sinceMs) && e.at < sinceMs) continue;
+      totals.set(e.host, (totals.get(e.host) || 0) + e.bytes);
+    }
+  }
+  return Array.from(totals.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([h, b]) => `${h}=${b}`)
+    .join(' ');
+}
+
 function hostMatches(host, suffix) {
   return host === suffix || host.endsWith('.' + suffix);
 }
@@ -488,6 +511,7 @@ class NetworkCapture {
     this.downloadCensus = new Map(); // v2.48.24: shape -> { n, bytes } (media-host / asb responses, poori run)
     this._cdpDlShape = new Map(); // CDP requestId -> shape
     this._cdpBigShape = new Map(); // v2.48.27: CDP requestId -> { shape, host, type, declared } (NET-BIG shikar)
+    this.netBigWindow = []; // v2.48.27: [{ host, bytes, at }] — har mukammal jawab ka behtareen size (window summary ke liye)
   }
 
   arm() { this.armed = true; }
@@ -707,9 +731,10 @@ class NetworkCapture {
           // v2.48.27 (NET-BIG): HAR jawab ki shakal/nau/declared
           // size note karo — loadingFinished par encoded size ke
           // saath mila kar ≥200KB walon ki ek line engine ko
-          // jayegi. Map had me rahe: purane adhoore hisse girte
-          // rahen (loadingFinished/Failed par saaf to hota hi hai).
-          if (this.onNetBig) {
+          // jayegi, aur har jawab window hisaab me bhi jayega.
+          // Map had me rahe: purane adhoore hisse girte rahen
+          // (loadingFinished/Failed par saaf to hota hi hai).
+          {
             if (this._cdpBigShape.size > 2000) {
               const firstKey = this._cdpBigShape.keys().next().value;
               this._cdpBigShape.delete(firstKey);
@@ -740,45 +765,61 @@ class NetworkCapture {
         } catch (err) {}
       });
       client.on('Network.loadingFinished', async (e) => {
+        let bigInfo = null;
+        let encBytes = 0;
+        let bodyBytes = 0;
         try {
           if (e && this._cdpDlShape.has(e.requestId)) {
             this.recordDownloadResponse(this._cdpDlShape.get(e.requestId), e.encodedDataLength || 0);
             this._cdpDlShape.delete(e.requestId);
           }
-          // v2.48.27 (NET-BIG): jawab mukammal — encoded size ke
-          // saath faisla; bada ho to engine ko EK line ki khabar
-          // (koi vyavhaar-badal nahi, sirf shikar).
           if (e && this._cdpBigShape.has(e.requestId)) {
-            const bigInfo = this._cdpBigShape.get(e.requestId);
+            bigInfo = this._cdpBigShape.get(e.requestId);
             this._cdpBigShape.delete(e.requestId);
-            const encBytes = e.encodedDataLength || 0;
-            if (this.onNetBig && isNetBigResponse(encBytes, bigInfo.declared)) {
-              try {
-                this.onNetBig({
-                  host: bigInfo.host,
-                  shape: bigInfo.shape,
-                  type: bigInfo.type,
-                  bytes: Math.max(encBytes, bigInfo.declared || 0),
-                  encodedBytes: encBytes,
-                  declaredBytes: bigInfo.declared || 0,
+            encBytes = e.encodedDataLength || 0;
+          }
+          if (e && this._cdpBatch.has(e.requestId)) {
+            this._cdpBatch.delete(e.requestId);
+            if (this.armed) {
+              const res = await client.send('Network.getResponseBody', { requestId: e.requestId });
+              const buf = decodeCdpBody(res && res.body, res && res.base64Encoded);
+              if (buf && buf.length > 0 && buf.length <= this.patterns.maxBodyScanBytes * 4) {
+                bodyBytes = buf.length;
+                this.batchStats.cdpBodies++;
+                this.ingestResponse({
+                  url: 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute',
+                  contentType: 'application/json',
+                  bodyBuffer: buf,
                   at: Date.now()
                 });
-              } catch (err) {}
+              }
             }
           }
-          if (!e || !this._cdpBatch.has(e.requestId)) return;
-          this._cdpBatch.delete(e.requestId);
-          if (!this.armed) return;
-          const res = await client.send('Network.getResponseBody', { requestId: e.requestId });
-          const buf = decodeCdpBody(res && res.body, res && res.base64Encoded);
-          if (!buf || buf.length === 0 || buf.length > this.patterns.maxBodyScanBytes * 4) return;
-          this.batchStats.cdpBodies++;
-          this.ingestResponse({
-            url: 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute',
-            contentType: 'application/json',
-            bodyBuffer: buf,
-            at: Date.now()
-          });
+        } catch (err) {}
+        // v2.48.27 (NET-BIG): faisla + khidki-hisaab — size ki
+        // tarjeeh: asal body (jo uplabdh ho) > declared
+        // content-length > encoded wire size. Bada jawab ho to
+        // engine ko EK line; HAR jawab (chhota bhi) khidki me
+        // jama hota hai, taaki download ke aakhir me render→save
+        // khidki ka host-wise kul nikal sake. Koi vyavhaar-badal
+        // nahi — sirf shikar.
+        try {
+          if (bigInfo) {
+            const bestBytes = bodyBytes > 0 ? bodyBytes
+              : (bigInfo.declared > 0 ? bigInfo.declared : encBytes);
+            if (bestBytes > 0) this._recordNetBigWindow(bigInfo.host, bestBytes, Date.now());
+            if (this.onNetBig && isNetBigResponse(Math.max(encBytes, bodyBytes), bigInfo.declared)) {
+              this.onNetBig({
+                host: bigInfo.host,
+                shape: bigInfo.shape,
+                type: bigInfo.type,
+                bytes: Math.max(encBytes, bodyBytes, bigInfo.declared || 0),
+                encodedBytes: encBytes,
+                declaredBytes: bigInfo.declared || 0,
+                at: Date.now()
+              });
+            }
+          }
         } catch (err) {}
       });
     } catch (err) {}
@@ -932,6 +973,24 @@ class NetworkCapture {
     const out = {};
     for (const [shape, v] of this.downloadCensus.entries()) out[shape] = `${v.n}x/${v.bytes}B`;
     return out;
+  }
+
+  /** v2.48.27 (NET-BIG): ek mukammal jawab ka behtareen size khidki me darj karo. */
+  _recordNetBigWindow(host, bytes, at) {
+    if (!host || !(bytes > 0)) return;
+    this.netBigWindow.push({ host, bytes, at: Number.isFinite(at) ? at : Date.now() });
+    if (this.netBigWindow.length > 5000) {
+      this.netBigWindow.splice(0, this.netBigWindow.length - 5000);
+    }
+  }
+
+  /**
+   * v2.48.27 (NET-BIG): `sinceMs` (aam taur par render-complete)
+   * se is pal tak har host ke kul bytes, descending —
+   * 'host=bytes host=bytes …'. Khaali ho to ''.
+   */
+  netBigWindowSummary(sinceMs) {
+    return summarizeNetBigWindow(this.netBigWindow, sinceMs);
   }
 
   /**
@@ -1125,4 +1184,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow };

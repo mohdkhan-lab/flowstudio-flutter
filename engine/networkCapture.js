@@ -260,6 +260,34 @@ function hostOf(url) {
   try { return new URL(String(url || '')).hostname.toLowerCase(); } catch (e) { return ''; }
 }
 
+/**
+ * v2.48.27 (NET-BIG): bade jawabon ki pehchan — file ke bytes click
+ * ke baad asal me KIS channel se aate hain, ye shikar isi se hoga.
+ * Usool: encoded (wire) size YA declared content-length, jo bhi
+ * 200 KB ki hadd tak pahunche — ek bhi kaafi hai, kyunki kabhi
+ * content-length ghayab hota hai aur kabhi transfer beech me
+ * rukta hai (encoded chhota reh jata hai lekin irada bada tha).
+ */
+const NET_BIG_THRESHOLD_BYTES = 200000;
+
+function isNetBigResponse(encodedBytes, declaredBytes) {
+  const enc = Number(encodedBytes);
+  const dec = Number(declaredBytes);
+  if (Number.isFinite(enc) && enc >= NET_BIG_THRESHOLD_BYTES) return true;
+  if (Number.isFinite(dec) && dec >= NET_BIG_THRESHOLD_BYTES) return true;
+  return false;
+}
+
+/** CDP headers object se case-bekhabar header ki qeemat. */
+function headerValueOf(headers, name) {
+  if (!headers || typeof headers !== 'object') return '';
+  const want = String(name || '').toLowerCase();
+  for (const k of Object.keys(headers)) {
+    if (String(k).toLowerCase() === want) return String(headers[k] || '');
+  }
+  return '';
+}
+
 function hostMatches(host, suffix) {
   return host === suffix || host.endsWith('.' + suffix);
 }
@@ -392,6 +420,10 @@ class NetworkCapture {
   constructor(opts = {}) {
     this.patterns = opts.patterns || CAPTURE_PATTERNS;
     this.onMediaBound = typeof opts.onMediaBound === 'function' ? opts.onMediaBound : (() => {});
+    // v2.48.27 (NET-BIG): bade (≥200KB) jawabon ki khabar engine ko
+    // — engine use [NET-BIG] line me badalta hai. Callback na ho
+    // to shikar khamoshi se band rehta hai (koi vyavhaar-badal nahi).
+    this.onNetBig = typeof opts.onNetBig === 'function' ? opts.onNetBig : null;
     this._page = null;
     this._reqHandler = null;
     this._resHandler = null;
@@ -455,6 +487,7 @@ class NetworkCapture {
     this._cdpBatch = new Map(); // CDP requestId -> { rpcids, at, text, bound }
     this.downloadCensus = new Map(); // v2.48.24: shape -> { n, bytes } (media-host / asb responses, poori run)
     this._cdpDlShape = new Map(); // CDP requestId -> shape
+    this._cdpBigShape = new Map(); // v2.48.27: CDP requestId -> { shape, host, type, declared } (NET-BIG shikar)
   }
 
   arm() { this.armed = true; }
@@ -658,7 +691,7 @@ class NetworkCapture {
         } catch (err) {}
       });
       client.on('Network.loadingFailed', (e) => {
-        try { if (e) { this._cdpBatch.delete(e.requestId); this._cdpDlShape.delete(e.requestId); } } catch (err) {}
+        try { if (e) { this._cdpBatch.delete(e.requestId); this._cdpDlShape.delete(e.requestId); this._cdpBigShape.delete(e.requestId); } } catch (err) {}
       });
       // v2.48.24: DOWNLOAD CENSUS — media-host / asb wale tamam
       // responses ki shakal + kul size, poori run (menu wale
@@ -670,6 +703,25 @@ class NetworkCapture {
           const u = e.response.url;
           if (isMediaHostUrl(u) || u.includes('/asb/')) {
             this._cdpDlShape.set(e.requestId, urlShape(u));
+          }
+          // v2.48.27 (NET-BIG): HAR jawab ki shakal/nau/declared
+          // size note karo — loadingFinished par encoded size ke
+          // saath mila kar ≥200KB walon ki ek line engine ko
+          // jayegi. Map had me rahe: purane adhoore hisse girte
+          // rahen (loadingFinished/Failed par saaf to hota hi hai).
+          if (this.onNetBig) {
+            if (this._cdpBigShape.size > 2000) {
+              const firstKey = this._cdpBigShape.keys().next().value;
+              this._cdpBigShape.delete(firstKey);
+            }
+            const rawType = headerValueOf(e.response.headers, 'content-type');
+            const declared = parseInt(headerValueOf(e.response.headers, 'content-length') || '', 10);
+            this._cdpBigShape.set(e.requestId, {
+              shape: urlShape(u),
+              host: hostOf(u),
+              type: (rawType.split(';')[0] || '').trim().toLowerCase(),
+              declared: Number.isFinite(declared) ? declared : 0
+            });
           }
         } catch (err) {}
       });
@@ -692,6 +744,27 @@ class NetworkCapture {
           if (e && this._cdpDlShape.has(e.requestId)) {
             this.recordDownloadResponse(this._cdpDlShape.get(e.requestId), e.encodedDataLength || 0);
             this._cdpDlShape.delete(e.requestId);
+          }
+          // v2.48.27 (NET-BIG): jawab mukammal — encoded size ke
+          // saath faisla; bada ho to engine ko EK line ki khabar
+          // (koi vyavhaar-badal nahi, sirf shikar).
+          if (e && this._cdpBigShape.has(e.requestId)) {
+            const bigInfo = this._cdpBigShape.get(e.requestId);
+            this._cdpBigShape.delete(e.requestId);
+            const encBytes = e.encodedDataLength || 0;
+            if (this.onNetBig && isNetBigResponse(encBytes, bigInfo.declared)) {
+              try {
+                this.onNetBig({
+                  host: bigInfo.host,
+                  shape: bigInfo.shape,
+                  type: bigInfo.type,
+                  bytes: Math.max(encBytes, bigInfo.declared || 0),
+                  encodedBytes: encBytes,
+                  declaredBytes: bigInfo.declared || 0,
+                  at: Date.now()
+                });
+              } catch (err) {}
+            }
           }
           if (!e || !this._cdpBatch.has(e.requestId)) return;
           this._cdpBatch.delete(e.requestId);
@@ -1052,4 +1125,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf };

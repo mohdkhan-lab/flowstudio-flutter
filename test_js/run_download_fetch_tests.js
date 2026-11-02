@@ -328,6 +328,55 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   ok('FAST-DL hook wraps createObjectURL', HOOK_SOURCE.includes('createObjectURL'));
 }
 
+// --- v2.48.27 (MENU-FIRST): download route order ---
+{
+  const routeOrder = require('../engine/downloadRouteOrder');
+  const { DOWNLOAD_ROUTE_ORDER, fallbackRouteOrder, firstRoute } = routeOrder;
+
+  // The menu route — the only route that actually produces the
+  // file (FASTTEST1, proven live) — runs FIRST.
+  eq('MENU-FIRST first route is native-menu', firstRoute(), 'native-menu');
+  eq('MENU-FIRST order starts with native-menu', DOWNLOAD_ROUTE_ORDER[0], 'native-menu');
+  eq('MENU-FIRST order ends with native-editor', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'native-editor');
+  eq('MENU-FIRST route count', DOWNLOAD_ROUTE_ORDER.length, 9);
+  ok('MENU-FIRST order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
+
+  // Fallbacks keep their previous (v2.48.26) relative order.
+  const fb = fallbackRouteOrder();
+  eq('MENU-FIRST fallback drops only the menu route', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
+  ok('MENU-FIRST fallback has no native-menu', !fb.includes('native-menu'));
+  const prev = ['blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'backend-fetch-retry', 'tile-src-fast', 'tile-src', 'native-editor'];
+  let idx = -1;
+  let inOrder = true;
+  for (const name of prev) {
+    const at = fb.indexOf(name);
+    if (at <= idx) { inOrder = false; break; }
+    idx = at;
+  }
+  ok('MENU-FIRST fallbacks retain previous relative order', inOrder);
+  eq('MENU-FIRST fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
+}
+
+// --- v2.48.27 (NET-BIG): big-response decision + header lookup ---
+{
+  const nc = require('../engine/networkCapture');
+  const { NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf } = nc;
+
+  eq('NET-BIG threshold is 200000', NET_BIG_THRESHOLD_BYTES, 200000);
+  ok('NET-BIG encoded at threshold counts', isNetBigResponse(200000, 0));
+  ok('NET-BIG declared at threshold counts', isNetBigResponse(0, 200000));
+  ok('NET-BIG either side can trigger', isNetBigResponse(150000, 250000));
+  eq('NET-BIG just under threshold does not count', isNetBigResponse(199999, 199999), false);
+  eq('NET-BIG zero sizes do not count', isNetBigResponse(0, 0), false);
+  eq('NET-BIG missing sizes do not count', isNetBigResponse(undefined, undefined), false);
+  eq('NET-BIG string sizes coerce', isNetBigResponse('250000', ''), true);
+
+  eq('NET-BIG header lookup is case-insensitive', headerValueOf({ 'Content-Type': 'video/mp4' }, 'content-type'), 'video/mp4');
+  eq('NET-BIG header lookup finds length', headerValueOf({ 'content-length': '123' }, 'Content-Length'), '123');
+  eq('NET-BIG missing header is empty', headerValueOf({}, 'content-type'), '');
+  eq('NET-BIG null headers are safe', headerValueOf(null, 'content-type'), '');
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 process.exit(failed > 0 ? 1 : 0);
 

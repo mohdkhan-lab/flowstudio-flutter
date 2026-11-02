@@ -21,6 +21,7 @@ const downloadGuard = require('./downloadGuard');
 const downloadFetch = require('./downloadFetch');
 const { describeUrlShape, formatUrlShape } = require('./urlShape');
 const blobHarvest = require('./blobHarvest');
+const downloadRouteOrder = require('./downloadRouteOrder');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -91,6 +92,25 @@ class FlowAutomationEngine {
     this.netCapture = new networkCapture.NetworkCapture({
       onMediaBound: (key, url, via) => {
         try { this._onBackendMediaBound(key, url, via); } catch (e) {}
+      },
+      // v2.48.27 (NET-BIG): ≥200KB ka har network jawab ek line —
+      // Download click ke baad file ke bytes kis channel se aate
+      // hain, uska shikar. Stage ka andaza: kisi task ka download
+      // chal raha ho to 'download-attempt', monitor chal raha ho
+      // to 'render-monitor', warna khaali.
+      onNetBig: (info) => {
+        try {
+          let stage = '';
+          try {
+            let dlActive = false;
+            for (const t of this._captureTasks.values()) {
+              if (t && t._downloadInProgress) { dlActive = true; break; }
+            }
+            stage = dlActive ? 'download-attempt'
+              : (this._monitorTasks && this._monitorTasks.length ? 'render-monitor' : '');
+          } catch (e) {}
+          this.log(`[NET-BIG] host=${info.host} path=${info.shape} type=${info.type || 'unknown'} bytes=${info.bytes}${stage ? ` timing=${stage}` : ''}`, 'info');
+        } catch (e) {}
       }
     });
     // v2.8.0: captureKey -> live engine task (registered by the
@@ -3423,6 +3443,18 @@ class FlowAutomationEngine {
       }
       const session = await target.createCDPSession();
       this.browserCdpSession = session;
+      // v2.48.27 (MENU-FIRST): E1 wala observe-only listener ab
+      // sirf log nahi karta — download events ka hisaab bhi rakhta
+      // hai, taaki menu route ka save filesystem ke 1s poll ki
+      // jagah downloadProgress 'completed' event se foran bandhe
+      // (event hi asal completion hai; disk ki jaanch ≤100ms par
+      // uski pushti ke liye rehti hai). Vyavhaar phir bhi waisa
+      // hi: behavior 'allow', wahi folder — badla sirf intezaar
+      // ka tareeka hai.
+      if (!this._dlEventState) {
+        this._dlEventState = { begins: [], completed: new Map(), waiters: new Set() };
+      }
+      const dlState = this._dlEventState;
       const onWillBegin = (ev) => {
         try {
           const shape = formatUrlShape(describeUrlShape(ev && ev.url ? ev.url : ''));
@@ -3430,6 +3462,11 @@ class FlowAutomationEngine {
           const guid = ev && ev.guid ? String(ev.guid) : '';
           const hasFrame = ev && ev.frameId ? 'yes' : 'no';
           this.log(`[E1-DL] downloadWillBegin ${shape} suggestedFilename="${fname}" guid=${guid} frameId=${hasFrame}`, 'info');
+          if (guid) {
+            dlState.begins.push({ guid, suggestedFilename: fname, at: Date.now() });
+            if (dlState.begins.length > 50) dlState.begins.splice(0, dlState.begins.length - 50);
+          }
+          this._notifyDlWaiters();
         } catch (e) {}
       };
       const onProgress = (ev) => {
@@ -3439,6 +3476,10 @@ class FlowAutomationEngine {
           const total = Number.isFinite(ev.totalBytes) ? ev.totalBytes : -1;
           const received = Number.isFinite(ev.receivedBytes) ? ev.receivedBytes : -1;
           this.log(`[E1-DL] downloadProgress guid=${guid} state=${ev.state} received=${received} total=${total}`, 'info');
+          if (guid) {
+            dlState.completed.set(guid, { state: ev.state, at: Date.now(), receivedBytes: received, totalBytes: total });
+          }
+          this._notifyDlWaiters();
         } catch (e) {}
       };
       if (typeof session.on === 'function') {
@@ -3461,6 +3502,82 @@ class FlowAutomationEngine {
         this.log('[E1-DL] Browser-level download events could not be enabled — continuing with the existing page-level download route.', 'warn');
       } catch (e2) {}
     }
+  }
+
+  /**
+   * v2.48.27: download-event waiters ko jagao (koi download shuru
+   * ya mukammal hua). Waiter khud apni shart jaanch kar so jata ya
+   * uth jata hai — yahan sirf ghanti bajti hai.
+   */
+  _notifyDlWaiters() {
+    try {
+      const st = this._dlEventState;
+      if (!st || !st.waiters || st.waiters.size === 0) return;
+      const waiters = Array.from(st.waiters);
+      st.waiters.clear();
+      for (const w of waiters) { try { w(); } catch (e) {} }
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.27: itne waqt (ms) so jao, lekin koi download event aate
+   * hi foran uth jao — menu route ke save ka intezaar isi se
+   * event-driven banta hai. Event state na ho to aam neend.
+   */
+  _dlSleep(ms) {
+    const st = this._dlEventState;
+    if (!st || !st.waiters) return sleep(ms);
+    return new Promise((resolve) => {
+      let done = false;
+      let timer = null;
+      const wake = () => {
+        if (done) return;
+        done = true;
+        if (timer) { try { clearTimeout(timer); } catch (e) {} }
+        try { st.waiters.delete(wake); } catch (e) {}
+        resolve();
+      };
+      timer = setTimeout(wake, Math.max(10, ms));
+      if (timer && typeof timer.unref === 'function') timer.unref();
+      st.waiters.add(wake);
+    });
+  }
+
+  /**
+   * v2.48.27: `sinceMs` ke baad SHURU hue downloads me se wo jo
+   * downloadProgress 'completed' tak pahunch gaya ho — sab se
+   * pehla aisa event lautao, warna null. fileName diya ho to
+   * sirf usi suggestedFilename wala (ya naam-mukammal bina wala
+   * begin) gina jayega.
+   */
+  _dlCompletedSince(sinceMs, fileName) {
+    try {
+      const st = this._dlEventState;
+      if (!st || !st.begins || !st.completed) return null;
+      for (const b of st.begins) {
+        if (!b || !b.guid || b.at < sinceMs) continue;
+        if (fileName && b.suggestedFilename && b.suggestedFilename !== fileName) continue;
+        const c = st.completed.get(b.guid);
+        if (c && c.state === 'completed') {
+          return { guid: b.guid, suggestedFilename: b.suggestedFilename || '', at: c.at, receivedBytes: c.receivedBytes, totalBytes: c.totalBytes };
+        }
+      }
+    } catch (e) {}
+    return null;
+  }
+
+  /**
+   * v2.48.27 (FAST-DL diagnostic): is pal page ki blob registry
+   * me kitni entries hain — menu click ke pal ki ek line ke liye.
+   * Sirf GINATI hai; koi extraction NAHI (wo is build ke dayre
+   * se bahar hai). Na padh sake to -1.
+   */
+  async _blobRegistryCount() {
+    try {
+      if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return -1;
+      const n = await this.page.evaluate(() => (window.__mkBlobRegistry || []).length);
+      return Number.isFinite(n) ? n : -1;
+    } catch (e) { return -1; }
   }
 
   /** CDP download folder taiyaar + maujooda files ka snapshot. */
@@ -3586,6 +3703,16 @@ class FlowAutomationEngine {
     let newlyDownloadedFile = null;
     const pollStart = Date.now();
     const timeout = Math.max(5000, Number(timeoutMs) || 90000);
+    // v2.48.27 (MENU-FIRST): completion ab EVENT-driven hai —
+    // browser-level CDP session (v2.48.25 wala) maujood ho to
+    // downloadProgress 'completed' hi asal "ho gaya" hai; disk ki
+    // jaanch ≤100ms par sirf uski pushti/file-dhoondh ke liye
+    // rehti hai, aur event aate hi neend turant toot-ti hai
+    // (_dlSleep). CDP session na ho to purana 1s poll bilkul
+    // pehle ki tarah (koi badlav nahi).
+    const useDlEvents = !!this.browserCdpSession;
+    const pollMs = useDlEvents ? 100 : 1000;
+    let eventSave = null;
     // v2.31.3 (download fix pack): PROGRESS STALL CHECK — the poll
     // used to see only FINISHED files; a browser download whose
     // bytes simply stopped moving (dead connection, wedged Chrome
@@ -3600,7 +3727,10 @@ class FlowAutomationEngine {
     const partials = new Map(); // folder|name -> { size, lastGrowAt, fullPath }
     let stalledPartial = null;
     while (Date.now() - pollStart < timeout && !this.isStopping) {
-      await sleep(1000);
+      await this._dlSleep(pollMs);
+      // Is click ke baad shuru hue download ka completed event —
+      // mila ho to is iteration ki disk-jaanch usi ki pushti hai.
+      const evtDone = useDlEvents ? this._dlCompletedSince(clickTime - 2000) : null;
       for (const fld of prep.foldersToWatch) {
         if (!fs.existsSync(fld)) continue;
         const currentFiles = fs.readdirSync(fld);
@@ -3617,6 +3747,12 @@ class FlowAutomationEngine {
           // v1.7.0: the file must post-date THIS download click.
           if (stats.size > 20000 && stats.mtimeMs >= clickTime - 2000) {
             newlyDownloadedFile = fullPath;
+            // v2.48.27: completed event isi file ka hai (naam
+            // mile ya event bina-naame ho) to save event-driven
+            // bandha — gap wali line me event=yes yahi se aayega.
+            if (evtDone && (!evtDone.suggestedFilename || evtDone.suggestedFilename === finished)) {
+              eventSave = evtDone;
+            }
             break;
           }
         }
@@ -3696,6 +3832,11 @@ class FlowAutomationEngine {
     const fileStats = fs.statSync(finalSavedFilePath);
     const sizeMb = (fileStats.size / (1024 * 1024)).toFixed(2);
     this.log(`Video saved: ${task.fileName} (${sizeMb} MB).`, 'success');
+
+    // v2.48.27: ye save downloadProgress event se bandha tha ya
+    // sirf disk-poll se — gap wali [FAST-DL] line ke liye nishaan.
+    task._nativeEventDriven = !!eventSave;
+    task._nativeSavedAt = Date.now();
 
     task.downloaded = true;
     task.completed = true;
@@ -3986,13 +4127,45 @@ class FlowAutomationEngine {
       return false;
     }
     this.log(`[Prompt #${n}] Found the Download item inside the menu ("${item.how}") — clicking…`, 'info');
+    // v2.48.27 (FAST-DL diagnostic): click ke is pal page ki blob
+    // registry kitni bhari hai — sirf EK line; click-time
+    // extraction is build me NAHI hai (bhavishya ke liye data).
+    try {
+      const regAtClick = await this._blobRegistryCount();
+      this.log(`[FAST-DL] registry at click: ${regAtClick < 0 ? 'unknown' : regAtClick} entries`, 'info');
+    } catch (e) {}
     const clickTime = Date.now();
     await this.page.mouse.click(item.x, item.y);
     const res = await this._nativePickResolution(settings && settings.quality);
     const ok = await this._nativeAwaitAndSave(task, prep, res.clickedAt || clickTime, 90000, downloadFolder, settings);
+    if (ok) {
+      // Owner ka standing rule: render→save gap har video ka ALAG.
+      const gapBase = task.renderCompletedAt || clickTime;
+      const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
+      this.log(`[FAST-DL] [Prompt #${n}] menu-first save gap=${gapSec}s event=${task._nativeEventDriven ? 'yes' : 'no'}`, 'success');
+    }
     attempts.push({ strategy: 'native-menu', ok, note: ok ? 'the file came from the menu\'s Download item' : 'the menu\'s Download item was clicked, but no file arrived' });
     if (!ok) this.log(`[Prompt #${n}] No file came from the menu route either.`, 'warn');
     return ok;
+  }
+
+  /**
+   * v2.48.27 (MENU-FIRST): sirf ⋮ menu wala roop — bilkul wahi
+   * implementation jo pehle Native UI ke andar DER se chalti thi,
+   * ab _downloadTaskMediaInner ke SAB SE PEHLE qadam ke roop me.
+   * FASTTEST1 (v2.48.26 ke live test) ne sabit kiya: file sirf
+   * isi raste se aati hai, is liye intezaar-me-haraane wale saare
+   * qadam is ke baad fallback me gaye. Haar maane to false —
+   * bachi hui poori tartib peeche chalti hai.
+   */
+  async _tryMenuFirstDownload(task, downloadFolder, settings, tileIndexHint, attempts) {
+    try {
+      const prep = await this._nativePrepareWatch(downloadFolder);
+      return await this._nativeMenuForm(task, prep, downloadFolder, settings, tileIndexHint, attempts);
+    } catch (e) {
+      attempts.push({ strategy: 'native-menu', ok: false, note: 'the menu-first route hit a problem — the remaining routes will be tried' });
+      return false;
+    }
   }
 
   /**
@@ -4002,12 +4175,15 @@ class FlowAutomationEngine {
    * top bar ka "Download media". Hover wala roop v2.8.0 me gaya —
    * tile par hover karne se download button aata hi NAHI hai.
    */
-  async _downloadViaNativeUi(task, downloadFolder, settings, tileIndexHint, attempts) {
+  async _downloadViaNativeUi(task, downloadFolder, settings, tileIndexHint, attempts, opts = {}) {
     const prep = await this._nativePrepareWatch(downloadFolder);
-    const forms = [
-      () => this._nativeMenuForm(task, prep, downloadFolder, settings, tileIndexHint, attempts),
-      () => this._nativeEditorForm(task, prep, downloadFolder, settings, tileIndexHint, attempts)
-    ];
+    // v2.48.27: menu roop agar is round me pehle hi (menu-first)
+    // chal chuka ho to yahan dobara NAHI — sirf editor roop.
+    const forms = [];
+    if (!opts.skipMenuForm) {
+      forms.push(() => this._nativeMenuForm(task, prep, downloadFolder, settings, tileIndexHint, attempts));
+    }
+    forms.push(() => this._nativeEditorForm(task, prep, downloadFolder, settings, tileIndexHint, attempts));
     for (const run of forms) {
       if (this.isStopping) return false;
       let ok = false;
@@ -4597,7 +4773,10 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.26 (FAST-DL — "turant download"): SABSE PEHLI ranneeti.
+   * v2.48.26 (FAST-DL — "turant download"): in-page blob harvest.
+   * (v2.48.27 se ye FALLBACK hai — menu-first sab se pehle chalta
+   * hai, kyunki FASTTEST1 ne sabit kiya ke render ke pal registry
+   * khaali hoti hai; bytes click ke baad hi page me aate hain.)
    * E1 (owner ke PC par sabit, 2026-11-02): asal download ek blob:
    * URL hai — video ke bytes Download click se PEHLE hi page ki
    * memory me hote hain; Chrome ka download manager unhe sirf disk
@@ -4764,7 +4943,31 @@ class FlowAutomationEngine {
       try { fs.mkdirSync(downloadFolder, { recursive: true }); } catch (e) {}
     }
 
-    // --- v2.48.26 (FAST-DL): SABSE PEHLE in-page blob harvest ---
+    // Ranneeti-tartib ka ek-matra sach (tests wahi jaanchte hain):
+    task.downloadRouteOrder = downloadRouteOrder.DOWNLOAD_ROUTE_ORDER.slice();
+
+    // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download SAB SE PEHLE ---
+    // FASTTEST1 (2026-11-02, owner ke PC par sabit): render ke pal
+    // page me bytes hote hi NAHI; file sirf menu ke Download click
+    // ke baad aati hai. To jo rasta file LAATA hai, wahi pehle —
+    // 5s registry poll, backend check, 8s tile wait, sab is ke
+    // baad FALLBACK me hain (purani aapas-tartib me), sirf tab jab
+    // menu roop haar jaye. Image tasks ki tartib bilkul purani hi
+    // hai (menu-first sirf video ke liye hai).
+    let menuFirstTried = false;
+    if (!isImage) {
+      menuFirstTried = true;
+      const okMenuFirst = await this._tryMenuFirstDownload(task, downloadFolder, settings, tileIndexHint, attempts);
+      if (okMenuFirst || task.mediaSaved) {
+        try {
+          this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
+        } catch (e) {}
+        const wonFirst = attempts.filter(a => a.ok).pop();
+        return { ok: true, strategy: wonFirst ? wonFirst.strategy : 'native-menu', attempts };
+      }
+    }
+
+    // --- v2.48.26 (FAST-DL): in-page blob harvest (ab FALLBACK) ---
     // Render hote hi page ke andar maujood bytes se seedha save —
     // backend check, 8s tile wait, menu, filesystem poll, sab se
     // pehle. Na bane to neeche ki poori tartib bilkul pehle ki
@@ -4931,9 +5134,11 @@ class FlowAutomationEngine {
       attempts.push({ strategy: 'tile-src', ok: false, note: 'no media URL was found on the tile' });
     }
 
-    // --- Ranneeti 4: native UI ke do roop (⋮ menu → editor) ---
+    // --- Ranneeti 4: native UI (ab sirf editor roop — ⋮ menu
+    // v2.48.27 se round ke aaghaz me menu-first ho chuka hai;
+    // image tasks par menu roop yahin purani tartib se chalta hai) ---
     // (Kram-bandhan bhi v2.48.15 se aaghaz me chalta hai.)
-    const okNative = await this._downloadViaNativeUi(task, downloadFolder, settings, tileIndexHint, attempts);
+    const okNative = await this._downloadViaNativeUi(task, downloadFolder, settings, tileIndexHint, attempts, { skipMenuForm: menuFirstTried });
     if (okNative) {
       const won = attempts.filter(a => a.ok).pop();
       // v2.48.24: file UI raaste se aayi — poori run ke media

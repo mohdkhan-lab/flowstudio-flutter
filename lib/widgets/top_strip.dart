@@ -120,7 +120,7 @@ class TopStrip extends StatelessWidget {
                 // Version Pill — Tactile 3D
                 TactileChip(
                   color: AppTheme.accentText,
-                  label: 'v2.48.26',
+                  label: 'v2.48.27',
                   height: 22,
                   borderRadius: 11,
                   bevelDepth: 1.5,

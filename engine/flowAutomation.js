@@ -246,6 +246,11 @@ class FlowAutomationEngine {
     this.capturedVideoUrls = [];
     this.capturedVideoBuffers = new Map();
     this.capturedVideoBytes = 0;
+    // v2.48.29 (HTML-POISON): jin bound/captured links ne is run
+    // me HTML page diya, wo dobara fetch NAHI hote (FASTTEST3:
+    // ek hi asb link 4 dafa, har dafa wahi HTML, ~32s zaaya).
+    // Capture state ke saath launch par reset hota hai.
+    this._htmlPoisonGuard = downloadFetch.createPoisonGuard();
     this.lastLaunchError = null;
     // v1.1 freeze fix: video-stream capture stays DISARMED until the first
     // prompt of the session is actually submitted (see submitPrompt). The
@@ -479,6 +484,10 @@ class FlowAutomationEngine {
       // by the blob harvest on THIS browser — a later task on the
       // same page must never be handed the same bytes again.
       this._fastDlConsumedBlobs = new Set();
+      // v2.48.29: naya browser = nayi run-haalat — HTML-poison
+      // wala hisaab bhi yahin se saaf (capture state ki tarah).
+      this._htmlPoisonGuard = downloadFetch.createPoisonGuard();
+      this._fastDlFailedBlobs = new Set();
       this.page.on('response', async (res) => {
         try {
           // v1.1: ignore ALL traffic until a prompt has been submitted —
@@ -663,6 +672,7 @@ class FlowAutomationEngine {
     if (this.claimedTileIndices) this.claimedTileIndices.clear();
     if (this.claimedTileFingerprints) this.claimedTileFingerprints.clear();
     if (this.consumedVideoUrls) this.consumedVideoUrls.clear();
+    if (this._htmlPoisonGuard) this._htmlPoisonGuard.clear();
   }
 
   /**
@@ -2852,6 +2862,31 @@ class FlowAutomationEngine {
     if (!fs.existsSync(downloadFolder)) {
       fs.mkdirSync(downloadFolder, { recursive: true });
     }
+    const isImageMode = !!(settings && settings.type === 'Image');
+    task._saveRejectedReason = null;
+    // v2.48.29 (QUALITY GATE): buffer asal video ho lekin
+    // duration ke hisaab se size floor se neeche ho to ye
+    // PREVIEW-quality hai — final save KABHI nahi. FASTTEST3
+    // (2026-11-02, ffprobe-sabit): tile-src wali preview encode
+    // 80,843 bytes / 3.97s (~163 kbps) "safal" save ho gayi thi,
+    // asal Original (1.2 MB, ~2.4 Mbps) se ~15 guna halki. Ab
+    // aisi file yahin rukti hai: na file banti hai, na success
+    // ginati hoti hai — raaste aage chalte hain aur kuch behtar
+    // na mile to task park (needs_check) hota hai, bilkul baaki
+    // nakam raaston ki tarah. Sirf video tasks par (tasveeron
+    // par nahi). Floor ka hisaab downloadFetch ke pure helpers
+    // me hai (unit-tested); wajah task._saveRejectedReason me
+    // bulane wale ke liye rehti hai.
+    if (!isImageMode && buffer && downloadFetch.looksLikeVideoBuffer(buffer)) {
+      const floorBytes = downloadFetch.minBytesForDuration(settings && settings.duration);
+      if (buffer.length < floorBytes) {
+        const durSec = downloadFetch.parseDurationSeconds(settings && settings.duration);
+        const durLabel = durSec ? `${durSec}s` : String((settings && settings.duration) || 'unknown');
+        this.log(`[QUALITY-GATE] [Prompt #${task.promptIndex + 1}] preview-quality buffer rejected (${buffer.length} < floor ${floorBytes} for ${durLabel}) — routes continue`, 'warn');
+        task._saveRejectedReason = 'quality-gate';
+        return false;
+      }
+    }
     // v1.7.0: never silently overwrite a file this engine did not
     // itself save — a previous run's same-named video stays intact
     // and this save takes a suffixed name.
@@ -2867,7 +2902,6 @@ class FlowAutomationEngine {
 
     // Validate the saved file is a real, probeable video (when ffprobe is
     // available). A corrupt payload must not count as a completion.
-    const isImageMode = (settings.type === 'Image');
     if (!isImageMode) {
       const valid = await FFmpegService.verifyVideoFile(finalSavedFilePath, 20000);
       if (!valid) {
@@ -3078,6 +3112,18 @@ class FlowAutomationEngine {
     // call's outcome, not an earlier one's.
     task._lastFetchSteps = [];
     let savedBuffer = null;
+
+    // v2.48.29 (HTML-POISON): ye link is run me pehle hi HTML
+    // page de chuka hai to dobara network par haath hi NAHI
+    // padta — FASTTEST3 me ek hi asb link chaar dafa fetch
+    // hokar har dafa wahi HTML laya tha (~32s zaaya). Saare
+    // fetch raaste isi function se guzarte hain, is liye
+    // darwaza yahin kaafi hai.
+    if (targetUrl.startsWith('http') && this._htmlPoisonGuard && this._htmlPoisonGuard.isPoisoned(targetUrl)) {
+      this._noteFetchStep(task, { step: 'poison-skip', ok: false, error: 'this link already returned an HTML page in this run — it was not fetched again' });
+      this.log(`[Prompt #${task.promptIndex + 1}] This link already returned an HTML page earlier in this run — it will NOT be fetched again. The remaining routes will be tried.`, 'warn');
+      return false;
+    }
 
     // v2.48.12: hot paths (backend fetch / background queue) skip
     // the captured buffer too — the owner's standing order is
@@ -3298,17 +3344,33 @@ class FlowAutomationEngine {
       && !downloadFetch.looksLikeVideoBuffer(savedBuffer)) {
       this._noteFetchStep(task, { step: 'content-check', ok: false, error: 'the fetched data is not a video file (no video header — likely an image or an error page)' });
       this.log(`[Prompt #${task.promptIndex + 1}] The data fetched from the link is NOT a video file (it has no video header — probably an image) — it was not saved. The remaining routes will be tried. · fetched: ${savedBuffer.length} bytes, format: ${downloadFetch.classifyBufferMagic(savedBuffer)}, head: ${savedBuffer.subarray(0, 16).toString('hex')}, boxes: ${JSON.stringify(downloadFetch.findBoxOffsets(savedBuffer))}`, 'warn');
+      // v2.48.29 (HTML-POISON): data asal me HTML page hai to
+      // is link ko is run ke liye zeher-yafta mark kar do —
+      // koi bhi stage (backend, tile-src, retry) use dobara
+      // fetch NAHI karega. Tasveer (poster) wali rukawat par
+      // poison NAHI lagta — wo link kisi aur roop me asal
+      // video bhi de sakta hai.
+      if (targetUrl && targetUrl.startsWith('http') && downloadFetch.looksLikeHtmlBuffer(savedBuffer)) {
+        if (this._htmlPoisonGuard) this._htmlPoisonGuard.poison(targetUrl);
+        this.log(`[Prompt #${task.promptIndex + 1}] That link returned an HTML page — it is marked poisoned for this run and will not be fetched again.`, 'warn');
+      }
       return false;
     }
 
     if (savedBuffer && savedBuffer.length > 10000) {
       const savedOk = await this._saveBufferForTask(task, downloadFolder, settings, savedBuffer, targetUrl);
       if (!savedOk) {
-        // _saveBufferForTask returns false ONLY when the saved
-        // file failed the ffprobe video check (it logs the line
-        // itself) — record it so the strategy note names the real
-        // cause instead of "the data was not received".
-        this._noteFetchStep(task, { step: 'save-verify', ok: false, error: 'the saved file failed the video check (ffprobe)' });
+        // _saveBufferForTask returns false when the saved file
+        // failed the ffprobe video check (it logs the line
+        // itself) — ya v2.48.29 se, jab QUALITY GATE ne buffer
+        // ko preview-quality keh kar save se PEHLE roka ho.
+        // Note me asal wajah hi aaye, is liye wajah alag padhi
+        // jati hai.
+        if (task._saveRejectedReason === 'quality-gate') {
+          this._noteFetchStep(task, { step: 'quality-gate', ok: false, error: 'the fetched video was preview quality (below the size floor for its duration) — not saved as the final file' });
+        } else {
+          this._noteFetchStep(task, { step: 'save-verify', ok: false, error: 'the saved file failed the video check (ffprobe)' });
+        }
       }
       return savedOk;
     }
@@ -4144,6 +4206,26 @@ class FlowAutomationEngine {
     }
     if (!item.found) {
       this.log(`[Prompt #${n}] The ⋮ menu opened, but no Download item was found inside it.`, 'warn');
+      // v2.48.29 (MENU-DIAG): menu khula lekin Download nahi
+      // mila — andar asal me tha KYA, ye ek line me note kar
+      // lo (sirf menu ke label — koi URL nahi). FASTTEST2 aur
+      // FASTTEST3 dono me menu lagatar is mor par haara; agli
+      // tashkhees isi saboot se hogi. Koi behavior change nahi.
+      try {
+        const menuTexts = await this.page.evaluate(() => {
+          const items = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane button, .mat-mdc-menu-panel [role="menuitem"], .mat-mdc-menu-panel button, [role="menu"] [role="menuitem"], [role="menu"] button'));
+          const out = [];
+          for (const b of items) {
+            const r = b.getBoundingClientRect();
+            if (!(r.width > 0 && r.height > 0)) continue;
+            const t = String(b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim().substring(0, 40);
+            if (t && !out.includes(t)) out.push(t);
+            if (out.length >= 12) break;
+          }
+          return out;
+        });
+        this.log(`[MENU-DIAG] [Prompt #${n}] menu items: ${Array.isArray(menuTexts) && menuTexts.length ? menuTexts.join(', ') : '(none visible)'}`, 'warn');
+      } catch (e) {}
       attempts.push({ strategy: 'native-menu', ok: false, note: 'the menu opened but it had no Download item' });
       try { await this.page.keyboard.press('Escape'); } catch (e) {}
       await this._returnToProjectGrid();
@@ -4900,7 +4982,13 @@ class FlowAutomationEngine {
     if (candidate.url && candidate.url.startsWith('blob:')) srcUrl = candidate.url;
     else if (candidate.url && flowContent.isFlowContentVideoUrl(candidate.url)) srcUrl = candidate.url;
     const savedOk = await this._saveBufferForTask(task, downloadFolder, settings, buffer, srcUrl);
-    if (!savedOk) return { ok: false, stage: 'save' };
+    if (!savedOk) {
+      // v2.48.29: quality gate wali rukawat apni alag stage ke
+      // saath wapas jati hai — bulane wala use ffprobe-nakami se
+      // alag naam de sakta hai.
+      if (task._saveRejectedReason === 'quality-gate') return { ok: false, stage: 'quality' };
+      return { ok: false, stage: 'save' };
+    }
     this._fastDlConsumedBlobs.add(blobHarvest.candidateKey(candidate));
     if (srcUrl && flowContent.isFlowContentVideoUrl(srcUrl)) {
       try { if (this.netCapture) this.netCapture.claimFlowContentVideo(srcUrl); } catch (e) {}
@@ -5167,6 +5255,81 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.29 (ALWAYS-ON QUICK-CHECK): server-first ki SAFAL
+   * wali tarkeeb ka NO-WAIT roop — na prime, na poll; sirf
+   * "is pal kuch pakda hua pehle se maujood hai kya?" Ek
+   * registry read + ek capture fehrist, bas. FASTTEST2 ki
+   * seekh: flow-content wala fetch aksar KISI AUR stage (menu
+   * ghumao) ke dauraan aata hai — server-first ki apni 12s
+   * khidki use dekh hi nahi pati. Is liye ye jaanch
+   * _downloadTaskMediaInner me har bare fallback stage se
+   * PEHLE chalti hai (menu se pehle, backend se pehle,
+   * tile-src se pehle): kuch milte hi save aur attempt wahi
+   * khatam. Pehchan ke darwaze bilkul server-first wale hain
+   * (_pickServerFetchUrl + _extractAndSaveBlobCandidate ke
+   * andar ke gate) — is pal ki taaza entry na ho to foran
+   * null-wapas, koi der nahi.
+   * Lautta hai: true (save ho gaya) | false.
+   */
+  async _opportunisticServerCheck(task, downloadFolder, settings, attempts, whereLabel) {
+    const n = task.promptIndex + 1;
+    try {
+      if (!this.page || this.page.isClosed() || task.mediaSaved) return false;
+      if (!this._fastDlConsumedBlobs) this._fastDlConsumedBlobs = new Set();
+      if (!this._fastDlFailedBlobs) this._fastDlFailedBlobs = new Set();
+      const captureKey = task.captureKey || task.videoId || null;
+      const renderCompleteTs = task.renderCompletedAt || null;
+      const gapSec = () => Math.max(0, (Date.now() - (renderCompleteTs || task.startTime || Date.now())) / 1000).toFixed(1);
+
+      // (a) Registry — bytes page me pehle se aa chuke hon to.
+      const meta = await this._readBlobRegistryMeta();
+      if (Array.isArray(meta) && meta.length > 0) {
+        const consumed = new Set([...this._fastDlConsumedBlobs, ...this._fastDlFailedBlobs]);
+        const candidate = blobHarvest.selectCandidate(meta, {
+          renderStartTs: task.startTime || 0,
+          renderCompleteTs,
+          consumedKeys: consumed,
+          nowTs: Date.now(),
+          expectedSize: null
+        });
+        if (candidate) {
+          const res = await this._extractAndSaveBlobCandidate(task, downloadFolder, settings, candidate);
+          if (res.ok || task.mediaSaved) {
+            this.log(`[FAST-DL] [Prompt #${n}] opportunistic save via=registry gap=${gapSec()}s`, 'success');
+            attempts.push({ strategy: 'server-first', ok: true, note: `the file was saved by the always-on quick check (${whereLabel}) from the bytes the page had already fetched (extraction ${res.extractMs}ms); render→save gap ${gapSec()}s` });
+            return true;
+          }
+          this._fastDlFailedBlobs.add(blobHarvest.candidateKey(candidate));
+        }
+      }
+
+      // (b) Server channel — is task ke render ke baad dikha
+      // koi flow-content video jawab capture me ho to, unhi
+      // pehchan-darwazon se guzaar kar seedha server fetch.
+      let fcEntries = [];
+      try {
+        if (this.netCapture && typeof this.netCapture.recentFlowContentVideos === 'function') {
+          fcEntries = this.netCapture.recentFlowContentVideos(renderCompleteTs || task.startTime || 0);
+        }
+      } catch (e) { fcEntries = []; }
+      if (fcEntries.length > 0) {
+        const pick = this._pickServerFetchUrl(task, captureKey, fcEntries, '');
+        if (pick && pick.url) {
+          const okFetch = await this._serverFetchSave(task, downloadFolder, settings, pick);
+          if (okFetch || task.mediaSaved) {
+            this.log(`[FAST-DL] [Prompt #${n}] opportunistic save via=server-fetch gap=${gapSec()}s`, 'success');
+            attempts.push({ strategy: 'server-first', ok: true, note: `the file was fetched straight from Flow's server (flow-content.google, ${pick.via}) by the always-on quick check (${whereLabel}); render→save gap ${gapSec()}s` });
+            return true;
+          }
+        }
+      }
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
    * v2.48.26 (FAST-DL — "turant download"): in-page blob harvest.
    * (Ab ye FALLBACK hai — v2.48.28 se server-first sab se pehle
    * chalta hai aur menu dusra; harvest wahi kaam apni purani
@@ -5250,6 +5413,9 @@ class FlowAutomationEngine {
       } else if (res.stage === 'gate') {
         this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes are NOT a video file (no video header — format: ${res.format}) — discarded; the existing download routes will run.`, 'warn');
         attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were not a video file (no video header) — discarded, the existing routes ran as fallback' });
+      } else if (res.stage === 'quality') {
+        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes were a preview-quality copy (below the size floor for the duration) — not saved as the final file; the existing download routes will run.`, 'warn');
+        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were preview quality (below the size floor) — not saved as final, the existing routes ran as fallback' });
       } else {
         this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes failed the video check on save — the existing download routes will run.`, 'warn');
         attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes failed the video check (ffprobe) on save — the existing routes ran as fallback' });
@@ -5311,6 +5477,17 @@ class FlowAutomationEngine {
     // baad FALLBACK me hain (purani aapas-tartib me), sirf tab jab
     // menu roop haar jaye. Image tasks ki tartib bilkul purani hi
     // hai (menu-first sirf video ke liye hai).
+    // --- v2.48.29 (ALWAYS-ON QUICK-CHECK): menu se pehle ---
+    // Server-first ki khidki band ho chuki hai, lekin is beech
+    // page ne file khud mangwayi ho sakti hai (FASTTEST2 wala
+    // saboot) — menu ghumane se pehle ek NO-WAIT nazar.
+    if (!isImage) {
+      try {
+        const okQuick = await this._opportunisticServerCheck(task, downloadFolder, settings, attempts, 'before-menu');
+        if (okQuick || task.mediaSaved) return { ok: true, strategy: 'server-first', attempts };
+      } catch (e) {}
+    }
+
     let menuFirstTried = false;
     if (!isImage) {
       menuFirstTried = true;
@@ -5345,6 +5522,17 @@ class FlowAutomationEngine {
     // ka apna link is project roop me aata hi nahi. Ab backend
     // wale dono raaste SAB SE PEHLE chalte hain; tile wali
     // readiness sirf tab, jab backend se kuch na bane.
+    // --- v2.48.29 (ALWAYS-ON QUICK-CHECK): backend se pehle ---
+    // Menu/harvest ke ghumao ke dauraan server wala jawab aaya
+    // ho to backend ke purane (aksar HTML wale) link par waqt
+    // zaaya karne se pehle wahi utha lo.
+    if (!isImage) {
+      try {
+        const okQuick = await this._opportunisticServerCheck(task, downloadFolder, settings, attempts, 'before-backend');
+        if (okQuick || task.mediaSaved) return { ok: true, strategy: 'server-first', attempts };
+      } catch (e) {}
+    }
+
     try {
       const okBackend = await this._tryBackendDownload(task, downloadFolder, settings, attempts);
       if (okBackend) return { ok: true, strategy: 'backend-fetch', attempts };
@@ -5446,6 +5634,17 @@ class FlowAutomationEngine {
         if (okFast || task.mediaSaved) return { ok: true, strategy: 'tile-src-fast', attempts };
         this.log(`[Prompt #${n}] The fast route did not save the file — now running the full existing download routes for the same video (fallback).`, 'warn');
       }
+    }
+
+    // --- v2.48.29 (ALWAYS-ON QUICK-CHECK): tile-src se pehle ---
+    // Tile ki preview encode (jo QUALITY GATE ab rokta hai)
+    // uthane se pehle aakhri NO-WAIT nazar — asal server file
+    // is beech aa gayi ho to wahi asal jeet hai.
+    if (!isImage) {
+      try {
+        const okQuick = await this._opportunisticServerCheck(task, downloadFolder, settings, attempts, 'before-tile-src');
+        if (okQuick || task.mediaSaved) return { ok: true, strategy: 'server-first', attempts };
+      } catch (e) {}
     }
 
     // --- Ranneeti 2: apni stream / tile ka src ---

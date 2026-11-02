@@ -474,6 +474,85 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
     'x.com=15');
 }
 
+// --- v2.48.29 (QUALITY GATE): duration-aware size floor ---
+{
+  const {
+    QUALITY_BYTES_PER_SECOND, QUALITY_FLAT_FLOOR_BYTES,
+    parseDurationSeconds, minBytesForDuration, isPlausibleOriginalSize
+  } = require('../engine/downloadFetch');
+  eq('QG bytes-per-second is 60KB', QUALITY_BYTES_PER_SECOND, 60 * 1024);
+  eq('QG flat floor is 200KB', QUALITY_FLAT_FLOOR_BYTES, 200 * 1024);
+  eq('QG parses 4s', parseDurationSeconds('4s'), 4);
+  eq('QG parses 10s', parseDurationSeconds('10s'), 10);
+  eq('QG parses bare number string', parseDurationSeconds('8'), 8);
+  eq('QG parses numeric input', parseDurationSeconds(6), 6);
+  eq('QG unparsable duration is null', parseDurationSeconds('long'), null);
+  eq('QG undefined duration is null', parseDurationSeconds(undefined), null);
+  eq('QG zero duration is null', parseDurationSeconds('0s'), null);
+  eq('QG floor for 4s is 240KB', minBytesForDuration('4s'), 240 * 1024);
+  eq('QG floor for 10s is 600KB', minBytesForDuration('10s'), 600 * 1024);
+  eq('QG floor for unparsable duration is the flat 200KB', minBytesForDuration('junk'), 200 * 1024);
+  eq('QG floor for missing duration is the flat 200KB', minBytesForDuration(undefined), 200 * 1024);
+  // FASTTEST3 ki asal preview file: 80,843 bytes / 4s — reject.
+  eq('QG FASTTEST3 preview buffer (80843B, 4s) is rejected', isPlausibleOriginalSize(80843, '4s'), false);
+  // Asal Original (flow-content.google): 1,201,697 bytes / 4s — accept.
+  eq('QG genuine Original (1201697B, 4s) is accepted', isPlausibleOriginalSize(1201697, '4s'), true);
+  eq('QG genuine Original at 10s (2.2MB) is accepted', isPlausibleOriginalSize(2200000, '10s'), true);
+  eq('QG half-megabyte at 10s is below the floor', isPlausibleOriginalSize(500000, '10s'), false);
+  eq('QG exact flat floor passes for unknown duration', isPlausibleOriginalSize(200 * 1024, 'junk'), true);
+  eq('QG one byte under the flat floor fails', isPlausibleOriginalSize(200 * 1024 - 1, 'junk'), false);
+  eq('QG zero bytes never plausible', isPlausibleOriginalSize(0, '4s'), false);
+}
+
+// --- v2.48.29 (HTML-POISON): HTML pehchan + dobara fetch par rok ---
+{
+  const { looksLikeHtmlBuffer, createPoisonGuard } = require('../engine/downloadFetch');
+  // FASTTEST3 ka asal head: 3c21646f63747970652068746d6c3e = '<!doctype html><'
+  ok('POISON doctype page is HTML', looksLikeHtmlBuffer(Buffer.from('<!DOCTYPE html><html><head></head>')));
+  ok('POISON uppercase doctype is HTML', looksLikeHtmlBuffer(Buffer.from('<!DOCTYPE HTML PUBLIC "-//W3C//DTD HTML 4.01//EN">')));
+  ok('POISON bare <html> is HTML', looksLikeHtmlBuffer(Buffer.from('<html lang="en"><body>x</body></html>')));
+  ok('POISON leading whitespace then <html> is HTML', looksLikeHtmlBuffer(Buffer.from('  \n\t<html>')));
+  eq('POISON mp4 header is NOT HTML', looksLikeHtmlBuffer(Buffer.from([0, 0, 0, 24, 0x66, 0x74, 0x79, 0x70, 0x69, 0x73, 0x6f, 0x6d])), false);
+  eq('POISON jpeg is NOT HTML', looksLikeHtmlBuffer(Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10])), false);
+  eq('POISON tiny buffer is NOT HTML', looksLikeHtmlBuffer(Buffer.from('<ht')), false);
+  eq('POISON null buffer is NOT HTML', looksLikeHtmlBuffer(null), false);
+
+  // Guard: pehli fetch chalti hai aur link zeher ho jata hai;
+  // dusri koshish guard par hi rukti hai — network call NAHI hoti.
+  const guard = createPoisonGuard();
+  const LINK = 'https://lh3.googleusercontent.com/asb/EXAMPLE';
+  let networkCalls = 0;
+  const fetchOnce = (u) => {
+    if (guard.isPoisoned(u)) return 'skipped';
+    networkCalls++;
+    guard.poison(u); // pehli fetch ne HTML diya — engine yahi karta hai
+    return 'fetched';
+  };
+  eq('POISON fresh link is not poisoned', guard.isPoisoned(LINK), false);
+  eq('POISON first fetch runs', fetchOnce(LINK), 'fetched');
+  eq('POISON link is poisoned after the HTML fetch', guard.isPoisoned(LINK), true);
+  eq('POISON second fetch is skipped at the guard', fetchOnce(LINK), 'skipped');
+  eq('POISON second fetch made NO network call', networkCalls, 1);
+  eq('POISON another link stays clean', guard.isPoisoned('https://lh3.googleusercontent.com/asb/OTHER'), false);
+  guard.clear();
+  eq('POISON clear() resets the guard (new run)', guard.isPoisoned(LINK), false);
+}
+
+// --- v2.48.29 (ALWAYS-ON QUICK-CHECK): khaali par foran null ---
+{
+  const blobHarvest = require('../engine/blobHarvest');
+  const { isFlowContentVideoUrl } = require('../engine/flowContent');
+  // Registry khaali ho to candidate null — quick-check ka pehla
+  // darwaza yahi hai (bina intezaar ke wapas).
+  eq('QC empty registry yields no candidate', blobHarvest.selectCandidate([], { renderStartTs: 1000, renderCompleteTs: 2000, nowTs: 3000, consumedKeys: new Set() }), null);
+  eq('QC null registry yields no candidate', blobHarvest.selectCandidate(null, { renderStartTs: 1000, nowTs: 3000 }), null);
+  // Capture fehrist khaali ho to koi server URL banta hi nahi —
+  // matcher khaali/ghalat shakal par hamesha inkaar karta hai.
+  eq('QC no flow-content entries means no URL', [].filter(u => isFlowContentVideoUrl(u)).length, 0);
+  eq('QC empty URL is not a flow-content video', isFlowContentVideoUrl(''), false);
+  eq('QC undefined URL is not a flow-content video', isFlowContentVideoUrl(undefined), false);
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 process.exit(failed > 0 ? 1 : 0);
 

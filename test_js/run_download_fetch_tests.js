@@ -328,24 +328,27 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   ok('FAST-DL hook wraps createObjectURL', HOOK_SOURCE.includes('createObjectURL'));
 }
 
-// --- v2.48.27 (MENU-FIRST): download route order ---
+// --- v2.48.28 (SERVER-FIRST): download route order ---
 {
   const routeOrder = require('../engine/downloadRouteOrder');
   const { DOWNLOAD_ROUTE_ORDER, fallbackRouteOrder, firstRoute } = routeOrder;
 
-  // The menu route — the only route that actually produces the
-  // file (FASTTEST1, proven live) — runs FIRST.
-  eq('MENU-FIRST first route is native-menu', firstRoute(), 'native-menu');
-  eq('MENU-FIRST order starts with native-menu', DOWNLOAD_ROUTE_ORDER[0], 'native-menu');
-  eq('MENU-FIRST order ends with native-editor', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'native-editor');
-  eq('MENU-FIRST route count', DOWNLOAD_ROUTE_ORDER.length, 9);
-  ok('MENU-FIRST order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
+  // The server routes — the page's own fetch from Flow's CDN
+  // (registry harvest / direct flow-content fetch, FASTTEST2
+  // proven live) — run FIRST; the menu route is second.
+  eq('SERVER-FIRST first route is server-first', firstRoute(), 'server-first');
+  eq('SERVER-FIRST order starts with server-first', DOWNLOAD_ROUTE_ORDER[0], 'server-first');
+  eq('SERVER-FIRST menu route is second', DOWNLOAD_ROUTE_ORDER[1], 'native-menu');
+  eq('SERVER-FIRST order ends with native-editor', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'native-editor');
+  eq('SERVER-FIRST route count', DOWNLOAD_ROUTE_ORDER.length, 10);
+  ok('SERVER-FIRST order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
 
-  // Fallbacks keep their previous (v2.48.26) relative order.
+  // Fallbacks keep their previous (v2.48.27) relative order.
   const fb = fallbackRouteOrder();
-  eq('MENU-FIRST fallback drops only the menu route', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
-  ok('MENU-FIRST fallback has no native-menu', !fb.includes('native-menu'));
-  const prev = ['blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'backend-fetch-retry', 'tile-src-fast', 'tile-src', 'native-editor'];
+  eq('SERVER-FIRST fallback drops only the server route', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
+  ok('SERVER-FIRST fallback has no server-first', !fb.includes('server-first'));
+  ok('SERVER-FIRST fallback starts with native-menu', fb[0] === 'native-menu');
+  const prev = ['native-menu', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'backend-fetch-retry', 'tile-src-fast', 'tile-src', 'native-editor'];
   let idx = -1;
   let inOrder = true;
   for (const name of prev) {
@@ -353,8 +356,71 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
     if (at <= idx) { inOrder = false; break; }
     idx = at;
   }
-  ok('MENU-FIRST fallbacks retain previous relative order', inOrder);
-  eq('MENU-FIRST fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
+  ok('SERVER-FIRST fallbacks retain previous relative order', inOrder);
+  eq('SERVER-FIRST fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
+}
+
+// --- v2.48.28 (SERVER-FIRST): flow-content URL matcher ---
+{
+  const { FLOW_CONTENT_HOST, isFlowContentHost, isFlowContentVideoUrl } = require('../engine/flowContent');
+
+  eq('FLOW host constant', FLOW_CONTENT_HOST, 'flow-content.google');
+  ok('FLOW host exact matches', isFlowContentHost('flow-content.google'));
+  ok('FLOW host case-insensitive', isFlowContentHost('Flow-Content.Google'));
+  eq('FLOW host suffix look-alike rejected', isFlowContentHost('flow-content.google.evil.com'), false);
+  eq('FLOW host subdomain rejected', isFlowContentHost('www.flow-content.google'), false);
+
+  // Asal shakal (FASTTEST2): signed CDN address, /video/ rasta.
+  ok('FLOW video URL with signature passes', isFlowContentVideoUrl('https://flow-content.google/video/abc123def?sig=xyz&expire=1', 'video/mp4'));
+  ok('FLOW video URL without content-type passes', isFlowContentVideoUrl('https://flow-content.google/video/abc123def'));
+  ok('FLOW video URL with type parameters passes', isFlowContentVideoUrl('https://flow-content.google/video/abc123def', 'video/mp4; charset=binary'));
+  ok('FLOW http scheme passes', isFlowContentVideoUrl('http://flow-content.google/video/abc123def', 'video/mp4'));
+
+  // Naklein — host exact na ho to kabhi nahi.
+  eq('FLOW look-alike suffix host rejected', isFlowContentVideoUrl('https://flow-content.google.evil.com/video/abc', 'video/mp4'), false);
+  eq('FLOW userinfo trick rejected', isFlowContentVideoUrl('https://flow-content.google@evil.com/video/abc', 'video/mp4'), false);
+  eq('FLOW prefix look-alike rejected', isFlowContentVideoUrl('https://evilflow-content.google/video/abc', 'video/mp4'), false);
+  eq('FLOW subdomain rejected', isFlowContentVideoUrl('https://www.flow-content.google/video/abc', 'video/mp4'), false);
+  eq('FLOW other google host rejected', isFlowContentVideoUrl('https://flow.google.com/video/abc', 'video/mp4'), false);
+
+  // Nau (type) ki jaanch — video ke siwa kuch nahi.
+  eq('FLOW image type rejected', isFlowContentVideoUrl('https://flow-content.google/video/abc', 'image/png'), false);
+  eq('FLOW html type rejected', isFlowContentVideoUrl('https://flow-content.google/video/abc', 'text/html'), false);
+  eq('FLOW empty type skips the type gate', isFlowContentVideoUrl('https://flow-content.google/video/abc', ''), true);
+
+  // Rasta aur shakal ki jaanch.
+  eq('FLOW non-video path rejected', isFlowContentVideoUrl('https://flow-content.google/other/abc', 'video/mp4'), false);
+  eq('FLOW bare /video/ rejected', isFlowContentVideoUrl('https://flow-content.google/video/', 'video/mp4'), false);
+  eq('FLOW blob URL rejected', isFlowContentVideoUrl('blob:https://flow.google.com/6f9619ff-8b86-4a2b-b0d9-2c2e2e2e2e2e', 'video/mp4'), false);
+  eq('FLOW garbage rejected', isFlowContentVideoUrl('not a url', 'video/mp4'), false);
+  eq('FLOW empty rejected', isFlowContentVideoUrl('', 'video/mp4'), false);
+  eq('FLOW null rejected', isFlowContentVideoUrl(null, 'video/mp4'), false);
+  eq('FLOW undefined rejected', isFlowContentVideoUrl(undefined), false);
+}
+
+// --- v2.48.28 (SERVER-FIRST): capture ki flow-content fehrist ---
+{
+  const { NetworkCapture } = require('../engine/networkCapture');
+  const cap = new NetworkCapture({});
+  const T0 = 1700000000000;
+  const good = 'https://flow-content.google/video/aaa111?sig=s1';
+  const good2 = 'https://flow-content.google/video/bbb222?sig=s2';
+
+  cap._recordFlowContentVideo(good, 'video/mp4', T0 + 1000);
+  cap._recordFlowContentVideo(good2, 'video/mp4', T0 + 2000);
+  cap._recordFlowContentVideo('https://flow-content.google.evil.com/video/x', 'video/mp4', T0 + 3000); // nakal — darj NAHI hogi
+  cap._recordFlowContentVideo('https://flow-content.google/video/ccc333', 'image/png', T0 + 3000); // ghalat nau — darj NAHI hogi
+  cap._recordFlowContentVideo(good, 'video/mp4', T0 + 4000); // wahi URL dobara — waqt taaza, entry ek hi
+
+  const all = cap.recentFlowContentVideos(T0);
+  eq('FLOW capture keeps only real video URLs', all.length, 2);
+  eq('FLOW capture dedupes by URL', all.filter(e => e.url === good).length, 1);
+  eq('FLOW capture refreshes the timestamp', all.find(e => e.url === good).at, T0 + 4000);
+  eq('FLOW capture window filters old entries', cap.recentFlowContentVideos(T0 + 2500).length, 1);
+  eq('FLOW capture claimed URL is not offered', (cap.claimFlowContentVideo(good), cap.recentFlowContentVideos(T0).length), 1);
+  eq('FLOW capture double claim refused', cap.claimFlowContentVideo(good), false);
+  ok('FLOW capture knows the claim', cap.isFlowContentClaimed(good));
+  eq('FLOW capture unclaimed URL still offered', cap.recentFlowContentVideos(T0)[0].url, good2);
 }
 
 // --- v2.48.27 (NET-BIG): big-response decision + header lookup ---

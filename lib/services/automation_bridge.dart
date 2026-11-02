@@ -14,7 +14,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '2.48.27';
+  static const String appVersion = '2.48.28';
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();

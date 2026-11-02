@@ -1,5 +1,7 @@
 'use strict';
 
+const flowContent = require('./flowContent');
+
 /**
  * FlowStudio Lite — NETWORK CAPTURE LAYER (v2.8.0).
  *
@@ -512,6 +514,13 @@ class NetworkCapture {
     this._cdpDlShape = new Map(); // CDP requestId -> shape
     this._cdpBigShape = new Map(); // v2.48.27: CDP requestId -> { shape, host, type, declared } (NET-BIG shikar)
     this.netBigWindow = []; // v2.48.27: [{ host, bytes, at }] — har mukammal jawab ka behtareen size (window summary ke liye)
+    // v2.48.28 (SERVER-FIRST): flow-content.google ke asal video
+    // jawab — poora URL sirf YAAD me rehta hai (sightings ki
+    // tarah; log me kabhi nahi — wahan sirf shakal jati hai),
+    // taaki engine use isi attempt me seedha server se fetch kar
+    // sake. claimed = kisi task ne le liya (doosra phir nahi lega).
+    this.flowContentVideos = []; // [{ url, type, at }] — taaza peeche, hadd 50
+    this.flowContentClaimed = new Set(); // url -> kisi task ke naam ho chuka
   }
 
   arm() { this.armed = true; }
@@ -747,6 +756,14 @@ class NetworkCapture {
               type: (rawType.split(';')[0] || '').trim().toLowerCase(),
               declared: Number.isFinite(declared) ? declared : 0
             });
+            // v2.48.28 (SERVER-FIRST): asal server wala video
+            // jawab (flow-content.google, video/*) poore URL ke
+            // saath yaad rakho — engine ka server-first rasta
+            // isi attempt me use seedha fetch karega. Pehchan
+            // flowContent ke exact-host matcher se hi hoti hai.
+            if (flowContent.isFlowContentVideoUrl(u, rawType)) {
+              this._recordFlowContentVideo(u, (rawType.split(';')[0] || '').trim().toLowerCase(), Date.now());
+            }
           }
         } catch (err) {}
       });
@@ -991,6 +1008,50 @@ class NetworkCapture {
    */
   netBigWindowSummary(sinceMs) {
     return summarizeNetBigWindow(this.netBigWindow, sinceMs);
+  }
+
+  /**
+   * v2.48.28 (SERVER-FIRST): ek asal server video jawab yaad
+   * rakho. Pehchan yahan dobara bhi hoti hai (matcher) — galat
+   * shakal ka URL is fehrist me ghus hi nahi sakta. Ek hi URL
+   * dobara dikhe to uska waqt taaza ho jata hai (nayi entry nahi).
+   */
+  _recordFlowContentVideo(url, type, at) {
+    if (!flowContent.isFlowContentVideoUrl(url, type)) return;
+    const t = Number.isFinite(at) ? at : Date.now();
+    const normType = String(type || '').split(';')[0].trim().toLowerCase();
+    const existing = this.flowContentVideos.find(e => e.url === url);
+    if (existing) { existing.at = t; if (normType) existing.type = normType; return; }
+    this.flowContentVideos.push({ url, type: normType, at: t });
+    if (this.flowContentVideos.length > 50) {
+      this.flowContentVideos.splice(0, this.flowContentVideos.length - 50);
+    }
+  }
+
+  /**
+   * v2.48.28 (SERVER-FIRST): `sinceMs` se is pal tak dekhe gaye
+   * woh server video jawab jo abhi kisi task ke naam nahi hue —
+   * purane se naye ki taraf. Engine in par apne pehchan-darwaze
+   * (task ka apna hona) laga kar hi koi URL chunta hai.
+   */
+  recentFlowContentVideos(sinceMs) {
+    const since = Number.isFinite(sinceMs) ? sinceMs : 0;
+    return this.flowContentVideos
+      .filter(e => e.at >= since && !this.flowContentClaimed.has(e.url))
+      .sort((a, b) => a.at - b.at)
+      .map(e => ({ url: e.url, type: e.type, at: e.at }));
+  }
+
+  /** v2.48.28: is URL ko ek task ke naam kar do (doosra nahi lega). */
+  claimFlowContentVideo(url) {
+    if (!url || this.flowContentClaimed.has(url)) return false;
+    this.flowContentClaimed.add(url);
+    return true;
+  }
+
+  /** v2.48.28: URL pehle hi kisi task ke naam ho chuka hai kya? */
+  isFlowContentClaimed(url) {
+    return !!url && this.flowContentClaimed.has(url);
   }
 
   /**

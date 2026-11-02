@@ -22,6 +22,7 @@ const downloadFetch = require('./downloadFetch');
 const { describeUrlShape, formatUrlShape } = require('./urlShape');
 const blobHarvest = require('./blobHarvest');
 const downloadRouteOrder = require('./downloadRouteOrder');
+const flowContent = require('./flowContent');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -4795,10 +4796,382 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.28: task ki APNI tile ki halki priming — view me lao,
+   * player ko muted play karo. _tryBlobHarvestDownload se nikala
+   * mushtarika roop; server-first bhi yahi istemal karta hai.
+   * Lautta hai: tile ka index (ya -1). Kabhi throw nahi karta.
+   */
+  async _primeTaskTile(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return -1;
+      const idx = (typeof tileIndexHint === 'number' && tileIndexHint >= 0)
+        ? tileIndexHint
+        : await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (idx >= 0) {
+        await this.page.evaluate((tileIdx) => {
+          const containers = document.querySelectorAll('flow-grid-tile-container');
+          const target = containers[tileIdx] || null;
+          if (!target) return;
+          try { target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+          const vid = target.querySelector('video');
+          if (vid) {
+            try { vid.muted = true; } catch (e) {}
+            try { const p = vid.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+          }
+        }, idx);
+      }
+      return idx;
+    } catch (e) {
+      return -1;
+    }
+  }
+
+  /** v2.48.28: page ki blob registry ka sirf metadata (bytes nahi). */
+  async _readBlobRegistryMeta() {
+    try {
+      if (!this.page || this.page.isClosed()) return null;
+      return await this.page.evaluate(() => {
+        const reg = window.__mkBlobRegistry || [];
+        return reg.map(e => ({ url: e.url || '', type: e.type || '', size: e.size || 0, ts: e.ts || 0, via: e.via || '' }));
+      });
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * v2.48.28: ek registry candidate ke bytes page se bahar padho
+   * (512KB tukde), content gate lagao, aur _saveBufferForTask se
+   * save karo — _tryBlobHarvestDownload ka asal kaam, ab
+   * server-first ke saath mushtarika. Natija:
+   *   { ok:true, extractMs } |
+   *   { ok:false, stage:'read'|'incomplete'|'gate'|'save', ... }
+   * Log/notes bulane wale ki zimmedari hai (har ranneeti apni
+   * zubaan bolti hai); kamyaabi par candidate consumed bhi yahin
+   * mark hota hai, aur agar asal URL flow-content wala tha to
+   * capture me bhi claim ho jata hai — doosra task wahi bytes /
+   * wahi link dobara nahi lega.
+   */
+  async _extractAndSaveBlobCandidate(task, downloadFolder, settings, candidate) {
+    if (!this._fastDlConsumedBlobs) this._fastDlConsumedBlobs = new Set();
+    const extractStart = Date.now();
+    const chunks = blobHarvest.planChunks(candidate.size, blobHarvest.CHUNK_BYTES);
+    const parts = [];
+    let extractOk = chunks.length > 0;
+    for (const ch of chunks) {
+      if (!extractOk) break;
+      let dataUrl = null;
+      try {
+        dataUrl = await downloadGuard.withTimeout(this.page.evaluate(async ({ url, size, ts, start, end }) => {
+          const reg = window.__mkBlobRegistry || [];
+          const entry = reg.find(x => (x.url || '') === url && (x.size || 0) === size && (x.ts || 0) === ts);
+          if (!entry || !entry.blob) return null;
+          const slice = entry.blob.slice(start, end);
+          return await new Promise((resolve) => {
+            try {
+              const fr = new FileReader();
+              fr.onloadend = () => resolve(fr.result);
+              fr.onerror = () => resolve(null);
+              fr.readAsDataURL(slice);
+            } catch (e) { resolve(null); }
+          });
+        }, { url: candidate.url, size: candidate.size, ts: candidate.ts, start: ch.start, end: ch.end }), 30000, 'in-page video bytes read');
+      } catch (e) { dataUrl = null; }
+      if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.includes('base64,')) { extractOk = false; break; }
+      parts.push(Buffer.from(dataUrl.split('base64,')[1], 'base64'));
+    }
+    const extractMs = Date.now() - extractStart;
+    if (!extractOk) return { ok: false, stage: 'read' };
+    const buffer = Buffer.concat(parts);
+    if (buffer.length !== candidate.size) {
+      return { ok: false, stage: 'incomplete', got: buffer.length, want: candidate.size };
+    }
+    // Content gate — wahi jo downloadFromCapturedStream ka hai:
+    // video header na ho to bytes save hi nahi hote.
+    if (buffer.length <= 10000 || !downloadFetch.looksLikeVideoBuffer(buffer)) {
+      return { ok: false, stage: 'gate', format: downloadFetch.classifyBufferMagic(buffer) };
+    }
+    // Save + ffprobe verify + kitab-bandhi: wahi _saveBufferForTask
+    // jo stream/backend raaston ki hai. Asal URL kitab-bandhi ke
+    // liye tabhi diya jata hai jab wo pehchan ke qabil ho: blob:
+    // (is task ki apni tile ka) ya flow-content wala asal server
+    // pata (taaki consumed-set doosre tasks ko roke).
+    let srcUrl = '';
+    if (candidate.url && candidate.url.startsWith('blob:')) srcUrl = candidate.url;
+    else if (candidate.url && flowContent.isFlowContentVideoUrl(candidate.url)) srcUrl = candidate.url;
+    const savedOk = await this._saveBufferForTask(task, downloadFolder, settings, buffer, srcUrl);
+    if (!savedOk) return { ok: false, stage: 'save' };
+    this._fastDlConsumedBlobs.add(blobHarvest.candidateKey(candidate));
+    if (srcUrl && flowContent.isFlowContentVideoUrl(srcUrl)) {
+      try { if (this.netCapture) this.netCapture.claimFlowContentVideo(srcUrl); } catch (e) {}
+    }
+    return { ok: true, extractMs };
+  }
+
+  /**
+   * v2.48.28: tile ke ⋮ (more options) button ki jagah dhoondho —
+   * _nativeMenuForm ke andar wale finder ka method roop (wohi
+   * pehchan ke usool), taaki prime wala khul-band chakkar bhi
+   * yahi istemal kare. Menu route apni purani band (closure)
+   * shakal hi rakhta hai — usme haath nahi lagaya gaya.
+   */
+  async _findTileMoreControl(scopeIdx) {
+    try {
+      return await this.page.evaluate(({ idx }) => {
+        const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const isMore = (b) => {
+          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+          const icon = b.querySelector('mat-icon, [data-icon], svg');
+          const iconTxt = icon ? (icon.textContent || '').trim().toLowerCase() : '';
+          return aria.includes('more options') || aria.includes('more actions') || aria === 'more'
+            || iconTxt === 'more_vert' || iconTxt === 'more_horiz';
+        };
+        let scope = document;
+        if (typeof idx === 'number' && idx >= 0) {
+          const containers = Array.from(document.querySelectorAll('flow-grid-tile-container'));
+          scope = containers[idx] || null;
+          if (!scope) return { found: false };
+        }
+        const els = Array.from(scope.querySelectorAll('button, [role="button"]'));
+        for (const b of els) {
+          if (!visible(b)) continue;
+          if (b.closest && b.closest('.cdk-overlay-pane')) continue;
+          if (isMore(b)) {
+            const r = b.getBoundingClientRect();
+            return { found: true, x: r.x + r.width / 2, y: r.y + r.height / 2 };
+          }
+        }
+        return { found: false };
+      }, { idx: scopeIdx });
+    } catch (e) {
+      return { found: false };
+    }
+  }
+
+  /**
+   * v2.48.28 (SERVER-FIRST ka prime, hissa 2): task ki tile ke
+   * ⋮ menu ka ek khul→band chakkar — Download item NAHI
+   * dhoondha jata, NAHI dabta; menu khula rakh kar Escape se
+   * band kar diya jata hai.
+   *
+   * HYPOTHESIS (pakka usool NAHI — sirf FASTTEST2 ki ek run ki
+   * timing ka andaza, 2026-11-02): menu khulne ki harkat ke
+   * dauraan hi page ne flow-content.google se file fetch ki thi
+   * (menu khula 21:27:36.9, server jawab 21:27:44.5). Ye chakkar
+   * usi harkat ko jaan-boojh kar dohraya jata hai taaki server
+   * wala jawab is attempt ki khidki me aa jaye. Andaza galat bhi
+   * ho sakta hai — tab ye chakkar sirf ~4s ka be-nuksan prime
+   * hai aur baaki tartib pehle ki tarah chalti hai.
+   */
+  async _primeTileMenuCycle(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return false;
+      let onGrid = false;
+      try { onGrid = await this.page.evaluate(() => document.querySelectorAll('flow-grid-tile-container').length > 0); } catch (e) {}
+      if (!onGrid) return false;
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (idx < 0) return false;
+      const coords = await this._tileCenterCoords(idx);
+      if (coords.found) {
+        await this.page.mouse.move(coords.x, coords.y);
+        await sleep(900);
+      }
+      const more = await this._findTileMoreControl(idx);
+      if (!more.found) return false;
+      await this.page.mouse.click(more.x, more.y);
+      await sleep(2500);
+      try { await this.page.keyboard.press('Escape'); } catch (e) {}
+      await sleep(300);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.28: server-fetch ke liye URL chunna — pehchan ke
+   * darwaze (audit fix #6 wala usool):
+   *   - URL flowContent ke exact matcher se guzra ho (bulane
+   *     wala sirf capture ki fehrist deta hai, phir bhi yahan
+   *     dobara jaanch hai);
+   *   - _isTaskOwnUrl: purana (pre-existing) ya pehle istemal
+   *     shuda URL kabhi nahi;
+   *   - capture ne use KISI AUR task ke naam kiya ho to kabhi
+   *     nahi; ISI task ke naam ho to sab se mazboot (bound);
+   *   - is khidki ka AKELA ummeedwaar bhi chalega — ye wahi
+   *     kram-wali pehchan hai jo claimByOrder barson se deta
+   *     hai, farq sirf itna ke khidki is attempt tak mehdood
+   *     hai aur prime isi task ki APNI tile se hua tha;
+   *   - kai ummeedwaar hon to sirf registry candidate ke URL se
+   *     exact cross-match wala chalega — warna inkaar (doubt
+   *     me galat video lene se behtar hai menu wala rasta).
+   * Lautta hai: { url, via } | { ambiguous:true, count } | null.
+   * null = is pal koi qabil URL nahi (inkar ki wajah pehle hi
+   * filter me chhup gayi — ghalat URL 'usable' me aata hi nahi).
+   */
+  _pickServerFetchUrl(task, captureKey, entries, registryCandidateUrl) {
+    if (!Array.isArray(entries) || entries.length === 0) return null;
+    const usable = [];
+    for (const e of entries) {
+      const url = e && e.url;
+      if (!url || !flowContent.isFlowContentVideoUrl(url, e.type)) continue;
+      if (!this._isTaskOwnUrl(task, url)) continue;
+      let claimedBy = null;
+      try { claimedBy = (this.netCapture && this.netCapture.keyByUrl) ? this.netCapture.keyByUrl.get(url) : null; } catch (err) {}
+      if (claimedBy && claimedBy !== captureKey) continue;
+      usable.push({ url, at: (e && e.at) || 0, bound: !!claimedBy });
+    }
+    if (usable.length === 0) return null;
+    const bound = usable.find(u => u.bound);
+    if (bound) return { url: bound.url, via: 'capture-bound' };
+    if (usable.length === 1) return { url: usable[0].url, via: 'sole-candidate' };
+    if (registryCandidateUrl) {
+      const hit = usable.find(u => u.url === registryCandidateUrl);
+      if (hit) return { url: hit.url, via: 'registry-cross-match' };
+    }
+    return { ambiguous: true, count: usable.length };
+  }
+
+  /**
+   * v2.48.28: chune hue asal server URL ko Node se fetch karo —
+   * poori mashineri wahi jo downloadFromCapturedStream ki hai
+   * (session cookies + asal UA + ranged/plain koshishen +
+   * content gate + _saveBufferForTask ki ffprobe pushti).
+   * Fetch se pehle URL capture me claim ho jata hai, taaki
+   * doosra task use is dauraan na le le.
+   */
+  async _serverFetchSave(task, downloadFolder, settings, pick) {
+    const n = task.promptIndex + 1;
+    this.log(`[FAST-DL] [Prompt #${n}] The file's own server address was seen (Flow's CDN flow-content.google, via=${pick.via}) — fetching the file straight from the server…`, 'info');
+    try { if (this.netCapture) this.netCapture.claimFlowContentVideo(pick.url); } catch (e) {}
+    task.completedVideoUrl = pick.url;
+    let ok = false;
+    try { ok = await this.downloadFromCapturedStream(task, downloadFolder, settings); } catch (e) { ok = false; }
+    if (!ok && !task.mediaSaved) {
+      const why = this._fetchSummary(task);
+      this.log(`[FAST-DL] [Prompt #${n}] The direct server fetch did not save the file${why ? ` — ${why}` : ''} — it will not be retried in this attempt; the remaining routes will run.`, 'warn');
+    }
+    return !!(ok || task.mediaSaved);
+  }
+
+  /**
+   * v2.48.28 (SERVER-FIRST): _downloadTaskMediaInner ki SAB SE
+   * PEHLI ranneeti (sirf video tasks). FASTTEST2 (2026-11-02,
+   * owner ke PC par engine-log sabit) ne server channel dikha
+   * diya: file Flow ke server `flow-content.google/video/*` se
+   * aati hai, page tile ki harkat ke dauraan khud fetch karta
+   * hai, aur wo fetch registry me bhi girta hai (extraction
+   * 131ms). Is ranneeti ka kaam:
+   *   1. task ki tile prime karo (view + muted play) aur ⋮
+   *      menu ka ek khul→band chakkar chalao (Download NAHI
+   *      dabega) — server-fetch ko bulawa (upar _primeTileMenu-
+   *      Cycle par HYPOTHESIS wala note dekho);
+   *   2. ~12s tak (200ms poll) DONO raaston par nazar rakho:
+   *      (a) registry me taza video blob → bytes page se nikaal
+   *          kar wahi gate+save (_extractAndSaveBlobCandidate);
+   *      (b) networkCapture me is attempt ki khidki ka
+   *          flow-content video jawab → pehchan-darwazon
+   *          (_pickServerFetchUrl) se guzre to Node se seedha
+   *          server fetch (downloadFromCapturedStream).
+   *   Jo pehle verified save de de, wahi jeeta; dusra usi pal
+   *   ruk jata hai. Waqt khatam ho to jo dekha uska hisaab log
+   *   me aata hai aur poori purani tartib (menu pehle) peeche
+   *   chalti hai. Prompt yahan KABHI dobara submit nahi hota.
+   */
+  async _tryServerFirstDownload(task, downloadFolder, settings, attempts, tileIndexHint) {
+    const n = task.promptIndex + 1;
+    if (!this.page || this.page.isClosed()) return false;
+    if (!this._fastDlConsumedBlobs) this._fastDlConsumedBlobs = new Set();
+    const captureKey = task.captureKey || task.videoId || null;
+    const renderCompleteTs = task.renderCompletedAt || null;
+    const WATCH_MS = 12000;
+    const attemptStart = Date.now();
+
+    // 1. Prime — tile ki harkat hi server-fetch ka bulawa hai.
+    await this._primeTaskTile(task, tileIndexHint);
+    await this._primeTileMenuCycle(task, tileIndexHint);
+
+    // 2. Nazar — registry aur server channel, jo pehle mile.
+    let seenRegistry = 0;
+    let flowContentSeen = false;
+    let lastRegistryUrl = '';
+    let ambiguityLogged = false;
+    const failedBlobKeys = new Set();
+    const refusedUrls = new Set();
+
+    while (Date.now() - attemptStart < WATCH_MS && !this.isStopping && !task.mediaSaved) {
+      // (a) Registry — bytes page ke andar aa gaye hon to wahi.
+      const meta = await this._readBlobRegistryMeta();
+      let candidate = null;
+      if (Array.isArray(meta)) {
+        seenRegistry = meta.length;
+        const consumed = new Set([...this._fastDlConsumedBlobs, ...failedBlobKeys]);
+        candidate = blobHarvest.selectCandidate(meta, {
+          renderStartTs: task.startTime || 0,
+          renderCompleteTs,
+          consumedKeys: consumed,
+          nowTs: Date.now(),
+          expectedSize: null
+        });
+      }
+      if (candidate) {
+        lastRegistryUrl = candidate.url || '';
+        const ageSec = Math.max(0, Math.round((Date.now() - (candidate.ts || Date.now())) / 1000));
+        this.log(`[FAST-DL] [Prompt #${n}] In-page video bytes found (type=${candidate.type || 'unknown'}, size=${candidate.size} bytes, age=${ageSec}s, via=${candidate.via || 'page'}) — taking them straight out of the page…`, 'info');
+        const res = await this._extractAndSaveBlobCandidate(task, downloadFolder, settings, candidate);
+        if (res.ok) {
+          const gapSec = Math.max(0, (Date.now() - (renderCompleteTs || attemptStart)) / 1000).toFixed(1);
+          this.log(`[FAST-DL] [Prompt #${n}] server-first save via=registry gap=${gapSec}s`, 'success');
+          attempts.push({ strategy: 'server-first', ok: true, note: `the file was saved straight from the server's own delivery — the bytes the page fetched were taken out of the page (extraction ${res.extractMs}ms); render→save gap ${gapSec}s` });
+          return true;
+        }
+        failedBlobKeys.add(blobHarvest.candidateKey(candidate));
+        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes could not be used (${res.stage}) — still watching for the server address…`, 'warn');
+        candidate = null;
+      }
+
+      // (b) Server channel — asal URL dikha ho to seedha fetch.
+      let fcEntries = [];
+      try {
+        if (this.netCapture && typeof this.netCapture.recentFlowContentVideos === 'function') {
+          fcEntries = this.netCapture.recentFlowContentVideos(attemptStart);
+        }
+      } catch (e) { fcEntries = []; }
+      if (fcEntries.length > 0) flowContentSeen = true;
+      const fresh = fcEntries.filter(e => !refusedUrls.has(e.url));
+      if (fresh.length > 0) {
+        const pick = this._pickServerFetchUrl(task, captureKey, fresh, lastRegistryUrl);
+        if (pick && pick.url) {
+          const okFetch = await this._serverFetchSave(task, downloadFolder, settings, pick);
+          if (okFetch) {
+            const gapSec = Math.max(0, (Date.now() - (renderCompleteTs || attemptStart)) / 1000).toFixed(1);
+            this.log(`[FAST-DL] [Prompt #${n}] server-first save via=server-fetch gap=${gapSec}s`, 'success');
+            attempts.push({ strategy: 'server-first', ok: true, note: `the file was fetched straight from Flow's server (flow-content.google, ${pick.via}) the moment its address appeared; render→save gap ${gapSec}s` });
+            return true;
+          }
+          refusedUrls.add(pick.url);
+        } else if (pick && pick.ambiguous && !ambiguityLogged) {
+          ambiguityLogged = true;
+          this.log(`[FAST-DL] [Prompt #${n}] ${pick.count} different server video addresses were seen in this attempt and none could be proven to be this task's own — the direct server fetch was NOT used (the registry/menu routes will carry it).`, 'warn');
+        }
+      }
+
+      await sleep(200);
+    }
+
+    if (task.mediaSaved) return true;
+    const watchedSec = Math.max(0, (Date.now() - attemptStart) / 1000).toFixed(1);
+    this.log(`[FAST-DL] [Prompt #${n}] Server-first found nothing usable in ${watchedSec}s (registry entries seen: ${seenRegistry}, flow-content video seen: ${flowContentSeen ? 'yes' : 'no'}) — the menu route and the rest will run.`, 'info');
+    attempts.push({ strategy: 'server-first', ok: false, note: `no usable in-page bytes or provable server address appeared within ${watchedSec}s (registry entries seen: ${seenRegistry}, flow-content video seen: ${flowContentSeen ? 'yes' : 'no'}) — the existing routes ran as fallback` });
+    return false;
+  }
+
+  /**
    * v2.48.26 (FAST-DL — "turant download"): in-page blob harvest.
-   * (v2.48.27 se ye FALLBACK hai — menu-first sab se pehle chalta
-   * hai, kyunki FASTTEST1 ne sabit kiya ke render ke pal registry
-   * khaali hoti hai; bytes click ke baad hi page me aate hain.)
+   * (Ab ye FALLBACK hai — v2.48.28 se server-first sab se pehle
+   * chalta hai aur menu dusra; harvest wahi kaam apni purani
+   * jagah par bhi karta hai, kyunki FASTTEST2 me asal save isi
+   * registry raaste se hua tha jab menu haar gaya tha.)
    * E1 (owner ke PC par sabit, 2026-11-02): asal download ek blob:
    * URL hai — video ke bytes Download click se PEHLE hi page ki
    * memory me hote hain; Chrome ka download manager unhe sirf disk
@@ -4833,35 +5206,12 @@ class FlowAutomationEngine {
     // player ko muted play karo — tile apni video load kare to
     // uske bytes registry me aate hain (media-readiness wala hi
     // usool; koi menu nahi khulta, koi button nahi dabta).
-    try {
-      const idx = (typeof tileIndexHint === 'number' && tileIndexHint >= 0)
-        ? tileIndexHint
-        : await this._resolveTileIndexForTask(task, tileIndexHint);
-      if (idx >= 0) {
-        await this.page.evaluate((tileIdx) => {
-          const containers = document.querySelectorAll('flow-grid-tile-container');
-          const target = containers[tileIdx] || null;
-          if (!target) return;
-          try { target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
-          const vid = target.querySelector('video');
-          if (vid) {
-            try { vid.muted = true; } catch (e) {}
-            try { const p = vid.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
-          }
-        }, idx);
-      }
-    } catch (e) {}
+    await this._primeTaskTile(task, tileIndexHint);
 
     let candidate = null;
     let seenEntries = 0;
     while (Date.now() - harvestStart < POLL_MS && !this.isStopping) {
-      let meta = null;
-      try {
-        meta = await this.page.evaluate(() => {
-          const reg = window.__mkBlobRegistry || [];
-          return reg.map(e => ({ url: e.url || '', type: e.type || '', size: e.size || 0, ts: e.ts || 0, via: e.via || '' }));
-        });
-      } catch (e) { meta = null; }
+      const meta = await this._readBlobRegistryMeta();
       if (Array.isArray(meta)) {
         seenEntries = meta.length;
         candidate = blobHarvest.selectCandidate(meta, {
@@ -4885,71 +5235,32 @@ class FlowAutomationEngine {
     const ageSec = Math.max(0, Math.round((Date.now() - candidate.ts) / 1000));
     this.log(`[FAST-DL] [Prompt #${n}] In-page video bytes found (type=${candidate.type || 'unknown'}, size=${candidate.size} bytes, age=${ageSec}s, via=${candidate.via || 'page'}) — taking them straight out of the page, no menu, no wait…`, 'info');
 
-    // Bytes ko 512KB tukdon me page se bahar padho (poori file ek
-    // saath base64 me uthana bade 720p par bhaari pad sakta hai).
-    const extractStart = Date.now();
-    const chunks = blobHarvest.planChunks(candidate.size, blobHarvest.CHUNK_BYTES);
-    const parts = [];
-    let extractOk = chunks.length > 0;
-    for (const ch of chunks) {
-      if (!extractOk) break;
-      let dataUrl = null;
-      try {
-        dataUrl = await downloadGuard.withTimeout(this.page.evaluate(async ({ url, size, ts, start, end }) => {
-          const reg = window.__mkBlobRegistry || [];
-          const entry = reg.find(x => (x.url || '') === url && (x.size || 0) === size && (x.ts || 0) === ts);
-          if (!entry || !entry.blob) return null;
-          const slice = entry.blob.slice(start, end);
-          return await new Promise((resolve) => {
-            try {
-              const fr = new FileReader();
-              fr.onloadend = () => resolve(fr.result);
-              fr.onerror = () => resolve(null);
-              fr.readAsDataURL(slice);
-            } catch (e) { resolve(null); }
-          });
-        }, { url: candidate.url, size: candidate.size, ts: candidate.ts, start: ch.start, end: ch.end }), 30000, 'in-page video bytes read');
-      } catch (e) { dataUrl = null; }
-      if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.includes('base64,')) { extractOk = false; break; }
-      parts.push(Buffer.from(dataUrl.split('base64,')[1], 'base64'));
-    }
-    const extractMs = Date.now() - extractStart;
-    if (!extractOk) {
-      this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes could not be read out of the page — the existing download routes will run.`, 'warn');
-      attempts.push({ strategy: 'blob-harvest', ok: false, note: 'video bytes were seen inside the page but could not be read out — the existing routes ran as fallback' });
+    // Bytes nikaalna + content gate + save: mushtarika helper
+    // (_extractAndSaveBlobCandidate) — nakami ki har wajah alag
+    // stage ke saath wapas aati hai, taaki yahan ki log/notes
+    // pehle ki tarah har wajah ko naam de saken.
+    const res = await this._extractAndSaveBlobCandidate(task, downloadFolder, settings, candidate);
+    if (!res.ok) {
+      if (res.stage === 'read') {
+        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes could not be read out of the page — the existing download routes will run.`, 'warn');
+        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'video bytes were seen inside the page but could not be read out — the existing routes ran as fallback' });
+      } else if (res.stage === 'incomplete') {
+        this.log(`[FAST-DL] [Prompt #${n}] The extracted bytes are incomplete (${res.got} of ${res.want} bytes) — discarded; the existing download routes will run.`, 'warn');
+        attempts.push({ strategy: 'blob-harvest', ok: false, note: `the in-page bytes came out incomplete (${res.got} of ${res.want} bytes) — discarded, the existing routes ran as fallback` });
+      } else if (res.stage === 'gate') {
+        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes are NOT a video file (no video header — format: ${res.format}) — discarded; the existing download routes will run.`, 'warn');
+        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were not a video file (no video header) — discarded, the existing routes ran as fallback' });
+      } else {
+        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes failed the video check on save — the existing download routes will run.`, 'warn');
+        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes failed the video check (ffprobe) on save — the existing routes ran as fallback' });
+      }
       return false;
     }
-    const buffer = Buffer.concat(parts);
-    if (buffer.length !== candidate.size) {
-      this.log(`[FAST-DL] [Prompt #${n}] The extracted bytes are incomplete (${buffer.length} of ${candidate.size} bytes) — discarded; the existing download routes will run.`, 'warn');
-      attempts.push({ strategy: 'blob-harvest', ok: false, note: `the in-page bytes came out incomplete (${buffer.length} of ${candidate.size} bytes) — discarded, the existing routes ran as fallback` });
-      return false;
-    }
-
-    // Content gate — wahi jo downloadFromCapturedStream ka hai:
-    // video header na ho to bytes save hi nahi hote.
-    if (buffer.length <= 10000 || !downloadFetch.looksLikeVideoBuffer(buffer)) {
-      this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes are NOT a video file (no video header — format: ${downloadFetch.classifyBufferMagic(buffer)}) — discarded; the existing download routes will run.`, 'warn');
-      attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were not a video file (no video header) — discarded, the existing routes ran as fallback' });
-      return false;
-    }
-
-    // Save + ffprobe verify + kitab-bandhi: wahi _saveBufferForTask
-    // jo stream/backend raaston ki hai — task downloaded/completed/
-    // mediaSaved wahi se banta hai, koi alag rasta nahi.
-    const srcUrl = candidate.url && candidate.url.startsWith('blob:') ? candidate.url : '';
-    const savedOk = await this._saveBufferForTask(task, downloadFolder, settings, buffer, srcUrl);
-    if (!savedOk) {
-      this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes failed the video check on save — the existing download routes will run.`, 'warn');
-      attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes failed the video check (ffprobe) on save — the existing routes ran as fallback' });
-      return false;
-    }
-    this._fastDlConsumedBlobs.add(blobHarvest.candidateKey(candidate));
     // Owner ka standing rule: har video ka render→save gap ALAG
     // gin kar batao — kul waqt ya gol 'PASS' kabhi nahi.
     const gapBase = renderCompleteTs || harvestStart;
     const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
-    this.log(`[FAST-DL] [Prompt #${n}] Saved from the page's own bytes — extraction took ${extractMs}ms; render→save gap for this video: ${gapSec}s.`, 'success');
+    this.log(`[FAST-DL] [Prompt #${n}] Saved from the page's own bytes — extraction took ${res.extractMs}ms; render→save gap for this video: ${gapSec}s.`, 'success');
     attempts.push({ strategy: 'blob-harvest', ok: true, note: `the file was saved the moment the render finished, from the video bytes already inside the page (no menu, no wait) — render→save gap ${gapSec}s` });
     return true;
   }
@@ -4968,7 +5279,31 @@ class FlowAutomationEngine {
     // Ranneeti-tartib ka ek-matra sach (tests wahi jaanchte hain):
     task.downloadRouteOrder = downloadRouteOrder.DOWNLOAD_ROUTE_ORDER.slice();
 
-    // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download SAB SE PEHLE ---
+    // --- v2.48.28 (SERVER-FIRST): server se seedha uthana SAB SE PEHLE ---
+    // FASTTEST2 (2026-11-02, owner ke PC par sabit): file Flow ke
+    // server (flow-content.google) se aati hai; tile ki harkat use
+    // bulati hai, bytes registry me bhi girte hain. Tile prime +
+    // ⋮ khul-band chakkar ke baad ~12s tak dono par nazar — jo
+    // pehle verified save de wahi jeeta. Na bane to neeche ki
+    // poori tartib (menu dusra) bilkul pehle ki tarah hai.
+    // Image tasks ki tartib bilkul purani hi hai (ye sirf video).
+    if (!isImage) {
+      try {
+        const okServerFirst = await this._tryServerFirstDownload(task, downloadFolder, settings, attempts, tileIndexHint);
+        if (okServerFirst || task.mediaSaved) {
+          try {
+            this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
+          } catch (e) {}
+          const wonServer = attempts.filter(a => a.ok).pop();
+          return { ok: true, strategy: wonServer ? wonServer.strategy : 'server-first', attempts };
+        }
+      } catch (e) {
+        attempts.push({ strategy: 'server-first', ok: false, note: 'the server-first route hit a problem — the remaining routes will be tried' });
+      }
+    }
+
+    // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download — v2.48.28 se
+    // DUSRA qadam (server-first sab se pehle hai) ---
     // FASTTEST1 (2026-11-02, owner ke PC par sabit): render ke pal
     // page me bytes hote hi NAHI; file sirf menu ke Download click
     // ke baad aati hai. To jo rasta file LAATA hai, wahi pehle —

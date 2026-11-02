@@ -244,6 +244,90 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   eq('E1 garbage input does not throw', describeUrlShape('not a url at all').scheme, 'invalid');
 }
 
+// --- v2.48.26 (FAST-DL): blob-harvest selection + chunk plan ---
+{
+  const blobHarvest = require('../engine/blobHarvest');
+  const { selectCandidate, planChunks, candidateKey, isVideoBlobMeta, CHUNK_BYTES, HOOK_SOURCE } = blobHarvest;
+  const T0 = 1700000000000;
+  const vid = (size, ts, extra) => Object.assign(
+    { url: 'blob:https://flow.google.com/x', type: 'video/mp4', size, ts, via: 'fetch' }, extra || {});
+
+  // Picks the largest fresh video blob.
+  const c1 = selectCandidate(
+    [vid(500000, T0 + 1000), vid(2000000, T0 + 2000), vid(900000, T0 + 3000)],
+    { renderStartTs: T0, nowTs: T0 + 10000 });
+  eq('FAST-DL picks largest fresh video blob', c1 && c1.size, 2000000);
+
+  // Rejects stale (pre-render) blobs — even big ones.
+  eq('FAST-DL rejects pre-render (stale) blob',
+    selectCandidate([vid(3000000, T0 - 60000)], { renderStartTs: T0, nowTs: T0 + 10000 }), null);
+  const c2 = selectCandidate(
+    [vid(3000000, T0 - 60000), vid(800000, T0 + 500)],
+    { renderStartTs: T0, nowTs: T0 + 10000 });
+  eq('FAST-DL stale big blob ignored, fresh smaller wins', c2 && c2.size, 800000);
+
+  // Rejects non-video and too-small blobs.
+  eq('FAST-DL rejects image blob',
+    selectCandidate([{ url: 'blob:x', type: 'image/jpeg', size: 500000, ts: T0 + 1 }],
+      { renderStartTs: T0, nowTs: T0 + 10000 }), null);
+  eq('FAST-DL rejects small video blob',
+    selectCandidate([vid(50000, T0 + 1)], { renderStartTs: T0, nowTs: T0 + 10000 }), null);
+  eq('FAST-DL rejects small untyped blob',
+    selectCandidate([{ url: 'u', type: '', size: 150000, ts: T0 + 1 }],
+      { renderStartTs: T0, nowTs: T0 + 10000 }), null);
+  const c3 = selectCandidate([{ url: 'u', type: '', size: 250000, ts: T0 + 1 }],
+    { renderStartTs: T0, nowTs: T0 + 10000 });
+  eq('FAST-DL accepts large untyped blob', c3 && c3.size, 250000);
+
+  // Empty / missing registry → null.
+  eq('FAST-DL empty registry gives null', selectCandidate([], { renderStartTs: T0, nowTs: T0 + 10000 }), null);
+  eq('FAST-DL missing registry gives null', selectCandidate(null, { renderStartTs: T0, nowTs: T0 + 10000 }), null);
+
+  // A blob already consumed by an earlier task is never re-picked.
+  const e1 = vid(2000000, T0 + 1000);
+  const e2 = vid(900000, T0 + 2000);
+  const c4 = selectCandidate([e1, e2],
+    { renderStartTs: T0, nowTs: T0 + 10000, consumedKeys: new Set([candidateKey(e1)]) });
+  eq('FAST-DL consumed blob skipped', c4 && c4.size, 900000);
+
+  // An exact expected-size match beats a bigger blob.
+  const c5 = selectCandidate([vid(3000000, T0 + 1000), vid(1200000, T0 + 2000)],
+    { renderStartTs: T0, nowTs: T0 + 10000, expectedSize: 1200000 });
+  eq('FAST-DL expected size wins', c5 && c5.size, 1200000);
+
+  // With a known render-completion time, the blob created closest
+  // to it wins over a later task's bigger blob (identity first).
+  const c6 = selectCandidate([vid(3000000, T0 + 40000), vid(1100000, T0 + 2000)],
+    { renderStartTs: T0 - 60000, renderCompleteTs: T0, nowTs: T0 + 50000 });
+  eq('FAST-DL render-complete proximity wins', c6 && c6.size, 1100000);
+
+  ok('FAST-DL isVideoBlobMeta accepts video type', isVideoBlobMeta({ type: 'video/mp4', size: 500000 }));
+
+  // Chunk plan covers a 1.2 MB blob exactly — no gap, no overlap.
+  const plan = planChunks(1200000, CHUNK_BYTES);
+  eq('FAST-DL chunk count for 1.2MB', plan.length, 3);
+  let covered = 0;
+  let contiguous = true;
+  let prevEnd = 0;
+  for (const ch of plan) {
+    if (ch.start !== prevEnd) contiguous = false;
+    covered += (ch.end - ch.start);
+    prevEnd = ch.end;
+  }
+  ok('FAST-DL chunks are contiguous', contiguous);
+  eq('FAST-DL chunks cover exactly', covered, 1200000);
+  eq('FAST-DL last chunk ends at total', plan[plan.length - 1].end, 1200000);
+  eq('FAST-DL chunk plan of 0 is empty', planChunks(0).length, 0);
+  const onePlan = planChunks(1000);
+  eq('FAST-DL small blob is one chunk', onePlan.length, 1);
+  eq('FAST-DL small chunk end', onePlan[0].end, 1000);
+  eq('FAST-DL chunk size is 512KB', CHUNK_BYTES, 512 * 1024);
+
+  // The hook source wires the registry + createObjectURL.
+  ok('FAST-DL hook defines the registry', HOOK_SOURCE.includes('__mkBlobRegistry'));
+  ok('FAST-DL hook wraps createObjectURL', HOOK_SOURCE.includes('createObjectURL'));
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 process.exit(failed > 0 ? 1 : 0);
 

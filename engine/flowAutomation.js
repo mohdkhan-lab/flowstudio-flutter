@@ -20,6 +20,7 @@ const tagNaming = require('./tagNaming');
 const downloadGuard = require('./downloadGuard');
 const downloadFetch = require('./downloadFetch');
 const { describeUrlShape, formatUrlShape } = require('./urlShape');
+const blobHarvest = require('./blobHarvest');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -416,6 +417,16 @@ class FlowAutomationEngine {
         }
       });
 
+      // v2.48.26 (FAST-DL): in-page video-blob registry — the hook
+      // is installed before any Flow script runs and only OBSERVES:
+      // video blobs the page creates or fetches are recorded in
+      // window.__mkBlobRegistry, so the moment a render completes
+      // the harvest (see _tryBlobHarvestDownload) can take the
+      // bytes straight out of the page — no menu, no wait. Fully
+      // defensive: if the hook cannot install or the registry
+      // stays empty, every existing download route runs unchanged.
+      try { await this.page.evaluateOnNewDocument(blobHarvest.HOOK_SOURCE); } catch (e) {}
+
       try {
         this.cdpSession = await this.page.target().createCDPSession();
         // v2.6.0 (background mode): focus emulation — the page keeps
@@ -443,6 +454,10 @@ class FlowAutomationEngine {
       this.capturedVideoUrls = [];
       this.capturedVideoBuffers = new Map();
       this.capturedVideoBytes = 0;
+      // v2.48.26 (FAST-DL): in-page registry entries already saved
+      // by the blob harvest on THIS browser — a later task on the
+      // same page must never be handed the same bytes again.
+      this._fastDlConsumedBlobs = new Set();
       this.page.on('response', async (res) => {
         try {
           // v1.1: ignore ALL traffic until a prompt has been submitted —
@@ -4581,6 +4596,163 @@ class FlowAutomationEngine {
     }
   }
 
+  /**
+   * v2.48.26 (FAST-DL — "turant download"): SABSE PEHLI ranneeti.
+   * E1 (owner ke PC par sabit, 2026-11-02): asal download ek blob:
+   * URL hai — video ke bytes Download click se PEHLE hi page ki
+   * memory me hote hain; Chrome ka download manager unhe sirf disk
+   * par likhta hai. Blob URL Node se fetch ho hi nahi sakta, is
+   * liye "backend se turant" ka ek hi asal roop hai: bytes page ke
+   * andar se hi nikaal lo. Isi liye har Flow page par launch ke pal
+   * se ek hook (blobHarvest.HOOK_SOURCE) page ke banaye/fetch kiye
+   * video blobs ko window.__mkBlobRegistry me rakhta hai.
+   *
+   * Ye ranneeti render-complete ke pal chalti hai: registry me is
+   * task ka taza video blob dhoondho (pehchan: freshness +
+   * render-complete se qurbat + consumed-set — audit fix #6 wala
+   * usool, kisi aur task ka video KABHI nahi), use 512KB tukdon me
+   * page se bahar padho, phir WAHI content gate
+   * (downloadFetch.looksLikeVideoBuffer) aur WAHI save+ffprobe
+   * verify (_saveBufferForTask) jo baaki raaston ki hai. Kuch bhi
+   * na mile / verify fail ho to ye ranneeti chup-chaap haar maan
+   * leti hai aur neeche ki poori purani tartib bilkul pehle ki
+   * tarah chalti hai. Prompt yahan KABHI dobara submit nahi hota —
+   * ye sirf download hai.
+   */
+  async _tryBlobHarvestDownload(task, downloadFolder, settings, attempts, tileIndexHint) {
+    const n = task.promptIndex + 1;
+    if (!this.page || this.page.isClosed()) return false;
+    if (!this._fastDlConsumedBlobs) this._fastDlConsumedBlobs = new Set();
+    const harvestStart = Date.now();
+    const POLL_MS = 5000;
+    const renderStartTs = task.startTime || 0;
+    const renderCompleteTs = task.renderCompletedAt || null;
+
+    // Halki priming: task ki APNI tile ko view me lao aur uske
+    // player ko muted play karo — tile apni video load kare to
+    // uske bytes registry me aate hain (media-readiness wala hi
+    // usool; koi menu nahi khulta, koi button nahi dabta).
+    try {
+      const idx = (typeof tileIndexHint === 'number' && tileIndexHint >= 0)
+        ? tileIndexHint
+        : await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (idx >= 0) {
+        await this.page.evaluate((tileIdx) => {
+          const containers = document.querySelectorAll('flow-grid-tile-container');
+          const target = containers[tileIdx] || null;
+          if (!target) return;
+          try { target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+          const vid = target.querySelector('video');
+          if (vid) {
+            try { vid.muted = true; } catch (e) {}
+            try { const p = vid.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
+          }
+        }, idx);
+      }
+    } catch (e) {}
+
+    let candidate = null;
+    let seenEntries = 0;
+    while (Date.now() - harvestStart < POLL_MS && !this.isStopping) {
+      let meta = null;
+      try {
+        meta = await this.page.evaluate(() => {
+          const reg = window.__mkBlobRegistry || [];
+          return reg.map(e => ({ url: e.url || '', type: e.type || '', size: e.size || 0, ts: e.ts || 0, via: e.via || '' }));
+        });
+      } catch (e) { meta = null; }
+      if (Array.isArray(meta)) {
+        seenEntries = meta.length;
+        candidate = blobHarvest.selectCandidate(meta, {
+          renderStartTs,
+          renderCompleteTs,
+          consumedKeys: this._fastDlConsumedBlobs,
+          nowTs: Date.now(),
+          expectedSize: null
+        });
+      }
+      if (candidate) break;
+      await sleep(250);
+    }
+
+    if (!candidate) {
+      this.log(`[FAST-DL] [Prompt #${n}] No usable in-page video bytes yet (registry entries seen: ${seenEntries}) — the existing download routes will run.`, 'info');
+      attempts.push({ strategy: 'blob-harvest', ok: false, note: 'no usable video bytes were found inside the page yet — the existing routes ran as fallback' });
+      return false;
+    }
+
+    const ageSec = Math.max(0, Math.round((Date.now() - candidate.ts) / 1000));
+    this.log(`[FAST-DL] [Prompt #${n}] In-page video bytes found (type=${candidate.type || 'unknown'}, size=${candidate.size} bytes, age=${ageSec}s, via=${candidate.via || 'page'}) — taking them straight out of the page, no menu, no wait…`, 'info');
+
+    // Bytes ko 512KB tukdon me page se bahar padho (poori file ek
+    // saath base64 me uthana bade 720p par bhaari pad sakta hai).
+    const extractStart = Date.now();
+    const chunks = blobHarvest.planChunks(candidate.size, blobHarvest.CHUNK_BYTES);
+    const parts = [];
+    let extractOk = chunks.length > 0;
+    for (const ch of chunks) {
+      if (!extractOk) break;
+      let dataUrl = null;
+      try {
+        dataUrl = await downloadGuard.withTimeout(this.page.evaluate(async ({ url, size, ts, start, end }) => {
+          const reg = window.__mkBlobRegistry || [];
+          const entry = reg.find(x => (x.url || '') === url && (x.size || 0) === size && (x.ts || 0) === ts);
+          if (!entry || !entry.blob) return null;
+          const slice = entry.blob.slice(start, end);
+          return await new Promise((resolve) => {
+            try {
+              const fr = new FileReader();
+              fr.onloadend = () => resolve(fr.result);
+              fr.onerror = () => resolve(null);
+              fr.readAsDataURL(slice);
+            } catch (e) { resolve(null); }
+          });
+        }, { url: candidate.url, size: candidate.size, ts: candidate.ts, start: ch.start, end: ch.end }), 30000, 'in-page video bytes read');
+      } catch (e) { dataUrl = null; }
+      if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.includes('base64,')) { extractOk = false; break; }
+      parts.push(Buffer.from(dataUrl.split('base64,')[1], 'base64'));
+    }
+    const extractMs = Date.now() - extractStart;
+    if (!extractOk) {
+      this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes could not be read out of the page — the existing download routes will run.`, 'warn');
+      attempts.push({ strategy: 'blob-harvest', ok: false, note: 'video bytes were seen inside the page but could not be read out — the existing routes ran as fallback' });
+      return false;
+    }
+    const buffer = Buffer.concat(parts);
+    if (buffer.length !== candidate.size) {
+      this.log(`[FAST-DL] [Prompt #${n}] The extracted bytes are incomplete (${buffer.length} of ${candidate.size} bytes) — discarded; the existing download routes will run.`, 'warn');
+      attempts.push({ strategy: 'blob-harvest', ok: false, note: `the in-page bytes came out incomplete (${buffer.length} of ${candidate.size} bytes) — discarded, the existing routes ran as fallback` });
+      return false;
+    }
+
+    // Content gate — wahi jo downloadFromCapturedStream ka hai:
+    // video header na ho to bytes save hi nahi hote.
+    if (buffer.length <= 10000 || !downloadFetch.looksLikeVideoBuffer(buffer)) {
+      this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes are NOT a video file (no video header — format: ${downloadFetch.classifyBufferMagic(buffer)}) — discarded; the existing download routes will run.`, 'warn');
+      attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were not a video file (no video header) — discarded, the existing routes ran as fallback' });
+      return false;
+    }
+
+    // Save + ffprobe verify + kitab-bandhi: wahi _saveBufferForTask
+    // jo stream/backend raaston ki hai — task downloaded/completed/
+    // mediaSaved wahi se banta hai, koi alag rasta nahi.
+    const srcUrl = candidate.url && candidate.url.startsWith('blob:') ? candidate.url : '';
+    const savedOk = await this._saveBufferForTask(task, downloadFolder, settings, buffer, srcUrl);
+    if (!savedOk) {
+      this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes failed the video check on save — the existing download routes will run.`, 'warn');
+      attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes failed the video check (ffprobe) on save — the existing routes ran as fallback' });
+      return false;
+    }
+    this._fastDlConsumedBlobs.add(blobHarvest.candidateKey(candidate));
+    // Owner ka standing rule: har video ka render→save gap ALAG
+    // gin kar batao — kul waqt ya gol 'PASS' kabhi nahi.
+    const gapBase = renderCompleteTs || harvestStart;
+    const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
+    this.log(`[FAST-DL] [Prompt #${n}] Saved from the page's own bytes — extraction took ${extractMs}ms; render→save gap for this video: ${gapSec}s.`, 'success');
+    attempts.push({ strategy: 'blob-harvest', ok: true, note: `the file was saved the moment the render finished, from the video bytes already inside the page (no menu, no wait) — render→save gap ${gapSec}s` });
+    return true;
+  }
+
   async _downloadTaskMediaInner(task, downloadFolder, settings, tileIndexHint) {
     const attempts = [];
     task.downloadAttempts = attempts;
@@ -4590,6 +4762,20 @@ class FlowAutomationEngine {
 
     if (!fs.existsSync(downloadFolder)) {
       try { fs.mkdirSync(downloadFolder, { recursive: true }); } catch (e) {}
+    }
+
+    // --- v2.48.26 (FAST-DL): SABSE PEHLE in-page blob harvest ---
+    // Render hote hi page ke andar maujood bytes se seedha save —
+    // backend check, 8s tile wait, menu, filesystem poll, sab se
+    // pehle. Na bane to neeche ki poori tartib bilkul pehle ki
+    // tarah hai (fallback ki poori guarantee).
+    if (!isImage) {
+      try {
+        const okFastDl = await this._tryBlobHarvestDownload(task, downloadFolder, settings, attempts, tileIndexHint);
+        if (okFastDl || task.mediaSaved) return { ok: true, strategy: 'blob-harvest', attempts };
+      } catch (e) {
+        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page fast download hit a problem — the existing routes ran as fallback' });
+      }
     }
 
     // --- v2.48.15: BACKEND PEHLE — Ranneeti 1 + kram-bandhan ---
@@ -5630,6 +5816,10 @@ class FlowAutomationEngine {
             // and the task was observed generating or 25s+ elapsed.
             if (bestTile.isReady && (task.wasObservedGenerating || elapsedSec >= 25)) {
               task.completed = true;
+              // v2.48.26 (FAST-DL): the render→save gap is measured
+              // from THIS moment, and the blob harvest anchors its
+              // freshness on it (see blobHarvest.freshnessCutoff).
+              if (!task.renderCompletedAt) task.renderCompletedAt = Date.now();
               this.onVideoProgress({
                 id: task.videoId,
                 state: 'downloading',

@@ -19,6 +19,7 @@ const { sanitizeFilePart } = require('./pathSecurity');
 const tagNaming = require('./tagNaming');
 const downloadGuard = require('./downloadGuard');
 const downloadFetch = require('./downloadFetch');
+const { describeUrlShape, formatUrlShape } = require('./urlShape');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -374,6 +375,11 @@ class FlowAutomationEngine {
         if (genPid) liveBrowsers.register(account.id, genPid, 'generation');
       } catch (e) {}
 
+      // v2.48.25 (E1 — observe-only): browser-level download events.
+      // Best-effort and fully detached from the working route: if it
+      // fails, the launch continues exactly as before.
+      try { await this._attachE1DownloadListener(this.browserDownloadDir || downloadDir); } catch (e) {}
+
       const pages = await this.browser.pages();
       this.page = pages.length > 0 ? pages[0] : await this.browser.newPage();
 
@@ -596,6 +602,11 @@ class FlowAutomationEngine {
         if (pid && this.currentAccount) liveBrowsers.unregister(this.currentAccount.id, pid);
       } catch (e) {}
       try { await this.browser.close(); } catch (e) {}
+      // v2.48.25 (E1): the browser-level session dies with the browser.
+      if (this.browserCdpSession) {
+        try { await this.browserCdpSession.detach(); } catch (e) {}
+        this.browserCdpSession = null;
+      }
       this.browser = null;
       this.page = null;
       this.cdpSession = null;
@@ -3361,6 +3372,81 @@ class FlowAutomationEngine {
    * backend network capture hai (downloadTaskMedia ki tartib dekho).
    * Jo selector mile, wo log hota hai. File aate hi ruk jao.
    */
+
+  /**
+   * v2.48.25 (E1 — OBSERVE ONLY): browser-level CDP download events.
+   *
+   * Research (2026-11-02) proved the file arrives through Chrome's
+   * own download manager and that this transfer never appears in
+   * page-target Network events — the app has only ever configured
+   * the PAGE-level Page.setDownloadBehavior and polled the disk.
+   * The Browser domain is the documented place where the download
+   * manager announces the REAL url it is about to fetch
+   * (Browser.downloadWillBegin), but only when download events are
+   * explicitly enabled (Browser.setDownloadBehavior eventsEnabled,
+   * default false).
+   *
+   * This listener changes NOTHING about downloads: it sends the
+   * same behavior ('allow') and the same download folder the
+   * page-level calls already use; the only addition is
+   * eventsEnabled: true at browser level. On downloadWillBegin it
+   * logs ONE [E1-DL] line with the URL's SHAPE only (scheme, host,
+   * redacted path pattern, query KEY names, length) — the full
+   * signed URL and its values never reach the log.
+   *
+   * Defensive by design: any failure logs one warning and the
+   * launch/download flow continues exactly as before.
+   */
+  async _attachE1DownloadListener(downloadPath) {
+    try {
+      if (!this.browser) return;
+      if (this.browserCdpSession) return; // one listener per browser
+      const target = typeof this.browser.target === 'function' ? this.browser.target() : null;
+      if (!target || typeof target.createCDPSession !== 'function') {
+        this.log('[E1-DL] Browser-level download events are not available on this browser target — continuing with the existing page-level download route.', 'warn');
+        return;
+      }
+      const session = await target.createCDPSession();
+      this.browserCdpSession = session;
+      const onWillBegin = (ev) => {
+        try {
+          const shape = formatUrlShape(describeUrlShape(ev && ev.url ? ev.url : ''));
+          const fname = ev && ev.suggestedFilename ? String(ev.suggestedFilename) : '';
+          const guid = ev && ev.guid ? String(ev.guid) : '';
+          const hasFrame = ev && ev.frameId ? 'yes' : 'no';
+          this.log(`[E1-DL] downloadWillBegin ${shape} suggestedFilename="${fname}" guid=${guid} frameId=${hasFrame}`, 'info');
+        } catch (e) {}
+      };
+      const onProgress = (ev) => {
+        try {
+          if (!ev || (ev.state !== 'completed' && ev.state !== 'canceled')) return;
+          const guid = ev.guid ? String(ev.guid) : '';
+          const total = Number.isFinite(ev.totalBytes) ? ev.totalBytes : -1;
+          const received = Number.isFinite(ev.receivedBytes) ? ev.receivedBytes : -1;
+          this.log(`[E1-DL] downloadProgress guid=${guid} state=${ev.state} received=${received} total=${total}`, 'info');
+        } catch (e) {}
+      };
+      if (typeof session.on === 'function') {
+        session.on('Browser.downloadWillBegin', onWillBegin);
+        session.on('Browser.downloadProgress', onProgress);
+      }
+      const targetDownloadPath = downloadPath || this.browserDownloadDir;
+      if (targetDownloadPath && !fs.existsSync(targetDownloadPath)) {
+        try { fs.mkdirSync(targetDownloadPath, { recursive: true }); } catch (e) {}
+      }
+      await session.send('Browser.setDownloadBehavior', {
+        behavior: 'allow',
+        downloadPath: targetDownloadPath,
+        eventsEnabled: true
+      });
+      this.log('[E1-DL] Browser-level download events enabled (observe-only) — download behaviour is unchanged.', 'info');
+    } catch (e) {
+      try { this.browserCdpSession = null; } catch (e2) {}
+      try {
+        this.log('[E1-DL] Browser-level download events could not be enabled — continuing with the existing page-level download route.', 'warn');
+      } catch (e2) {}
+    }
+  }
 
   /** CDP download folder taiyaar + maujooda files ka snapshot. */
   async _nativePrepareWatch(downloadFolder) {

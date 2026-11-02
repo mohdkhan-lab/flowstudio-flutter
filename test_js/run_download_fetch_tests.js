@@ -211,6 +211,39 @@ eq('planRanges(0) empty', planRanges(0, 4).length, 0);
 eq('planRanges tiny total clamps chunks', planRanges(2, 4).length, 2);
 eq('planRanges single chunk', planRanges(500, 1).length, 1);
 
+// v2.48.25 (E1): URL shape redactor — the downloadWillBegin log line
+// must carry the URL's SHAPE only. A signed URL's query values and
+// ID-like path segments (tokens) must never appear in the output.
+{
+  const { describeUrlShape, formatUrlShape } = require('../engine/urlShape');
+  const TOKEN = 'S1gnedT0kenValueXYZ123456789';
+  const PATHID = 'aB3dE5fG7hJ9kL2mN4pQ6rS8';
+  const signed = `https://lh3.googleusercontent.com/asb/${PATHID}/video.mp4?sig=${TOKEN}&expires=1899999999`;
+  const s1 = describeUrlShape(signed);
+  eq('E1 shape scheme is https', s1.scheme, 'https');
+  eq('E1 shape keeps host', s1.host, 'lh3.googleusercontent.com');
+  eq('E1 shape lists query keys only', s1.queryKeys.join(','), 'sig,expires');
+  eq('E1 shape records full length', s1.urlLength, signed.length);
+  const line1 = formatUrlShape(s1);
+  ok('E1 shape keeps readable segment', line1.includes('/asb/'));
+  ok('E1 shape keeps file extension', line1.includes('.mp4'));
+  ok('E1 shape hides query value', !line1.includes(TOKEN));
+  ok('E1 shape hides token substring', !line1.includes('S1gnedT0ken'));
+  ok('E1 shape hides path id', !line1.includes(PATHID));
+  ok('E1 shape redacts id segment', line1.includes(':seg'));
+
+  const blob = describeUrlShape('blob:https://flow.google.com/123e4567-e89b-12d3-a456-426614174000');
+  eq('E1 blob scheme flagged', blob.scheme, 'blob');
+  eq('E1 blob inner host kept', blob.host, 'flow.google.com');
+  ok('E1 blob uuid hidden', !formatUrlShape(blob).includes('123e4567'));
+
+  const plain = describeUrlShape('https://flow.google.com/asb/poster.jpg');
+  eq('E1 no-query keys empty', plain.queryKeys.length, 0);
+  ok('E1 no-query line has empty keys', formatUrlShape(plain).includes('queryKeys=[]'));
+
+  eq('E1 garbage input does not throw', describeUrlShape('not a url at all').scheme, 'invalid');
+}
+
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
 process.exit(failed > 0 ? 1 : 0);
 

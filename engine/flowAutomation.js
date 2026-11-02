@@ -23,6 +23,7 @@ const { describeUrlShape, formatUrlShape } = require('./urlShape');
 const blobHarvest = require('./blobHarvest');
 const downloadRouteOrder = require('./downloadRouteOrder');
 const flowContent = require('./flowContent');
+const downloadEventMatch = require('./downloadEventMatch');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -2862,6 +2863,16 @@ class FlowAutomationEngine {
     if (!fs.existsSync(downloadFolder)) {
       fs.mkdirSync(downloadFolder, { recursive: true });
     }
+    // v2.48.30 (POST-CLICK RACE ki hifazat): ek task = EK hi
+    // saved file. Race me do raaste (app ka server fetch aur
+    // Chrome ka blob download) ek saath khatam ho sakte hain —
+    // jo pehle mediaSaved kar gaya, dusre ka save yahin ruk
+    // jata hai; dohri file aur dohri kitab-bandhi mumkin hi
+    // nahi rehti.
+    if (task.mediaSaved) {
+      this.log(`[FAST-DL] [Prompt #${task.promptIndex + 1}] A second save was refused — this video is already saved (${task.fileName || 'file'}); no duplicate will be written.`, 'warn');
+      return false;
+    }
     const isImageMode = !!(settings && settings.type === 'Image');
     task._saveRejectedReason = null;
     // v2.48.29 (QUALITY GATE): buffer asal video ho lekin
@@ -2907,6 +2918,15 @@ class FlowAutomationEngine {
       if (!valid) {
         try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
         this.log(`The saved file ${fileName} failed the video check — this download has been treated as failed.`, 'warn');
+        return false;
+      }
+      // v2.48.30: verify ke intezaar ke dauraan koi dusra
+      // rasta (race ka browser download) is task ko pehle hi
+      // save kar chuka ho to apni file hata do — dohri
+      // kitab-bandhi kabhi nahi.
+      if (task.mediaSaved) {
+        try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
+        this.log(`[FAST-DL] [Prompt #${task.promptIndex + 1}] This save finished second in the race — the duplicate file was removed; the first save stands.`, 'warn');
         return false;
       }
     }
@@ -3610,22 +3630,20 @@ class FlowAutomationEngine {
   /**
    * v2.48.27: `sinceMs` ke baad SHURU hue downloads me se wo jo
    * downloadProgress 'completed' tak pahunch gaya ho — sab se
-   * pehla aisa event lautao, warna null. fileName diya ho to
-   * sirf usi suggestedFilename wala (ya naam-mukammal bina wala
-   * begin) gina jayega.
+   * pehla aisa event lautao, warna null.
+   * v2.48.30: asal milaan ab engine/downloadEventMatch.js ke
+   * KHALIS (pure) hisaab me hai — fileName diya ho to naam ka
+   * milaan Chrome ke " (1)" dedup suffix ki riayat ke saath,
+   * aur fileSize diya ho to exact byte-size ka milaan bhi
+   * chalega. State yahan pehle se maujood hai to event
+   * intezaar shuru hone se PEHLE fire hua ho to bhi gina
+   * jata hai (FASTTEST4 wala regression yahi tha).
    */
-  _dlCompletedSince(sinceMs, fileName) {
+  _dlCompletedSince(sinceMs, fileName, fileSize) {
     try {
       const st = this._dlEventState;
       if (!st || !st.begins || !st.completed) return null;
-      for (const b of st.begins) {
-        if (!b || !b.guid || b.at < sinceMs) continue;
-        if (fileName && b.suggestedFilename && b.suggestedFilename !== fileName) continue;
-        const c = st.completed.get(b.guid);
-        if (c && c.state === 'completed') {
-          return { guid: b.guid, suggestedFilename: b.suggestedFilename || '', at: c.at, receivedBytes: c.receivedBytes, totalBytes: c.totalBytes };
-        }
-      }
+      return downloadEventMatch.matchCompletedDownload(st, { sinceMs, fileName, fileSize });
     } catch (e) {}
     return null;
   }
@@ -3810,7 +3828,10 @@ class FlowAutomationEngine {
     const stallMs = this.nativeDownloadStallMs || 45000;
     const partials = new Map(); // folder|name -> { size, lastGrowAt, fullPath }
     let stalledPartial = null;
-    while (Date.now() - pollStart < timeout && !this.isStopping) {
+    // v2.48.30: post-click race ka dusra rasta (server fetch)
+    // pehle save kar de to ye intezaar foran chhod do —
+    // _raceAbandoned wahi nishaan hai, mediaSaved asal sach.
+    while (Date.now() - pollStart < timeout && !this.isStopping && !task._raceAbandoned && !task.mediaSaved) {
       await this._dlSleep(pollMs);
       // Is click ke baad shuru hue download ka completed event —
       // mila ho to is iteration ki disk-jaanch usi ki pushti hai.
@@ -3877,6 +3898,42 @@ class FlowAutomationEngine {
       try { fs.unlinkSync(stalledPartial.fullPath); } catch (e) {}
     }
 
+    // v2.48.30 (EVENT RECONCILIATION — FASTTEST4 ke event=no
+    // ka ilaaj): poll loop me eventSave SIRF usi iteration me
+    // bandhta tha jis me file disk par pehli baar dikhe, aur
+    // evtDone us iteration ke AAGHAZ me gina jata tha. Chrome
+    // file ka rename aksar downloadProgress 'completed' event
+    // ke Node tak pahunchne se pehle kar deta hai — file pehle
+    // dikh gayi, event us iteration me state me tha hi nahi,
+    // loop toot gaya aur save event=no keh kar 1s-poll wala
+    // ginne laga, halanke [E1-DL] lines sabit karti hain ke
+    // event fire hua tha aur state me darj bhi hua tha (bas
+    // ek tick der se). Ab: file mil gayi ho aur eventSave
+    // khaali ho to ek mukhtasar (≤1.5s, event-driven) dobara
+    // milaan — naam (dedup-suffix riayat ke saath) ya exact
+    // size se — taaki jo event asal me is download ka hai wo
+    // ginati me aaye, chahe wo intezaar ki aakhri tick ke
+    // baad darj hua ho.
+    if (newlyDownloadedFile && !eventSave && useDlEvents && !task.mediaSaved) {
+      try {
+        let foundSize = 0;
+        try { foundSize = fs.statSync(newlyDownloadedFile).size; } catch (e) {}
+        const foundName = path.basename(newlyDownloadedFile);
+        const reconDeadline = Date.now() + 1500;
+        while (Date.now() < reconDeadline) {
+          const evt = this._dlCompletedSince(clickTime - 2000, foundName, foundSize);
+          if (evt) {
+            eventSave = evt;
+            this.log(`[FAST-DL] [Prompt #${task.promptIndex + 1}] The browser download's completion event was confirmed just after the file landed (name/size match) — this save counts as event-driven.`, 'info');
+            break;
+          }
+          const remain = reconDeadline - Date.now();
+          if (remain <= 0) break;
+          await this._dlSleep(Math.min(remain, 250));
+        }
+      } catch (e) {}
+    }
+
     // Return the viewer to the grid either way — VERIFIED (v1.6.1).
     // The old single Escape + aria-only button hunt could leave the
     // page sitting in Flow's editor, where the monitor sees no tiles
@@ -3884,6 +3941,11 @@ class FlowAutomationEngine {
     await this._returnToProjectGrid();
 
     if (!newlyDownloadedFile) return false;
+
+    // v2.48.30: race ka dusra rasta (server fetch) is dauraan
+    // pehle hi save kar chuka ho to yahan kitab-bandhi dobara
+    // NAHI hogi — ek task, ek file.
+    if (task._raceAbandoned || task.mediaSaved) return false;
 
     // v1.7.0: never overwrite a file this engine did not save itself
     // (e.g. a previous run's scene001.mp4) — take a suffixed name.
@@ -3911,6 +3973,14 @@ class FlowAutomationEngine {
         this.log(`The downloaded file ${task.fileName} failed the video check — this download has been treated as failed.`, 'warn');
         return false;
       }
+    }
+
+    // v2.48.30: ffprobe verify ke intezaar ke dauraan race ka
+    // server fetch is task ko pehle save kar chuka ho to ye
+    // file duplicate hai — hata do, kitab-bandhi ek hi hogi.
+    if (task.mediaSaved) {
+      try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
+      return false;
     }
 
     const fileStats = fs.statSync(finalSavedFilePath);
@@ -4242,7 +4312,11 @@ class FlowAutomationEngine {
     const clickTime = Date.now();
     await this.page.mouse.click(item.x, item.y);
     const res = await this._nativePickResolution(settings && settings.quality);
-    const ok = await this._nativeAwaitAndSave(task, prep, res.clickedAt || clickTime, 90000, downloadFolder, settings);
+    // v2.48.30 (POST-CLICK RACE): seedha intezaar nahi —
+    // resolution click ke baad browser download ke intezaar
+    // ke saath-saath server channel par bhi nazar rehti hai
+    // (taaza flow-content URL dikhte hi parallel fetch).
+    const ok = await this._nativeAwaitWithRace(task, prep, res.clickedAt || clickTime, 90000, downloadFolder, settings);
     if (ok) {
       // Owner ka standing rule: render→save gap har video ka ALAG.
       const gapBase = task.renderCompletedAt || clickTime;
@@ -4252,6 +4326,95 @@ class FlowAutomationEngine {
     attempts.push({ strategy: 'native-menu', ok, note: ok ? 'the file came from the menu\'s Download item' : 'the menu\'s Download item was clicked, but no file arrived' });
     if (!ok) this.log(`[Prompt #${n}] No file came from the menu route either.`, 'warn');
     return ok;
+  }
+
+  /**
+   * v2.48.30 (POST-CLICK RACE): _nativeAwaitAndSave ke gird
+   * muqabla. Menu ke resolution ("360p Original size") click
+   * ke BAAD — jab ke page file ko flow-content.google se
+   * mangwa raha hota hai aur blob banne me ~7–15s lagte hain
+   * (E1TEST/FASTTEST4 ke log) — browser download ke intezaar
+   * ke saath-saath networkCapture par nazar rakho (~200ms
+   * poll): is attempt ke APNE click ke baad pehli baar dikha
+   * taaza flow-content video URL (pehchan ka langar yahi
+   * click hai; flowContent.pickRaceFlowContentUrl — stale /
+   * claimed / ajnabi URL hamesha inkaar) milte hi wahi file
+   * Node se seedha fetch karo, maujooda mashineri se hi
+   * (_serverFetchSave → downloadFromCapturedStream: session
+   * cookies + asal UA + content gate + quality gate +
+   * _saveBufferForTask).
+   *
+   * JEET KA FAISLA: jo pehle VERIFIED save de — app fetch ya
+   * Chrome ka blob download (asal _nativeAwaitAndSave wali
+   * finalization) — wahi jeeta. Haarne wala saaf chhod diya
+   * jata hai: task._raceAbandoned nishaan native intezaar ko
+   * rokta hai, aur _saveBufferForTask / native finalization
+   * dono jagah "task.mediaSaved ho to dusra save NAHI" wala
+   * darwaza dohri file aur dohri kitab-bandhi ko namumkin
+   * karta hai — finalization hamesha EK hi rehti hai.
+   * Click ke baad koi flow-content URL native intezaar ke
+   * maujooda budget me na aaye to vyavhaar bilkul v2.48.29
+   * jaisa hai (race chup rehti hai).
+   */
+  async _nativeAwaitWithRace(task, prep, clickTime, timeoutMs, downloadFolder, settings) {
+    const n = task.promptIndex + 1;
+    task._raceAbandoned = false;
+    let settled = false;
+    let raceUrl = '';
+    const NEVER = new Promise(() => {});
+
+    const nativePromise = this._nativeAwaitAndSave(task, prep, clickTime, timeoutMs, downloadFolder, settings)
+      .then(v => { settled = true; return v; }, () => { settled = true; return false; });
+    const nativeWin = nativePromise.then(v => (v ? { via: 'browser-download' } : NEVER));
+
+    const serverWin = (async () => {
+      const deadline = Date.now() + Math.max(5000, Number(timeoutMs) || 90000);
+      while (!settled && Date.now() < deadline) {
+        await sleep(200);
+        if (settled || task.mediaSaved) break;
+        let entries = [];
+        try {
+          entries = (this.netCapture && typeof this.netCapture.recentFlowContentVideos === 'function')
+            ? this.netCapture.recentFlowContentVideos(clickTime)
+            : [];
+        } catch (e) { entries = []; }
+        if (!entries || entries.length === 0) continue;
+        const pick = flowContent.pickRaceFlowContentUrl(entries, {
+          sinceMs: clickTime,
+          isClaimed: (u) => {
+            try { return !!(this.netCapture && this.netCapture.isFlowContentClaimed(u)); } catch (e) { return false; }
+          },
+          isOwnUrl: (u) => this._isTaskOwnUrl(task, u)
+        });
+        if (!pick) continue;
+        if (pick.ambiguous) {
+          this.log(`[FAST-DL] [Prompt #${n}] post-click race: ${pick.count} fresh server addresses appeared after the click and none could be proven to be this task's own — the direct fetch was NOT used; the browser download continues alone.`, 'warn');
+          return NEVER;
+        }
+        raceUrl = pick.url;
+        this.log(`[FAST-DL] [Prompt #${n}] post-click race: a fresh server video address appeared after this attempt's own resolution click (click at ${new Date(clickTime).toISOString()}, first seen ${new Date(pick.at).toISOString()} — the click is the ownership anchor) — fetching it in parallel with the browser download…`, 'info');
+        let okFetch = false;
+        try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: pick.url, via: 'post-click-race' }); } catch (e) { okFetch = false; }
+        return (okFetch || task.mediaSaved) ? { via: 'server-fetch' } : NEVER;
+      }
+      return NEVER;
+    })();
+
+    const timeoutGuard = sleep(Math.max(5000, Number(timeoutMs) || 90000) + 5000).then(() => ({ via: null }));
+    const winner = await Promise.race([nativeWin, serverWin, timeoutGuard]);
+
+    if (winner && winner.via) {
+      // Haarne wale ko saaf roko — kitab-bandhi EK hi hogi.
+      task._raceAbandoned = true;
+      if (raceUrl) {
+        const gapBase = task.renderCompletedAt || clickTime;
+        const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
+        this.log(`[FAST-DL] [Prompt #${n}] post-click race via=${winner.via} gap=${gapSec}s`, winner.via === 'server-fetch' ? 'success' : 'info');
+      }
+      if (winner.via === 'server-fetch') return true;
+      return await nativePromise;
+    }
+    return await nativePromise;
   }
 
   /**
@@ -4880,7 +5043,7 @@ class FlowAutomationEngine {
   /**
    * v2.48.28: task ki APNI tile ki halki priming — view me lao,
    * player ko muted play karo. _tryBlobHarvestDownload se nikala
-   * mushtarika roop; server-first bhi yahi istemal karta hai.
+   * mushtarika roop; quick-check bhi yahi istemal karta hai.
    * Lautta hai: tile ka index (ya -1). Kabhi throw nahi karta.
    */
   async _primeTaskTile(task, tileIndexHint) {
@@ -4925,7 +5088,7 @@ class FlowAutomationEngine {
    * v2.48.28: ek registry candidate ke bytes page se bahar padho
    * (512KB tukde), content gate lagao, aur _saveBufferForTask se
    * save karo — _tryBlobHarvestDownload ka asal kaam, ab
-   * server-first ke saath mushtarika. Natija:
+   * quick-check ke saath mushtarika. Natija:
    *   { ok:true, extractMs } |
    *   { ok:false, stage:'read'|'incomplete'|'gate'|'save', ... }
    * Log/notes bulane wale ki zimmedari hai (har ranneeti apni
@@ -4997,86 +5160,6 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.28: tile ke ⋮ (more options) button ki jagah dhoondho —
-   * _nativeMenuForm ke andar wale finder ka method roop (wohi
-   * pehchan ke usool), taaki prime wala khul-band chakkar bhi
-   * yahi istemal kare. Menu route apni purani band (closure)
-   * shakal hi rakhta hai — usme haath nahi lagaya gaya.
-   */
-  async _findTileMoreControl(scopeIdx) {
-    try {
-      return await this.page.evaluate(({ idx }) => {
-        const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-        const isMore = (b) => {
-          const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-          const icon = b.querySelector('mat-icon, [data-icon], svg');
-          const iconTxt = icon ? (icon.textContent || '').trim().toLowerCase() : '';
-          return aria.includes('more options') || aria.includes('more actions') || aria === 'more'
-            || iconTxt === 'more_vert' || iconTxt === 'more_horiz';
-        };
-        let scope = document;
-        if (typeof idx === 'number' && idx >= 0) {
-          const containers = Array.from(document.querySelectorAll('flow-grid-tile-container'));
-          scope = containers[idx] || null;
-          if (!scope) return { found: false };
-        }
-        const els = Array.from(scope.querySelectorAll('button, [role="button"]'));
-        for (const b of els) {
-          if (!visible(b)) continue;
-          if (b.closest && b.closest('.cdk-overlay-pane')) continue;
-          if (isMore(b)) {
-            const r = b.getBoundingClientRect();
-            return { found: true, x: r.x + r.width / 2, y: r.y + r.height / 2 };
-          }
-        }
-        return { found: false };
-      }, { idx: scopeIdx });
-    } catch (e) {
-      return { found: false };
-    }
-  }
-
-  /**
-   * v2.48.28 (SERVER-FIRST ka prime, hissa 2): task ki tile ke
-   * ⋮ menu ka ek khul→band chakkar — Download item NAHI
-   * dhoondha jata, NAHI dabta; menu khula rakh kar Escape se
-   * band kar diya jata hai.
-   *
-   * HYPOTHESIS (pakka usool NAHI — sirf FASTTEST2 ki ek run ki
-   * timing ka andaza, 2026-11-02): menu khulne ki harkat ke
-   * dauraan hi page ne flow-content.google se file fetch ki thi
-   * (menu khula 21:27:36.9, server jawab 21:27:44.5). Ye chakkar
-   * usi harkat ko jaan-boojh kar dohraya jata hai taaki server
-   * wala jawab is attempt ki khidki me aa jaye. Andaza galat bhi
-   * ho sakta hai — tab ye chakkar sirf ~4s ka be-nuksan prime
-   * hai aur baaki tartib pehle ki tarah chalti hai.
-   */
-  async _primeTileMenuCycle(task, tileIndexHint) {
-    try {
-      if (!this.page || this.page.isClosed()) return false;
-      let onGrid = false;
-      try { onGrid = await this.page.evaluate(() => document.querySelectorAll('flow-grid-tile-container').length > 0); } catch (e) {}
-      if (!onGrid) return false;
-      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
-      if (idx < 0) return false;
-      const coords = await this._tileCenterCoords(idx);
-      if (coords.found) {
-        await this.page.mouse.move(coords.x, coords.y);
-        await sleep(900);
-      }
-      const more = await this._findTileMoreControl(idx);
-      if (!more.found) return false;
-      await this.page.mouse.click(more.x, more.y);
-      await sleep(2500);
-      try { await this.page.keyboard.press('Escape'); } catch (e) {}
-      await sleep(300);
-      return true;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  /**
    * v2.48.28: server-fetch ke liye URL chunna — pehchan ke
    * darwaze (audit fix #6 wala usool):
    *   - URL flowContent ke exact matcher se guzra ho (bulane
@@ -5089,7 +5172,8 @@ class FlowAutomationEngine {
    *   - is khidki ka AKELA ummeedwaar bhi chalega — ye wahi
    *     kram-wali pehchan hai jo claimByOrder barson se deta
    *     hai, farq sirf itna ke khidki is attempt tak mehdood
-   *     hai aur prime isi task ki APNI tile se hua tha;
+   *     hai (v2.48.30: prime khatam — khidki attempt ke
+   *     aaghaz se is pal tak ki hai);
    *   - kai ummeedwaar hon to sirf registry candidate ke URL se
    *     exact cross-match wala chalega — warna inkaar (doubt
    *     me galat video lene se behtar hai menu wala rasta).
@@ -5143,118 +5227,6 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.28 (SERVER-FIRST): _downloadTaskMediaInner ki SAB SE
-   * PEHLI ranneeti (sirf video tasks). FASTTEST2 (2026-11-02,
-   * owner ke PC par engine-log sabit) ne server channel dikha
-   * diya: file Flow ke server `flow-content.google/video/*` se
-   * aati hai, page tile ki harkat ke dauraan khud fetch karta
-   * hai, aur wo fetch registry me bhi girta hai (extraction
-   * 131ms). Is ranneeti ka kaam:
-   *   1. task ki tile prime karo (view + muted play) aur ⋮
-   *      menu ka ek khul→band chakkar chalao (Download NAHI
-   *      dabega) — server-fetch ko bulawa (upar _primeTileMenu-
-   *      Cycle par HYPOTHESIS wala note dekho);
-   *   2. ~12s tak (200ms poll) DONO raaston par nazar rakho:
-   *      (a) registry me taza video blob → bytes page se nikaal
-   *          kar wahi gate+save (_extractAndSaveBlobCandidate);
-   *      (b) networkCapture me is attempt ki khidki ka
-   *          flow-content video jawab → pehchan-darwazon
-   *          (_pickServerFetchUrl) se guzre to Node se seedha
-   *          server fetch (downloadFromCapturedStream).
-   *   Jo pehle verified save de de, wahi jeeta; dusra usi pal
-   *   ruk jata hai. Waqt khatam ho to jo dekha uska hisaab log
-   *   me aata hai aur poori purani tartib (menu pehle) peeche
-   *   chalti hai. Prompt yahan KABHI dobara submit nahi hota.
-   */
-  async _tryServerFirstDownload(task, downloadFolder, settings, attempts, tileIndexHint) {
-    const n = task.promptIndex + 1;
-    if (!this.page || this.page.isClosed()) return false;
-    if (!this._fastDlConsumedBlobs) this._fastDlConsumedBlobs = new Set();
-    const captureKey = task.captureKey || task.videoId || null;
-    const renderCompleteTs = task.renderCompletedAt || null;
-    const WATCH_MS = 12000;
-    const attemptStart = Date.now();
-
-    // 1. Prime — tile ki harkat hi server-fetch ka bulawa hai.
-    await this._primeTaskTile(task, tileIndexHint);
-    await this._primeTileMenuCycle(task, tileIndexHint);
-
-    // 2. Nazar — registry aur server channel, jo pehle mile.
-    let seenRegistry = 0;
-    let flowContentSeen = false;
-    let lastRegistryUrl = '';
-    let ambiguityLogged = false;
-    const failedBlobKeys = new Set();
-    const refusedUrls = new Set();
-
-    while (Date.now() - attemptStart < WATCH_MS && !this.isStopping && !task.mediaSaved) {
-      // (a) Registry — bytes page ke andar aa gaye hon to wahi.
-      const meta = await this._readBlobRegistryMeta();
-      let candidate = null;
-      if (Array.isArray(meta)) {
-        seenRegistry = meta.length;
-        const consumed = new Set([...this._fastDlConsumedBlobs, ...failedBlobKeys]);
-        candidate = blobHarvest.selectCandidate(meta, {
-          renderStartTs: task.startTime || 0,
-          renderCompleteTs,
-          consumedKeys: consumed,
-          nowTs: Date.now(),
-          expectedSize: null
-        });
-      }
-      if (candidate) {
-        lastRegistryUrl = candidate.url || '';
-        const ageSec = Math.max(0, Math.round((Date.now() - (candidate.ts || Date.now())) / 1000));
-        this.log(`[FAST-DL] [Prompt #${n}] In-page video bytes found (type=${candidate.type || 'unknown'}, size=${candidate.size} bytes, age=${ageSec}s, via=${candidate.via || 'page'}) — taking them straight out of the page…`, 'info');
-        const res = await this._extractAndSaveBlobCandidate(task, downloadFolder, settings, candidate);
-        if (res.ok) {
-          const gapSec = Math.max(0, (Date.now() - (renderCompleteTs || attemptStart)) / 1000).toFixed(1);
-          this.log(`[FAST-DL] [Prompt #${n}] server-first save via=registry gap=${gapSec}s`, 'success');
-          attempts.push({ strategy: 'server-first', ok: true, note: `the file was saved straight from the server's own delivery — the bytes the page fetched were taken out of the page (extraction ${res.extractMs}ms); render→save gap ${gapSec}s` });
-          return true;
-        }
-        failedBlobKeys.add(blobHarvest.candidateKey(candidate));
-        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes could not be used (${res.stage}) — still watching for the server address…`, 'warn');
-        candidate = null;
-      }
-
-      // (b) Server channel — asal URL dikha ho to seedha fetch.
-      let fcEntries = [];
-      try {
-        if (this.netCapture && typeof this.netCapture.recentFlowContentVideos === 'function') {
-          fcEntries = this.netCapture.recentFlowContentVideos(attemptStart);
-        }
-      } catch (e) { fcEntries = []; }
-      if (fcEntries.length > 0) flowContentSeen = true;
-      const fresh = fcEntries.filter(e => !refusedUrls.has(e.url));
-      if (fresh.length > 0) {
-        const pick = this._pickServerFetchUrl(task, captureKey, fresh, lastRegistryUrl);
-        if (pick && pick.url) {
-          const okFetch = await this._serverFetchSave(task, downloadFolder, settings, pick);
-          if (okFetch) {
-            const gapSec = Math.max(0, (Date.now() - (renderCompleteTs || attemptStart)) / 1000).toFixed(1);
-            this.log(`[FAST-DL] [Prompt #${n}] server-first save via=server-fetch gap=${gapSec}s`, 'success');
-            attempts.push({ strategy: 'server-first', ok: true, note: `the file was fetched straight from Flow's server (flow-content.google, ${pick.via}) the moment its address appeared; render→save gap ${gapSec}s` });
-            return true;
-          }
-          refusedUrls.add(pick.url);
-        } else if (pick && pick.ambiguous && !ambiguityLogged) {
-          ambiguityLogged = true;
-          this.log(`[FAST-DL] [Prompt #${n}] ${pick.count} different server video addresses were seen in this attempt and none could be proven to be this task's own — the direct server fetch was NOT used (the registry/menu routes will carry it).`, 'warn');
-        }
-      }
-
-      await sleep(200);
-    }
-
-    if (task.mediaSaved) return true;
-    const watchedSec = Math.max(0, (Date.now() - attemptStart) / 1000).toFixed(1);
-    this.log(`[FAST-DL] [Prompt #${n}] Server-first found nothing usable in ${watchedSec}s (registry entries seen: ${seenRegistry}, flow-content video seen: ${flowContentSeen ? 'yes' : 'no'}) — the menu route and the rest will run.`, 'info');
-    attempts.push({ strategy: 'server-first', ok: false, note: `no usable in-page bytes or provable server address appeared within ${watchedSec}s (registry entries seen: ${seenRegistry}, flow-content video seen: ${flowContentSeen ? 'yes' : 'no'}) — the existing routes ran as fallback` });
-    return false;
-  }
-
-  /**
    * v2.48.29 (ALWAYS-ON QUICK-CHECK): server-first ki SAFAL
    * wali tarkeeb ka NO-WAIT roop — na prime, na poll; sirf
    * "is pal kuch pakda hua pehle se maujood hai kya?" Ek
@@ -5263,11 +5235,15 @@ class FlowAutomationEngine {
    * ghumao) ke dauraan aata hai — server-first ki apni 12s
    * khidki use dekh hi nahi pati. Is liye ye jaanch
    * _downloadTaskMediaInner me har bare fallback stage se
-   * PEHLE chalti hai (menu se pehle, backend se pehle,
-   * tile-src se pehle): kuch milte hi save aur attempt wahi
-   * khatam. Pehchan ke darwaze bilkul server-first wale hain
-   * (_pickServerFetchUrl + _extractAndSaveBlobCandidate ke
-   * andar ke gate) — is pal ki taaza entry na ho to foran
+   * PEHLE chalti hai (backend se pehle, tile-src se pehle):
+   * kuch milte hi save aur attempt wahi khatam.
+   * v2.48.30: yahi check ab attempt ka SAB SE PEHLA qadam
+   * bhi hai ('attempt-start') — .28 wala server-first head
+   * (prime + 12s watch) khatam ho gaya hai, is liye alag
+   * 'before-menu' check bhi nahi raha (attempt-start wala
+   * usi pal ka hai). Pehchan ke darwaze bilkul pehle wale
+   * hain (_pickServerFetchUrl + _extractAndSaveBlobCandidate
+   * ke andar ke gate) — is pal ki taaza entry na ho to foran
    * null-wapas, koi der nahi.
    * Lautta hai: true (save ho gaya) | false.
    */
@@ -5296,7 +5272,7 @@ class FlowAutomationEngine {
           const res = await this._extractAndSaveBlobCandidate(task, downloadFolder, settings, candidate);
           if (res.ok || task.mediaSaved) {
             this.log(`[FAST-DL] [Prompt #${n}] opportunistic save via=registry gap=${gapSec()}s`, 'success');
-            attempts.push({ strategy: 'server-first', ok: true, note: `the file was saved by the always-on quick check (${whereLabel}) from the bytes the page had already fetched (extraction ${res.extractMs}ms); render→save gap ${gapSec()}s` });
+            attempts.push({ strategy: 'quick-check', ok: true, note: `the file was saved by the always-on quick check (${whereLabel}) from the bytes the page had already fetched (extraction ${res.extractMs}ms); render→save gap ${gapSec()}s` });
             return true;
           }
           this._fastDlFailedBlobs.add(blobHarvest.candidateKey(candidate));
@@ -5318,7 +5294,7 @@ class FlowAutomationEngine {
           const okFetch = await this._serverFetchSave(task, downloadFolder, settings, pick);
           if (okFetch || task.mediaSaved) {
             this.log(`[FAST-DL] [Prompt #${n}] opportunistic save via=server-fetch gap=${gapSec()}s`, 'success');
-            attempts.push({ strategy: 'server-first', ok: true, note: `the file was fetched straight from Flow's server (flow-content.google, ${pick.via}) by the always-on quick check (${whereLabel}); render→save gap ${gapSec()}s` });
+            attempts.push({ strategy: 'quick-check', ok: true, note: `the file was fetched straight from Flow's server (flow-content.google, ${pick.via}) by the always-on quick check (${whereLabel}); render→save gap ${gapSec()}s` });
             return true;
           }
         }
@@ -5331,7 +5307,7 @@ class FlowAutomationEngine {
 
   /**
    * v2.48.26 (FAST-DL — "turant download"): in-page blob harvest.
-   * (Ab ye FALLBACK hai — v2.48.28 se server-first sab se pehle
+   * (Ab ye FALLBACK hai — v2.48.30 se quick-check sab se pehle
    * chalta hai aur menu dusra; harvest wahi kaam apni purani
    * jagah par bhi karta hai, kyunki FASTTEST2 me asal save isi
    * registry raaste se hua tha jab menu haar gaya tha.)
@@ -5445,31 +5421,36 @@ class FlowAutomationEngine {
     // Ranneeti-tartib ka ek-matra sach (tests wahi jaanchte hain):
     task.downloadRouteOrder = downloadRouteOrder.DOWNLOAD_ROUTE_ORDER.slice();
 
-    // --- v2.48.28 (SERVER-FIRST): server se seedha uthana SAB SE PEHLE ---
-    // FASTTEST2 (2026-11-02, owner ke PC par sabit): file Flow ke
-    // server (flow-content.google) se aati hai; tile ki harkat use
-    // bulati hai, bytes registry me bhi girte hain. Tile prime +
-    // ⋮ khul-band chakkar ke baad ~12s tak dono par nazar — jo
-    // pehle verified save de wahi jeeta. Na bane to neeche ki
-    // poori tartib (menu dusra) bilkul pehle ki tarah hai.
-    // Image tasks ki tartib bilkul purani hi hai (ye sirf video).
+    // --- v2.48.30 (QUICK-CHECK HEAD): attempt ka SAB SE PEHLA
+    // qadam sirf ek NO-WAIT nazar hai ---
+    // v2.48.28 ka server-first head (tile prime + ~12s passive
+    // watch) KHATAM hai: prime-trigger hypothesis FASTTEST3
+    // aur FASTTEST4 dono me fail hui (12.1–12.2s ki watch
+    // khaali; asal flow-content fetch hamesha menu ke
+    // Download→resolution click ke BAAD aaya). Ab pehla qadam
+    // .29 wala _opportunisticServerCheck hi hai — ek registry
+    // read + ek capture fehrist, na prime, na intezaar. Kuch
+    // pehle se pakda hua ho to wahi save; warna seedha menu
+    // route, jiske ANDAR post-click race server channel ko
+    // click ke baad pakadti hai. (Isi wajah se alag
+    // 'before-menu' quick-check bhi gaya — attempt-start
+    // wala check usi pal ka hai.) Image tasks ki tartib
+    // bilkul purani hi hai (ye sirf video).
     if (!isImage) {
       try {
-        const okServerFirst = await this._tryServerFirstDownload(task, downloadFolder, settings, attempts, tileIndexHint);
-        if (okServerFirst || task.mediaSaved) {
+        const okQuick = await this._opportunisticServerCheck(task, downloadFolder, settings, attempts, 'attempt-start');
+        if (okQuick || task.mediaSaved) {
           try {
             this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
           } catch (e) {}
-          const wonServer = attempts.filter(a => a.ok).pop();
-          return { ok: true, strategy: wonServer ? wonServer.strategy : 'server-first', attempts };
+          const wonQuick = attempts.filter(a => a.ok).pop();
+          return { ok: true, strategy: wonQuick ? wonQuick.strategy : 'quick-check', attempts };
         }
-      } catch (e) {
-        attempts.push({ strategy: 'server-first', ok: false, note: 'the server-first route hit a problem — the remaining routes will be tried' });
-      }
+      } catch (e) {}
     }
 
-    // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download — v2.48.28 se
-    // DUSRA qadam (server-first sab se pehle hai) ---
+    // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download — ab DUSRA
+    // qadam (quick-check sab se pehle hai) ---
     // FASTTEST1 (2026-11-02, owner ke PC par sabit): render ke pal
     // page me bytes hote hi NAHI; file sirf menu ke Download click
     // ke baad aati hai. To jo rasta file LAATA hai, wahi pehle —
@@ -5477,16 +5458,6 @@ class FlowAutomationEngine {
     // baad FALLBACK me hain (purani aapas-tartib me), sirf tab jab
     // menu roop haar jaye. Image tasks ki tartib bilkul purani hi
     // hai (menu-first sirf video ke liye hai).
-    // --- v2.48.29 (ALWAYS-ON QUICK-CHECK): menu se pehle ---
-    // Server-first ki khidki band ho chuki hai, lekin is beech
-    // page ne file khud mangwayi ho sakti hai (FASTTEST2 wala
-    // saboot) — menu ghumane se pehle ek NO-WAIT nazar.
-    if (!isImage) {
-      try {
-        const okQuick = await this._opportunisticServerCheck(task, downloadFolder, settings, attempts, 'before-menu');
-        if (okQuick || task.mediaSaved) return { ok: true, strategy: 'server-first', attempts };
-      } catch (e) {}
-    }
 
     let menuFirstTried = false;
     if (!isImage) {
@@ -5529,7 +5500,7 @@ class FlowAutomationEngine {
     if (!isImage) {
       try {
         const okQuick = await this._opportunisticServerCheck(task, downloadFolder, settings, attempts, 'before-backend');
-        if (okQuick || task.mediaSaved) return { ok: true, strategy: 'server-first', attempts };
+        if (okQuick || task.mediaSaved) return { ok: true, strategy: 'quick-check', attempts };
       } catch (e) {}
     }
 
@@ -5643,7 +5614,7 @@ class FlowAutomationEngine {
     if (!isImage) {
       try {
         const okQuick = await this._opportunisticServerCheck(task, downloadFolder, settings, attempts, 'before-tile-src');
-        if (okQuick || task.mediaSaved) return { ok: true, strategy: 'server-first', attempts };
+        if (okQuick || task.mediaSaved) return { ok: true, strategy: 'quick-check', attempts };
       } catch (e) {}
     }
 

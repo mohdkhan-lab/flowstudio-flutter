@@ -1,23 +1,25 @@
 'use strict';
 
-// v2.48.28 (SERVER-FIRST): _downloadTaskMediaInner ki ranneeti-
-// tartib ka ek-matra sach (single source of truth), taaki tests
-// use seedha jaanch saken aur tartib kabhi chup-chaap na badle.
+// v2.48.30 (QUICK-CHECK HEAD): _downloadTaskMediaInner ki
+// ranneeti-tartib ka ek-matra sach (single source of truth),
+// taaki tests use seedha jaanch saken aur tartib kabhi
+// chup-chaap na badle.
 //
-// FASTTEST2 (v2.48.27, owner ke PC par engine-log sabit,
-// 2026-11-02 21:27): SERVER CHANNEL MIL GAYA — file Flow ke
-// server `flow-content.google/video/*` se aati hai (signed CDN,
-// video/mp4). Page tile ke saath harkat ke dauraan khud ye fetch
-// karta hai, aur fetch hue bytes v2.48.26 ki registry me bhi aa
-// jate hain (extraction sirf 131ms lagi thi). Us run me menu
-// route FAIL ho gaya tha (⋮ khula, Download item nahi mila,
-// ~12s zaya) aur save phir bhi ho gaya — registry se. Is liye ab
-// SAB SE PEHLE wohi do raaste hain jo server se uthate hain:
-// tile ko prime karke (view + muted play + ⋮ menu ka ek
-// khul-band chakkar, Download NAHI dabega) server-fetch ko
-// bulawa do, phir registry aur asal server URL — jo pehle mile
-// usi se save. (Prime se file fetch hoti hai — ye FASTTEST2 ki
-// ek-run timing se nikla HYPOTHESIS hai, pakka usool nahi.)
+// v2.48.28 (SERVER-FIRST) ka head — tile prime + ~12s passive
+// watch — v2.48.30 me KHATAM hai. Wajah: prime-trigger
+// hypothesis (prime karne se page flow-content fetch karta
+// hai) FASTTEST3 aur FASTTEST4 dono me FAIL hui — dono runs
+// me 12.1–12.2s ki watch khaali gayi (registry 0, flow-content
+// seen: no), aur FASTTEST2/FASTTEST4 dono me hi asal
+// flow-content fetch menu ke Download→resolution click ke
+// BAAD aaya. Server channel ka asal trigger wahi click hai.
+// Is liye ab head sirf .29 wala NO-WAIT quick-check hai
+// (_opportunisticServerCheck: ek registry read + ek capture
+// fehrist, koi prime nahi, koi intezaar nahi) — aur server
+// wala asal muqabla menu route ke ANDAR hai (post-click
+// race: resolution click ke baad taaza flow-content URL
+// dikhte hi parallel Node fetch; jo pehle verified save de,
+// wahi jeeta).
 //
 // FASTTEST1 (v2.48.26) ki seekh bhi barkarar hai: kabhi-kabhi
 // file page-fetch se guzarti hi nahi (blob aur tareeqe se banta
@@ -25,9 +27,12 @@
 // hai, dusre number par poora barkarar hai.
 //
 // Kram (video tasks):
-//   1. server-first      — prime + registry harvest / flow-content
-//                          seedha server fetch (v2.48.28)
+//   1. quick-check       — NO-WAIT: pehle se pakde hue registry
+//                          bytes / flow-content URL ka turant
+//                          save (v2.48.29 ka opportunistic
+//                          check, ab attempt ka pehla qadam)
 //   2. native-menu       — ⋮ menu → Download → resolution select
+//                          (+ v2.48.30 post-click server race)
 //   3. blob-harvest      — page ke andar ke bytes (v2.48.26 FAST-DL)
 //   4. backend-fetch     — bandha backend link seedha fetch
 //   5. backend-order     — kram se bandhan (claimByOrder)
@@ -38,7 +43,7 @@
 //  10. native-editor     — editor ki top bar ka "Download media"
 //      (native-menu yahan dobara NAHI chalta — wo pehle hi ho gaya)
 const DOWNLOAD_ROUTE_ORDER = Object.freeze([
-  'server-first',
+  'quick-check',
   'native-menu',
   'blob-harvest',
   'backend-fetch',

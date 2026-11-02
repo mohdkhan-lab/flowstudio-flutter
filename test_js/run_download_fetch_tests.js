@@ -328,26 +328,30 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   ok('FAST-DL hook wraps createObjectURL', HOOK_SOURCE.includes('createObjectURL'));
 }
 
-// --- v2.48.28 (SERVER-FIRST): download route order ---
+// --- v2.48.30 (QUICK-CHECK HEAD): download route order ---
 {
   const routeOrder = require('../engine/downloadRouteOrder');
   const { DOWNLOAD_ROUTE_ORDER, fallbackRouteOrder, firstRoute } = routeOrder;
 
-  // The server routes — the page's own fetch from Flow's CDN
-  // (registry harvest / direct flow-content fetch, FASTTEST2
-  // proven live) — run FIRST; the menu route is second.
-  eq('SERVER-FIRST first route is server-first', firstRoute(), 'server-first');
-  eq('SERVER-FIRST order starts with server-first', DOWNLOAD_ROUTE_ORDER[0], 'server-first');
-  eq('SERVER-FIRST menu route is second', DOWNLOAD_ROUTE_ORDER[1], 'native-menu');
-  eq('SERVER-FIRST order ends with native-editor', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'native-editor');
-  eq('SERVER-FIRST route count', DOWNLOAD_ROUTE_ORDER.length, 10);
-  ok('SERVER-FIRST order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
+  // v2.48.30: the attempt's first step is the NO-WAIT
+  // quick-check (the .29 opportunistic read) — the .28
+  // server-first head (prime + ~12s passive watch) is GONE:
+  // no 12s dead window anywhere in the attempt. The menu
+  // route is second (and carries the post-click race inside).
+  eq('QUICK-CHECK first route is quick-check', firstRoute(), 'quick-check');
+  eq('QUICK-CHECK order starts with quick-check', DOWNLOAD_ROUTE_ORDER[0], 'quick-check');
+  eq('QUICK-CHECK menu route is second', DOWNLOAD_ROUTE_ORDER[1], 'native-menu');
+  eq('QUICK-CHECK order ends with native-editor', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'native-editor');
+  eq('QUICK-CHECK route count', DOWNLOAD_ROUTE_ORDER.length, 10);
+  ok('QUICK-CHECK order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
+  ok('QUICK-CHECK order has no server-first watch', !DOWNLOAD_ROUTE_ORDER.includes('server-first'));
 
-  // Fallbacks keep their previous (v2.48.27) relative order.
+  // Fallbacks keep their previous relative order.
   const fb = fallbackRouteOrder();
-  eq('SERVER-FIRST fallback drops only the server route', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
-  ok('SERVER-FIRST fallback has no server-first', !fb.includes('server-first'));
-  ok('SERVER-FIRST fallback starts with native-menu', fb[0] === 'native-menu');
+  eq('QUICK-CHECK fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
+  ok('QUICK-CHECK fallback has no quick-check', !fb.includes('quick-check'));
+  ok('QUICK-CHECK fallback has no server-first', !fb.includes('server-first'));
+  ok('QUICK-CHECK fallback starts with native-menu', fb[0] === 'native-menu');
   const prev = ['native-menu', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'backend-fetch-retry', 'tile-src-fast', 'tile-src', 'native-editor'];
   let idx = -1;
   let inOrder = true;
@@ -356,8 +360,8 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
     if (at <= idx) { inOrder = false; break; }
     idx = at;
   }
-  ok('SERVER-FIRST fallbacks retain previous relative order', inOrder);
-  eq('SERVER-FIRST fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
+  ok('QUICK-CHECK fallbacks retain previous relative order', inOrder);
+  eq('QUICK-CHECK fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
 }
 
 // --- v2.48.28 (SERVER-FIRST): flow-content URL matcher ---
@@ -551,6 +555,110 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   eq('QC no flow-content entries means no URL', [].filter(u => isFlowContentVideoUrl(u)).length, 0);
   eq('QC empty URL is not a flow-content video', isFlowContentVideoUrl(''), false);
   eq('QC undefined URL is not a flow-content video', isFlowContentVideoUrl(undefined), false);
+}
+
+// --- v2.48.30 (EVENT-MATCH): FASTTEST4 event=no regression ---
+{
+  const { stripDedupSuffix, matchCompletedDownload } = require('../engine/downloadEventMatch');
+  const T0 = 1700000000000;
+  const CLICK = T0 + 40480; // resolution click (22:29:40.48 ki nisbat)
+
+  eq('EM dedup suffix (1) stripped', stripDedupSuffix('Red_ball (1).mp4'), 'Red_ball.mp4');
+  eq('EM dedup suffix (12) stripped', stripDedupSuffix('clip (12).mp4'), 'clip.mp4');
+  eq('EM plain name untouched', stripDedupSuffix('clip.mp4'), 'clip.mp4');
+  eq('EM suffix without extension stripped', stripDedupSuffix('clip (2)'), 'clip');
+
+  // FASTTEST4 ki asal haalat: begin click ke ~15.6s baad,
+  // completed ~18.6s baad; save ka intezaar/milaan us ke BAAD
+  // hota hai — event pehle se state me darj hai. Purana loop
+  // use is liye ganwa deta tha ke eventSave sirf file-dikhne
+  // wali iteration me bandhta tha. Matcher ko waqt ki is
+  // tartib se koi farq nahi padna chahiye.
+  const ft4 = {
+    begins: [{ guid: 'g1', suggestedFilename: 'Red_ball_rolling_on_floor_ffeb7d60.mp4', at: CLICK + 15640 }],
+    completed: new Map([['g1', { state: 'completed', at: CLICK + 18620, receivedBytes: 1216301, totalBytes: 1216301 }]])
+  };
+  const m1 = matchCompletedDownload(ft4, { sinceMs: CLICK - 2000 });
+  ok('EM FASTTEST4 event fired before the wait still counts', !!m1 && m1.guid === 'g1');
+  const m2 = matchCompletedDownload(ft4, { sinceMs: CLICK - 2000, fileName: 'Red_ball_rolling_on_floor_ffeb7d60.mp4' });
+  ok('EM FASTTEST4 exact name matches', !!m2 && m2.guid === 'g1');
+  // Disk par Chrome ne " (1)" wala naam diya ho to bhi milaan.
+  const m3 = matchCompletedDownload(ft4, { sinceMs: CLICK - 2000, fileName: 'Red_ball_rolling_on_floor_ffeb7d60 (1).mp4' });
+  ok('EM FASTTEST4 dedup-suffixed disk name matches', !!m3 && m3.guid === 'g1');
+  // Naam ajnabi ho lekin size exact wahi (1,216,301) ho.
+  const m4 = matchCompletedDownload(ft4, { sinceMs: CLICK - 2000, fileName: 'renamed-by-something.mp4', fileSize: 1216301 });
+  ok('EM FASTTEST4 exact size matches when name differs', !!m4 && m4.guid === 'g1');
+
+  // Click se PEHLE shuru hua download is attempt ka nahi.
+  const stale = {
+    begins: [{ guid: 'g0', suggestedFilename: 'old.mp4', at: CLICK - 60000 }],
+    completed: new Map([['g0', { state: 'completed', at: CLICK - 59000, receivedBytes: 5, totalBytes: 5 }]])
+  };
+  eq('EM begin before the window is ignored', matchCompletedDownload(stale, { sinceMs: CLICK - 2000 }), null);
+  // Canceled kabhi completed nahi.
+  const canc = {
+    begins: [{ guid: 'g2', suggestedFilename: 'x.mp4', at: CLICK + 100 }],
+    completed: new Map([['g2', { state: 'canceled', at: CLICK + 200, receivedBytes: 5, totalBytes: 5 }]])
+  };
+  eq('EM canceled download never matches', matchCompletedDownload(canc, { sinceMs: CLICK - 2000 }), null);
+  // Do completed, dono ka size wahi, naam koi na mile → shak, null.
+  const amb = {
+    begins: [
+      { guid: 'ga', suggestedFilename: 'a.mp4', at: CLICK + 100 },
+      { guid: 'gb', suggestedFilename: 'b.mp4', at: CLICK + 200 }
+    ],
+    completed: new Map([
+      ['ga', { state: 'completed', at: CLICK + 300, receivedBytes: 999, totalBytes: 999 }],
+      ['gb', { state: 'completed', at: CLICK + 400, receivedBytes: 999, totalBytes: 999 }]
+    ])
+  };
+  eq('EM ambiguous size match is refused', matchCompletedDownload(amb, { sinceMs: CLICK - 2000, fileName: 'zzz.mp4', fileSize: 999 }), null);
+  // Naam/size na hon to pehla completed (purana vyavhaar).
+  const m5 = matchCompletedDownload(amb, { sinceMs: CLICK - 2000 });
+  ok('EM bare window returns the first completed', !!m5 && m5.guid === 'ga');
+  eq('EM null state is null', matchCompletedDownload(null, { sinceMs: 0 }), null);
+  eq('EM empty state is null', matchCompletedDownload({ begins: [], completed: new Map() }, { sinceMs: 0 }), null);
+}
+
+// --- v2.48.30 (POST-CLICK RACE): taaza URL ki pehchan ---
+{
+  const { pickRaceFlowContentUrl } = require('../engine/flowContent');
+  const CLICK = 1700000000000;
+  const FRESH = 'https://flow-content.google/video/fresh123?sig=a';
+  const STALE = 'https://flow-content.google/video/stale999?sig=b';
+  const FRESH2 = 'https://flow-content.google/video/fresh456?sig=c';
+  const own = () => true;
+  const notClaimed = () => false;
+
+  // Click se pehle ka fetch (stale) — is attempt ka saboot nahi.
+  eq('RACE stale pre-click URL rejected',
+    pickRaceFlowContentUrl([{ url: STALE, type: 'video/mp4', at: CLICK - 5000 }], { sinceMs: CLICK, isClaimed: notClaimed, isOwnUrl: own }), null);
+  // Click ke baad ka taaza URL — qabool.
+  const p1 = pickRaceFlowContentUrl([{ url: FRESH, type: 'video/mp4', at: CLICK + 14600 }], { sinceMs: CLICK, isClaimed: notClaimed, isOwnUrl: own });
+  ok('RACE post-click URL accepted', !!p1 && p1.url === FRESH && p1.via === 'post-click');
+  // Pehle se claimed/consumed — inkaar.
+  eq('RACE claimed URL rejected',
+    pickRaceFlowContentUrl([{ url: FRESH, type: 'video/mp4', at: CLICK + 100 }], { sinceMs: CLICK, isClaimed: () => true, isOwnUrl: own }), null);
+  // Ajnabi / purana address (isOwnUrl jhooth) — inkaar.
+  eq('RACE foreign URL rejected',
+    pickRaceFlowContentUrl([{ url: FRESH, type: 'video/mp4', at: CLICK + 100 }], { sinceMs: CLICK, isClaimed: notClaimed, isOwnUrl: () => false }), null);
+  // Nakli host matcher par hi marta hai.
+  eq('RACE look-alike host rejected',
+    pickRaceFlowContentUrl([{ url: 'https://flow-content.google.evil.com/video/x', type: 'video/mp4', at: CLICK + 100 }], { sinceMs: CLICK, isClaimed: notClaimed, isOwnUrl: own }), null);
+  // Stale + fresh mila ho to fresh hi chuna jata hai.
+  const p2 = pickRaceFlowContentUrl([
+    { url: STALE, type: 'video/mp4', at: CLICK - 5000 },
+    { url: FRESH, type: 'video/mp4', at: CLICK + 14600 }
+  ], { sinceMs: CLICK, isClaimed: notClaimed, isOwnUrl: own });
+  ok('RACE fresh wins over stale in the same list', !!p2 && p2.url === FRESH);
+  // Do taaze usable — shak, race nahi hogi.
+  const p3 = pickRaceFlowContentUrl([
+    { url: FRESH, type: 'video/mp4', at: CLICK + 100 },
+    { url: FRESH2, type: 'video/mp4', at: CLICK + 200 }
+  ], { sinceMs: CLICK, isClaimed: notClaimed, isOwnUrl: own });
+  ok('RACE two fresh URLs are ambiguous', !!p3 && p3.ambiguous === true && p3.count === 2);
+  eq('RACE empty list is null', pickRaceFlowContentUrl([], { sinceMs: CLICK, isClaimed: notClaimed, isOwnUrl: own }), null);
+  eq('RACE null list is null', pickRaceFlowContentUrl(null, { sinceMs: CLICK }), null);
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

@@ -102,4 +102,87 @@ function claimedByOtherTask(ownerKey, taskKey) {
   return !!ownerKey && ownerKey !== taskKey;
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask };
+// ---------------------------------------------------------------------------
+// v2.48.36 (ROOT PACK — D): PAGE-FETCH HARVEST ke darwaze.
+//
+// Page khud editor ke preview/playback par asal server file
+// (flow-content.google/video/*) ke bytes khinchta hai — wohi
+// bytes exact server file hain. Capture unhe yaad rakhe ya
+// na rakhe, is ka faisla yahan hota hai (khalis hisaab):
+//   harvestGenericGates — bandhan (binding) se pehle wale
+//     aam darwaze: body maujood, size hadd ke andar, MP4
+//     header theek, duration ke size floor se upar.
+//   harvestCandidateVerdict — wohi + bandhan lazmi: URL
+//     kisi task ke naam bandha hi na ho to candidate kabhi
+//     nahi (galat task ki file uthane ka khatra yahin
+//     rukta hai).
+// ---------------------------------------------------------------------------
+
+/** Harvest me rakhi ja sakne wali sab se badi body (~8MB). */
+const HARVEST_MAX_BYTES = 8 * 1024 * 1024;
+
+/**
+ * Bandhan se pehle ke aam darwaze. input =
+ * { byteLength, floorBytes, headerOk, maxBytes }.
+ * Natija { ok, reason } — reason: 'empty' | 'too-big' |
+ * 'bad-header' | 'below-floor' | 'ok'.
+ */
+function harvestGenericGates(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const len = Number.isFinite(o.byteLength) ? Math.floor(o.byteLength) : 0;
+  if (len <= 0) return { ok: false, reason: 'empty' };
+  const max = Number.isFinite(o.maxBytes) && o.maxBytes > 0 ? o.maxBytes : HARVEST_MAX_BYTES;
+  if (len > max) return { ok: false, reason: 'too-big' };
+  if (!o.headerOk) return { ok: false, reason: 'bad-header' };
+  const floor = Number.isFinite(o.floorBytes) ? Math.floor(o.floorBytes) : 0;
+  if (floor > 0 && len < floor) return { ok: false, reason: 'below-floor' };
+  return { ok: true, reason: 'ok' };
+}
+
+/**
+ * Ek bandhe hue task ke liye harvest candidate ka faisla.
+ * input = harvestGenericGates wala + { bound } — URL is
+ * task ke naam bandha hai kya. Bandhan na ho to sab se
+ * pehla inkaar 'unbound' hai.
+ * Natija { accept, reason }.
+ */
+function harvestCandidateVerdict(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  if (!o.bound) return { accept: false, reason: 'unbound' };
+  const g = harvestGenericGates(o);
+  return { accept: g.ok, reason: g.reason };
+}
+
+// ---------------------------------------------------------------------------
+// v2.48.36 (ROOT PACK — B/C): VERBATIM REPLAY ke jawab ke
+// URLs par faisla. Seekhi hui mint call hu-bahu chalane par
+// jawab jo flow-content address laata hai, wo ya to TEACHER
+// (pichhle task) ka hota hai — tab use FETCH KABHI NAHI
+// karna (context is task ka set nahi hua) — ya is task ka
+// naya address hota hai — tab claim + verified fetch jaiz
+// hai. Faisla yahan, khalis:
+//   input = { urls, teacherUrl, isClaimed(url) }
+//   natija = { action, url, freshCount }
+//     'none'      — jawab me koi flow-content address nahi
+//     'teacher'   — sirf teacher ka address aaya (fetch NAHI)
+//     'ambiguous' — teacher se alag ek se zyada (koi nahi)
+//     'claimed'   — akela naya address pehle se claimed hai
+//     'save'      — akela naya, unclaimed address: url diya
+// ---------------------------------------------------------------------------
+function replayUrlVerdict(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const urls = Array.isArray(o.urls) ? o.urls.filter(u => typeof u === 'string' && u) : [];
+  if (urls.length === 0) return { action: 'none', url: null, freshCount: 0 };
+  const teacherUrl = typeof o.teacherUrl === 'string' && o.teacherUrl ? o.teacherUrl : null;
+  const fresh = [...new Set(urls.filter(u => u !== teacherUrl))];
+  if (fresh.length === 0) return { action: 'teacher', url: null, freshCount: 0 };
+  if (fresh.length > 1) return { action: 'ambiguous', url: null, freshCount: fresh.length };
+  let claimed = false;
+  if (typeof o.isClaimed === 'function') {
+    try { claimed = !!o.isClaimed(fresh[0]); } catch (e) { claimed = false; }
+  }
+  if (claimed) return { action: 'claimed', url: null, freshCount: 1 };
+  return { action: 'save', url: fresh[0], freshCount: 1 };
+}
+
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict };

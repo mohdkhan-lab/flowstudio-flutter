@@ -347,20 +347,31 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   // v2.48.33 (ZEROCLICK probe): the learned-mint-call replay
   // is the new second step; direct-viewer moves to third and
   // the menu to fourth (their aapas-tartib barkarar hai).
-  eq('ZEROCLICK replay route is second', DOWNLOAD_ROUTE_ORDER[1], 'zero-click');
-  eq('SWITCH viewer route is primary (third)', DOWNLOAD_ROUTE_ORDER[2], 'direct-viewer');
-  eq('QUICK-CHECK menu route is fourth', DOWNLOAD_ROUTE_ORDER[3], 'native-menu');
+  // v2.48.36 (ROOT PACK): the substitution 'zero-click' step
+  // is GONE (the mint call carries no id to substitute —
+  // ZEROCLICK2). In its place two verbatim replays:
+  // grid-replay (tile selected on the grid, no editor) is
+  // second, replay-context (inside the open editor, no
+  // Download click) is third; direct-viewer moves to fourth
+  // and the menu to fifth. Page-harvest lives INSIDE
+  // quick-check (and inside replay-context), so it is not
+  // its own table entry.
+  eq('ROOT grid-replay route is second', DOWNLOAD_ROUTE_ORDER[1], 'grid-replay');
+  eq('ROOT replay-context route is third', DOWNLOAD_ROUTE_ORDER[2], 'replay-context');
+  eq('SWITCH viewer route is fourth', DOWNLOAD_ROUTE_ORDER[3], 'direct-viewer');
+  eq('QUICK-CHECK menu route is fifth', DOWNLOAD_ROUTE_ORDER[4], 'native-menu');
   eq('QUICK-CHECK order ends with native-editor', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'native-editor');
-  eq('QUICK-CHECK route count', DOWNLOAD_ROUTE_ORDER.length, 12);
+  eq('QUICK-CHECK route count', DOWNLOAD_ROUTE_ORDER.length, 13);
   ok('QUICK-CHECK order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
   ok('QUICK-CHECK order has no server-first watch', !DOWNLOAD_ROUTE_ORDER.includes('server-first'));
+  ok('ROOT order has no substitution zero-click step', !DOWNLOAD_ROUTE_ORDER.includes('zero-click'));
 
   // Fallbacks keep their previous relative order.
   const fb = fallbackRouteOrder();
   eq('QUICK-CHECK fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
   ok('QUICK-CHECK fallback has no quick-check', !fb.includes('quick-check'));
   ok('QUICK-CHECK fallback has no server-first', !fb.includes('server-first'));
-  ok('QUICK-CHECK fallback starts with zero-click', fb[0] === 'zero-click');
+  ok('ROOT fallback starts with grid-replay', fb[0] === 'grid-replay');
   const prev = ['native-menu', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'backend-fetch-retry', 'tile-src-fast', 'tile-src', 'native-editor'];
   let idx = -1;
   let inOrder = true;

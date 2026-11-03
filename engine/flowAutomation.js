@@ -27,6 +27,7 @@ const downloadEventMatch = require('./downloadEventMatch');
 const mintWindow = require('./mintWindow');
 const mintReplay = require('./mintReplay');
 const saveGuard = require('./saveGuard');
+const stageLock = require('./stageLock');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -159,6 +160,13 @@ class FlowAutomationEngine {
         } catch (e) {}
       }
     });
+    // v2.48.36 (ROOT PACK — A): download-stage ka tala —
+    // capture-session ke hisaab se bandha hua (isi liye
+    // stageLockFor): is page/capture par chalne wala har
+    // download round (monitor ho ya drain/retry) ek hi
+    // kataar se guzarta hai; generation/rendering is se
+    // bilkul alag aur parallel rehti hai.
+    this._downloadStageLock = stageLock.stageLockFor(this.netCapture);
     // v2.8.0: captureKey -> live engine task (registered by the
     // monitor / download-retry), and captureKey -> {url, via} for
     // bindings that landed before the task object was registered.
@@ -4985,7 +4993,28 @@ class FlowAutomationEngine {
     }
     task._downloadInProgress = true;
     let result = null;
+    // v2.48.36 (ROOT PACK — A): DOWNLOAD-STAGE SERIALIZATION.
+    // Poora download marhala (pehle route se save/aakhri
+    // fallback tak) is capture session par ek pal me sirf
+    // EK task ka chalta hai — generation/rendering is tale
+    // se bahar aur parallel rehti hai. ZEROCLICK3 ki seekh:
+    // do tasks ki harkat ek hi page par ulajhne se pehle
+    // task ki mint binding download ke pal gum ho jati thi.
+    // Kataar ka intezaar 1s se zyada ho to [ROOT] line.
+    let stageHandle = null;
     try {
+      stageHandle = await this._downloadStageLock.acquire();
+      if (stageHandle.waitedMs > 1000) {
+        this.log(`[ROOT] [Prompt #${n}] download-stage queued +${(stageHandle.waitedMs / 1000).toFixed(1)}s`, 'info');
+      }
+      // v2.48.36 (ROOT PACK — D): is round ki duration ka
+      // size floor capture ko de do — page-fetch harvest
+      // ke darwaze isi par chalte hain.
+      try {
+        if (this.netCapture) {
+          this.netCapture.harvestFloorBytes = downloadFetch.minBytesForDuration(settings && settings.duration);
+        }
+      } catch (e) {}
       // v2.30.0 (2nd-video stall fix): the whole strategy chain runs
       // under downloadGuard — a hard deadline around a step that
       // used to have NO timeout anywhere, so one stuck await froze
@@ -5011,6 +5040,13 @@ class FlowAutomationEngine {
       // v2.48.31 (MINT): round khatam — mint watch band (har
       // rasta/timeout yahin se guzarta hai).
       try { this._mintEndWatch(); } catch (e) {}
+      // v2.48.36 (ROOT PACK — D): is task ka harvest ab
+      // kisi kaam ka nahi — kitab saaf (agli video ke liye
+      // purani body kabhi candidate nahi banti).
+      try {
+        if (this.netCapture) this.netCapture.evictHarvest(task.captureKey || task.videoId || null);
+      } catch (e) {}
+      if (stageHandle) { try { stageHandle.release(); } catch (e) {} }
     }
     // Settle the round in the persisted ledger — success resets the
     // budget to 0, failure records the round and its reason (in the
@@ -5405,10 +5441,75 @@ class FlowAutomationEngine {
    * null-wapas, koi der nahi.
    * Lautta hai: true (save ho gaya) | false.
    */
+  /**
+   * v2.48.36 (ROOT PACK — D): page ne khud server se jo
+   * bytes khinche the (editor preview/playback fetch),
+   * capture ne unhe is task ke naam kitab me rakha hai to
+   * wohi EXACT file yahin save karo — koi download click
+   * nahi, koi menu nahi, koi dobara fetch nahi. Save wahi
+   * _saveBufferForTask se hota hai, is liye quality gate
+   * + content-hash guard + ffprobe sab laagu rehte hain.
+   * Bytes ek hi dafa istemal hote hain (koshish ke baad
+   * kitab se hat jate hain — reject hue bytes dobara
+   * candidate nahi bante).
+   * Lautta hai: true (save ho gaya) | false.
+   */
+  async _tryHarvestSave(task, downloadFolder, settings, attempts) {
+    try {
+      const cap = this.netCapture;
+      if (!cap || typeof cap.harvestForKey !== 'function') return false;
+      if (!task || task.mediaSaved) return false;
+      const captureKey = task.captureKey || task.videoId || null;
+      const entry = cap.harvestForKey(captureKey);
+      if (!entry || !entry.buffer) return false;
+      const n = task.promptIndex + 1;
+      try { cap.evictHarvest(captureKey); } catch (e) {}
+      // Ye address ab is task ke naam claim bhi kar do —
+      // koi aur task use is run me dobara na le.
+      try { cap.claimFlowContentVideo(entry.url); } catch (e) {}
+      task.completedVideoUrl = entry.url;
+      const ok = await this._saveBufferForTask(task, downloadFolder, settings, entry.buffer, entry.url);
+      if (ok || task.mediaSaved) {
+        const gapSec = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+        this.log(`[ROOT] via=page-harvest gap=${gapSec}s`, 'success');
+        attempts.push({ strategy: 'page-harvest', ok: true, note: `the exact file was saved from the bytes the page itself had already fetched from Flow's server — no download click, no menu, no second fetch; render→save gap ${gapSec}s` });
+        return true;
+      }
+      attempts.push({ strategy: 'page-harvest', ok: false, note: `the bytes the page had fetched did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the remaining routes ran` });
+      this.log(`[ROOT] [Prompt #${n}] page-harvest bytes did not pass the save checks — the remaining routes will run`, 'warn');
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — D): hadd bandhe waqt tak harvest
+   * ka intezaar — editor khulne ke baad preview fetch ke
+   * bytes chand second me aa sakte hain (route C yahi
+   * bulata hai).
+   */
+  async _pollHarvestSave(task, downloadFolder, settings, attempts, waitMs) {
+    const deadline = Date.now() + Math.max(0, Number(waitMs) || 0);
+    for (;;) {
+      const ok = await this._tryHarvestSave(task, downloadFolder, settings, attempts);
+      if (ok || (task && task.mediaSaved)) return true;
+      if (Date.now() >= deadline || this.isStopping) return false;
+      await sleep(250);
+    }
+  }
+
   async _opportunisticServerCheck(task, downloadFolder, settings, attempts, whereLabel) {
     const n = task.promptIndex + 1;
     try {
       if (!this.page || this.page.isClosed() || task.mediaSaved) return false;
+      // v2.48.36 (ROOT PACK — D): sab se pehle page-harvest
+      // — page ke khinche hue bytes kitab me hon to wohi
+      // exact file hai; registry/server nazar is ke baad.
+      try {
+        const okHarvest = await this._tryHarvestSave(task, downloadFolder, settings, attempts);
+        if (okHarvest || task.mediaSaved) return true;
+      } catch (e) {}
       if (!this._fastDlConsumedBlobs) this._fastDlConsumedBlobs = new Set();
       if (!this._fastDlFailedBlobs) this._fastDlFailedBlobs = new Set();
       const captureKey = task.captureKey || task.videoId || null;
@@ -5820,6 +5921,107 @@ class FlowAutomationEngine {
    *     jati hai — download ki tartib bilkul nahi rukti.
    * Faisla mintReplay.classifyVerbatimProbe (khalis) se.
    */
+  /**
+   * v2.48.36 (ROOT PACK — B/C ki buniyad): seekhi hui mint
+   * call ko HU-BAHU (verbatim — koi tabdeeli nahi; badalne
+   * ko id hai hi nahi, ZEROCLICK2 sabit) page ke andar se
+   * ek dafa bhejna. Hadd ~8s. Kabhi throw nahi karta:
+   * natija { status, buf } — nakami par status 'error'
+   * aur khaali buf. Jawab se yahan kuch save/claim NAHI
+   * hota — faisla bulane wale ka hai.
+   */
+  async _fireMintReplay(tpl) {
+    try {
+      if (!tpl || !tpl.url || !tpl.body || !this.page || this.page.isClosed()) {
+        return { status: 'error', buf: Buffer.alloc(0) };
+      }
+      const res = await downloadGuard.withTimeout(
+        this.page.evaluate(async (u, m, h, b64) => {
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const r = await fetch(u, { method: m || 'POST', headers: h, body: bytes, credentials: 'include' });
+          const rbuf = await r.arrayBuffer();
+          const u8 = new Uint8Array(rbuf);
+          let s = '';
+          for (let i = 0; i < u8.length; i += 8192) {
+            s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+          }
+          return { status: r.status, b64: btoa(s) };
+        }, tpl.url, tpl.method || 'POST', tpl.headers, tpl.body.toString('base64')),
+        8000, 'mint replay');
+      if (!res) return { status: 'error', buf: Buffer.alloc(0) };
+      let buf = Buffer.alloc(0);
+      try { buf = res.b64 ? Buffer.from(res.b64, 'base64') : Buffer.alloc(0); } catch (e) { buf = Buffer.alloc(0); }
+      return { status: res.status, buf };
+    } catch (e) {
+      return { status: 'error', buf: Buffer.alloc(0) };
+    }
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK): ek batchexecute jawab ke buffer
+   * se asal flow-content video address nikaalna — sirf
+   * andarooni istemal (muqabla/claim/fetch ke liye); ye
+   * address kabhi log nahi hote.
+   */
+  _replayResponseUrls(buf) {
+    try {
+      if (!buf || buf.length === 0) return [];
+      const cap = this.netCapture;
+      const scan = networkCapture.scanBatchExecuteBody(buf, cap ? cap.patterns : undefined);
+      return (scan.allUrls || []).filter(u => flowContent.isFlowContentVideoUrl(u));
+    } catch (e) { return []; }
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — B/C ka mushtarak aakhri qadam):
+   * verbatim replay ke jawab ke URLs ka faisla aur (jaiz
+   * ho to) verified server-fetch save. Usool sakht:
+   *   - jawab capture pipeline se bhi guzarta hai (bandish
+   *     ki kitab taaza rehti hai — zero-click wala usool);
+   *   - faisla saveGuard.replayUrlVerdict (khalis) se:
+   *     teacher ka address aaya ho to FETCH KABHI NAHI —
+   *     wo is task ki file ho hi nahi sakti;
+   *   - akela naya unclaimed address hi claim + fetch
+   *     hota hai, aur save ki har jaanch (_serverFetchSave
+   *     → content gate + hash guard + ffprobe) barkarar.
+   * Natija: { outcome: 'saved'|'teacher'|'none'|
+   * 'ambiguous'|'claimed'|'fetch-failed', gapSec? }.
+   */
+  async _saveFromReplayUrls(task, downloadFolder, settings, urls, via, buf, replayUrl) {
+    const cap = this.netCapture;
+    const captureKey = task.captureKey || task.videoId || null;
+    try {
+      if (buf && buf.length > 0 && cap && typeof cap.ingestResponse === 'function') {
+        cap.ingestResponse({ url: replayUrl, contentType: 'application/json', bodyBuffer: buf, at: Date.now() });
+      }
+    } catch (e) {}
+    const tpl = cap && cap.mintTemplate ? cap.mintTemplate : null;
+    const teacherUrl = cap && typeof cap.teacherMintUrlForTemplate === 'function'
+      ? cap.teacherMintUrlForTemplate(tpl) : null;
+    const verdict = saveGuard.replayUrlVerdict({
+      urls,
+      teacherUrl,
+      isClaimed: (u) => {
+        try {
+          return !!((cap && cap.isFlowContentClaimed(u)) || this._urlClaimedByOtherTask(u, captureKey));
+        } catch (e) { return false; }
+      }
+    });
+    if (verdict.action !== 'save') {
+      return { outcome: verdict.action === 'teacher' ? 'teacher' : verdict.action };
+    }
+    let okFetch = false;
+    try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: verdict.url, via }); } catch (e) { okFetch = false; }
+    if (okFetch || task.mediaSaved) {
+      const gapBase = task.renderCompletedAt || task.startTime || Date.now();
+      const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
+      return { outcome: 'saved', gapSec };
+    }
+    return { outcome: 'fetch-failed' };
+  }
+
   async _verbatimReplayProbe(task, captureKey) {
     try {
       const cap = this.netCapture;
@@ -5829,42 +6031,26 @@ class FlowAutomationEngine {
       if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return; // teacher khud hai
       if (!this.page || this.page.isClosed()) return;
       cap._verbatimProbeDone = true; // nishaan PEHLE — ek session, ek probe
-      let status = 'error';
-      let buf = Buffer.alloc(0);
-      try {
-        const res = await downloadGuard.withTimeout(
-          this.page.evaluate(async (u, m, h, b64) => {
-            const bin = atob(b64);
-            const bytes = new Uint8Array(bin.length);
-            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-            const r = await fetch(u, { method: m || 'POST', headers: h, body: bytes, credentials: 'include' });
-            const rbuf = await r.arrayBuffer();
-            const u8 = new Uint8Array(rbuf);
-            let s = '';
-            for (let i = 0; i < u8.length; i += 8192) {
-              s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
-            }
-            return { status: r.status, b64: btoa(s) };
-          }, tpl.url, tpl.method || 'POST', tpl.headers, tpl.body.toString('base64')),
-          8000, 'verbatim replay probe');
-        if (res) {
-          status = res.status;
-          try { buf = res.b64 ? Buffer.from(res.b64, 'base64') : Buffer.alloc(0); } catch (e) { buf = Buffer.alloc(0); }
-        }
-      } catch (e) { status = 'error'; buf = Buffer.alloc(0); }
+      // v2.48.36: firing ab mushtarak helper se hai (rawaaN
+      // bilkul waisa hi — hu-bahu call, ~8s hadd, page ka
+      // apna session).
+      const { status, buf } = await this._fireMintReplay(tpl);
       let verdict = { carriesUrl: false, urlVsTeacher: 'n/a' };
       try {
         const carries = buf.length > 0 && mintWindow.responseCarriesFileUrl({ bodyText: buf });
         let urls = [];
         let teacherUrl = null;
         if (carries) {
+          urls = this._replayResponseUrls(buf);
+          // v2.48.36 (ROOT PACK — E): teacher ka address ab
+          // capture ki asal kitab se aata hai (seekhne ke
+          // pal darj hua mint address) — muqabla tab hi
+          // 'n/a' rahega jab wo asal me kabhi darj hi na
+          // hua ho (v2.48.35 me bandhe link par nirbhar
+          // tha, jo aksar khaali milta tha).
           try {
-            const scan = networkCapture.scanBatchExecuteBody(buf, cap.patterns);
-            urls = (scan.allUrls || []).filter(u => flowContent.isFlowContentVideoUrl(u));
-          } catch (e) { urls = []; }
-          try {
-            const bound = (typeof cap.urlForKey === 'function') ? cap.urlForKey(tpl.taskKey) : null;
-            teacherUrl = bound && bound.url ? bound.url : null;
+            teacherUrl = (typeof cap.teacherMintUrlForTemplate === 'function')
+              ? cap.teacherMintUrlForTemplate(tpl) : null;
           } catch (e) { teacherUrl = null; }
         }
         verdict = mintReplay.classifyVerbatimProbe({ carriesUrl: carries, urls, teacherUrl });
@@ -6075,6 +6261,268 @@ class FlowAutomationEngine {
    * tarah chalta hai. Download-stage ki haar par prompt
    * KABHI dobara nahi bheja jata (sacred rule barkarar).
    */
+  /**
+   * v2.48.36 (ROOT PACK — B ki seedhi): is task ki tile ko
+   * page ki selected/focused state me lana — editor khole
+   * BAGHAIR. Tartib: hover (tile ke controls jaagte hain)
+   * → tile ke andar koi selection affordance (checkbox /
+   * role=checkbox / 'select' naam wala control) ho to
+   * wahi click → warna keyboard focus (tile ya us ke
+   * pehle focusable ko focus(); click NAHI, is liye
+   * editor nahi khulta). Affordance ke click se editor
+   * khul jaye to wo khabar alag lautti hai (openedEditor)
+   * — bulane wala use route C ke hawale kar deta hai.
+   * Koi mehfooz tareeqa na mile to { attempted:false } —
+   * bulane wala log karke route chhod deta hai.
+   * Natija: { attempted, method?, openedEditor? }.
+   */
+  async _selectTileWithoutOpening(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return { attempted: false };
+      let editorAlready = false;
+      try { editorAlready = await this._inEditorView(); } catch (e) { editorAlready = false; }
+      if (editorAlready) return { attempted: false, openedEditor: true };
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      const coords = idx >= 0 ? await this._tileCenterCoords(idx) : { found: false };
+      if (!coords.found) return { attempted: false };
+      try { await this.page.mouse.move(coords.x, coords.y); } catch (e) {}
+      await sleep(350);
+      const act = await this.page.evaluate(({ idx }) => {
+        const tiles = Array.from(document.querySelectorAll('flow-grid-tile-container'));
+        const tile = tiles[idx];
+        if (!tile) return { method: 'none' };
+        const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        const cands = Array.from(tile.querySelectorAll('input[type="checkbox"], [role="checkbox"], button, [role="button"]'));
+        for (const el of cands) {
+          if (!visible(el)) continue;
+          const isCheckbox = (el.getAttribute && el.getAttribute('type') === 'checkbox')
+            || (el.getAttribute && el.getAttribute('role') === 'checkbox');
+          const label = norm(el.getAttribute && el.getAttribute('aria-label'));
+          if (isCheckbox || /select/.test(label)) {
+            const r = el.getBoundingClientRect();
+            return { method: 'affordance', x: r.x + r.width / 2, y: r.y + r.height / 2 };
+          }
+        }
+        // Keyboard focus: tile ya us ke andar ke pehle
+        // focusable ko focus — click nahi, editor nahi.
+        try {
+          const focusable = tile.querySelector('a[href], button, [tabindex]') || tile;
+          if (focusable) {
+            if (focusable.setAttribute && !(focusable.hasAttribute && focusable.hasAttribute('tabindex'))) {
+              try { focusable.setAttribute('tabindex', '-1'); } catch (e) {}
+            }
+            focusable.focus();
+            const active = document.activeElement;
+            if (active && (active === tile || tile.contains(active))) return { method: 'focus' };
+          }
+        } catch (e) {}
+        return { method: 'none' };
+      }, { idx });
+      if (!act || act.method === 'none') return { attempted: false };
+      if (act.method === 'affordance') {
+        try { await this.page.mouse.click(act.x, act.y); } catch (e) {}
+        await sleep(250);
+        let opened = false;
+        try { opened = await this._inEditorView(); } catch (e) { opened = false; }
+        if (opened) return { attempted: true, method: 'affordance', openedEditor: true };
+      }
+      return { attempted: true, method: act.method };
+    } catch (e) {
+      return { attempted: false };
+    }
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — B: GRID-SELECTION REPLAY):
+   * editor khole baghair, sirf tile ko selected/focused
+   * karke seekhi hui mint call hu-bahu chalana. Theory
+   * (ZEROCLICK3 ke saboot par): call session ke
+   * "current" media ka address deti hai — tile ki
+   * selection hi wo current state grid par bana sakti
+   * hai. Jawab ka address TEACHER ke address jaisa ho
+   * to FETCH KABHI NAHI (wo is task ki file nahi) —
+   * wahi line is theory ka faisla hai:
+   *   [ROOT] grid-replay returned teacher url — context
+   *   is not tile-selection
+   * Alag address aaye to claim + verified server-fetch:
+   *   [ROOT] via=grid-replay gap=<N>s
+   * Template na ho (pehla task) ya ye task khud teacher
+   * ho to khamoshi se skip — viewer route wahi seekhta
+   * hai jo aaj seekhta hai.
+   * Natija: { done, editorOpen }.
+   */
+  async _tryGridReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint) {
+    const n = task.promptIndex + 1;
+    if (task._gridReplayTried) return { done: false, editorOpen: false };
+    task._gridReplayTried = true;
+    const cap = this.netCapture;
+    const tpl = cap && cap.mintTemplate ? cap.mintTemplate : null;
+    if (!tpl || !tpl.body || !tpl.url) return { done: false, editorOpen: false }; // pehla task — seekhne wala koi nahi
+    if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return { done: false, editorOpen: false }; // apna hi template — ye task khud teacher hai
+    if (!this.page || this.page.isClosed() || this.isStopping || task.mediaSaved) return { done: false, editorOpen: false };
+
+    const sel = await this._selectTileWithoutOpening(task, tileIndexHint);
+    if (!sel || !sel.attempted) {
+      this.log(`[ROOT] [Prompt #${n}] grid-replay skipped — no safe way to select this tile without opening the editor was found`, 'info');
+      attempts.push({ strategy: 'grid-replay', ok: false, note: 'no safe way to select this task\'s tile without opening the editor was found — the grid replay was skipped and the normal routes ran' });
+      return { done: false, editorOpen: false };
+    }
+    if (sel.openedEditor) {
+      this.log(`[ROOT] [Prompt #${n}] grid-replay selection opened the editor instead — the replay will be tried from the editor context`, 'info');
+      attempts.push({ strategy: 'grid-replay', ok: false, note: 'selecting the tile opened its editor instead — the replay continues from the editor context route' });
+      return { done: false, editorOpen: true };
+    }
+    const { status, buf } = await this._fireMintReplay(tpl);
+    if (status === 'error' || (typeof status === 'number' && status >= 400)) {
+      attempts.push({ strategy: 'grid-replay', ok: false, note: `the grid-selection replay was not answered (${status === 'error' ? 'no response' : `http-${status}`}) — the normal routes ran as fallback` });
+      return { done: false, editorOpen: false };
+    }
+    const urls = this._replayResponseUrls(buf);
+    if (!(buf.length > 0 && mintWindow.responseCarriesFileUrl({ bodyText: buf })) || urls.length === 0) {
+      this.log(`[ROOT] [Prompt #${n}] grid-replay answered without file url`, 'info');
+      attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid-selection replay was answered but carried no file address — the normal routes ran as fallback' });
+      return { done: false, editorOpen: false };
+    }
+    const res = await this._saveFromReplayUrls(task, downloadFolder, settings, urls, 'grid-replay', buf, tpl.url);
+    if (res.outcome === 'teacher') {
+      this.log(`[ROOT] grid-replay returned teacher url — context is not tile-selection`, 'warn');
+      attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid-selection replay returned the previous task\'s file address — tile selection does not set the download context, and the address was NOT fetched' });
+      return { done: false, editorOpen: false };
+    }
+    if (res.outcome === 'saved') {
+      this.log(`[ROOT] via=grid-replay gap=${res.gapSec}s`, 'success');
+      attempts.push({ strategy: 'grid-replay', ok: true, note: `the file was fetched straight from Flow's server after selecting this video's tile on the grid and replaying the learned mint call — no editor, no download-button click, no menu; render→save gap ${res.gapSec}s` });
+      return { done: true, editorOpen: false };
+    }
+    attempts.push({ strategy: 'grid-replay', ok: false, note: `the grid-selection replay produced an address that could not be saved (${res.outcome}) — the normal routes ran as fallback` });
+    return { done: false, editorOpen: false };
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — C: EDITOR-CONTEXT REPLAY):
+   * is task ka viewer/editor kholo — lekin Download
+   * button NAHI dabana. Editor ka context hi (theory ke
+   * mutabiq) session ka "current" media hota hai; ~600ms
+   * settle ke baad seekhi hui mint call hu-bahu chalao:
+   *   - jawab is task ka naya address le aaye → claim +
+   *     verified server-fetch → [ROOT] via=replay-context
+   *   - jawab TEACHER ka address le aaye →
+   *     [ROOT] replay-context returned teacher url
+   *   - jawab me address hi na aaye →
+   *     [ROOT] replay-context no url
+   *   Dono haar par editor KHULA rehta hai aur
+   *   direct-viewer route usi khule editor se aage
+   *   badhta hai (uska apna button click wahan jaiz hai —
+   *   wo maujood proven rasta hai).
+   * Editor khulne ke baad page-harvest bhi dobara
+   * dekha jata hai (preview fetch ke bytes is beech aa
+   * sakte hain, ~3s tak poll) — wo exact file hai:
+   * [ROOT] via=page-harvest.
+   * Template na ho / teacher khud ho to khamosh skip.
+   * Natija: { done, editorOpen }.
+   */
+  async _tryEditorContextReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, opts) {
+    const o = opts || {};
+    if (task._replayContextTried) return { done: false, editorOpen: !!o.editorOpen };
+    task._replayContextTried = true;
+    const cap = this.netCapture;
+    const tpl = cap && cap.mintTemplate ? cap.mintTemplate : null;
+    if (!tpl || !tpl.body || !tpl.url) return { done: false, editorOpen: !!o.editorOpen }; // pehla task — khamosh skip
+    if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return { done: false, editorOpen: !!o.editorOpen }; // teacher khud
+    if (!this.page || this.page.isClosed() || this.isStopping || task.mediaSaved) return { done: false, editorOpen: !!o.editorOpen };
+
+    let editorOpen = !!o.editorOpen;
+    if (!editorOpen) {
+      const openedRes = await this._openTileViewer(task, tileIndexHint, 'ROOT');
+      editorOpen = !!openedRes.opened;
+      if (!editorOpen) {
+        attempts.push({ strategy: 'replay-context', ok: false, note: 'the tile viewer did not open — the editor-context replay was skipped and the viewer route will try opening it itself' });
+        return { done: false, editorOpen: false };
+      }
+    }
+    task._viewerOpenedByRoot = true;
+    // Editor ki haalat ko saans lene do (~600ms) — context
+    // wahi pal pakka hota hai.
+    await sleep(600);
+    // (D-ii) preview fetch ke bytes is beech kitab me aa
+    // gaye hon to wohi exact file hai — replay se pehle.
+    try {
+      const okHarvest = await this._pollHarvestSave(task, downloadFolder, settings, attempts, 3000);
+      if (okHarvest || task.mediaSaved) return { done: true, editorOpen: true };
+    } catch (e) {}
+    if (this.isStopping || task.mediaSaved) return { done: !!task.mediaSaved, editorOpen: true };
+
+    const { status, buf } = await this._fireMintReplay(tpl);
+    if (status === 'error' || (typeof status === 'number' && status >= 400)) {
+      attempts.push({ strategy: 'replay-context', ok: false, note: `the editor-context replay was not answered (${status === 'error' ? 'no response' : `http-${status}`}) — the viewer route continues from the open editor` });
+      return { done: false, editorOpen: true };
+    }
+    const urls = this._replayResponseUrls(buf);
+    if (!(buf.length > 0 && mintWindow.responseCarriesFileUrl({ bodyText: buf })) || urls.length === 0) {
+      this.log(`[ROOT] replay-context no url`, 'info');
+      attempts.push({ strategy: 'replay-context', ok: false, note: 'the editor-context replay was answered but carried no file address — the viewer route continues from the open editor' });
+      return { done: false, editorOpen: true };
+    }
+    const res = await this._saveFromReplayUrls(task, downloadFolder, settings, urls, 'replay-context', buf, tpl.url);
+    if (res.outcome === 'teacher') {
+      this.log(`[ROOT] replay-context returned teacher url`, 'warn');
+      attempts.push({ strategy: 'replay-context', ok: false, note: 'the editor-context replay returned the previous task\'s file address — it was NOT fetched; the viewer route continues from the open editor' });
+      return { done: false, editorOpen: true };
+    }
+    if (res.outcome === 'saved') {
+      this.log(`[ROOT] via=replay-context gap=${res.gapSec}s`, 'success');
+      attempts.push({ strategy: 'replay-context', ok: true, note: `the file was fetched straight from Flow's server by replaying the learned mint call inside this video's open editor — the Download button was NOT clicked and no menu was used; render→save gap ${res.gapSec}s` });
+      return { done: true, editorOpen: true };
+    }
+    attempts.push({ strategy: 'replay-context', ok: false, note: `the editor-context replay produced an address that could not be saved (${res.outcome}) — the viewer route continues from the open editor` });
+    return { done: false, editorOpen: true };
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — C ki mushtarak seedhi): is task
+   * ke tile ka viewer/editor kholna — ya pehle se khula ho
+   * to wahi reuse. Koi button NAHI dabta, koi menu NAHI
+   * khulta. Route C (replay-context) aur direct-viewer
+   * dono yahi istemal karte hain, is liye C ke khole hue
+   * editor ko viewer route baghair dobara khole aage
+   * badha sakta hai (task._viewerOpenedByRoot nishaan).
+   * Natija: { opened, alreadyOpen, tileMissing, anchor } —
+   * anchor = khulne ki koshish ke aaghaz ka pal (mint
+   * khidki ka langar).
+   */
+  async _openTileViewer(task, tileIndexHint, logTag) {
+    const n = task.promptIndex + 1;
+    const tag = logTag || 'DIRECT';
+    let viewerOpen = false;
+    try { viewerOpen = await this._inEditorView(); } catch (e) { viewerOpen = false; }
+    if (viewerOpen) {
+      if (task._viewerOpenedByRoot) {
+        this.log(`[${tag}] [Prompt #${n}] The big view is already open for this video (opened by the replay route) — reusing it, no second opening…`, 'info');
+      } else if (tag === 'DIRECT') {
+        this.log(`[DIRECT] [Prompt #${n}] The big view is already open — going straight to its Download button (no menu)…`, 'info');
+      } else {
+        this.log(`[${tag}] [Prompt #${n}] The big view is already open — reusing it (no menu)…`, 'info');
+      }
+      return { opened: true, alreadyOpen: true, tileMissing: false, anchor: Date.now() };
+    }
+    const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+    const coords = idx >= 0 ? await this._tileCenterCoords(idx) : { found: false };
+    if (!coords.found) return { opened: false, alreadyOpen: false, tileMissing: true, anchor: Date.now() };
+    if (tag === 'DIRECT') {
+      this.log(`[DIRECT] [Prompt #${n}] Opening this video's tile viewer (no menu) — the viewer's own Download button is the primary download route…`, 'info');
+    } else {
+      this.log(`[${tag}] [Prompt #${n}] Opening this video's tile viewer (no menu) — the Download button will NOT be clicked; the learned mint call is replayed from this editor context…`, 'info');
+    }
+    const anchor = Date.now();
+    await this.page.mouse.click(coords.x, coords.y);
+    for (let r = 0; r < 10 && !viewerOpen; r++) {
+      await sleep(250);
+      try { viewerOpen = await this._inEditorView(); } catch (e) { viewerOpen = false; }
+    }
+    return { opened: viewerOpen, alreadyOpen: false, tileMissing: false, anchor };
+  }
+
   async _tryDirectViewerDownload(task, downloadFolder, settings, tileIndexHint, attempts, attemptStartedAt) {
     const n = task.promptIndex + 1;
     if (!this.page || this.page.isClosed()) return false;
@@ -6085,26 +6533,16 @@ class FlowAutomationEngine {
     const attemptStart = Number.isFinite(attemptStartedAt) ? attemptStartedAt : Date.now();
     const atPlus = (t) => Math.max(0, ((Number.isFinite(t) ? t : Date.now()) - attemptStart) / 1000).toFixed(1);
 
-    let anchor = Date.now();
-    let viewerOpen = false;
-    try { viewerOpen = await this._inEditorView(); } catch (e) { viewerOpen = false; }
-    if (!viewerOpen) {
-      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
-      const coords = idx >= 0 ? await this._tileCenterCoords(idx) : { found: false };
-      if (!coords.found) {
-        attempts.push({ strategy: 'direct-viewer', ok: false, note: 'its tile was not found on the grid — the direct viewer route was skipped' });
-        return false;
-      }
-      this.log(`[DIRECT] [Prompt #${n}] Opening this video's tile viewer (no menu) — the viewer's own Download button is the primary download route…`, 'info');
-      anchor = Date.now();
-      await this.page.mouse.click(coords.x, coords.y);
-      for (let r = 0; r < 10 && !viewerOpen; r++) {
-        await sleep(250);
-        try { viewerOpen = await this._inEditorView(); } catch (e) { viewerOpen = false; }
-      }
-    } else {
-      this.log(`[DIRECT] [Prompt #${n}] The big view is already open — going straight to its Download button (no menu)…`, 'info');
+    // v2.48.36 (ROOT PACK — C): khulna ab mushtarak helper
+    // se hai — route C ka khola hua editor (usi task ka)
+    // yahan baghair dobara khole reuse hota hai.
+    const openedRes = await this._openTileViewer(task, tileIndexHint, 'DIRECT');
+    if (openedRes.tileMissing) {
+      attempts.push({ strategy: 'direct-viewer', ok: false, note: 'its tile was not found on the grid — the direct viewer route was skipped' });
+      return false;
     }
+    const anchor = openedRes.anchor;
+    const viewerOpen = openedRes.opened;
     if (!viewerOpen) {
       this.log(`[DIRECT] [Prompt #${n}] The tile viewer did not open — falling back to the menu route.`, 'warn');
       attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the tile viewer did not open' });
@@ -6264,26 +6702,56 @@ class FlowAutomationEngine {
       } catch (e) {}
     }
 
-    // --- v2.48.33 (ZEROCLICK — PROBE, abhi LIVE PROVEN
-    // NAHI): quick-check ke baad, viewer se bhi PEHLE —
-    // session ke kisi pehle task se seekhi hui mint-call ko
-    // bina kisi UI click ke replay karo (teacher ke ID ki
-    // jagah is task ka ID). Template na ho (pehla task) ya
-    // replay nakam ho to waqt ki hadd (~8s) ke andar haar
-    // maan kar agli tartib bilkul pehle ki tarah chalti hai.
-    // (Image tasks par ye qadam nahi hai.) ---
+    // --- v2.48.36 (ROOT PACK — B: GRID-SELECTION REPLAY):
+    // quick-check ke baad, editor kholne se bhi PEHLE —
+    // tile ko grid par selected/focused karke seekhi hui
+    // mint call hu-bahu chalana. Jawab TEACHER ka address
+    // le aaye to fetch NAHI hota (wo is task ki file nahi);
+    // naya address aaye to claim + verified server-fetch.
+    // Template na ho (pehla task khud teacher hai) to ye
+    // qadam khamoshi se guzar jata hai. Selection ke bajae
+    // editor khul gaya ho to wo khabar route C ko jati
+    // hai (rootEditorOpen). ---
+    let rootEditorOpen = false;
     if (!isImage) {
       try {
-        const okZero = await this._tryZeroClickReplay(task, downloadFolder, settings, attempts, captureKey);
-        if (okZero || task.mediaSaved) {
+        const g = await this._tryGridReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
+        if (g && g.done) {
           try {
             this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
           } catch (e) {}
-          const wonZero = attempts.filter(a => a.ok).pop();
-          return { ok: true, strategy: wonZero ? wonZero.strategy : 'zero-click', attempts };
+          return { ok: true, strategy: 'grid-replay', attempts };
         }
+        if (g && g.editorOpen) rootEditorOpen = true;
       } catch (e) {
-        attempts.push({ strategy: 'zero-click', ok: false, note: 'the zero-click replay hit a problem — the existing routes ran as fallback' });
+        attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid-selection replay hit a problem — the existing routes ran as fallback' });
+      }
+    }
+
+    // --- v2.48.36 (ROOT PACK — C: EDITOR-CONTEXT REPLAY):
+    // is task ka editor kholo, Download button NAHI
+    // dabao — editor ke context se wahi mint call hu-bahu.
+    // Naya address → server-fetch save; teacher ka
+    // address ya khaali jawab → editor KHULA rehta hai
+    // aur direct-viewer route usi se aage badhta hai.
+    // (v2.48.33/.34 wala substitution zero-click qadam
+    // gaya: ZEROCLICK2 ne sabit kar diya ke call me
+    // badalne ko koi id hai hi nahi — uski jagah ab ye
+    // do hu-bahu (verbatim) wale raaste hain.) ---
+    if (!isImage) {
+      try {
+        const c = await this._tryEditorContextReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, { editorOpen: rootEditorOpen });
+        if (c && c.done) {
+          try {
+            this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
+          } catch (e) {}
+          const wonRoot = attempts.filter(a => a.ok).pop();
+          return { ok: true, strategy: wonRoot ? wonRoot.strategy : 'replay-context', attempts };
+        }
+        if (c && c.editorOpen) rootEditorOpen = true;
+      } catch (e) {
+        attempts.push({ strategy: 'replay-context', ok: false, note: 'the editor-context replay hit a problem — the existing routes ran as fallback' });
+        try { await this._returnToProjectGrid(); } catch (e2) {}
       }
     }
 
@@ -6312,9 +6780,10 @@ class FlowAutomationEngine {
     }
 
     // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download — ab
-    // CHAHTHA qadam aur fallback #2 (quick-check sab se pehle,
-    // zero-click replay dusra — v2.48.33 probe, direct viewer
-    // route teesra — v2.48.32 se primary) ---
+    // fallback wala qadam (v2.48.36 ki tartib: quick-check
+    // sab se pehle, phir grid-replay, phir editor-context
+    // replay, phir direct viewer route — v2.48.32 se
+    // primary — aur menu us ke baad) ---
     // FASTTEST1 (2026-11-02, owner ke PC par sabit): render ke pal
     // page me bytes hote hi NAHI; file sirf menu ke Download click
     // ke baad aati hai. To jo rasta file LAATA hai, wahi pehle —

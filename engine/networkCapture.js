@@ -3,6 +3,8 @@
 const flowContent = require('./flowContent');
 const mintWindow = require('./mintWindow');
 const mintReplay = require('./mintReplay');
+const saveGuard = require('./saveGuard');
+const downloadFetch = require('./downloadFetch');
 
 /**
  * FlowStudio Lite — NETWORK CAPTURE LAYER (v2.8.0).
@@ -550,8 +552,31 @@ class NetworkCapture {
     // jis ke download round me watch chalu hai (seekhne wale
     // task ki pehchan). Template roundon ke paar rehta hai —
     // sirf reset() (naya session) use saaf karta hai.
-    this.mintTemplate = null; // { url, method, headers, body, at, taskKey, primaryId, ids, idOccurrences, urlPrimaryId, urlIds, urlIdOccurrences }
+    this.mintTemplate = null; // { url, method, headers, body, at, taskKey, primaryId, ids, idOccurrences, urlPrimaryId, urlIds, urlIdOccurrences, teacherUrl }
     this._mintTaskKey = null;
+    // v2.48.36 (ROOT PACK — E): teacher task ka ASAL mint
+    // hua flow-content URL — sirf is capture ki yaad me
+    // rehta hai (kabhi log nahi), taaki verbatim replay ke
+    // jawab ka same/different muqabla hamesha ho sake
+    // (v2.48.35 me teacher ka URL capture ke paas maujood
+    // hote hue bhi muqabla 'n/a' nikal sakta tha kyunke
+    // probe bandhe hue link ko hi dhoondta tha — mint ke
+    // pal ka address wahan darj hi nahi hota tha).
+    this.mintTeacherUrl = null;
+    // v2.48.36 (ROOT PACK — D): PAGE-FETCH HARVEST — page
+    // khud (editor preview/playback par) asal server file
+    // ke bytes khinchta hai; wohi bytes CDP getResponseBody
+    // se yaad rakh liye jate hain, lekin SIRF tab jab
+    // saveGuard ke darwaze (bandhan + size floor + MP4
+    // header) guzar jayen. Ek task ke naam ek hi body,
+    // hadd ~8MB; task ke round ke aakhir par evict.
+    this.harvestBodies = new Map(); // captureKey -> { url, buffer, at }
+    this._harvestByUrl = new Map(); // url -> { buffer, at } (bandhan se pehle aayi body; hadd 2)
+    this._harvestPending = new Map(); // CDP requestId -> { url, declared }
+    // Engine har download round me apni duration ka size
+    // floor yahan rakh deta hai (downloadFetch wala hisaab);
+    // 0 = floor nahi (aam darwaze hi laagu).
+    this.harvestFloorBytes = 0;
   }
 
   arm() { this.armed = true; }
@@ -811,7 +836,7 @@ class NetworkCapture {
         } catch (err) {}
       });
       client.on('Network.loadingFailed', (e) => {
-        try { if (e) { this._cdpBatch.delete(e.requestId); this._cdpDlShape.delete(e.requestId); this._cdpBigShape.delete(e.requestId); } } catch (err) {}
+        try { if (e) { this._cdpBatch.delete(e.requestId); this._cdpDlShape.delete(e.requestId); this._cdpBigShape.delete(e.requestId); this._harvestPending.delete(e.requestId); } } catch (err) {}
       });
       // v2.48.24: DOWNLOAD CENSUS — media-host / asb wale tamam
       // responses ki shakal + kul size, poori run (menu wale
@@ -850,6 +875,14 @@ class NetworkCapture {
             // flowContent ke exact-host matcher se hi hoti hai.
             if (flowContent.isFlowContentVideoUrl(u, rawType)) {
               this._recordFlowContentVideo(u, (rawType.split(';')[0] || '').trim().toLowerCase(), Date.now());
+              // v2.48.36 (ROOT PACK — D): harvest ummeedwaar —
+              // loadingFinished par is jawab ka body CDP se
+              // uthaya jayega (best-effort). Map had me rahe.
+              if (this._harvestPending.size > 20) {
+                const firstKey = this._harvestPending.keys().next().value;
+                this._harvestPending.delete(firstKey);
+              }
+              this._harvestPending.set(e.requestId, { url: u, declared: Number.isFinite(declared) ? declared : 0 });
             }
           }
         } catch (err) {}
@@ -910,6 +943,21 @@ class NetworkCapture {
                 });
               }
             }
+          }
+          // v2.48.36 (ROOT PACK — D): PAGE-FETCH HARVEST —
+          // page ne khud jo flow-content jawab khincha tha,
+          // us ka body ab CDP se uthao (best-effort: na mile
+          // to koi candidate nahi, kabhi blocker nahi, kabhi
+          // error nahi). Rakha sirf saveGuard ke darwazon se
+          // guzarne par jata hai (_retainHarvestBody).
+          if (e && this._harvestPending.has(e.requestId)) {
+            const pend = this._harvestPending.get(e.requestId);
+            this._harvestPending.delete(e.requestId);
+            try {
+              const hres = await client.send('Network.getResponseBody', { requestId: e.requestId });
+              const hbuf = decodeCdpBody(hres && hres.body, hres && hres.base64Encoded);
+              if (hbuf && hbuf.length > 0) this._retainHarvestBody(pend.url, hbuf, Date.now());
+            } catch (herr) {}
           }
         } catch (err) {}
         // v2.48.27 (NET-BIG): faisla + khidki-hisaab — size ki
@@ -993,6 +1041,18 @@ class NetworkCapture {
     if (sub && sight && sight.firstSeenAt < sub.at - this.patterns.bindSlackMs) return false;
     this.urlByKey.set(key, { url, via, at: Number.isFinite(at) ? at : Date.now() });
     this.keyByUrl.set(url, key);
+    // v2.48.36 (ROOT PACK — E): teacher task ka asal
+    // flow-content address bandhan ke pal bhi pakad lo —
+    // seekhne ke pal jawab ke andar se na mila ho to yahi
+    // uski jagah lega, taaki replay muqabla kabhi 'n/a'
+    // na bane jab address asal me maloom hai.
+    try {
+      if (this.mintTemplate && this.mintTemplate.taskKey === key
+        && flowContent.isFlowContentVideoUrl(url) && !this.mintTeacherUrl) {
+        this.mintTeacherUrl = url;
+        if (!this.mintTemplate.teacherUrl) this.mintTemplate.teacherUrl = url;
+      }
+    } catch (e) {}
     if (sight) sight.claimedBy = key;
     if (via === 'workflow-id') this.stats.boundById++;
     else if (via === 'currentSrc') this.stats.boundByCurrentSrc++;
@@ -1154,6 +1214,108 @@ class NetworkCapture {
   }
 
   /**
+   * v2.48.36 (ROOT PACK — D): page ke khinche hue ek
+   * flow-content jawab ke body ko harvest kitab me rakho.
+   * Darwaze saveGuard ke khalis hisaab se hain:
+   *   - URL pehle se kisi task ke naam bandha ho to bandhan
+   *     ke saath poora faisla (harvestCandidateVerdict) —
+   *     pass ho to us task ke naam ek body (pehli wali hi
+   *     rehti hai);
+   *   - bandhan abhi na hua ho to aam darwaze
+   *     (harvestGenericGates) guzarne par body URL ke naam
+   *     pakdi rehti hai (hadd 2) — bandhan bante hi
+   *     harvestForKey use asal task ke naam kar deta hai,
+   *     wahan faisla dobara poora chalta hai.
+   * Koi bhi nakami = koi candidate nahi (khamoshi se).
+   */
+  _retainHarvestBody(url, buffer, at) {
+    try {
+      if (!url || !Buffer.isBuffer(buffer) || buffer.length === 0) return false;
+      const t = Number.isFinite(at) ? at : Date.now();
+      const headerOk = downloadFetch.looksLikeVideoBuffer(buffer);
+      const floor = this.harvestFloorBytes || 0;
+      const key = this.keyByUrl.get(url) || null;
+      if (key) {
+        const v = saveGuard.harvestCandidateVerdict({
+          bound: true, byteLength: buffer.length, floorBytes: floor, headerOk
+        });
+        if (!v.accept) return false;
+        if (!this.harvestBodies.has(key)) {
+          this.harvestBodies.set(key, { url, buffer, at: t });
+        }
+        return true;
+      }
+      const g = saveGuard.harvestGenericGates({
+        byteLength: buffer.length, floorBytes: floor, headerOk
+      });
+      if (!g.ok) return false;
+      if (!this._harvestByUrl.has(url) && this._harvestByUrl.size >= 2) {
+        const firstKey = this._harvestByUrl.keys().next().value;
+        this._harvestByUrl.delete(firstKey);
+      }
+      if (!this._harvestByUrl.has(url)) {
+        this._harvestByUrl.set(url, { buffer, at: t });
+      }
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — D): is task ke liye rakha hua
+   * page-fetch body ({ url, buffer, at }) ya null. URL ke
+   * naam pakdi body bandhan banne par yahin task ke naam
+   * ho jati hai (faisla dobara poora chalta hai — bandhan
+   * ke baghair kabhi nahi milti).
+   */
+  harvestForKey(key) {
+    try {
+      if (!key) return null;
+      if (this.harvestBodies.has(key)) return this.harvestBodies.get(key);
+      const bound = this.urlByKey.get(key);
+      if (!bound || !bound.url) return null;
+      const held = this._harvestByUrl.get(bound.url);
+      if (!held) return null;
+      this._harvestByUrl.delete(bound.url);
+      const v = saveGuard.harvestCandidateVerdict({
+        bound: true,
+        byteLength: held.buffer.length,
+        floorBytes: this.harvestFloorBytes || 0,
+        headerOk: downloadFetch.looksLikeVideoBuffer(held.buffer)
+      });
+      if (!v.accept) return null;
+      const entry = { url: bound.url, buffer: held.buffer, at: held.at };
+      this.harvestBodies.set(key, entry);
+      return entry;
+    } catch (e) { return null; }
+  }
+
+  /** v2.48.36 (ROOT PACK — D): task ka harvest saaf karo (round ke aakhir par engine bulata hai). */
+  evictHarvest(key) {
+    try { if (key) this.harvestBodies.delete(key); } catch (e) {}
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — E): is template ke TEACHER task
+   * ka asal mint hua flow-content URL — pehle template par
+   * seekhne ke pal darj hua, warna task ke bandhe hue link
+   * se, warna capture ki apni kitab (mintTeacherUrl) se.
+   * Teeno na hon to hi null — yani same/different muqabla
+   * ab sirf tab 'n/a' hoga jab teacher ka address asal me
+   * kabhi darj hi na hua ho. URL kabhi log nahi hota.
+   */
+  teacherMintUrlForTemplate(tpl) {
+    try {
+      const t = tpl || this.mintTemplate;
+      if (t && t.teacherUrl) return t.teacherUrl;
+      if (t && t.taskKey) {
+        const bound = this.urlByKey.get(t.taskKey);
+        if (bound && bound.url && flowContent.isFlowContentVideoUrl(bound.url)) return bound.url;
+      }
+      return this.mintTeacherUrl || null;
+    } catch (e) { return null; }
+  }
+
+  /**
    * v2.48.31 (MINT): mint watch chalu/band. Chalu karne par
    * ring aur carries-dedupe saaf hote hain (har download round
    * apni taaza khidki rakhta hai). Watch band ho to na koi
@@ -1226,7 +1388,23 @@ class NetworkCapture {
       // jawab file-address le aaya — use replay template ke
       // roop me seekh lo (asal darkhwast saath aayi ho tab hi;
       // Location-wali khabar par template nahi banta).
-      if (reqTemplate) this._learnMintTemplate(reqTemplate);
+      if (reqTemplate) {
+        // v2.48.36 (ROOT PACK — E): is jawab ke andar ke
+        // asal flow-content address bhi template ke saath
+        // darj karo (sirf yaad me — kabhi log nahi) —
+        // teacher ka yahi address aage ke har replay
+        // muqable ka langar hai.
+        try {
+          let carriedUrls = [];
+          if (bodyText) {
+            const buf = Buffer.isBuffer(bodyText) ? bodyText : Buffer.from(String(bodyText), 'latin1');
+            const scan = scanBatchExecuteBody(buf, this.patterns);
+            carriedUrls = (scan.allUrls || []).filter(u => flowContent.isFlowContentVideoUrl(u));
+          }
+          reqTemplate.carriedUrls = carriedUrls;
+        } catch (e) { reqTemplate.carriedUrls = []; }
+        this._learnMintTemplate(reqTemplate);
+      }
     } catch (e) {}
   }
 
@@ -1297,9 +1475,29 @@ class NetworkCapture {
       // replay ka dusra (aur shayad asal) rasta yahi hai.
       const urlOccurrences = mintReplay.findIdOccurrencesInText(String(reqTemplate.url || ''), usableIds);
       const urlPrimaryId = urlOccurrences.length ? urlOccurrences[0].id : null;
+      // v2.48.36 (ROOT PACK — E): teacher ka asal mint hua
+      // address — pehle is jawab ke andar se (carriedUrls),
+      // warna is task ke bandhe hue link se. Sirf yaad me
+      // rehta hai, kabhi log nahi hota.
+      let teacherUrl = null;
+      if (Array.isArray(reqTemplate.carriedUrls)) {
+        const fc = reqTemplate.carriedUrls.filter(u => flowContent.isFlowContentVideoUrl(u));
+        if (fc.length) teacherUrl = fc[0];
+      }
+      if (!teacherUrl && key) {
+        const bound = this.urlByKey.get(key);
+        if (bound && bound.url && flowContent.isFlowContentVideoUrl(bound.url)) teacherUrl = bound.url;
+      }
       if (this.mintTemplate && this.mintTemplate.taskKey === key
         && Buffer.isBuffer(this.mintTemplate.body) && this.mintTemplate.body.equals(body)) {
-        return; // wahi template pehle se hai — khabar dobara nahi
+        // Wahi template pehle se hai — khabar dobara nahi,
+        // lekin teacher ka address is dafa mila ho aur
+        // pehle ghayab raha ho to kitab poori kar do.
+        if (teacherUrl && !this.mintTemplate.teacherUrl) {
+          this.mintTemplate.teacherUrl = teacherUrl;
+          if (!this.mintTeacherUrl) this.mintTeacherUrl = teacherUrl;
+        }
+        return;
       }
       this.mintTemplate = {
         url: reqTemplate.url,
@@ -1313,8 +1511,10 @@ class NetworkCapture {
         idOccurrences: occurrences,
         urlPrimaryId,
         urlIds: urlOccurrences.map(o => o.id),
-        urlIdOccurrences: urlOccurrences
+        urlIdOccurrences: urlOccurrences,
+        teacherUrl
       };
+      if (teacherUrl && !this.mintTeacherUrl) this.mintTeacherUrl = teacherUrl;
       if (this.onMintTemplate) {
         try {
           this.onMintTemplate({

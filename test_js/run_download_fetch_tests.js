@@ -340,9 +340,11 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   // route is second (and carries the post-click race inside).
   eq('QUICK-CHECK first route is quick-check', firstRoute(), 'quick-check');
   eq('QUICK-CHECK order starts with quick-check', DOWNLOAD_ROUTE_ORDER[0], 'quick-check');
-  // v2.48.31: the DIRECT-PROBE (tile viewer, no menu) is the
-  // second step now; the menu route moved to third.
-  eq('DIRECT-PROBE viewer route is second', DOWNLOAD_ROUTE_ORDER[1], 'direct-viewer');
+  // v2.48.31: the DIRECT-PROBE (tile viewer, no menu) became
+  // the second step; the menu route moved to third.
+  // v2.48.32 (SWITCH): same order — direct-viewer is now the
+  // PRIMARY route and the menu is fallback #2.
+  eq('SWITCH viewer route is primary (second)', DOWNLOAD_ROUTE_ORDER[1], 'direct-viewer');
   eq('QUICK-CHECK menu route is third', DOWNLOAD_ROUTE_ORDER[2], 'native-menu');
   eq('QUICK-CHECK order ends with native-editor', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'native-editor');
   eq('QUICK-CHECK route count', DOWNLOAD_ROUTE_ORDER.length, 11);

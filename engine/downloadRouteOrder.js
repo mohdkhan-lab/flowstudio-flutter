@@ -27,21 +27,29 @@
 // hai, dusre number par poora barkarar hai.
 //
 // v2.48.31 (DIRECT-PROBE): quick-check ke baad, menu se
-// PEHLE naya probe qadam 'direct-viewer' hai — tile ka viewer
-// khol kar (aur andar seedha Download button ho to use daba
-// kar) dekha jata hai ke file ka server address bina ⋮ menu
-// ke mint hota hai kya. Mile to verified server-fetch se
-// save; na bane to viewer band karke baaki tartib bilkul
-// pehle ki tarah. Probe ka natija live test hi tay karega.
+// PEHLE naya probe qadam 'direct-viewer' aaya tha — tile ka
+// viewer khol kar (aur andar seedha Download button ho to
+// use daba kar) dekha gaya ke file ka server address bina
+// ⋮ menu ke mint hota hai kya.
+//
+// v2.48.32 (SWITCH): DIRECTTEST1 (v2.48.31, owner ke PC par
+// LIVE PROVEN) ke baad 'direct-viewer' ab PRIMARY download
+// rasta hai — viewer ke apne "Download media" button ka
+// click hi address mint karta hai aur file app ki verified
+// server-fetch se save hoti hai; ⋮ menu kabhi khulta hi
+// nahi. Tartib ke andar bhi button pehle, passive poll baad
+// me hai. Na bane to viewer band karke baaki tartib bilkul
+// pehle ki tarah (menu ab fallback #2 hai).
 //
 // Kram (video tasks):
 //   1. quick-check       — NO-WAIT: pehle se pakde hue registry
 //                          bytes / flow-content URL ka turant
 //                          save (v2.48.29 ka opportunistic
 //                          check, ab attempt ka pehla qadam)
-//   2. direct-viewer     — PROBE: tile viewer (bina menu) —
-//                          kholne/button se server address?
-//                          (v2.48.31)
+//   2. direct-viewer     — PRIMARY (v2.48.32): tile viewer ka
+//                          apna Download button (bina menu) —
+//                          click se mint hua server address,
+//                          app ki server-fetch se save
 //   3. native-menu       — ⋮ menu → Download → resolution select
 //                          (+ v2.48.30 post-click server race)
 //   4. blob-harvest      — page ke andar ke bytes (v2.48.26 FAST-DL)

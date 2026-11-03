@@ -5518,9 +5518,22 @@ class FlowAutomationEngine {
    * Sirf googlevideo preview wala URL is fehrist me aata hi
    * nahi (capture sirf flow-content jawab darj karta hai) —
    * preview-only ka saboot _viewerSawPreviewStream deta hai.
+   *
+   * v2.48.32 (SWITCH): opts.pollMs se poll ka waqfa badla ja
+   * sakta hai (button ke baad wala intezaar ~150–200ms par
+   * rakha gaya hai), aur opts.overlayDetourAtMs diya jaye to
+   * intezaar ke beech us pal par EK dafa resolution-overlay
+   * wali belt-and-braces harkat bhi hoti hai (neeche
+   * _clickViewerOriginalOverlayEntry dekho — wo rasta
+   * ABHI TAK LIVE PROVEN NAHI hai).
    */
-  async _pollViewerFlowContent(task, anchorMs, waitMs) {
-    const deadline = Date.now() + Math.max(500, Number(waitMs) || 3500);
+  async _pollViewerFlowContent(task, anchorMs, waitMs, opts) {
+    const o = opts || {};
+    const pollMs = Math.max(50, Number(o.pollMs) || 200);
+    const detourAtMs = Number.isFinite(o.overlayDetourAtMs) ? o.overlayDetourAtMs : -1;
+    const startedAt = Date.now();
+    const deadline = startedAt + Math.max(500, Number(waitMs) || 3500);
+    let detourDone = false;
     while (Date.now() < deadline) {
       if (this.isStopping || task.mediaSaved) return null;
       let entries = [];
@@ -5539,9 +5552,64 @@ class FlowAutomationEngine {
         });
         if (pick) return pick;
       }
-      await sleep(200);
+      // Belt-and-braces detour: button click ke ~2.5s baad
+      // tak address na aaya ho aur screen par resolution
+      // overlay khula ho to us ka Original entry ek dafa
+      // click karo, phir baaki intezaar jaari rakho.
+      if (!detourDone && detourAtMs >= 0 && (Date.now() - startedAt) >= detourAtMs) {
+        detourDone = true;
+        try { await this._clickViewerOriginalOverlayEntry(task); } catch (e) {}
+        continue;
+      }
+      await sleep(pollMs);
     }
     return null;
+  }
+
+  /**
+   * v2.48.32 (SWITCH — ⚠️ UNPROVEN PATH): viewer ke Download
+   * button ke click ke baad agar Flow resolution overlay/list
+   * khol de aur file ka address khud na aaye, to overlay ke
+   * "Original size" entry ko click karna. DIRECTTEST1
+   * (v2.48.31) me ye haalat aayi hi NAHI — button click ke
+   * ~1.4s baad address khud aa gaya tha, koi overlay
+   * interaction nahi hua. Is liye ye code sirf ek
+   * belt-and-braces bachav hai: overlay maujood hi na ho
+   * (proven raaste par yahi hoga) to ye kuch karta hi nahi,
+   * aur is ka live saboot DIRECTTEST2+ ke live runs se hi
+   * milega. Sirf overlay containeron ke ANDAR ki entries
+   * dekhi jati hain aur /original/ wala label hi chuna jata
+   * hai — editor ke aam controls ko ye kabhi nahi chhuta.
+   */
+  async _clickViewerOriginalOverlayEntry(task) {
+    const n = task.promptIndex + 1;
+    let hit = null;
+    try {
+      hit = await this.page.evaluate(() => {
+        const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const norm = (s) => String(s || '').toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+        const panes = Array.from(document.querySelectorAll('.cdk-overlay-pane, [role="menu"], [role="listbox"], .mat-mdc-menu-panel'));
+        for (const pane of panes) {
+          if (!visible(pane)) continue;
+          const items = Array.from(pane.querySelectorAll('button, [role="menuitem"], [role="option"], li'));
+          for (const it of items) {
+            if (!visible(it)) continue;
+            const label = norm(it.getAttribute('aria-label')) || norm(it.innerText || it.textContent || '');
+            if (label && /original/.test(label)) {
+              const r = it.getBoundingClientRect();
+              return { found: true, x: r.x + r.width / 2, y: r.y + r.height / 2, label: label.substring(0, 40) };
+            }
+          }
+        }
+        return { found: false };
+      });
+    } catch (e) { hit = null; }
+    if (hit && hit.found) {
+      this.log(`[DIRECT] [Prompt #${n}] viewer overlay resolution clicked (detour) — "${hit.label}"`, 'info');
+      try { await this.page.mouse.click(hit.x, hit.y); } catch (e) {}
+      return true;
+    }
+    return false;
   }
 
   /**
@@ -5591,29 +5659,51 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.31 (DIRECT-PROBE): owner ka naya hukm/sawaal — ⋮ menu
-   * poora skip ho sakta hai kya? Do ankhe-phaad (untested)
-   * mumkin raaste is probe se saboot ke saath tay honge:
-   *   (A) sirf tile ka bara view (viewer — is app me tile click
-   *       se khulne wala editor view hi hai, _nativeEditorForm
-   *       wali hi harkat) kholne se flow-content address khud
-   *       aata hai kya? Aur viewer ke andar seedha Download
-   *       button hai kya (bina ⋮ ke)?
-   *   (B) mint window ki [MINT] lines (menu raste par) — alag
-   *       jagah darj hoti hain.
-   * Tartib: tile click → 3.5s tak address ka intezaar → mile
-   * to wahi verified server-fetch machinery (_serverFetchSave:
-   * quality gate + ffprobe) se save, [DIRECT] via=viewer-open.
-   * Na mile lekin seedha button mila → use click karke aur
-   * 3.5s — mile to via=viewer-button. Kuch na bane to viewer
-   * saaf band karke (Escape + grid wapsi) menu wala rasta
-   * bilkul pehle ki tarah chalta hai. PROBE hai — jeet ka
-   * daawa sirf live test karega.
+   * v2.48.32 (SWITCH — .31 ka DIRECT-PROBE ab PRIMARY rasta):
+   * ⋮ menu ke baghair, tile ke bare view (viewer — is app me
+   * tile click se khulne wala editor view) ke apne "Download
+   * media" button se file ka server address mint karke app ki
+   * apni verified server-fetch (_serverFetchSave: quality
+   * gate + ffprobe + mediaSaved bachav) se save.
+   *
+   * LIVE SABOOT (DIRECTTEST1, v2.48.31, 2026-11-03, owner ke
+   * PC par engine log): render-complete → viewer khula →
+   * button mila ("download media") → click ke ~1.4s baad
+   * [MINT] batchexecute jawab file ka address le aaya →
+   * app ki parallel fetch ne file save ki; ⋮ menu kabhi
+   * khula hi nahi, koi resolution-overlay click nahi hua,
+   * koi browser blob download nahi hua. Gap 15.3s tha, jisme
+   * ~4.2s probe ki dheeli tartib (pehle 3.5s passive poll,
+   * phir ek-shot button scan) me gaya — .32 wahi tartib
+   * kas-ta hai:
+   *   1. Viewer confirm khula → FORAN button scan (har
+   *      ~150ms, kul ~2.5s tak); button milte hi click —
+   *      passive poll button se PEHLE nahi chalta.
+   *   2. Click ke baad address ka intezaar kul ~6s (poll
+   *      ~175ms). ~2.5s par address na aaya ho aur
+   *      resolution overlay khula dikhe to us ka Original
+   *      entry ek dafa (detour — ⚠️ UNPROVEN, neeche dekho),
+   *      phir baaki intezaar jaari.
+   *   3. Button ~2.5s me na mile tab hi passive poll (3.5s)
+   *      — sirf kholne se address aaye to via=viewer-open.
+   * Sub-timing lines (download-attempt ke aaghaz se):
+   *   [DIRECT] editor-open at +<s>s · button-clicked at +<s>s
+   *   · url-seen at +<s>s — aur aakhir me wahi
+   *   [DIRECT] via=<...> gap=<s>s (render→save).
+   * Kuch na bane to viewer saaf band karke (Escape + grid
+   * wapsi) menu wala rasta (fallback #2) bilkul pehle ki
+   * tarah chalta hai. Download-stage ki haar par prompt
+   * KABHI dobara nahi bheja jata (sacred rule barkarar).
    */
-  async _tryDirectViewerDownload(task, downloadFolder, settings, tileIndexHint, attempts) {
+  async _tryDirectViewerDownload(task, downloadFolder, settings, tileIndexHint, attempts, attemptStartedAt) {
     const n = task.promptIndex + 1;
     if (!this.page || this.page.isClosed()) return false;
     const gapBase = task.renderCompletedAt || task.startTime || Date.now();
+    // Sub-timings ka langar: download attempt ka aaghaz
+    // (_downloadTaskMediaInner se aata hai; wahan se yahan
+    // tak sirf no-wait quick-check hai).
+    const attemptStart = Number.isFinite(attemptStartedAt) ? attemptStartedAt : Date.now();
+    const atPlus = (t) => Math.max(0, ((Number.isFinite(t) ? t : Date.now()) - attemptStart) / 1000).toFixed(1);
 
     let anchor = Date.now();
     let viewerOpen = false;
@@ -5622,10 +5712,10 @@ class FlowAutomationEngine {
       const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
       const coords = idx >= 0 ? await this._tileCenterCoords(idx) : { found: false };
       if (!coords.found) {
-        attempts.push({ strategy: 'direct-viewer', ok: false, note: 'its tile was not found on the grid — the direct viewer probe was skipped' });
+        attempts.push({ strategy: 'direct-viewer', ok: false, note: 'its tile was not found on the grid — the direct viewer route was skipped' });
         return false;
       }
-      this.log(`[DIRECT] [Prompt #${n}] Probe: opening this video's tile viewer (no menu) to see whether the file's server address appears on its own…`, 'info');
+      this.log(`[DIRECT] [Prompt #${n}] Opening this video's tile viewer (no menu) — the viewer's own Download button is the primary download route…`, 'info');
       anchor = Date.now();
       await this.page.mouse.click(coords.x, coords.y);
       for (let r = 0; r < 10 && !viewerOpen; r++) {
@@ -5633,29 +5723,51 @@ class FlowAutomationEngine {
         try { viewerOpen = await this._inEditorView(); } catch (e) { viewerOpen = false; }
       }
     } else {
-      this.log(`[DIRECT] [Prompt #${n}] Probe: the big view is already open — watching whether the file's server address appears on its own…`, 'info');
+      this.log(`[DIRECT] [Prompt #${n}] The big view is already open — going straight to its Download button (no menu)…`, 'info');
     }
     if (!viewerOpen) {
       this.log(`[DIRECT] [Prompt #${n}] The tile viewer did not open — falling back to the menu route.`, 'warn');
       attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the tile viewer did not open' });
       return false;
     }
+    this.log(`[DIRECT] [Prompt #${n}] editor-open at +${atPlus(Date.now())}s`, 'info');
 
-    // Mor A: sirf kholne se address aaya kya?
-    let pick = await this._pollViewerFlowContent(task, anchor, 3500);
+    // Qadam 1 (.32 ki kaseli tartib): button PEHLE — har
+    // ~150ms par scan, kul ~2.5s tak; milte hi click.
+    // (.31 me pehle 3.5s ka passive poll chalta tha aur
+    // button ki talash ek-shot thi — DIRECTTEST1 ke gap ka
+    // ~4.2s wahi gaya tha.)
+    let btn = null;
+    const btnDeadline = Date.now() + 2500;
+    while (Date.now() < btnDeadline) {
+      if (this.isStopping || task.mediaSaved) break;
+      btn = await this._findViewerDownloadButton();
+      if (btn && btn.found) break;
+      btn = null;
+      await sleep(150);
+    }
+    this.log(`[DIRECT] [Prompt #${n}] viewer-download-button=${btn && btn.found ? `found ("${btn.label}")` : 'absent'}`, 'info');
+
+    let pick = null;
     let via = 'viewer-open';
-    if (!pick || !pick.url) {
-      // Viewer ke andar seedha Download button hai kya?
-      const btn = await this._findViewerDownloadButton();
-      this.log(`[DIRECT] [Prompt #${n}] viewer-download-button=${btn && btn.found ? `found ("${btn.label}")` : 'absent'}`, 'info');
-      if (btn && btn.found) {
-        await this.page.mouse.click(btn.x, btn.y);
-        pick = await this._pollViewerFlowContent(task, anchor, 3500);
-        via = 'viewer-button';
-      }
+    if (btn && btn.found) {
+      // Qadam 2: click ke baad ~6s tak address ka intezaar;
+      // ~2.5s par overlay detour (⚠️ UNPROVEN bachav —
+      // proven raste par overlay aata hi nahi aur detour
+      // kuch karta hi nahi).
+      await this.page.mouse.click(btn.x, btn.y);
+      this.log(`[DIRECT] [Prompt #${n}] button-clicked at +${atPlus(Date.now())}s`, 'info');
+      pick = await this._pollViewerFlowContent(task, anchor, 6000, { pollMs: 175, overlayDetourAtMs: 2500 });
+      via = 'viewer-button';
+    } else {
+      // Qadam 3: button hi nahi — sirf kholne se address
+      // aaya kya? (3.5s passive poll, .31 wala hi saboot.)
+      pick = await this._pollViewerFlowContent(task, anchor, 3500);
+      via = 'viewer-open';
     }
 
     if (pick && pick.url) {
+      this.log(`[DIRECT] [Prompt #${n}] url-seen at +${atPlus(pick.at)}s`, 'info');
       let okFetch = false;
       try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: pick.url, via }); } catch (e) { okFetch = false; }
       if (okFetch || task.mediaSaved) {
@@ -5673,9 +5785,9 @@ class FlowAutomationEngine {
     if (this._viewerSawPreviewStream(anchor)) {
       this.log(`[DIRECT] [Prompt #${n}] viewer yielded preview-only — the viewer fetched only a googlevideo preview stream, not the file's server address; falling back to menu`, 'warn');
     } else {
-      this.log(`[DIRECT] [Prompt #${n}] viewer probe failed — falling back to menu`, 'warn');
+      this.log(`[DIRECT] [Prompt #${n}] viewer route failed — falling back to menu`, 'warn');
     }
-    attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the viewer probe produced no usable server address — the existing routes ran as fallback' });
+    attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the direct viewer route produced no usable server address — the existing routes ran as fallback' });
     try { await this.page.keyboard.press('Escape'); } catch (e) {}
     try { await this._returnToProjectGrid(); } catch (e) {}
     return false;
@@ -5687,6 +5799,10 @@ class FlowAutomationEngine {
     const n = task.promptIndex + 1;
     const isImage = !!(settings && settings.type === 'Image');
     const captureKey = task.captureKey || task.videoId || null;
+    // v2.48.32 (SWITCH): is download attempt ka aaghaz —
+    // direct route ki sub-timing lines ([DIRECT] … at +<s>s)
+    // isi pal se gini jati hain.
+    const attemptStartedAt = Date.now();
 
     // v2.48.31 (MINT): is round ki render→save khidki ke liye
     // enhanced capture chalu (sirf video) — band bulane wale
@@ -5728,16 +5844,17 @@ class FlowAutomationEngine {
       } catch (e) {}
     }
 
-    // --- v2.48.31 (DIRECT-PROBE): ⋮ menu se PEHLE tile ka
-    // viewer khol kar dekho — sirf kholne se (ya viewer ke
-    // apne seedhe Download button se) file ka server address
-    // mint hota hai kya? Mile to verified server-fetch se
-    // save aur menu is attempt me chalta hi nahi. Na bane to
-    // viewer saaf band karke menu wala rasta bilkul pehle
-    // ki tarah. (Image tasks par probe nahi hai.) ---
+    // --- v2.48.32 (SWITCH): ⋮ menu se PEHLE tile ke viewer
+    // ka apna Download button — ab ye PRIMARY download rasta
+    // hai (DIRECTTEST1, v2.48.31 par LIVE PROVEN: menu kabhi
+    // khula hi nahi, file app ki server-fetch se save hui).
+    // Viewer khol → button foran click → mint hua address
+    // verified server-fetch se save. Na bane to viewer saaf
+    // band karke menu wala rasta (fallback #2) bilkul pehle
+    // ki tarah. (Image tasks par ye qadam nahi hai.) ---
     if (!isImage) {
       try {
-        const okDirect = await this._tryDirectViewerDownload(task, downloadFolder, settings, tileIndexHint, attempts);
+        const okDirect = await this._tryDirectViewerDownload(task, downloadFolder, settings, tileIndexHint, attempts, attemptStartedAt);
         if (okDirect || task.mediaSaved) {
           try {
             this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
@@ -5746,13 +5863,14 @@ class FlowAutomationEngine {
           return { ok: true, strategy: wonDirect ? wonDirect.strategy : 'direct-viewer', attempts };
         }
       } catch (e) {
-        attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the direct viewer probe hit a problem — the existing routes ran as fallback' });
+        attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the direct viewer route hit a problem — the existing routes ran as fallback' });
         try { await this._returnToProjectGrid(); } catch (e2) {}
       }
     }
 
     // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download — ab TEESRA
-    // qadam (quick-check sab se pehle, direct probe dusra) ---
+    // qadam aur fallback #2 (quick-check sab se pehle, direct
+    // viewer route dusra — v2.48.32 se primary) ---
     // FASTTEST1 (2026-11-02, owner ke PC par sabit): render ke pal
     // page me bytes hote hi NAHI; file sirf menu ke Download click
     // ke baad aati hai. To jo rasta file LAATA hai, wahi pehle —

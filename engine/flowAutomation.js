@@ -6070,6 +6070,26 @@ class FlowAutomationEngine {
     if (verdict.action !== 'save') {
       return { outcome: verdict.action === 'teacher' ? 'teacher' : verdict.action };
     }
+    // v2.48.39 (HARVEST-FIRST SPEED FIX): replay-context
+    // ka address FAST-DL fetch par bhejne se PEHLE — is
+    // task ki editor-khidki me pehle se PROMOTED mukammal
+    // body (guard-pass) maujood ho to wohi editor-harvest
+    // ke raste save karo aur replay address ka fetch
+    // BILKUL mat chalao. ZEROCLICK6 (v2.48.38) me Prompt
+    // #2 par yahi fetch 403 par ~8.7s zaya karke haara
+    // tha, halanke promoted body pehle se kitab me thi
+    // aur aakhir wohi save hui. Promoted body na ho (ya
+    // us ki save hi nakam ho) to vyavhaar bilkul pehle
+    // jaisa — replay fetch aage chalega.
+    if (via === 'replay-context') {
+      try {
+        const hs = await this._savePromotedHarvestInstead(task, downloadFolder, settings, captureKey);
+        if (hs && hs.saved) {
+          this.log(`[ROOT] replay-fetch skipped — editor-harvest body already promoted`, 'info');
+          return { outcome: 'saved', gapSec: hs.gapSec, savedVia: 'editor-harvest' };
+        }
+      } catch (e) {}
+    }
     let okFetch = false;
     try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: verdict.url, via }); } catch (e) { okFetch = false; }
     if (okFetch || task.mediaSaved) {
@@ -6551,6 +6571,15 @@ class FlowAutomationEngine {
       return { done: false, editorOpen: true };
     }
     if (res.outcome === 'saved') {
+      // v2.48.39 (HARVEST-FIRST): save asal me editor-
+      // harvest ki promoted body se hui hai (replay
+      // address fetch hua hi nahi) — kamyaabi usi route
+      // ke naam; via=replay-context wali line yahan
+      // NAHI banti (wo jhooti nisbat hoti).
+      if (res.savedVia === 'editor-harvest') {
+        attempts.push({ strategy: 'editor-harvest', ok: true, note: `a complete playback body for this video had already been captured and promoted while its editor was open, so the replay address was NOT fetched — that promoted body was saved instead, straight from Flow's server, with no Download-button click and no menu; render→save gap ${res.gapSec}s` });
+        return { done: true, editorOpen: true };
+      }
       this.log(`[ROOT] via=replay-context gap=${res.gapSec}s`, 'success');
       attempts.push({ strategy: 'replay-context', ok: true, note: `the file was fetched straight from Flow's server by replaying the learned mint call inside this video's open editor — the Download button was NOT clicked and no menu was used; render→save gap ${res.gapSec}s` });
       return { done: true, editorOpen: true };
@@ -6588,6 +6617,67 @@ class FlowAutomationEngine {
     } catch (e) {
       return null;
     }
+  }
+
+  /**
+   * v2.48.39 (HARVEST-FIRST SPEED FIX): is task ki
+   * editor-khidki ki kitab me pehle se PROMOTED koi
+   * mukammal, guard-pass body hai to use editor-harvest
+   * ke raste save karo (claim + _saveBufferForTask —
+   * content gate + hash guard + ffprobe wahan andar
+   * hain) aur [ROOT] via=editor-harvest wali line likho.
+   * Faisla saveGuard.promotedEditorHarvestPick (khalis)
+   * se hai: sirf action 'save' wala jawab — adhoora
+   * jawab yahan NAHI uth-ta (wo editor-harvest route ke
+   * apne fetch-full raste ka hai), teacher-identical /
+   * duplicate bhi nahi (is run ki saved-hash kitab se
+   * muqabla yahin annotation me hota hai).
+   * Natija: kamyaabi par { saved:true, gapSec }, warna
+   * null — bulane wala apna aam rasta (replay fetch)
+   * bilkul pehle ki tarah chalata hai.
+   */
+  async _savePromotedHarvestInstead(task, downloadFolder, settings, captureKey) {
+    const cap = this.netCapture;
+    if (!cap || typeof cap.editorHarvestEntriesForKey !== 'function') return null;
+    let entries = [];
+    try { entries = cap.editorHarvestEntriesForKey(captureKey); } catch (e) { entries = []; }
+    if (!entries || entries.length === 0) return null;
+    const floorBytes = downloadFetch.minBytesForDuration(settings && settings.duration);
+    let teacherUrl = null;
+    try { teacherUrl = typeof cap.teacherMintUrlForTemplate === 'function' ? cap.teacherMintUrlForTemplate(null) : null; } catch (e) { teacherUrl = null; }
+    const annotated = entries.map((e) => {
+      const buffer = e && Buffer.isBuffer(e.buffer) ? e.buffer : null;
+      const hash = buffer ? saveGuard.contentHash(buffer) : null;
+      let duplicate = false;
+      if (hash) {
+        try { duplicate = saveGuard.checkDuplicate(this._runSavedContentHashes, this._taskKey(task), hash).duplicate; } catch (err) { duplicate = false; }
+      }
+      return {
+        url: e ? e.url : null,
+        byteLength: buffer ? buffer.length : 0,
+        headerOk: buffer ? downloadFetch.looksLikeVideoBuffer(buffer) : false,
+        partial: !!(e && e.partial),
+        status: e ? e.status : 0,
+        contentRange: e ? e.contentRange : '',
+        duplicate
+      };
+    });
+    const pick = saveGuard.promotedEditorHarvestPick({ entries: annotated, teacherUrl, floorBytes });
+    if (!pick || !pick.skip) return null;
+    const candidate = entries[pick.index];
+    if (!candidate || !candidate.buffer) return null;
+    const buffer = candidate.buffer;
+    const url = candidate.url;
+    try { cap.claimFlowContentVideo(url); } catch (e) {}
+    task.completedVideoUrl = url;
+    let ok = false;
+    try { ok = await this._saveBufferForTask(task, downloadFolder, settings, buffer, url); } catch (e) { ok = false; }
+    if (ok || task.mediaSaved) {
+      const gapSec = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+      this.log(`[ROOT] via=editor-harvest gap=${gapSec}s`, 'success');
+      return { saved: true, gapSec };
+    }
+    return null;
   }
 
   /**

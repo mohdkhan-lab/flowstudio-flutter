@@ -288,6 +288,69 @@ function editorHarvestVerdict(input) {
 }
 
 /**
+ * v2.48.39 (HARVEST-FIRST SPEED FIX): replay-context ke
+ * address ko FAST-DL fetch par bhejne se PEHLE ka faisla —
+ * is task ki editor-khidki ki kitab me koi aisa jawab
+ * pehle se PROMOTED hai kya jo seedha save ke qabil ho
+ * (mukammal, guard-pass)? Ho to replay fetch BILKUL nahi
+ * chalega — wahi body editor-harvest ke raste save hogi.
+ *
+ * SABOOT (ZEROCLICK6, v2.48.38, owner ke PC par engine
+ * log, 2026-11-03): Prompt #2 par harvest-audit ne jawab
+ * ko promoted darj kar diya tha (22:57:00.9), phir bhi
+ * replay-context ka address FAST-DL fetch par gaya aur
+ * ~8.7s zaya hue (node-fetch 403 ×3, page-fetch fail) —
+ * editor-harvest ne aakhir wahi promoted body save ki
+ * (22:57:11.8). Ye faisla wahi zaya waqt kaat-ta hai.
+ *
+ * Usool sakht:
+ *   - sirf woh jawab jo editorHarvestVerdict par action
+ *     'save' de (mukammal + teacher nahi + duplicate
+ *     nahi + darwaze pass);
+ *   - ADHOORA jawab (action 'fetch-full') is skip ke
+ *     liye KABHI qabil nahi — wo editor-harvest route ke
+ *     apne fetch-full raste se hi jayega (yahan skip
+ *     karne se wo rasta bhi ruk jata aur replay fetch
+ *     bhi — ulta nuqsan);
+ *   - tarjeeh editor-harvest route wali hi: sab se taza
+ *     mukammal jawab pehle.
+ * input = { entries, teacherUrl, floorBytes } — entries
+ *   editorHarvestVerdict ke hisaab wale hisse hain:
+ *   { url, byteLength, headerOk, partial, status,
+ *     contentRange, declaredLength, duplicate, hash,
+ *     teacherHash } (kitab ki asal entry se engine banata
+ *     hai; inWindow hamesha sach — kitab me khidki ke
+ *     bahar ka jawab hota hi nahi).
+ * natija = { skip, index, url, verdict } — skip sach ho
+ *   to index entries me us jawab ki jagah hai.
+ */
+function promotedEditorHarvestPick(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const entries = Array.isArray(o.entries) ? o.entries : [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    const e = entries[i] && typeof entries[i] === 'object' ? entries[i] : {};
+    if (e.partial) continue;
+    const v = editorHarvestVerdict({
+      inWindow: true,
+      url: e.url,
+      teacherUrl: o.teacherUrl,
+      byteLength: e.byteLength,
+      floorBytes: o.floorBytes,
+      headerOk: e.headerOk,
+      partial: typeof e.partial === 'boolean' ? e.partial : undefined,
+      status: e.status,
+      contentRange: e.contentRange,
+      declaredLength: e.declaredLength,
+      duplicate: !!e.duplicate,
+      hash: e.hash,
+      teacherHash: e.teacherHash
+    });
+    if (v.action === 'save') return { skip: true, index: i, url: e.url || null, verdict: v };
+  }
+  return { skip: false, index: -1, url: null, verdict: null };
+}
+
+/**
  * HARVEST-AUDIT ka hisaab: ek mukammal flow-content jawab
  * ka ek-line khulasa — kitne bytes, body mili ya nahi,
  * hash ke pehle 8 harf (poora hash kabhi log nahi —
@@ -327,4 +390,4 @@ function formatHarvestAudit(audit) {
   return `bytes=${Number.isFinite(a.bytes) ? a.bytes : 0} body=${a.body || 'fail'} hash=${a.hash || 'n/a'} vsTeacher=${a.vsTeacher || 'n/a'} decision=${a.decision || 'rejected'} reason=${a.reason || 'unknown'}`;
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, editorHarvestVerdict, harvestAuditOf, formatHarvestAudit };
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, editorHarvestVerdict, promotedEditorHarvestPick, harvestAuditOf, formatHarvestAudit };

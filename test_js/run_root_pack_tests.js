@@ -33,6 +33,7 @@ const {
   contentHash,
   isPartialHarvestResponse,
   editorHarvestVerdict,
+  promotedEditorHarvestPick,
   harvestAuditOf,
   formatHarvestAudit
 } = require('../engine/saveGuard');
@@ -542,6 +543,93 @@ async function main() {
     nc._emitHarvestAudit({ url: FC_FRESH }, null, false);
     eq('EH-AUDIT speaks while an editor is open (body-fail included)', heard, 2);
     nc.endEditorWindow('task-a');
+  }
+
+  // ---------------------------------------------------------------------------
+  // J. v2.48.39 — HARVEST-FIRST SPEED FIX ka faisla
+  // (saveGuard.promotedEditorHarvestPick — khalis):
+  // replay-context ka address FAST-DL fetch par bhejne
+  // se PEHLE, is task ki editor-khidki me PROMOTED
+  // mukammal body maujood ho to fetch skip hota hai aur
+  // wohi body save hoti hai.
+  //   (a) promoted mukammal body → skip, wohi ummeedwaar;
+  //   (b) sirf adhoora jawab → skip NAHI (wo editor-
+  //       harvest ke apne fetch-full raste ka hai);
+  //   (c) teacher-identical / duplicate → skip NAHI;
+  //   (d) kitab khaali → skip NAHI.
+  // ---------------------------------------------------------------------------
+  {
+    const floor = 200 * 1024;
+    const teacherBuf = mp4Buffer(600000);
+    const freshBuf = mp4Buffer(600000);
+    freshBuf[100] = 0xAB;
+    const tHash = contentHash(teacherBuf);
+    const fHash = contentHash(freshBuf);
+    const completeEntry = { url: FC_FRESH, byteLength: 600000, floorBytes: floor, headerOk: true, partial: false, status: 200, hash: fHash, teacherHash: tHash };
+
+    // (a) promoted mukammal body — skip, aur chuna gaya
+    // ummeedwaar wohi hai (usi ka URL/index engine save
+    // karega).
+    const pickA = promotedEditorHarvestPick({ entries: [completeEntry], teacherUrl: FC_TEACHER, floorBytes: floor });
+    eq('HF (a) promoted complete body — skip', pickA.skip, true);
+    eq('HF (a) picked entry is the harvest body (url)', pickA.url, FC_FRESH);
+    eq('HF (a) picked entry index', pickA.index, 0);
+    eq('HF (a) picked verdict action is save', pickA.verdict && pickA.verdict.action, 'save');
+    // Kitab (NetworkCapture) se asal raasta: khidki me
+    // darj mukammal jawab ko engine-wali annotation ke
+    // baad bhi wahi ummeedwaar chuna jata hai.
+    const nc = new NetworkCapture({});
+    nc.beginEditorWindow('task-hf');
+    eq('HF (a) NC window records the playback body', nc._recordEditorHarvest(FC_FRESH, freshBuf, { status: 200 }, Date.now()), true);
+    const book = nc.editorHarvestEntriesForKey('task-hf');
+    const annotated = book.map(e => ({
+      url: e.url, byteLength: e.buffer.length, headerOk: true,
+      partial: !!e.partial, status: e.status, contentRange: e.contentRange,
+      duplicate: false, hash: contentHash(e.buffer), teacherHash: tHash
+    }));
+    const pickBook = promotedEditorHarvestPick({ entries: annotated, teacherUrl: FC_TEACHER, floorBytes: floor });
+    eq('HF (a) NC book entry — skip', pickBook.skip, true);
+    eq('HF (a) NC book picked body is the recorded one', book[pickBook.index] && book[pickBook.index].buffer === freshBuf, true);
+    nc.endEditorWindow('task-hf');
+    // Tarjeeh: sab se taza mukammal jeet-ta hai; adhoora
+    // sab se taza ho tab bhi purana mukammal hi chuna
+    // jata hai (adhoora is skip ka ummeedwaar hi nahi).
+    const older = { url: FC_FRESH, byteLength: 600000, headerOk: true, partial: false, status: 200, hash: fHash, teacherHash: tHash };
+    const newerPartial = { url: FC_FRESH2, byteLength: 100000, headerOk: true, partial: true, status: 206, contentRange: 'bytes 0-99999/600000' };
+    const pickPref = promotedEditorHarvestPick({ entries: [older, newerPartial], teacherUrl: FC_TEACHER, floorBytes: floor });
+    eq('HF (a) newest partial does not shadow an older complete body', pickPref.skip && pickPref.url, FC_FRESH);
+
+    // (b) sirf adhoora jawab — skip NAHI. Nishaan chahe
+    // partial jhande se aaye ya 206/Content-Range se
+    // (faisla fetch-full banta hai, save nahi).
+    eq('HF (b) partial-flagged entry — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 100000, headerOk: true, partial: true, status: 206, contentRange: 'bytes 0-99999/600000' }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
+    eq('HF (b) 206 without the flag — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 600000, headerOk: true, status: 206 }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
+    eq('HF (b) below-floor entry — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 100000, headerOk: true, partial: false, status: 200 }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
+    // Kitab me darj asal adhoora jawab bhi skip nahi deta.
+    const ncP = new NetworkCapture({});
+    ncP.beginEditorWindow('task-hfp');
+    ncP._recordEditorHarvest(FC_FRESH, mp4Buffer(100000), { status: 206, contentRange: 'bytes 0-99999/600000', declared: 600000 }, Date.now());
+    const bookP = ncP.editorHarvestEntriesForKey('task-hfp');
+    const annotatedP = bookP.map(e => ({ url: e.url, byteLength: e.buffer.length, headerOk: true, partial: !!e.partial, status: e.status, contentRange: e.contentRange, duplicate: false }));
+    eq('HF (b) NC partial-only book — no skip', promotedEditorHarvestPick({ entries: annotatedP, teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
+    ncP.endEditorWindow('task-hfp');
+
+    // (c) teacher-identical — skip NAHI (hash barabar,
+    // duplicate nishaan, ya teacher ka apna URL).
+    eq('HF (c) teacher-identical bytes — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 600000, headerOk: true, partial: false, status: 200, hash: tHash, teacherHash: tHash }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
+    eq('HF (c) duplicate-flagged entry — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 600000, headerOk: true, partial: false, status: 200, duplicate: true }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
+    eq('HF (c) teacher url entry — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_TEACHER, byteLength: 600000, headerOk: true, partial: false, status: 200 }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
+    // Teacher-identical sab se taza ho aur purana saaf
+    // mukammal bhi ho — saaf wala hi chuna jata hai,
+    // ganda kabhi nahi.
+    const pickC = promotedEditorHarvestPick({ entries: [completeEntry, { url: FC_FRESH2, byteLength: 600000, headerOk: true, partial: false, status: 200, hash: tHash, teacherHash: tHash }], teacherUrl: FC_TEACHER, floorBytes: floor });
+    eq('HF (c) clean older body still picked over a dirty newer one', pickC.skip && pickC.url, FC_FRESH);
+
+    // (d) kitab khaali / kharab input — skip NAHI.
+    eq('HF (d) no entries — no skip', promotedEditorHarvestPick({ entries: [], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
+    eq('HF (d) garbage input — no skip', promotedEditorHarvestPick(null).skip, false);
+    eq('HF (d) missing entries field — no skip', promotedEditorHarvestPick({ teacherUrl: FC_TEACHER }).skip, false);
+    eq('HF (d) header-broken entry — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 600000, headerOk: false, partial: false, status: 200 }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

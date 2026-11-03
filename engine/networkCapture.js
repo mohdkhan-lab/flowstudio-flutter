@@ -1,6 +1,7 @@
 'use strict';
 
 const flowContent = require('./flowContent');
+const mintWindow = require('./mintWindow');
 
 /**
  * FlowStudio Lite — NETWORK CAPTURE LAYER (v2.8.0).
@@ -449,6 +450,10 @@ class NetworkCapture {
     // — engine use [NET-BIG] line me badalta hai. Callback na ho
     // to shikar khamoshi se band rehta hai (koi vyavhaar-badal nahi).
     this.onNetBig = typeof opts.onNetBig === 'function' ? opts.onNetBig : null;
+    // v2.48.31 (MINT): mint watch ke callbacks — engine inhe
+    // [MINT] lines me badalta hai. Na hon to watch khamosh hai.
+    this.onMintRequest = typeof opts.onMintRequest === 'function' ? opts.onMintRequest : null;
+    this.onMintCarriesUrl = typeof opts.onMintCarriesUrl === 'function' ? opts.onMintCarriesUrl : null;
     this._page = null;
     this._reqHandler = null;
     this._resHandler = null;
@@ -521,6 +526,15 @@ class NetworkCapture {
     // sake. claimed = kisi task ne le liya (doosra phir nahi lega).
     this.flowContentVideos = []; // [{ url, type, at }] — taaza peeche, hadd 50
     this.flowContentClaimed = new Set(); // url -> kisi task ke naam ho chuka
+    // v2.48.31 (MINT): mint watch — sirf download round ke
+    // dauraan chalu (engine setMintWatch bulata hai). mintRequests
+    // me har request ki saaf shakal (method/host/path — query ki
+    // sirf keys) rehti hai, hadd 600; _mintCarriesSeen ek watch
+    // ke andar ek hi (method|host|path) ki carries-khabar ko
+    // dobara nahi ugne deta.
+    this.mintWatch = false;
+    this.mintRequests = []; // [{ method, host, path, at }]
+    this._mintCarriesSeen = new Set();
   }
 
   arm() { this.armed = true; }
@@ -552,6 +566,15 @@ class NetworkCapture {
       try {
         const k = pathKeyOf(req.url());
         if (k) this.pathCounts.set(k, (this.pathCounts.get(k) || 0) + 1);
+      } catch (e) {}
+      // v2.48.31 (MINT): mint watch chalu ho to is request ki
+      // saaf shakal bhi darj karo (armed se pehle bhi — download
+      // round ke dauraan capture armed hi hota hai, lekin mint
+      // ginati click ke pal se pakki honi chahiye).
+      try {
+        let m = 'GET';
+        try { m = req.method() || 'GET'; } catch (e) {}
+        this._noteMintRequest({ method: m, url: req.url(), at: Date.now() });
       } catch (e) {}
       // v2.48.18 DIAGNOSTIC-3: batchexecute requests + rpcid naam.
       try {
@@ -624,6 +647,13 @@ class NetworkCapture {
         let headers = {};
         try { headers = res.headers() || {}; } catch (e) {}
         const ct = String(headers['content-type'] || '').toLowerCase();
+        // v2.48.31 (MINT): is jawab ka method (carries-khabar ke
+        // liye) aur redirect Location me file-address ki jaanch.
+        let resMethod = 'GET';
+        try { const rq = res.request(); if (rq) resMethod = rq.method() || 'GET'; } catch (e) {}
+        try {
+          if (this.mintWatch) this._checkMintCarries(resMethod, url, headers['location'], null);
+        } catch (e) {}
         const api = isApiUrl(url, this.patterns);
         // Media response (page ne khud file khinchi — tile playback
         // adi): URL ki sighting note karo, body NAHI padho (badi
@@ -659,6 +689,11 @@ class NetworkCapture {
           return;
         }
         if (batch) this.batchStats.bodiesFetched++;
+        // v2.48.31 (MINT): padhe gaye body me file ke server
+        // address ka nishan hai kya (sirf haan/na darj hota hai).
+        try {
+          if (this.mintWatch) this._checkMintCarries(resMethod, url, null, buf);
+        } catch (e) {}
         this.ingestResponse({ url, contentType: ct, bodyBuffer: buf, at: Date.now() });
       } catch (e) {}
     };
@@ -719,7 +754,7 @@ class NetworkCapture {
       client.on('Network.requestWillBeSent', (e) => {
         try {
           if (e && e.request && isBatchExecuteUrl(e.request.url)) {
-            this._cdpBatch.set(e.requestId, { rpcids: rpcidsOf(e.request.url), at: Date.now() });
+            this._cdpBatch.set(e.requestId, { rpcids: rpcidsOf(e.request.url), at: Date.now(), method: e.request.method || 'GET' });
           }
         } catch (err) {}
       });
@@ -796,6 +831,7 @@ class NetworkCapture {
             encBytes = e.encodedDataLength || 0;
           }
           if (e && this._cdpBatch.has(e.requestId)) {
+            const batchMeta = this._cdpBatch.get(e.requestId);
             this._cdpBatch.delete(e.requestId);
             if (this.armed) {
               const res = await client.send('Network.getResponseBody', { requestId: e.requestId });
@@ -803,6 +839,14 @@ class NetworkCapture {
               if (buf && buf.length > 0 && buf.length <= this.patterns.maxBodyScanBytes * 4) {
                 bodyBytes = buf.length;
                 this.batchStats.cdpBodies++;
+                // v2.48.31 (MINT): CDP se mile batchexecute body
+                // me bhi file-address ki jaanch (wahi darwaza jo
+                // [MINT] sawal ka markaz hai).
+                try {
+                  if (this.mintWatch) {
+                    this._checkMintCarries((batchMeta && batchMeta.method) || 'POST', 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute', null, buf);
+                  }
+                } catch (err) {}
                 this.ingestResponse({
                   url: 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute',
                   contentType: 'application/json',
@@ -1055,6 +1099,72 @@ class NetworkCapture {
   }
 
   /**
+   * v2.48.31 (MINT): mint watch chalu/band. Chalu karne par
+   * ring aur carries-dedupe saaf hote hain (har download round
+   * apni taaza khidki rakhta hai). Watch band ho to na koi
+   * request darj hoti hai, na carries-khabar — baaki capture
+   * bilkul pehle ki tarah.
+   */
+  setMintWatch(on) {
+    const v = !!on;
+    if (v && !this.mintWatch) {
+      this.mintRequests = [];
+      this._mintCarriesSeen = new Set();
+    }
+    this.mintWatch = v;
+  }
+
+  /** v2.48.31 (MINT): `sinceMs` ke baad darj requests (mint khidki ke backfill ke liye). */
+  mintRequestsSince(sinceMs) {
+    const since = Number.isFinite(sinceMs) ? sinceMs : 0;
+    return this.mintRequests.filter(e => e.at >= since);
+  }
+
+  /**
+   * v2.48.31 (MINT): ek request ki saaf shakal darj karo —
+   * sirf watch chalu ho tab. Asal URL/query values kabhi save
+   * nahi hote (sanitizeRequestEntry sirf keys rakhta hai).
+   */
+  _noteMintRequest(reqLike) {
+    if (!this.mintWatch) return;
+    try {
+      const entry = mintWindow.sanitizeRequestEntry(reqLike);
+      if (!entry) return;
+      this.mintRequests.push(entry);
+      if (this.mintRequests.length > 600) {
+        this.mintRequests.splice(0, this.mintRequests.length - 600);
+      }
+      if (this.onMintRequest) { try { this.onMintRequest(entry); } catch (e) {} }
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.31 (MINT): ek jawab file ke server address ko le
+   * ja raha tha — engine ko khabar do, lekin ek watch me ek
+   * (method|host|path) sirf EK baar (wahi API baar-baar jawab
+   * de to log na bhare).
+   */
+  _noteMintCarries(info) {
+    if (!this.mintWatch || !info) return;
+    try {
+      const key = `${info.method}|${info.host}|${info.path}`;
+      if (this._mintCarriesSeen.has(key)) return;
+      this._mintCarriesSeen.add(key);
+      if (this.onMintCarriesUrl) { try { this.onMintCarriesUrl(info); } catch (e) {} }
+    } catch (e) {}
+  }
+
+  /** v2.48.31 (MINT): ek jawab ki Location/body jaanch — file-address mile to carries-khabar. */
+  _checkMintCarries(method, url, location, bodyText) {
+    if (!this.mintWatch) return;
+    try {
+      if (!mintWindow.responseCarriesFileUrl({ location, bodyText })) return;
+      const entry = mintWindow.sanitizeRequestEntry({ method, url, at: Date.now() });
+      if (entry) this._noteMintCarries({ method: entry.method, host: entry.host, path: entry.path });
+    } catch (e) {}
+  }
+
+  /**
    * v2.48.20: streaming batchexecute jawab ka ek tukda.
    * Poora jama-shuda text har tukde par dobara scan hota hai
    * taaki tukdon ki sarhad par kata URL bhi mil jaye. Pehchan
@@ -1066,6 +1176,14 @@ class NetworkCapture {
     this.batchStats.streamChunks++;
     meta.text = (meta.text || '') + chunkBuf.toString('latin1');
     if (meta.text.length > 2 * 1024 * 1024) meta.text = meta.text.slice(-1024 * 1024);
+    // v2.48.31 (MINT): behta (streaming) jawab kabhi khatam hi
+    // nahi hota — uske jama-shuda text me file-address dikhe to
+    // wahi carries-khabar hai (dedupe ki wajah se ek hi baar).
+    try {
+      if (this.mintWatch) {
+        this._checkMintCarries(meta.method || 'POST', 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute', null, meta.text);
+      }
+    } catch (e) {}
     if (!this.armed) return [];
     const found = scanBatchExecuteBody(Buffer.from(meta.text, 'latin1'), this.patterns);
     const newly = [];

@@ -26,24 +26,36 @@
 // hai) — is liye menu wala rasta, jo click par blob banwata
 // hai, dusre number par poora barkarar hai.
 //
+// v2.48.31 (DIRECT-PROBE): quick-check ke baad, menu se
+// PEHLE naya probe qadam 'direct-viewer' hai — tile ka viewer
+// khol kar (aur andar seedha Download button ho to use daba
+// kar) dekha jata hai ke file ka server address bina ⋮ menu
+// ke mint hota hai kya. Mile to verified server-fetch se
+// save; na bane to viewer band karke baaki tartib bilkul
+// pehle ki tarah. Probe ka natija live test hi tay karega.
+//
 // Kram (video tasks):
 //   1. quick-check       — NO-WAIT: pehle se pakde hue registry
 //                          bytes / flow-content URL ka turant
 //                          save (v2.48.29 ka opportunistic
 //                          check, ab attempt ka pehla qadam)
-//   2. native-menu       — ⋮ menu → Download → resolution select
+//   2. direct-viewer     — PROBE: tile viewer (bina menu) —
+//                          kholne/button se server address?
+//                          (v2.48.31)
+//   3. native-menu       — ⋮ menu → Download → resolution select
 //                          (+ v2.48.30 post-click server race)
-//   3. blob-harvest      — page ke andar ke bytes (v2.48.26 FAST-DL)
-//   4. backend-fetch     — bandha backend link seedha fetch
-//   5. backend-order     — kram se bandhan (claimByOrder)
-//   6. tile-readiness    — tile media ready hone ka intezaar
-//   7. backend-fetch-retry — readiness ke baad backend ek aur baar
-//   8. tile-src-fast     — tile ka apna src, turant fetch (v2.47.4)
-//   9. tile-src          — tile/stream ka src
-//  10. native-editor     — editor ki top bar ka "Download media"
+//   4. blob-harvest      — page ke andar ke bytes (v2.48.26 FAST-DL)
+//   5. backend-fetch     — bandha backend link seedha fetch
+//   6. backend-order     — kram se bandhan (claimByOrder)
+//   7. tile-readiness    — tile media ready hone ka intezaar
+//   8. backend-fetch-retry — readiness ke baad backend ek aur baar
+//   9. tile-src-fast     — tile ka apna src, turant fetch (v2.47.4)
+//  10. tile-src          — tile/stream ka src
+//  11. native-editor     — editor ki top bar ka "Download media"
 //      (native-menu yahan dobara NAHI chalta — wo pehle hi ho gaya)
 const DOWNLOAD_ROUTE_ORDER = Object.freeze([
   'quick-check',
+  'direct-viewer',
   'native-menu',
   'blob-harvest',
   'backend-fetch',

@@ -24,6 +24,7 @@ const blobHarvest = require('./blobHarvest');
 const downloadRouteOrder = require('./downloadRouteOrder');
 const flowContent = require('./flowContent');
 const downloadEventMatch = require('./downloadEventMatch');
+const mintWindow = require('./mintWindow');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -112,6 +113,30 @@ class FlowAutomationEngine {
               : (this._monitorTasks && this._monitorTasks.length ? 'render-monitor' : '');
           } catch (e) {}
           this.log(`[NET-BIG] host=${info.host} path=${info.shape} type=${info.type || 'unknown'} bytes=${info.bytes}${stage ? ` timing=${stage}` : ''}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.31 (MINT): mint watch ki khabrein — [MINT] lines.
+      // Request wali line SIRF tab jab is pal kisi task ki mint
+      // khidki (resolution click → pehli flow-content sighting)
+      // khuli ho; ginati aur cap tracker (mintWindow) rakhta hai.
+      onMintRequest: (entry) => {
+        try {
+          const tr = this._mintTracker;
+          if (!tr || !tr.isOpen()) return;
+          const r = tr.noteRequest(entry);
+          if (r === 'cap') {
+            this.log(`[MINT] req … (mint-window log cap ${mintWindow.DEFAULT_WINDOW_CAP} reached — further requests in this window are counted, not listed)`, 'info');
+          } else if (r) {
+            this.log(`[MINT] req method=${r.method} host=${r.host} path=${r.path}`, 'info');
+          }
+        } catch (e) {}
+      },
+      // Kisi jawab ke Location/body me file ke server address ka
+      // nishan — kaunsi API call asal me signed URL laati hai,
+      // yehi (B) sawal ka saboot hai.
+      onMintCarriesUrl: (info) => {
+        try {
+          this.log(`[MINT] response-carries-file-url method=${info.method} host=${info.host} path=${info.path}`, 'info');
         } catch (e) {}
       }
     });
@@ -4312,6 +4337,13 @@ class FlowAutomationEngine {
     const clickTime = Date.now();
     await this.page.mouse.click(item.x, item.y);
     const res = await this._nativePickResolution(settings && settings.quality);
+    // v2.48.31 (MINT-WINDOW): resolution click ke is pal se
+    // mint khidki khul gayi — pehli flow-content sighting tak
+    // ki har request [MINT] req line banegi, aur sighting par
+    // khulasa (beech me kitni requests gayin). Sawal (B): kisi
+    // API jawab ke andar signed URL aata hai kya — carries
+    // wali [MINT] lines wahi batayengi.
+    this._mintOpenWindow(res.clickedAt || clickTime);
     // v2.48.30 (POST-CLICK RACE): seedha intezaar nahi —
     // resolution click ke baad browser download ke intezaar
     // ke saath-saath server channel par bhi nazar rehti hai
@@ -4393,6 +4425,9 @@ class FlowAutomationEngine {
         }
         raceUrl = pick.url;
         this.log(`[FAST-DL] [Prompt #${n}] post-click race: a fresh server video address appeared after this attempt's own resolution click (click at ${new Date(clickTime).toISOString()}, first seen ${new Date(pick.at).toISOString()} — the click is the ownership anchor) — fetching it in parallel with the browser download…`, 'info');
+        // v2.48.31 (MINT-WINDOW): yahi is khidki ki pehli
+        // sighting hai — khulasa darj karo (beech ki ginati).
+        this._mintNoteSighting(pick.at);
         let okFetch = false;
         try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: pick.url, via: 'post-click-race' }); } catch (e) { okFetch = false; }
         return (okFetch || task.mediaSaved) ? { via: 'server-fetch' } : NEVER;
@@ -4897,6 +4932,9 @@ class FlowAutomationEngine {
       );
     } finally {
       task._downloadInProgress = false;
+      // v2.48.31 (MINT): round khatam — mint watch band (har
+      // rasta/timeout yahin se guzarta hai).
+      try { this._mintEndWatch(); } catch (e) {}
     }
     // Settle the round in the persisted ledger — success resets the
     // budget to 0, failure records the round and its reason (in the
@@ -5407,12 +5445,253 @@ class FlowAutomationEngine {
     return true;
   }
 
+  /**
+   * v2.48.31 (MINT): ek download round ki render→save khidki
+   * ke liye enhanced capture chalu karo — capture har request
+   * ki saaf shakal darj karega aur file-address le jaane wale
+   * jawab [MINT] khabar denge. Tracker isi engine ka hai (har
+   * worker ka apna capture + apna tracker). Band round ke
+   * aakhir me hota hai (bulane wale ke finally me _mintEndWatch).
+   */
+  _mintBeginWatch() {
+    try {
+      this._mintTracker = mintWindow.createMintWindow({ cap: mintWindow.DEFAULT_WINDOW_CAP });
+      if (this.netCapture && typeof this.netCapture.setMintWatch === 'function') {
+        this.netCapture.setMintWatch(true);
+      }
+    } catch (e) {}
+  }
+
+  _mintEndWatch() {
+    try {
+      if (this.netCapture && typeof this.netCapture.setMintWatch === 'function') {
+        this.netCapture.setMintWatch(false);
+      }
+    } catch (e) {}
+    this._mintTracker = null;
+  }
+
+  /**
+   * v2.48.31 (MINT-WINDOW): resolution click ke pal khidki
+   * kholo. Click aur is pal ke beech guzri requests capture ki
+   * ring se backfill hoti hain (un par bhi [MINT] req lines
+   * banti hain, cap ke andar); us ke baad ki requests
+   * onMintRequest callback se seedha aati hain.
+   */
+  _mintOpenWindow(clickAtMs) {
+    try {
+      const tr = this._mintTracker;
+      if (!tr || !Number.isFinite(clickAtMs) || clickAtMs <= 0) return;
+      tr.open(clickAtMs);
+      const back = (this.netCapture && typeof this.netCapture.mintRequestsSince === 'function')
+        ? this.netCapture.mintRequestsSince(clickAtMs)
+        : [];
+      for (const e of back) {
+        const r = tr.noteRequest(e);
+        if (r === 'cap') {
+          this.log(`[MINT] req … (mint-window log cap ${mintWindow.DEFAULT_WINDOW_CAP} reached — further requests in this window are counted, not listed)`, 'info');
+          break;
+        }
+        if (r) this.log(`[MINT] req method=${r.method} host=${r.host} path=${r.path}`, 'info');
+      }
+    } catch (e) {}
+  }
+
+  /** v2.48.31 (MINT-WINDOW): pehli flow-content sighting ka khulasa — beech me kitni requests gayin. */
+  _mintNoteSighting(atMs) {
+    try {
+      const tr = this._mintTracker;
+      if (!tr) return;
+      const s = tr.noteSighting(atMs);
+      if (s) {
+        this.log(`[MINT] first flow-content sighting after ${s.requestsBefore} request(s) in the mint window (click→sighting ${((s.sightingAt - s.clickAt) / 1000).toFixed(1)}s)`, 'info');
+      }
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.31 (DIRECT-PROBE): viewer khulne (ya viewer ke
+   * button) ke baad taaza flow-content URL ka intezaar —
+   * pehchan ke darwaze bilkul post-click race wale hain
+   * (flowContent.pickRaceFlowContentUrl: anchor se pehle ka =
+   * stale, claimed = inkaar, kai usable = ambiguous inkaar).
+   * Sirf googlevideo preview wala URL is fehrist me aata hi
+   * nahi (capture sirf flow-content jawab darj karta hai) —
+   * preview-only ka saboot _viewerSawPreviewStream deta hai.
+   */
+  async _pollViewerFlowContent(task, anchorMs, waitMs) {
+    const deadline = Date.now() + Math.max(500, Number(waitMs) || 3500);
+    while (Date.now() < deadline) {
+      if (this.isStopping || task.mediaSaved) return null;
+      let entries = [];
+      try {
+        entries = (this.netCapture && typeof this.netCapture.recentFlowContentVideos === 'function')
+          ? this.netCapture.recentFlowContentVideos(anchorMs)
+          : [];
+      } catch (e) { entries = []; }
+      if (entries && entries.length > 0) {
+        const pick = flowContent.pickRaceFlowContentUrl(entries, {
+          sinceMs: anchorMs,
+          isClaimed: (u) => {
+            try { return !!(this.netCapture && this.netCapture.isFlowContentClaimed(u)); } catch (e) { return false; }
+          },
+          isOwnUrl: (u) => this._isTaskOwnUrl(task, u)
+        });
+        if (pick) return pick;
+      }
+      await sleep(200);
+    }
+    return null;
+  }
+
+  /**
+   * v2.48.31 (DIRECT-PROBE): viewer ke andar woh button jo
+   * ⋮ menu ke andar NAHI hai aur jiska label /download/i se
+   * milta hai (asal ummeedwaar: editor ki top bar wala
+   * "Download media" — _findEditorDownloadControl wahi dhoondta
+   * hai; yahan matcher jaan-boojh kar aam rakha hai taaki jo
+   * bhi seedha button ho, usi ka naam saboot me aaye).
+   */
+  async _findViewerDownloadButton() {
+    try {
+      return await this.page.evaluate(() => {
+        const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const inMenu = (el) => !!(el.closest && (el.closest('.cdk-overlay-pane') || el.closest('.mat-mdc-menu-panel') || el.closest('[role="menu"]')));
+        const norm = (s) => String(s || '').toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
+        const els = Array.from(document.querySelectorAll('button, [role="button"]'));
+        for (const b of els) {
+          if (!visible(b) || inMenu(b)) continue;
+          const label = norm(b.getAttribute('aria-label')) || norm(b.innerText || b.textContent || '');
+          if (label && /download/.test(label)) {
+            const r = b.getBoundingClientRect();
+            return { found: true, x: r.x + r.width / 2, y: r.y + r.height / 2, label: label.substring(0, 40) };
+          }
+        }
+        return { found: false };
+      });
+    } catch (e) {
+      return { found: false };
+    }
+  }
+
+  /**
+   * v2.48.31 (DIRECT-PROBE): is khidki me page ne googlevideo
+   * ka preview stream khincha kya? (netBigWindow: har mukammal
+   * jawab ka host+size darj hota hai.) Viewer sirf preview hi
+   * chalata hai to yahi us ka saboot hai — preview asal file
+   * NAHI hai (quality gate use rokta bhi hai).
+   */
+  _viewerSawPreviewStream(sinceMs) {
+    try {
+      const win = (this.netCapture && Array.isArray(this.netCapture.netBigWindow)) ? this.netCapture.netBigWindow : [];
+      return win.some(e => e && Number.isFinite(e.at) && e.at >= sinceMs
+        && typeof e.host === 'string'
+        && (e.host === 'googlevideo.com' || e.host.endsWith('.googlevideo.com')));
+    } catch (e) { return false; }
+  }
+
+  /**
+   * v2.48.31 (DIRECT-PROBE): owner ka naya hukm/sawaal — ⋮ menu
+   * poora skip ho sakta hai kya? Do ankhe-phaad (untested)
+   * mumkin raaste is probe se saboot ke saath tay honge:
+   *   (A) sirf tile ka bara view (viewer — is app me tile click
+   *       se khulne wala editor view hi hai, _nativeEditorForm
+   *       wali hi harkat) kholne se flow-content address khud
+   *       aata hai kya? Aur viewer ke andar seedha Download
+   *       button hai kya (bina ⋮ ke)?
+   *   (B) mint window ki [MINT] lines (menu raste par) — alag
+   *       jagah darj hoti hain.
+   * Tartib: tile click → 3.5s tak address ka intezaar → mile
+   * to wahi verified server-fetch machinery (_serverFetchSave:
+   * quality gate + ffprobe) se save, [DIRECT] via=viewer-open.
+   * Na mile lekin seedha button mila → use click karke aur
+   * 3.5s — mile to via=viewer-button. Kuch na bane to viewer
+   * saaf band karke (Escape + grid wapsi) menu wala rasta
+   * bilkul pehle ki tarah chalta hai. PROBE hai — jeet ka
+   * daawa sirf live test karega.
+   */
+  async _tryDirectViewerDownload(task, downloadFolder, settings, tileIndexHint, attempts) {
+    const n = task.promptIndex + 1;
+    if (!this.page || this.page.isClosed()) return false;
+    const gapBase = task.renderCompletedAt || task.startTime || Date.now();
+
+    let anchor = Date.now();
+    let viewerOpen = false;
+    try { viewerOpen = await this._inEditorView(); } catch (e) { viewerOpen = false; }
+    if (!viewerOpen) {
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      const coords = idx >= 0 ? await this._tileCenterCoords(idx) : { found: false };
+      if (!coords.found) {
+        attempts.push({ strategy: 'direct-viewer', ok: false, note: 'its tile was not found on the grid — the direct viewer probe was skipped' });
+        return false;
+      }
+      this.log(`[DIRECT] [Prompt #${n}] Probe: opening this video's tile viewer (no menu) to see whether the file's server address appears on its own…`, 'info');
+      anchor = Date.now();
+      await this.page.mouse.click(coords.x, coords.y);
+      for (let r = 0; r < 10 && !viewerOpen; r++) {
+        await sleep(250);
+        try { viewerOpen = await this._inEditorView(); } catch (e) { viewerOpen = false; }
+      }
+    } else {
+      this.log(`[DIRECT] [Prompt #${n}] Probe: the big view is already open — watching whether the file's server address appears on its own…`, 'info');
+    }
+    if (!viewerOpen) {
+      this.log(`[DIRECT] [Prompt #${n}] The tile viewer did not open — falling back to the menu route.`, 'warn');
+      attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the tile viewer did not open' });
+      return false;
+    }
+
+    // Mor A: sirf kholne se address aaya kya?
+    let pick = await this._pollViewerFlowContent(task, anchor, 3500);
+    let via = 'viewer-open';
+    if (!pick || !pick.url) {
+      // Viewer ke andar seedha Download button hai kya?
+      const btn = await this._findViewerDownloadButton();
+      this.log(`[DIRECT] [Prompt #${n}] viewer-download-button=${btn && btn.found ? `found ("${btn.label}")` : 'absent'}`, 'info');
+      if (btn && btn.found) {
+        await this.page.mouse.click(btn.x, btn.y);
+        pick = await this._pollViewerFlowContent(task, anchor, 3500);
+        via = 'viewer-button';
+      }
+    }
+
+    if (pick && pick.url) {
+      let okFetch = false;
+      try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: pick.url, via }); } catch (e) { okFetch = false; }
+      if (okFetch || task.mediaSaved) {
+        const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
+        this.log(`[DIRECT] [Prompt #${n}] via=${via} gap=${gapSec}s`, 'success');
+        attempts.push({ strategy: 'direct-viewer', ok: true, note: `the file was fetched straight from Flow's server after ${via === 'viewer-open' ? 'opening the tile viewer' : "the viewer's own Download button"} — no ⋮ menu was used; render→save gap ${gapSec}s` });
+        return true;
+      }
+      // Fetch haar gaya — viewer band karke menu fallback (neeche).
+    }
+    if (pick && pick.ambiguous) {
+      this.log(`[DIRECT] [Prompt #${n}] ${pick.count} fresh server addresses appeared in the viewer and none could be proven to be this task's own — the direct fetch was NOT used.`, 'warn');
+    }
+    // Haar ka saboot: preview-only alag naam se, warna aam line.
+    if (this._viewerSawPreviewStream(anchor)) {
+      this.log(`[DIRECT] [Prompt #${n}] viewer yielded preview-only — the viewer fetched only a googlevideo preview stream, not the file's server address; falling back to menu`, 'warn');
+    } else {
+      this.log(`[DIRECT] [Prompt #${n}] viewer probe failed — falling back to menu`, 'warn');
+    }
+    attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the viewer probe produced no usable server address — the existing routes ran as fallback' });
+    try { await this.page.keyboard.press('Escape'); } catch (e) {}
+    try { await this._returnToProjectGrid(); } catch (e) {}
+    return false;
+  }
+
   async _downloadTaskMediaInner(task, downloadFolder, settings, tileIndexHint) {
     const attempts = [];
     task.downloadAttempts = attempts;
     const n = task.promptIndex + 1;
     const isImage = !!(settings && settings.type === 'Image');
     const captureKey = task.captureKey || task.videoId || null;
+
+    // v2.48.31 (MINT): is round ki render→save khidki ke liye
+    // enhanced capture chalu (sirf video) — band bulane wale
+    // ke finally me hota hai (_mintEndWatch).
+    if (!isImage) this._mintBeginWatch();
 
     if (!fs.existsSync(downloadFolder)) {
       try { fs.mkdirSync(downloadFolder, { recursive: true }); } catch (e) {}
@@ -5449,8 +5728,31 @@ class FlowAutomationEngine {
       } catch (e) {}
     }
 
-    // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download — ab DUSRA
-    // qadam (quick-check sab se pehle hai) ---
+    // --- v2.48.31 (DIRECT-PROBE): ⋮ menu se PEHLE tile ka
+    // viewer khol kar dekho — sirf kholne se (ya viewer ke
+    // apne seedhe Download button se) file ka server address
+    // mint hota hai kya? Mile to verified server-fetch se
+    // save aur menu is attempt me chalta hi nahi. Na bane to
+    // viewer saaf band karke menu wala rasta bilkul pehle
+    // ki tarah. (Image tasks par probe nahi hai.) ---
+    if (!isImage) {
+      try {
+        const okDirect = await this._tryDirectViewerDownload(task, downloadFolder, settings, tileIndexHint, attempts);
+        if (okDirect || task.mediaSaved) {
+          try {
+            this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
+          } catch (e) {}
+          const wonDirect = attempts.filter(a => a.ok).pop();
+          return { ok: true, strategy: wonDirect ? wonDirect.strategy : 'direct-viewer', attempts };
+        }
+      } catch (e) {
+        attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the direct viewer probe hit a problem — the existing routes ran as fallback' });
+        try { await this._returnToProjectGrid(); } catch (e2) {}
+      }
+    }
+
+    // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download — ab TEESRA
+    // qadam (quick-check sab se pehle, direct probe dusra) ---
     // FASTTEST1 (2026-11-02, owner ke PC par sabit): render ke pal
     // page me bytes hote hi NAHI; file sirf menu ke Download click
     // ke baad aati hai. To jo rasta file LAATA hai, wahi pehle —

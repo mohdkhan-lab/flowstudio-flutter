@@ -9,13 +9,19 @@
 // (only while the mint watch is on, only with the round's
 // task key), the learned line carries shape only, an identical
 // re-learn stays silent, and workflowIdForKey reports the
-// bound id for the replay step.
+// bound id for the replay step. v2.48.34 adds the URL side:
+// findIdOccurrencesInText / substituteIdsInUrl, and the
+// learn wiring recording urlPrimaryId + idsInUrl (the live
+// test's body held no id at all — the URL is the next place
+// the id can travel).
 // Usage: node test_js/run_mint_replay_tests.js
 
 const {
   findIdOccurrences,
   countOccurrences,
-  substituteIds
+  substituteIds,
+  findIdOccurrencesInText,
+  substituteIdsInUrl
 } = require('../engine/mintReplay');
 const { NetworkCapture } = require('../engine/networkCapture');
 
@@ -98,6 +104,62 @@ const STUDENT = 'bbbbbbbb-5555-6666-7777-888888888888';
   eq('SUB partial match untouched', partial.replacements, 0);
 }
 
+// --- findIdOccurrencesInText / substituteIdsInUrl: URL wala hisaab (v2.48.34) ---
+{
+  const url = `https://flow.google.com/x?rpcids=AbCdEf&a=${TEACHER}&b=${TEACHER}`;
+  const occ = findIdOccurrencesInText(url, [TEACHER]);
+  eq('UFIND one id entry', occ.length, 1);
+  eq('UFIND id echoed', occ[0].id, TEACHER);
+  eq('UFIND two occurrences', occ[0].offsets.length, 2);
+  eq('UFIND first offset', occ[0].offsets[0], url.indexOf(TEACHER));
+  eq('UFIND second offset', occ[0].offsets[1], url.indexOf(TEACHER, occ[0].offsets[0] + 1));
+  eq('UCOUNT totals occurrences', countOccurrences(occ), 2);
+  eq('UFIND absent id gives no entry', findIdOccurrencesInText(url, [STUDENT]).length, 0);
+  eq('UFIND duplicate ids deduped', findIdOccurrencesInText(url, [TEACHER, TEACHER]).length, 1);
+  eq('UFIND empty id skipped', findIdOccurrencesInText(url, ['']).length, 0);
+  eq('UFIND empty list', findIdOccurrencesInText(url, []).length, 0);
+  eq('UFIND null text', findIdOccurrencesInText(null, [TEACHER]).length, 0);
+  eq('UFIND empty text', findIdOccurrencesInText('', [TEACHER]).length, 0);
+  eq('UFIND needle longer than text', findIdOccurrencesInText('ab', [TEACHER]).length, 0);
+
+  const r = substituteIdsInUrl(url, [[TEACHER, STUDENT]]);
+  eq('USUB replacements counted', r.replacements, 2);
+  eq('USUB result has student twice', r.url.split(STUDENT).length - 1, 2);
+  ok('USUB teacher fully gone', !r.url.includes(TEACHER));
+
+  // Alag lambai: chhota -> lamba, sahi jagah par.
+  const grow = substituteIdsInUrl('https://h/x?id=ID&z=1', [['ID', 'LONGER-ID']]);
+  eq('USUB length grows correctly', grow.url, 'https://h/x?id=LONGER-ID&z=1');
+  eq('USUB growth replacements', grow.replacements, 1);
+  const shrink = substituteIdsInUrl('https://h/x?id=LONGER-ID', [['LONGER-ID', 'ID']]);
+  eq('USUB length shrinks correctly', shrink.url, 'https://h/x?id=ID');
+
+  // '$' wale pattern lafz-ba-lafz: regex hota to '$&' apna
+  // khaas matlab le aata — yahan seedha badlaav hota hai.
+  const dollar = substituteIdsInUrl('https://h/x?id=ID', [['ID', 'A$&B']]);
+  eq('USUB dollar sequence stays literal', dollar.url, 'https://h/x?id=A$&B');
+
+  // No-id / bekaar jodiyan.
+  eq('USUB no pairs is null', substituteIdsInUrl(url, []), null);
+  eq('USUB null pairs is null', substituteIdsInUrl(url, null), null);
+  eq('USUB same-id pair is null', substituteIdsInUrl(url, [[TEACHER, TEACHER]]), null);
+  eq('USUB empty from is null', substituteIdsInUrl(url, [['', STUDENT]]), null);
+  eq('USUB empty to is null', substituteIdsInUrl(url, [[TEACHER, '']]), null);
+  eq('USUB empty url is null', substituteIdsInUrl('', [[TEACHER, STUDENT]]), null);
+  eq('USUB non-string url is null', substituteIdsInUrl(null, [[TEACHER, STUDENT]]), null);
+
+  // ID URL me hai hi nahi: natija banta hai lekin 0 badlaav.
+  const none = substituteIdsInUrl(url, [[STUDENT, 'cccccccc-9999-8888-7777-666666666666']]);
+  eq('USUB absent id replaces 0', none.replacements, 0);
+  eq('USUB absent id url unchanged', none.url, url);
+
+  // Do jodiyan tartib se: pehli ka natija dusri ka medaan.
+  const two = substituteIdsInUrl(`https://h/x?a=${TEACHER}&b=${STUDENT}`,
+    [[TEACHER, 'tttttttt-0000-0000-0000-000000000000'], [STUDENT, 'ssssssss-0000-0000-0000-000000000000']]);
+  eq('USUB two pairs both applied', two.replacements, 2);
+  ok('USUB two pairs result clean', !two.url.includes(TEACHER) && !two.url.includes(STUDENT));
+}
+
 // --- NetworkCapture: mint template seekhna ---
 {
   const BATCH_URL = 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=AbCdEf&f.sid=123';
@@ -138,6 +200,8 @@ const STUDENT = 'bbbbbbbb-5555-6666-7777-888888888888';
   eq('LEARN callback taskKey', learned.taskKey, subKey);
   eq('LEARN callback bodyBytes', learned.bodyBytes, reqBody.length);
   eq('LEARN callback idsInBody counts both occurrences', learned.idsInBody, 2);
+  eq('LEARN callback idsInUrl is 0 when the url holds no id', learned.idsInUrl, 0);
+  eq('LEARN template urlPrimaryId is null when the url holds no id', nc.mintTemplate.urlPrimaryId, null);
   ok('LEARN callback rpcids listed', Array.isArray(learned.rpcids) && learned.rpcids.includes('AbCdEf'));
   ok('LEARN callback never carries the id itself', !JSON.stringify(learned).includes(TEACHER));
 
@@ -168,6 +232,42 @@ const STUDENT = 'bbbbbbbb-5555-6666-7777-888888888888';
   ok('LEARN no-id template still stored', !!nc3.mintTemplate);
   eq('LEARN no-id primaryId is null', nc3.mintTemplate.primaryId, null);
   eq('LEARN no-id idsInBody is 0', learned.idsInBody, 0);
+  eq('LEARN no-id idsInUrl is 0', learned.idsInUrl, 0);
+  eq('LEARN no-id urlPrimaryId is null', nc3.mintTemplate.urlPrimaryId, null);
+
+  // v2.48.34: ID sirf URL me ho (body khaali) — ZEROCLICK
+  // live test wali asal surat. Template banta hai, body
+  // primaryId null rehta hai, urlPrimaryId teacher ka ID,
+  // khabar me idsInBody=0 / idsInUrl=1, aur ID ki qeemat
+  // khabar me kabhi nahi.
+  const nc5 = new NetworkCapture({ onMintTemplate: (i) => { learned = i; } });
+  nc5.beginSubmission('task-5', Date.now());
+  nc5._bindId(TEACHER, Date.now());
+  nc5.setMintWatch(true, 'task-5');
+  const URL_WITH_ID = `https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=AbCdEf&media=${TEACHER}`;
+  nc5._checkMintCarries('POST', URL_WITH_ID, null, 'see https://flow-content.google/video/xyz',
+    { url: URL_WITH_ID, method: 'POST', headers: {}, body: Buffer.from('f.req=[[["AbCdEf","[]"]]]') });
+  ok('LEARN url-only template stored', !!nc5.mintTemplate);
+  eq('LEARN url-only body primaryId is null', nc5.mintTemplate.primaryId, null);
+  eq('LEARN url-only urlPrimaryId is the task id', nc5.mintTemplate.urlPrimaryId, TEACHER);
+  eq('LEARN url-only idsInBody is 0', learned.idsInBody, 0);
+  eq('LEARN url-only idsInUrl counts the url occurrence', learned.idsInUrl, 1);
+  ok('LEARN url-only callback never carries the id itself', !JSON.stringify(learned).includes(TEACHER));
+
+  // v2.48.34: ID body AUR url dono me — dono ginti alag,
+  // dono primary darj.
+  const nc6 = new NetworkCapture({ onMintTemplate: (i) => { learned = i; } });
+  nc6.beginSubmission('task-6', Date.now());
+  nc6._bindId(STUDENT, Date.now());
+  nc6.setMintWatch(true, 'task-6');
+  const URL_BOTH = `https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=AbCdEf&m=${STUDENT}&n=${STUDENT}`;
+  nc6._checkMintCarries('POST', URL_BOTH, null, 'see https://flow-content.google/video/xyz',
+    { url: URL_BOTH, method: 'POST', headers: {}, body: Buffer.from(`f.req=[[["AbCdEf","[\\"${STUDENT}\\"]"]]]`) });
+  ok('LEARN both template stored', !!nc6.mintTemplate);
+  eq('LEARN both primaryId is the task id', nc6.mintTemplate.primaryId, STUDENT);
+  eq('LEARN both urlPrimaryId is the task id', nc6.mintTemplate.urlPrimaryId, STUDENT);
+  eq('LEARN both idsInBody counts the body occurrence', learned.idsInBody, 1);
+  eq('LEARN both idsInUrl counts both url occurrences', learned.idsInUrl, 2);
 
   // Batchexecute na ho to template nahi banta (status-call
   // wali shakal is seekhne se bahar hai).

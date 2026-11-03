@@ -154,7 +154,7 @@ class FlowAutomationEngine {
           if (this._mintLearnedKeys.has(k)) return;
           this._mintLearnedKeys.add(k);
           const rpcids = Array.isArray(info.rpcids) && info.rpcids.length ? info.rpcids.join(',') : '(none)';
-          this.log(`[ZEROCLICK] mint-template learned rpcids=${rpcids} bodyBytes=${info.bodyBytes} idsInBody=${info.idsInBody}`, 'info');
+          this.log(`[ZEROCLICK] mint-template learned rpcids=${rpcids} bodyBytes=${info.bodyBytes} idsInBody=${info.idsInBody} idsInUrl=${info.idsInUrl}`, 'info');
         } catch (e) {}
       }
     });
@@ -5703,6 +5703,16 @@ class FlowAutomationEngine {
    * Replay har task par HAD EK dafa; nakami fallback ko 8s
    * se zyada nahi rokti. Download-stage ki haar par prompt
    * dobara KABHI nahi bheja jata (sacred rule barkarar).
+   *
+   * v2.48.34 (URL reach): pehle live test me template ke
+   * body me teacher ki id mili hi nahi (idsInBody=0) — is
+   * liye tabdeeli ab body AUR URL dono par alag-alag laagu
+   * hoti hai (urlPrimaryId capture seekhne ke pal URL se
+   * darj karta hai), aur replay sirf tab rukta hai jab dono
+   * jagah kuch na mile. SUCCESS aur skip lines par loc=
+   * body|url|both (skip-none par loc=none) yahi batata hai
+   * ke id asal me kahan safar karta hai. Tartib, 8s cap,
+   * ek-dafa-hadd aur fallback sab bilkul pehle jaise hain.
    */
   async _tryZeroClickReplay(task, downloadFolder, settings, attempts, captureKey) {
     const n = task.promptIndex + 1;
@@ -5714,8 +5724,17 @@ class FlowAutomationEngine {
     if (!tpl || !tpl.body) return false; // pehla task — seekhne wala koi nahi, khamosh aage
     if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return false; // apna hi template — ye task khud teacher hai
     if (!this.page || this.page.isClosed()) return false;
-    if (!tpl.primaryId) {
-      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — the learned mint call carries none of its own task's ids in the body (idsInBody was 0), so there is nothing to substitute for this task`, 'info');
+    // v2.48.34 (URL reach): tabdeeli ki jodi ab body ke
+    // primaryId se bhi ban sakti hai aur URL ke urlPrimaryId
+    // se bhi — dono jagah alag-alag laagu hoti hain, aur
+    // replay sirf tab rukta hai jab DONO jagah kuch na mile.
+    // loc wahi batata hai: tabdeeli kahan hui (body|url|both),
+    // skip par kahan ho sakti thi (ya none).
+    const hasBodyId = !!tpl.primaryId;
+    const hasUrlId = !!tpl.urlPrimaryId;
+    const locTried = hasBodyId && hasUrlId ? 'both' : hasBodyId ? 'body' : hasUrlId ? 'url' : 'none';
+    if (!hasBodyId && !hasUrlId) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — the learned mint call carries none of its own task's ids in the body or the url (idsInBody was 0, idsInUrl was 0), so there is nothing to substitute for this task loc=none`, 'info');
       attempts.push({ strategy: 'zero-click', ok: false, note: 'the learned mint-call template carries no substitutable task id — the replay was skipped and the normal routes ran' });
       return false;
     }
@@ -5723,16 +5742,22 @@ class FlowAutomationEngine {
     try { thisId = (cap && typeof cap.workflowIdForKey === 'function') ? cap.workflowIdForKey(captureKey) : null; } catch (e) { thisId = null; }
     if (!thisId && task.videoId) thisId = task.videoId;
     if (!thisId) {
-      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — this task's workflow id is not known yet`, 'info');
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — this task's workflow id is not known yet loc=${locTried}`, 'info');
       attempts.push({ strategy: 'zero-click', ok: false, note: 'this task\'s workflow id was not known at render-complete — the replay was skipped and the normal routes ran' });
       return false;
     }
-    const sub = mintReplay.substituteIds(tpl.body, [[tpl.primaryId, thisId]]);
-    if (!sub || sub.replacements === 0) {
-      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — the learned template body holds no occurrence of its task's id to substitute`, 'info');
-      attempts.push({ strategy: 'zero-click', ok: false, note: 'the learned template body held no substitutable id occurrence — the replay was skipped and the normal routes ran' });
+    const bodySub = hasBodyId ? mintReplay.substituteIds(tpl.body, [[tpl.primaryId, thisId]]) : null;
+    const urlSub = hasUrlId ? mintReplay.substituteIdsInUrl(tpl.url, [[tpl.urlPrimaryId, thisId]]) : null;
+    const bodyReps = bodySub ? bodySub.replacements : 0;
+    const urlReps = urlSub ? urlSub.replacements : 0;
+    if (bodyReps === 0 && urlReps === 0) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — the learned template holds no replaceable occurrence of its task's id in the body or the url loc=${locTried}`, 'info');
+      attempts.push({ strategy: 'zero-click', ok: false, note: 'the learned template held no substitutable id occurrence — the replay was skipped and the normal routes ran' });
       return false;
     }
+    const loc = bodyReps > 0 && urlReps > 0 ? 'both' : bodyReps > 0 ? 'body' : 'url';
+    const replayUrl = urlSub && urlReps > 0 ? urlSub.url : tpl.url;
+    const replayBody = bodySub && bodyReps > 0 ? bodySub.body : tpl.body;
     const gapBase = task.renderCompletedAt || task.startTime || Date.now();
     let res = null;
     let failReason = '';
@@ -5750,7 +5775,7 @@ class FlowAutomationEngine {
             s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
           }
           return { status: r.status, b64: btoa(s) };
-        }, tpl.url, tpl.method || 'POST', tpl.headers, sub.body.toString('base64')),
+        }, replayUrl, tpl.method || 'POST', tpl.headers, replayBody.toString('base64')),
         8000, 'zero-click replay');
     } catch (e) {
       failReason = e && e.message ? String(e.message).slice(0, 80) : 'no response';
@@ -5773,7 +5798,7 @@ class FlowAutomationEngine {
     // koi bhi link aam pehchan-usoolon se hi bandhta hai.
     try {
       if (buf.length > 0 && cap && typeof cap.ingestResponse === 'function') {
-        cap.ingestResponse({ url: tpl.url, contentType: 'application/json', bodyBuffer: buf, at: Date.now() });
+        cap.ingestResponse({ url: replayUrl, contentType: 'application/json', bodyBuffer: buf, at: Date.now() });
       }
     } catch (e) {}
     const carries = mintWindow.responseCarriesFileUrl({ bodyText: buf });
@@ -5808,7 +5833,7 @@ class FlowAutomationEngine {
     try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: pick.url, via: 'zero-click' }); } catch (e) { okFetch = false; }
     if (okFetch || task.mediaSaved) {
       const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
-      this.log(`[ZEROCLICK] replay SUCCESS via=zero-click gap=${gapSec}s`, 'success');
+      this.log(`[ZEROCLICK] replay SUCCESS via=zero-click gap=${gapSec}s loc=${loc}`, 'success');
       attempts.push({ strategy: 'zero-click', ok: true, note: `the file was fetched straight from Flow's server after the app replayed the learned mint call itself — no UI download click happened for this video; render→save gap ${gapSec}s` });
       return true;
     }
@@ -5927,13 +5952,20 @@ class FlowAutomationEngine {
     if (pick && pick.url) {
       this.log(`[DIRECT] [Prompt #${n}] url-seen at +${atPlus(pick.at)}s`, 'info');
       let okFetch = false;
-      try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: pick.url, via }); } catch (e) { okFetch = false; }
+      let fetchThrew = false;
+      try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: pick.url, via }); } catch (e) { okFetch = false; fetchThrew = true; }
       if (okFetch || task.mediaSaved) {
         const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
         this.log(`[DIRECT] [Prompt #${n}] via=${via} gap=${gapSec}s`, 'success');
         attempts.push({ strategy: 'direct-viewer', ok: true, note: `the file was fetched straight from Flow's server after ${via === 'viewer-open' ? 'opening the tile viewer' : "the viewer's own Download button"} — no ⋮ menu was used; render→save gap ${gapSec}s` });
         return true;
       }
+      // v2.48.34 (diagnostic only — rawayya bilkul waisa hi):
+      // fetch-save kyun haara, sirf us ki qisam. _serverFetchSave
+      // ek bare boolean lautata hai (andar ki haar wahan nigal
+      // li jati hai), is liye false = save verify nahi hua;
+      // exception aaye to us ki alag qisam.
+      this.log(`[DIRECT] [Prompt #${n}] fetch-save failed reason=${fetchThrew ? 'fetch-threw' : 'unverified-save'}`, 'warn');
       // Fetch haar gaya — viewer band karke menu fallback (neeche).
     }
     if (pick && pick.ambiguous) {

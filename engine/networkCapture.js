@@ -550,7 +550,7 @@ class NetworkCapture {
     // jis ke download round me watch chalu hai (seekhne wale
     // task ki pehchan). Template roundon ke paar rehta hai —
     // sirf reset() (naya session) use saaf karta hai.
-    this.mintTemplate = null; // { url, method, headers, body, at, taskKey, primaryId, ids, idOccurrences }
+    this.mintTemplate = null; // { url, method, headers, body, at, taskKey, primaryId, ids, idOccurrences, urlPrimaryId, urlIds, urlIdOccurrences }
     this._mintTaskKey = null;
   }
 
@@ -1252,6 +1252,14 @@ class NetworkCapture {
    *     hisaab se) — offsets aur primaryId (pehla mila ID)
    *     darj hote hain, taaki replay ke pal teacher ke ID ki
    *     jagah agle task ka ID rakha ja sake;
+   *   - v2.48.34: wohi ID(s) ab darkhwast ke poore URL me
+   *     bhi dhoondhe jate hain — urlIdOccurrences aur
+   *     urlPrimaryId (URL me pehla mila ID) alag darj hote
+   *     hain. ZEROCLICK live test (2026-11-03) me body me
+   *     koi id NAHI mili thi (170-byte body, idsInBody=0);
+   *     id asal me kahan safar karta hai, yehi agli jaanch
+   *     hai — is liye URL ki ginti (idsInUrl) bhi khabar me
+   *     jati hai, shakal hi, id ki qeemat kabhi nahi;
    *   - ID body me na mile to bhi template banta hai lekin
    *     primaryId null rehta hai — idsInBody=0 wali khabar
    *     khud ek saboot hai (call shayad per-media replayable
@@ -1284,6 +1292,11 @@ class NetworkCapture {
       const usableIds = ids.filter(id => typeof id === 'string' && id.length >= this.patterns.idMinLength);
       const occurrences = mintReplay.findIdOccurrences(body, usableIds);
       const primaryId = occurrences.length ? occurrences[0].id : null;
+      // v2.48.34: wohi jaane hue ID(s) ab darkhwast ke poore
+      // URL string me bhi — body me id na milne ki surat me
+      // replay ka dusra (aur shayad asal) rasta yahi hai.
+      const urlOccurrences = mintReplay.findIdOccurrencesInText(String(reqTemplate.url || ''), usableIds);
+      const urlPrimaryId = urlOccurrences.length ? urlOccurrences[0].id : null;
       if (this.mintTemplate && this.mintTemplate.taskKey === key
         && Buffer.isBuffer(this.mintTemplate.body) && this.mintTemplate.body.equals(body)) {
         return; // wahi template pehle se hai — khabar dobara nahi
@@ -1297,7 +1310,10 @@ class NetworkCapture {
         taskKey: key,
         primaryId,
         ids: occurrences.map(o => o.id),
-        idOccurrences: occurrences
+        idOccurrences: occurrences,
+        urlPrimaryId,
+        urlIds: urlOccurrences.map(o => o.id),
+        urlIdOccurrences: urlOccurrences
       };
       if (this.onMintTemplate) {
         try {
@@ -1305,7 +1321,8 @@ class NetworkCapture {
             taskKey: key,
             rpcids: rpcidsOf(reqTemplate.url),
             bodyBytes: body.length,
-            idsInBody: mintReplay.countOccurrences(occurrences)
+            idsInBody: mintReplay.countOccurrences(occurrences),
+            idsInUrl: mintReplay.countOccurrences(urlOccurrences)
           });
         } catch (e) {}
       }

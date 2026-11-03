@@ -29,6 +29,10 @@
 //      task ka ID. Lambai barabar ho ya na ho — Buffer tukdon
 //      se dobara jodta hai, is liye alag lambai bhi sahi
 //      sambhalti hai.
+//   3. (v2.48.34) findIdOccurrencesInText / substituteIdsInUrl
+//      — wohi do hisaab darkhwast ke URL par: live test me
+//      body me id NAHI mili thi (idsInBody=0), is liye ab
+//      URL bhi usi hifazat se jaancha/badla jata hai.
 
 /** ID string ke UTF-8 bytes (Flow ke IDs ASCII hote hain; har haal me yahi sab se wafadaar roop hai). */
 function idBytes(id) {
@@ -129,4 +133,86 @@ function substituteIds(body, pairs) {
   return { body: cur, replacements };
 }
 
-module.exports = { findIdOccurrences, countOccurrences, substituteIds };
+/**
+ * v2.48.34 (ZEROCLICK — URL reach): findIdOccurrences ka hi
+ * kaam, lekin ek aam string (darkhwast ka poora URL) par —
+ * ZEROCLICK live test (2026-11-03) me template ke 170-byte
+ * body me teacher task ki koi id NAHI mili (idsInBody=0),
+ * is liye ab id URL me bhi dhoondhi jati hai. Natija wahi
+ * shakal: [{ id, offsets: [charOffset, ...] }] — sirf woh
+ * IDs jo asal me milen. Offsets string ke character offsets
+ * hain (Flow ke IDs aur URL dono ASCII hote hain).
+ */
+function findIdOccurrencesInText(text, ids) {
+  const out = [];
+  if (typeof text !== 'string' || text.length === 0 || !Array.isArray(ids)) return out;
+  const seen = new Set();
+  for (const raw of ids) {
+    const id = typeof raw === 'string' ? raw : '';
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    if (id.length > text.length) continue;
+    const offsets = [];
+    let from = 0;
+    while (from <= text.length - id.length) {
+      const at = text.indexOf(id, from);
+      if (at < 0) break;
+      offsets.push(at);
+      from = at + 1;
+    }
+    if (offsets.length) out.push({ id, offsets });
+  }
+  return out;
+}
+
+/** Ek hi ID ki saari occurrences ek string me badlo (koi regex nahi — '$' waghera ke khaas matlab se poora bachav). */
+function replaceAllInText(text, fromId, toId) {
+  if (!fromId || fromId.length > text.length) return { text, replacements: 0 };
+  const parts = [];
+  let replacements = 0;
+  let cursor = 0;
+  while (cursor <= text.length - fromId.length) {
+    const at = text.indexOf(fromId, cursor);
+    if (at < 0) break;
+    parts.push(text.slice(cursor, at));
+    parts.push(toId);
+    replacements++;
+    cursor = at + fromId.length;
+  }
+  if (replacements === 0) return { text, replacements: 0 };
+  parts.push(text.slice(cursor));
+  return { text: parts.join(''), replacements };
+}
+
+/**
+ * v2.48.34 (ZEROCLICK — URL reach): substituteIds ka URL
+ * wala roop — pairs = [[teacherId, thisTaskId], ...]; har
+ * jodi ki saari occurrences URL string me badli jati hain
+ * (tartib se; agli jodi pichhli ke natije par). Khaali ID
+ * wali ya from===to wali jodi chhod di jati hai. Ek bhi
+ * qabil jodi na ho to null; warna { url, replacements } —
+ * replacements 0 bhi ho sakta hai (teacher ka ID URL me
+ * tha hi nahi — bulane wala isi par faisla karta hai).
+ */
+function substituteIdsInUrl(url, pairs) {
+  if (typeof url !== 'string' || url.length === 0 || !Array.isArray(pairs)) return null;
+  const valid = [];
+  for (const p of pairs) {
+    if (!Array.isArray(p) || p.length < 2) continue;
+    const from = typeof p[0] === 'string' ? p[0] : '';
+    const to = typeof p[1] === 'string' ? p[1] : '';
+    if (!from || !to || from === to) continue;
+    valid.push([from, to]);
+  }
+  if (!valid.length) return null;
+  let cur = url;
+  let replacements = 0;
+  for (const [from, to] of valid) {
+    const r = replaceAllInText(cur, from, to);
+    cur = r.text;
+    replacements += r.replacements;
+  }
+  return { url: cur, replacements };
+}
+
+module.exports = { findIdOccurrences, countOccurrences, substituteIds, findIdOccurrencesInText, substituteIdsInUrl };

@@ -462,6 +462,12 @@ class NetworkCapture {
     // hai (sirf shakal: rpcids + body size + ID ginti; asal
     // URL/ID/body kabhi callback se bahar nahi jata).
     this.onMintTemplate = typeof opts.onMintTemplate === 'function' ? opts.onMintTemplate : null;
+    // v2.48.38 (EDITOR-HARVEST PACK): harvest-audit ki khabar
+    // — engine use [ROOT] harvest-audit line me badalta hai
+    // (sirf hisaab: bytes/body/hash-8/vsTeacher/faisla/wajah;
+    // asal URL ya poora hash kabhi bahar nahi jata). Callback
+    // na ho to audit khamosh hai (vyavhaar nahi badalta).
+    this.onHarvestAudit = typeof opts.onHarvestAudit === 'function' ? opts.onHarvestAudit : null;
     this._page = null;
     this._reqHandler = null;
     this._resHandler = null;
@@ -602,7 +608,22 @@ class NetworkCapture {
     // hadd ~8MB; task ke round ke aakhir par evict.
     this.harvestBodies = new Map(); // captureKey -> { url, buffer, at }
     this._harvestByUrl = new Map(); // url -> { buffer, at } (bandhan se pehle aayi body; hadd 2)
-    this._harvestPending = new Map(); // CDP requestId -> { url, declared }
+    this._harvestPending = new Map(); // CDP requestId -> { url, declared, status, contentRange }
+    // v2.48.38 (EDITOR-HARVEST PACK): editor-khidki wali
+    // kitab. _editorWindow = is pal kis task ka editor
+    // khula hai ({ key, since }) — jawab SIRF usi khidki
+    // ke andar aane par _editorHarvest me darj hota hai
+    // (sanrachna wali nisbat; bandhan yahan lazmi NAHI —
+    // ZEROCLICK5 me playback wala GET kisi bandhan ke
+    // baghair aaya tha, is liye bandhan-wala harvest use
+    // kabhi promotion hi nahi kar paya tha).
+    // _downloadAttemptKey = stage-lock tale chal raha
+    // download attempt (engine round ke aaghaz/aakhir par
+    // khabar deta hai) — harvest-audit in dono haalaton
+    // me se kisi me bhi chalta hai.
+    this._editorWindow = null; // { key, since }
+    this._editorHarvest = new Map(); // captureKey -> [{ url, buffer, at, partial, status, contentRange }]
+    this._downloadAttemptKey = null;
     // Engine har download round me apni duration ka size
     // floor yahan rakh deta hai (downloadFetch wala hisaab);
     // 0 = floor nahi (aam darwaze hi laagu).
@@ -918,7 +939,14 @@ class NetworkCapture {
                 const firstKey = this._harvestPending.keys().next().value;
                 this._harvestPending.delete(firstKey);
               }
-              this._harvestPending.set(e.requestId, { url: u, declared: Number.isFinite(declared) ? declared : 0 });
+              this._harvestPending.set(e.requestId, {
+                url: u,
+                declared: Number.isFinite(declared) ? declared : 0,
+                // v2.48.38: adhoore (partial) jawab ki pehchan
+                // ke nishan — status (206) aur Content-Range.
+                status: Number.isFinite(e.response.status) ? e.response.status : 0,
+                contentRange: headerValueOf(e.response.headers, 'content-range') || ''
+              });
             }
           }
         } catch (err) {}
@@ -989,11 +1017,28 @@ class NetworkCapture {
           if (e && this._harvestPending.has(e.requestId)) {
             const pend = this._harvestPending.get(e.requestId);
             this._harvestPending.delete(e.requestId);
+            let hbuf = null;
             try {
               const hres = await client.send('Network.getResponseBody', { requestId: e.requestId });
-              const hbuf = decodeCdpBody(hres && hres.body, hres && hres.base64Encoded);
-              if (hbuf && hbuf.length > 0) this._retainHarvestBody(pend.url, hbuf, Date.now());
-            } catch (herr) {}
+              hbuf = decodeCdpBody(hres && hres.body, hres && hres.base64Encoded);
+            } catch (herr) { hbuf = null; }
+            let retained = false;
+            let editorStored = false;
+            if (hbuf && hbuf.length > 0) {
+              retained = this._retainHarvestBody(pend.url, hbuf, Date.now());
+              // v2.48.38 (EDITOR-HARVEST PACK): wahi jawab
+              // editor-khidki ki kitab me bhi — lekin sirf
+              // tab jab wo is pal kisi task ke khule editor
+              // ki khidki ke andar aaya ho.
+              try { editorStored = this._recordEditorHarvest(pend.url, hbuf, pend, Date.now()); } catch (herr) { editorStored = false; }
+            }
+            // v2.48.38 (EDITOR-HARVEST PACK): HARVEST-AUDIT
+            // — download attempt chal raha ho (stage-lock
+            // holder) ya kisi task ka editor khula ho, to
+            // har mukammal flow-content jawab par ek line:
+            // promotion asal me hua ya nahi, aur kyun nahi.
+            // Koi vyavhaar-badal nahi — sirf hisaab/khabar.
+            try { this._emitHarvestAudit(pend, hbuf, retained || editorStored); } catch (herr) {}
           }
         } catch (err) {}
         // v2.48.27 (NET-BIG): faisla + khidki-hisaab — size ki
@@ -1348,6 +1393,163 @@ class NetworkCapture {
   /** v2.48.36 (ROOT PACK — D): task ka harvest saaf karo (round ke aakhir par engine bulata hai). */
   evictHarvest(key) {
     try { if (key) this.harvestBodies.delete(key); } catch (e) {}
+  }
+
+  /**
+   * v2.48.38 (EDITOR-HARVEST PACK): engine ki khabar — ek
+   * download attempt (stage-lock holder) shuru / khatam.
+   * Harvest-audit sirf in khidkiyon me chalta hai: kisi
+   * task ka download attempt chal raha ho, ya kisi task
+   * ka editor khula ho.
+   */
+  setDownloadAttempt(key) {
+    try { this._downloadAttemptKey = key || null; } catch (e) {}
+  }
+
+  /** v2.48.38: download attempt khatam — audit ki khidki band (editor wali alag rehti hai). */
+  clearDownloadAttempt(key) {
+    try {
+      if (!key || this._downloadAttemptKey === key) this._downloadAttemptKey = null;
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.38 (EDITOR-HARVEST PACK): is task ka editor
+   * khul gaya — editor-khidki shuru. Wahi task ki khidki
+   * pehle se khuli ho to us ke darj jawab BARKARAR rehte
+   * hain (route C ke khole editor ko editor-harvest route
+   * dobara 'kholta' hai — us beech aaye playback bytes
+   * ginne hi chahiye); naya task aaye to us ki taaza
+   * khidki (purane jawab us ke naam kabhi nahi).
+   */
+  beginEditorWindow(key) {
+    try {
+      if (!key) return;
+      if (this._editorWindow && this._editorWindow.key === key) return;
+      this._editorWindow = { key, since: Date.now() };
+      this._editorHarvest.delete(key);
+    } catch (e) {}
+  }
+
+  /** v2.48.38: editor band — khidki khatam (us ke baad ke jawab is task ke kabhi nahi). */
+  endEditorWindow(key) {
+    try {
+      if (!key || (this._editorWindow && this._editorWindow.key === key)) this._editorWindow = null;
+    } catch (e) {}
+  }
+
+  /** v2.48.38: is pal kis task ka editor khula hai (key ya null). */
+  editorWindowKey() {
+    return this._editorWindow ? this._editorWindow.key : null;
+  }
+
+  /**
+   * v2.48.38 (EDITOR-HARVEST PACK): ek mukammal
+   * flow-content jawab ko editor-khidki ki kitab me darj
+   * karo. Darwaze sakht:
+   *   - khidki khuli hi na ho, ya jawab kisi AUR task ki
+   *     khidki ka ho → kabhi nahi (sanrachna wali nisbat);
+   *   - teacher ka address → kabhi nahi (wo pichhli file
+   *     hai; hash guard dusri hifazat engine par hai);
+   *   - khaali body → nahi.
+   * Adhoora (partial) jawab bhi darj hota hai (partial
+   * nishaan ke saath) — engine usi URL ka poora fetch
+   * page ke andar se karega; is liye yahan floor/header
+   * ka faisla NAHI hota (wo engine ke verdict ka kaam
+   * hai). Ek task ke naam hadd 4 jawab, sab se taza rehta
+   * hai. Natija: darj hua ya nahi.
+   */
+  _recordEditorHarvest(url, buffer, meta, at) {
+    try {
+      if (!url || !Buffer.isBuffer(buffer) || buffer.length === 0) return false;
+      const win = this._editorWindow;
+      if (!win || !win.key) return false;
+      let teacherUrl = null;
+      try { teacherUrl = this.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
+      if (teacherUrl && url === teacherUrl) return false;
+      const m = meta && typeof meta === 'object' ? meta : {};
+      const partial = saveGuard.isPartialHarvestResponse({
+        status: m.status, contentRange: m.contentRange,
+        byteLength: buffer.length, declaredLength: m.declared,
+        floorBytes: this.harvestFloorBytes || 0
+      });
+      const entry = {
+        url, buffer, at: Number.isFinite(at) ? at : Date.now(),
+        partial,
+        status: Number.isFinite(m.status) ? m.status : 0,
+        contentRange: typeof m.contentRange === 'string' ? m.contentRange : ''
+      };
+      let list = this._editorHarvest.get(win.key);
+      if (!list) { list = []; this._editorHarvest.set(win.key, list); }
+      const prev = list.findIndex(e => e.url === url);
+      if (prev >= 0) list.splice(prev, 1);
+      list.push(entry);
+      while (list.length > 4) list.shift();
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /**
+   * v2.48.38 (EDITOR-HARVEST PACK): is task ki editor-
+   * khidki ke andar darj jawabon ki fehrist (purane se
+   * naye ki taraf, nakal). Khidki ke bahar / doosre task
+   * ke jawab is kitab me hote hi nahi.
+   */
+  editorHarvestEntriesForKey(key) {
+    try {
+      if (!key) return [];
+      const list = this._editorHarvest.get(key);
+      return Array.isArray(list) ? list.slice() : [];
+    } catch (e) { return []; }
+  }
+
+  /** v2.48.38: is task ki editor-khidki kitab saaf karo. */
+  evictEditorHarvest(key) {
+    try { if (key) this._editorHarvest.delete(key); } catch (e) {}
+  }
+
+  /**
+   * v2.48.38 (EDITOR-HARVEST PACK): harvest-audit ki ek
+   * khabar engine ko — sirf tab jab audit ki khidki khuli
+   * ho (download attempt chal raha ho ya editor khula
+   * ho). Faisla saveGuard.harvestAuditOf (khalis) se:
+   * promotion asal _retainHarvestBody / editor-khidki
+   * darj se aata hai; inkaar ki wajah gates ke hisaab se
+   * dobara gin kar di jati hai (body-fail sab se pehle).
+   */
+  _emitHarvestAudit(pend, buffer, promoted) {
+    try {
+      if (!this.onHarvestAudit) return;
+      if (!this._downloadAttemptKey && !this._editorWindow) return;
+      const bodyOk = !!(buffer && buffer.length > 0);
+      let reason = 'ok';
+      if (!bodyOk) reason = 'body-fail';
+      else if (!promoted) {
+        let teacherUrl = null;
+        try { teacherUrl = this.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
+        if (teacherUrl && pend && pend.url === teacherUrl) reason = 'teacher-url';
+        else {
+          const g = saveGuard.harvestGenericGates({
+            byteLength: buffer.length,
+            floorBytes: this.harvestFloorBytes || 0,
+            headerOk: downloadFetch.looksLikeVideoBuffer(buffer)
+          });
+          reason = g.ok ? 'unbound' : g.reason;
+        }
+      }
+      let teacherUrl = null;
+      try { teacherUrl = this.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
+      const audit = saveGuard.harvestAuditOf({
+        byteLength: bodyOk ? buffer.length : 0,
+        bodyOk,
+        hash: bodyOk ? saveGuard.contentHash(buffer) : null,
+        url: pend ? pend.url : null,
+        teacherUrl,
+        promoted: !!promoted,
+        reason
+      });
+      try { this.onHarvestAudit(audit); } catch (e) {}
+    } catch (e) {}
   }
 
   /**

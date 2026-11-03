@@ -211,4 +211,120 @@ function templateStateOf(input) {
   return { template, teacherUrl };
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf };
+// ---------------------------------------------------------------------------
+// v2.48.38 (EDITOR-HARVEST PACK): editor ke playback fetch
+// par faisle + harvest-audit ka hisaab — sab khalis.
+//
+// SABOOT (ZEROCLICK5, v2.48.37, owner ke PC par engine log,
+// 2026-11-03): dono verbatim replay raaste teacher URL par
+// HAAR gaye ('grid-replay returned teacher url' aur
+// 'replay-context returned teacher url') — mint call
+// session ke LAST-MINTED media ka hi address deti hai,
+// tile/editor context use nahi badalta. Lekin usi log me
+// ek aur darwaza dikha: Prompt #2 ke editor-open khidki
+// me, Download button dabne se PEHLE, ek flow-content GET
+// 1,231,422 bytes ka hua (≈ usi task ki file size) —
+// editor apni playback ke liye file KHUD mangta hai. Un
+// bytes ko usi khidki me pakadna hi bacha hua zero-click
+// rasta hai ('editor-harvest').
+// ---------------------------------------------------------------------------
+
+/**
+ * Ek flow-content jawab ADHOORA (partial) hai kya?
+ * Nishan: HTTP 206, Content-Range header maujood, declared
+ * Content-Length se chhoti asal body, ya duration ke size
+ * floor se neeche ki body (chhota tukda asal file nahi ho
+ * sakta). input = { status, contentRange, byteLength,
+ * declaredLength, floorBytes }.
+ */
+function isPartialHarvestResponse(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  if (Number(o.status) === 206) return true;
+  if (typeof o.contentRange === 'string' && o.contentRange.trim() !== '') return true;
+  const len = Number.isFinite(o.byteLength) ? Math.floor(o.byteLength) : 0;
+  const declared = Number.isFinite(o.declaredLength) ? Math.floor(o.declaredLength) : 0;
+  if (declared > 0 && len > 0 && len < declared) return true;
+  const floor = Number.isFinite(o.floorBytes) ? Math.floor(o.floorBytes) : 0;
+  if (floor > 0 && len > 0 && len < floor) return true;
+  return false;
+}
+
+/**
+ * EDITOR-HARVEST ke ek ummeedwaar ka faisla. Nisbat
+ * SANRACHNA (structural) par hai: jawab SIRF tab qabil hai
+ * jab wo IS task ke editor ke khule hone ki khidki ke
+ * ANDAR dekha gaya ho (inWindow) — khidki ke bahar ka
+ * jawab kabhi nahi, chahe baaki sab theek ho. Teacher ka
+ * address (url barabar) ya teacher ke bytes (hash barabar
+ * / duplicate nishaan) hamesha inkaar hain. Adhoora jawab
+ * inkaar nahi — usi URL ka poora fetch page ke andar se
+ * hota hai (action 'fetch-full').
+ * input = { inWindow, url, teacherUrl, byteLength,
+ *   floorBytes, headerOk, status, contentRange,
+ *   declaredLength, partial, duplicate, hash, teacherHash }
+ * natija = { accept, action, reason } — action:
+ *   'save' | 'fetch-full' | 'reject'; reason 'ok' ho ya
+ *   haar ki qisam: 'outside-window' | 'no-url' |
+ *   'teacher-url' | 'duplicate-content' | 'partial' |
+ *   'empty' | 'too-big' | 'bad-header' | 'below-floor'.
+ */
+function editorHarvestVerdict(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  if (!o.inWindow) return { accept: false, action: 'reject', reason: 'outside-window' };
+  const url = typeof o.url === 'string' && o.url ? o.url : null;
+  if (!url) return { accept: false, action: 'reject', reason: 'no-url' };
+  if (typeof o.teacherUrl === 'string' && o.teacherUrl && url === o.teacherUrl) {
+    return { accept: false, action: 'reject', reason: 'teacher-url' };
+  }
+  if (o.duplicate) return { accept: false, action: 'reject', reason: 'duplicate-content' };
+  if (o.hash && o.teacherHash && o.hash === o.teacherHash) {
+    return { accept: false, action: 'reject', reason: 'duplicate-content' };
+  }
+  const partial = typeof o.partial === 'boolean' ? o.partial : isPartialHarvestResponse(o);
+  if (partial) return { accept: false, action: 'fetch-full', reason: 'partial' };
+  const g = harvestGenericGates(o);
+  if (!g.ok) return { accept: false, action: 'reject', reason: g.reason };
+  return { accept: true, action: 'save', reason: 'ok' };
+}
+
+/**
+ * HARVEST-AUDIT ka hisaab: ek mukammal flow-content jawab
+ * ka ek-line khulasa — kitne bytes, body mili ya nahi,
+ * hash ke pehle 8 harf (poora hash kabhi log nahi —
+ * shape-only discipline), teacher se muqabla (hash se
+ * pakka, warna URL se; dono na hon to 'n/a'), aur faisla
+ * (kitab me promotion hua ya inkaar) apni wajah ke saath.
+ * input = { byteLength, bodyOk, hash, teacherHash, url,
+ *   teacherUrl, promoted, reason }
+ * natija = { bytes, body, hash, vsTeacher, decision,
+ *   reason } — hash 'n/a' jab body hi na mili ho.
+ */
+function harvestAuditOf(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const bytes = Number.isFinite(o.byteLength) ? Math.max(0, Math.floor(o.byteLength)) : 0;
+  const body = o.bodyOk && bytes > 0 ? 'ok' : 'fail';
+  const hash = body === 'ok' && typeof o.hash === 'string' && o.hash
+    ? o.hash.slice(0, 8) : 'n/a';
+  let vsTeacher = 'n/a';
+  if (body === 'ok' && o.hash && o.teacherHash) {
+    vsTeacher = o.hash === o.teacherHash ? 'same' : 'different';
+  } else if (typeof o.url === 'string' && o.url && typeof o.teacherUrl === 'string' && o.teacherUrl) {
+    vsTeacher = o.url === o.teacherUrl ? 'same' : 'different';
+  }
+  return {
+    bytes,
+    body,
+    hash,
+    vsTeacher,
+    decision: o.promoted ? 'promoted' : 'rejected',
+    reason: typeof o.reason === 'string' && o.reason ? o.reason : (o.promoted ? 'ok' : 'unknown')
+  };
+}
+
+/** Harvest-audit natije ki ek-line shakal (bina '[ROOT] harvest-audit' prefix ke). */
+function formatHarvestAudit(audit) {
+  const a = audit && typeof audit === 'object' ? audit : {};
+  return `bytes=${Number.isFinite(a.bytes) ? a.bytes : 0} body=${a.body || 'fail'} hash=${a.hash || 'n/a'} vsTeacher=${a.vsTeacher || 'n/a'} decision=${a.decision || 'rejected'} reason=${a.reason || 'unknown'}`;
+}
+
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, editorHarvestVerdict, harvestAuditOf, formatHarvestAudit };

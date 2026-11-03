@@ -78,6 +78,23 @@
 // generation parallel rehti hai, download kabhi aapas me
 // nahi ulajhta (ZEROCLICK3 ki mint-binding wali seekh).
 //
+// v2.48.38 (EDITOR-HARVEST PACK): replay-context ke baad
+// naya qadam 'editor-harvest' — ZEROCLICK5 (v2.48.37) ne
+// dono replay raaste teacher URL par falsify kar diye
+// (mint call session ke last-minted media ka hi address
+// deti hai), lekin usi log me editor apni playback ke
+// liye file khud mangta dikha: editor-open khidki ke
+// andar, Download button dabne se PEHLE, ≈file-size ka
+// flow-content GET. Ye rasta usi khule editor (route C
+// wala) ke andar dekhe gaye jawabon ke bytes pakadta hai
+// — nisbat sirf sanrachna se (jawab is task ke editor ke
+// khule hone ki khidki ke andar aaya ho, teacher ka
+// address na ho), hash guard dusri hifazat. Adhoora
+// jawab (206 / Content-Range / floor se neeche) usi URL
+// ka page-context poora fetch bulata hai. Haar par
+// editor khula rehta hai aur direct-viewer usi se aage
+// badhta hai — click/menu is raaste me bhi NAHI hota.
+//
 // Kram (video tasks):
 //   1. quick-check       — NO-WAIT: page-harvest (page ke
 //                          khinche hue bytes) + registry
@@ -93,25 +110,30 @@
 //                          ke context se wahi hu-bahu
 //                          replay (Download button NAHI
 //                          dabta; andar page-harvest bhi)
-//   4. direct-viewer     — PRIMARY (v2.48.32): tile viewer ka
+//   4. editor-harvest    — EDITOR-HARVEST (v2.48.38): usi
+//                          khule editor ki playback ke
+//                          flow-content bytes pakdo —
+//                          Download button NAHI, menu NAHI
+//   5. direct-viewer     — PRIMARY (v2.48.32): tile viewer ka
 //                          apna Download button (bina menu) —
 //                          click se mint hua server address,
 //                          app ki server-fetch se save
-//   5. native-menu       — ⋮ menu → Download → resolution select
+//   6. native-menu       — ⋮ menu → Download → resolution select
 //                          (+ v2.48.30 post-click server race)
-//   6. blob-harvest      — page ke andar ke bytes (v2.48.26 FAST-DL)
-//   7. backend-fetch     — bandha backend link seedha fetch
-//   8. backend-order     — kram se bandhan (claimByOrder)
-//   9. tile-readiness    — tile media ready hone ka intezaar
-//  10. backend-fetch-retry — readiness ke baad backend ek aur baar
-//  11. tile-src-fast     — tile ka apna src, turant fetch (v2.47.4)
-//  12. tile-src          — tile/stream ka src
-//  13. native-editor     — editor ki top bar ka "Download media"
+//   7. blob-harvest      — page ke andar ke bytes (v2.48.26 FAST-DL)
+//   8. backend-fetch     — bandha backend link seedha fetch
+//   9. backend-order     — kram se bandhan (claimByOrder)
+//  10. tile-readiness    — tile media ready hone ka intezaar
+//  11. backend-fetch-retry — readiness ke baad backend ek aur baar
+//  12. tile-src-fast     — tile ka apna src, turant fetch (v2.47.4)
+//  13. tile-src          — tile/stream ka src
+//  14. native-editor     — editor ki top bar ka "Download media"
 //      (native-menu yahan dobara NAHI chalta — wo pehle hi ho gaya)
 const DOWNLOAD_ROUTE_ORDER = Object.freeze([
   'quick-check',
   'grid-replay',
   'replay-context',
+  'editor-harvest',
   'direct-viewer',
   'native-menu',
   'blob-harvest',

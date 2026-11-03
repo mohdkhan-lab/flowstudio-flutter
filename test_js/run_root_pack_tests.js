@@ -29,10 +29,16 @@ const {
   harvestGenericGates,
   harvestCandidateVerdict,
   replayUrlVerdict,
-  templateStateOf
+  templateStateOf,
+  contentHash,
+  isPartialHarvestResponse,
+  editorHarvestVerdict,
+  harvestAuditOf,
+  formatHarvestAudit
 } = require('../engine/saveGuard');
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
 const { NetworkCapture } = require('../engine/networkCapture');
+const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
 
 let passed = 0;
 let failed = 0;
@@ -396,6 +402,146 @@ async function main() {
     // Candidate aate hi state candidate/known.
     nc._noteMintCandidate({ url: CAND_URL_1, method: 'POST', headers: {}, body: Buffer.from('f.req=one') });
     eq('STATE-NC candidate — candidate/known', JSON.stringify(nc.templateState()), JSON.stringify({ template: 'candidate', teacherUrl: 'known' }));
+  }
+
+  // ---------------------------------------------------------------------------
+  // I. v2.48.38 — EDITOR-HARVEST PACK:
+  //   (a) tartib: editor-harvest replay-context ke baad
+  //       aur direct-viewer se pehle hai;
+  //   (b) teacher-identical bytes (hash barabar / duplicate
+  //       nishaan / teacher URL) hamesha reject;
+  //   (c) nisbat sanrachna se: jawab SIRF is task ke apne
+  //       editor ke khule hone ki khidki ke andar ka ho —
+  //       khidki se pehle/baad ka ya doosre task ki khidki
+  //       ka jawab kabhi candidate nahi;
+  //   (d) adhoora jawab (206 / Content-Range / declared se
+  //       chhota / floor se neeche) inkaar nahi — usi URL
+  //       ka page-context poora fetch (action 'fetch-full');
+  //   (e) harvest-audit ka hisaab: bytes/body/hash-8/
+  //       vsTeacher/decision/reason.
+  // ---------------------------------------------------------------------------
+  {
+    // (a) tartib
+    eq('EH-ORDER replay-context is third', DOWNLOAD_ROUTE_ORDER[2], 'replay-context');
+    eq('EH-ORDER editor-harvest is fourth', DOWNLOAD_ROUTE_ORDER[3], 'editor-harvest');
+    eq('EH-ORDER direct-viewer is fifth', DOWNLOAD_ROUTE_ORDER[4], 'direct-viewer');
+    ok('EH-ORDER editor-harvest sits between replay-context and direct-viewer',
+      DOWNLOAD_ROUTE_ORDER.indexOf('editor-harvest') === DOWNLOAD_ROUTE_ORDER.indexOf('replay-context') + 1
+      && DOWNLOAD_ROUTE_ORDER.indexOf('direct-viewer') === DOWNLOAD_ROUTE_ORDER.indexOf('editor-harvest') + 1);
+  }
+  {
+    // (b) teacher-identical bytes / teacher URL / duplicate
+    const teacherBuf = mp4Buffer(600000);
+    const freshBuf = mp4Buffer(600000);
+    freshBuf[100] = 0xAB; // bytes alag — hash alag
+    const tHash = contentHash(teacherBuf);
+    const fHash = contentHash(freshBuf);
+    const dup = editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true, hash: tHash, teacherHash: tHash });
+    eq('EH teacher-identical bytes rejected', dup.accept, false);
+    eq('EH teacher-identical reason is duplicate-content', dup.reason, 'duplicate-content');
+    eq('EH duplicate flag rejected as duplicate-content', editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true, duplicate: true }).reason, 'duplicate-content');
+    eq('EH teacher url rejected', editorHarvestVerdict({ inWindow: true, url: FC_TEACHER, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true }).reason, 'teacher-url');
+    const good = editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true, hash: fHash, teacherHash: tHash });
+    eq('EH fresh complete bytes accepted', good.accept, true);
+    eq('EH fresh complete action is save', good.action, 'save');
+    // Capture ki kitab me bhi teacher ka address kabhi darj nahi hota.
+    const nc = new NetworkCapture({});
+    nc.mintTeacherUrl = FC_TEACHER;
+    nc.beginEditorWindow('task-eh');
+    eq('EH-NC teacher url never recorded in the window', nc._recordEditorHarvest(FC_TEACHER, mp4Buffer(600000), { status: 200 }, Date.now()), false);
+    eq('EH-NC teacher url leaves no candidate', nc.editorHarvestEntriesForKey('task-eh').length, 0);
+    nc.endEditorWindow('task-eh');
+  }
+  {
+    // (c) sanrachna wali nisbat — khidki ke bahar kabhi nahi
+    eq('EH outside-window verdict rejected', editorHarvestVerdict({ inWindow: false, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true }).reason, 'outside-window');
+    const nc = new NetworkCapture({});
+    // Koi khidki hi nahi — darj nahi hota.
+    eq('EH-NC no window — not recorded', nc._recordEditorHarvest(FC_FRESH, mp4Buffer(600000), { status: 200 }, Date.now()), false);
+    eq('EH-NC no window — no entries', nc.editorHarvestEntriesForKey('task-eh').length, 0);
+    // Apni khidki ke andar — darj hota hai, apne hi naam par milta hai.
+    nc.beginEditorWindow('task-eh');
+    eq('EH-NC inside own window — recorded', nc._recordEditorHarvest(FC_FRESH, mp4Buffer(600000), { status: 200 }, Date.now()), true);
+    eq('EH-NC own entries visible', nc.editorHarvestEntriesForKey('task-eh').length, 1);
+    eq('EH-NC other task sees nothing', nc.editorHarvestEntriesForKey('task-other').length, 0);
+    // Khidki band — us ke baad ka jawab darj nahi hota.
+    nc.endEditorWindow('task-eh');
+    eq('EH-NC after window closed — not recorded', nc._recordEditorHarvest(FC_FRESH2, mp4Buffer(600000), { status: 200 }, Date.now()), false);
+    eq('EH-NC closed window keeps only the in-window entry', nc.editorHarvestEntriesForKey('task-eh').length, 1);
+    // Khidki band hone ke baad NAYI khidki purane jawab
+    // saaf karti hai (wo is khidki ke andar ke nahi the).
+    nc.beginEditorWindow('task-eh');
+    eq('EH-NC a fresh window after close starts empty', nc.editorHarvestEntriesForKey('task-eh').length, 0);
+    // Lekin khuli khidki ko 'dobara kholna' (route C →
+    // editor-harvest ka mushtarak editor reuse) darj
+    // jawab barkarar rakhta hai.
+    eq('EH-NC fresh window records again', nc._recordEditorHarvest(FC_FRESH, mp4Buffer(600000), { status: 200 }, Date.now()), true);
+    nc.beginEditorWindow('task-eh');
+    eq('EH-NC re-beginning the same open window keeps its entries', nc.editorHarvestEntriesForKey('task-eh').length, 1);
+    nc.endEditorWindow('task-eh');
+  }
+  {
+    // (d) adhoora jawab — poora fetch ka hukm, inkaar nahi
+    eq('EH-PARTIAL 206 is partial', isPartialHarvestResponse({ status: 206, byteLength: 600000 }), true);
+    eq('EH-PARTIAL content-range is partial', isPartialHarvestResponse({ status: 200, contentRange: 'bytes 0-99/600000', byteLength: 100 }), true);
+    eq('EH-PARTIAL declared se chhota is partial', isPartialHarvestResponse({ status: 200, byteLength: 300000, declaredLength: 600000 }), true);
+    eq('EH-PARTIAL floor se neeche is partial', isPartialHarvestResponse({ status: 200, byteLength: 100000, floorBytes: 200 * 1024 }), true);
+    eq('EH-PARTIAL mukammal jawab partial nahi', isPartialHarvestResponse({ status: 200, byteLength: 600000, declaredLength: 600000, floorBytes: 200 * 1024 }), false);
+    const v206 = editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 300000, floorBytes: 200 * 1024, headerOk: true, status: 206 });
+    eq('EH-PARTIAL 206 verdict action is fetch-full', v206.action, 'fetch-full');
+    eq('EH-PARTIAL 206 verdict is not an accept', v206.accept, false);
+    eq('EH-PARTIAL content-range verdict action is fetch-full', editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 100, floorBytes: 200 * 1024, headerOk: true, contentRange: 'bytes 0-99/600000' }).action, 'fetch-full');
+    eq('EH-PARTIAL below-floor verdict action is fetch-full', editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 100000, floorBytes: 200 * 1024, headerOk: true, status: 200 }).action, 'fetch-full');
+    // Capture adhoore jawab ko partial nishaan ke saath
+    // darj karta hai, taaki engine usi URL ka poora fetch
+    // kar sake.
+    const nc = new NetworkCapture({});
+    nc.beginEditorWindow('task-p');
+    eq('EH-NC partial response recorded', nc._recordEditorHarvest(FC_FRESH, mp4Buffer(100000), { status: 206, contentRange: 'bytes 0-99999/600000', declared: 600000 }, Date.now()), true);
+    const entries = nc.editorHarvestEntriesForKey('task-p');
+    eq('EH-NC partial entry carries the partial mark', entries.length === 1 && entries[0].partial, true);
+    eq('EH-NC partial entry keeps its url for the full fetch', entries.length === 1 && entries[0].url, FC_FRESH);
+    nc.endEditorWindow('task-p');
+    // Baaki darwaze: header kharab / khaali / url hi nahi.
+    eq('EH bad-header verdict is body reject', editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: false, status: 200 }).reason, 'bad-header');
+    eq('EH missing url verdict', editorHarvestVerdict({ inWindow: true, url: null, teacherUrl: FC_TEACHER, byteLength: 600000, headerOk: true }).reason, 'no-url');
+  }
+  {
+    // (e) harvest-audit ka hisaab
+    const buf = mp4Buffer(600000);
+    const other = mp4Buffer(600000);
+    other[100] = 0xAB;
+    const h = contentHash(buf);
+    const aSame = harvestAuditOf({ byteLength: buf.length, bodyOk: true, hash: h, teacherHash: h, promoted: true, reason: 'ok' });
+    eq('EH-AUDIT same-hash vsTeacher is same', aSame.vsTeacher, 'same');
+    eq('EH-AUDIT promoted decision', aSame.decision, 'promoted');
+    eq('EH-AUDIT hash is first 8 only', aSame.hash, h.slice(0, 8));
+    eq('EH-AUDIT different-hash vsTeacher is different', harvestAuditOf({ byteLength: buf.length, bodyOk: true, hash: contentHash(other), teacherHash: h, promoted: false, reason: 'unbound' }).vsTeacher, 'different');
+    eq('EH-AUDIT url se muqabla — same', harvestAuditOf({ byteLength: 10, bodyOk: true, url: FC_TEACHER, teacherUrl: FC_TEACHER, promoted: false, reason: 'teacher-url' }).vsTeacher, 'same');
+    const aFail = harvestAuditOf({ byteLength: 0, bodyOk: false, promoted: false, reason: 'body-fail' });
+    eq('EH-AUDIT body-fail body field', aFail.body, 'fail');
+    eq('EH-AUDIT body-fail hash is n/a', aFail.hash, 'n/a');
+    eq('EH-AUDIT no teacher info — vsTeacher n/a', harvestAuditOf({ byteLength: 10, bodyOk: true, promoted: true }).vsTeacher, 'n/a');
+    const line = formatHarvestAudit(aSame);
+    ok('EH-AUDIT line carries every field', line.includes(`bytes=${buf.length}`) && line.includes('body=ok') && line.includes(`hash=${h.slice(0, 8)}`) && line.includes('vsTeacher=same') && line.includes('decision=promoted') && line.includes('reason=ok'));
+    ok('EH-AUDIT line never carries the full hash', !line.includes(h));
+    // Capture audit sirf khidki (attempt/editor) me bolta
+    // hai — bahar khamosh.
+    const nc = new NetworkCapture({});
+    let heard = 0;
+    nc.onHarvestAudit = () => { heard++; };
+    nc._emitHarvestAudit({ url: FC_FRESH }, buf, true);
+    eq('EH-AUDIT silent outside any window', heard, 0);
+    nc.setDownloadAttempt('task-a');
+    nc._emitHarvestAudit({ url: FC_FRESH }, buf, true);
+    eq('EH-AUDIT speaks during a download attempt', heard, 1);
+    nc.clearDownloadAttempt('task-a');
+    nc._emitHarvestAudit({ url: FC_FRESH }, buf, true);
+    eq('EH-AUDIT silent after the attempt ends', heard, 1);
+    nc.beginEditorWindow('task-a');
+    nc._emitHarvestAudit({ url: FC_FRESH }, null, false);
+    eq('EH-AUDIT speaks while an editor is open (body-fail included)', heard, 2);
+    nc.endEditorWindow('task-a');
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

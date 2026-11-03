@@ -358,10 +358,14 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   // its own table entry.
   eq('ROOT grid-replay route is second', DOWNLOAD_ROUTE_ORDER[1], 'grid-replay');
   eq('ROOT replay-context route is third', DOWNLOAD_ROUTE_ORDER[2], 'replay-context');
-  eq('SWITCH viewer route is fourth', DOWNLOAD_ROUTE_ORDER[3], 'direct-viewer');
-  eq('QUICK-CHECK menu route is fifth', DOWNLOAD_ROUTE_ORDER[4], 'native-menu');
+  // v2.48.38 (EDITOR-HARVEST PACK): editor-harvest chautha
+  // hai — replay-context ke baad, direct-viewer se pehle;
+  // viewer/menu ek-ek qadam peeche hate.
+  eq('EDITOR-HARVEST route is fourth', DOWNLOAD_ROUTE_ORDER[3], 'editor-harvest');
+  eq('SWITCH viewer route is fifth', DOWNLOAD_ROUTE_ORDER[4], 'direct-viewer');
+  eq('QUICK-CHECK menu route is sixth', DOWNLOAD_ROUTE_ORDER[5], 'native-menu');
   eq('QUICK-CHECK order ends with native-editor', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'native-editor');
-  eq('QUICK-CHECK route count', DOWNLOAD_ROUTE_ORDER.length, 13);
+  eq('QUICK-CHECK route count', DOWNLOAD_ROUTE_ORDER.length, 14);
   ok('QUICK-CHECK order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
   ok('QUICK-CHECK order has no server-first watch', !DOWNLOAD_ROUTE_ORDER.includes('server-first'));
   ok('ROOT order has no substitution zero-click step', !DOWNLOAD_ROUTE_ORDER.includes('zero-click'));

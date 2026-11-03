@@ -35,11 +35,13 @@ const {
   editorHarvestVerdict,
   promotedEditorHarvestPick,
   harvestAuditOf,
-  formatHarvestAudit
+  formatHarvestAudit,
+  cascadeVerdict
 } = require('../engine/saveGuard');
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
 const { NetworkCapture } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
+const { FlowAutomationEngine } = require('../engine/flowAutomation');
 
 let passed = 0;
 let failed = 0;
@@ -630,6 +632,279 @@ async function main() {
     eq('HF (d) garbage input — no skip', promotedEditorHarvestPick(null).skip, false);
     eq('HF (d) missing entries field — no skip', promotedEditorHarvestPick({ teacherUrl: FC_TEACHER }).skip, false);
     eq('HF (d) header-broken entry — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 600000, headerOk: false, partial: false, status: 200 }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
+  }
+
+  // ---------------------------------------------------------------------------
+  // K. v2.48.40 — INVISIBLE HARVEST PACK:
+  //   (a) editor-harvest ka editor BACKGROUND page par
+  //       mangta hai — asal page kabhi navigate nahi
+  //       hota aur front par hi rehta hai (CDP
+  //       background target; warna context.newPage +
+  //       asal page foran wapas front par);
+  //   (b) background page nakam ho to
+  //       '[ROOT] editor-harvest bg-failed <reason>' ke
+  //       saath purana dikha-hua editor fallback —
+  //       download kabhi peeche nahi jata;
+  //   (c) background page har koshish ke baad band
+  //       hota hai — kamyaabi par bhi, haar par bhi —
+  //       aur us ka CDP session bhi detach hota hai;
+  //   (d) cascade ka hisaab (saveGuard.cascadeVerdict +
+  //       capture ki kitab): editor khulne se pehle
+  //       kisi jawab me aaya address → preEditorUrl=yes
+  //       aur sahi firstSeen; stream pehli dafa editor
+  //       ke andar dikhe to firstSeen=editor-open.
+  // ---------------------------------------------------------------------------
+  // --- K ke jaali karagar: CDP client + Puppeteer page ---
+  function fakeCdpClient(getBody) {
+    const client = {
+      handlers: {},
+      sent: [],
+      detached: false,
+      on(ev, fn) { client.handlers[ev] = fn; },
+      async send(method, params) {
+        client.sent.push({ method, params });
+        if (method === 'Network.getResponseBody') return getBody ? getBody(params) : { body: '', base64Encoded: false };
+        return {};
+      },
+      async detach() { client.detached = true; }
+    };
+    return client;
+  }
+  function fakePage(name, opts = {}) {
+    const page = {
+      name,
+      _url: opts.url || 'https://flow.google.com/project/test-project',
+      _closed: false,
+      gotoCalls: [],
+      bringToFrontCalls: 0,
+      closeCalls: 0,
+      _ctx: opts.context || null,
+      _browser: opts.browser || null,
+      _cdp: opts.cdpClient || null,
+      url() { return page._url; },
+      isClosed() { return page._closed; },
+      async goto(u) { page.gotoCalls.push(u); page._url = u; },
+      async bringToFront() { page.bringToFrontCalls++; },
+      async close() { page.closeCalls++; page._closed = true; },
+      on() {},
+      async evaluate() { return typeof opts.evaluateResult === 'function' ? opts.evaluateResult() : (opts.evaluateResult !== undefined ? opts.evaluateResult : 3); },
+      async evaluateOnNewDocument() {},
+      target() { return { createCDPSession: async () => page._cdp || fakeCdpClient() }; },
+      browserContext() { return page._ctx; },
+      browser() { return page._browser; },
+      mouse: { click: async () => {} }
+    };
+    return page;
+  }
+  {
+    // (a1) CDP background target — tab bandle hi nahi
+    // hota: asal page na navigate, na re-front.
+    const eng = new FlowAutomationEngine({ onLog: () => {} });
+    const pages = [];
+    const bgPage = fakePage('bg-a1');
+    const ctx = {
+      pages: async () => pages.slice(),
+      newPage: async () => { throw new Error('newPage must not be used when the CDP background target works'); }
+    };
+    const mainPage = fakePage('main-a1', { context: ctx });
+    pages.push(mainPage);
+    bgPage._ctx = ctx;
+    const browserSession = {
+      sent: [],
+      async send(method, params) {
+        browserSession.sent.push({ method, params });
+        if (method === 'Target.createTarget') pages.push(bgPage);
+        return {};
+      },
+      async detach() {}
+    };
+    const fakeBrowser = { target: () => ({ createCDPSession: async () => browserSession }) };
+    mainPage._browser = fakeBrowser;
+    eng.page = mainPage;
+    eng.browser = fakeBrowser;
+    const created = await eng._createBackgroundPage();
+    eq('IH (a) CDP background target returns the new page', created, bgPage);
+    const ct = browserSession.sent.find(s => s.method === 'Target.createTarget');
+    ok('IH (a) createTarget was asked for a BACKGROUND target', !!ct && !!ct.params && ct.params.background === true);
+    eq('IH (a) the main page was never navigated', mainPage.gotoCalls.length, 0);
+    eq('IH (a) the main page url is untouched', mainPage.url(), 'https://flow.google.com/project/test-project');
+    eq('IH (a) the main page never had to be brought back to front', mainPage.bringToFrontCalls, 0);
+  }
+  {
+    // (a2) CDP rasta na ho to context.newPage — aur
+    // asal page FORAN wapas front par (wohi rehta hai
+    // jo owner dekhta hai); navigate kabhi nahi hota.
+    const eng = new FlowAutomationEngine({ onLog: () => {} });
+    const bgPage = fakePage('bg-a2');
+    let newPageCalls = 0;
+    const ctx = {
+      pages: async () => [],
+      newPage: async () => { newPageCalls++; return bgPage; }
+    };
+    const mainPage = fakePage('main-a2', { context: ctx });
+    eng.page = mainPage;
+    eng.browser = {};
+    const created = await eng._createBackgroundPage();
+    eq('IH (a) fallback creates the page in the same context', created, bgPage);
+    eq('IH (a) fallback newPage called once', newPageCalls, 1);
+    eq('IH (a) fallback restores the main page to front at once', mainPage.bringToFrontCalls, 1);
+    eq('IH (a) fallback never navigates the main page', mainPage.gotoCalls.length, 0);
+  }
+  {
+    // (a3) poora harvest-editor rasta: capture bg page
+    // par lagta hai, viewer bg page par khulta hai,
+    // asal page bilkul waisa hi rehta hai.
+    const eng = new FlowAutomationEngine({ onLog: () => {} });
+    const mainPage = fakePage('main-a3');
+    const bgPage = fakePage('bg-a3');
+    eng.page = mainPage;
+    eng._createBackgroundPage = async () => bgPage;
+    let attachedPage = null;
+    eng.netCapture.attachBackgroundPage = async (p) => { attachedPage = p; return true; };
+    eng.netCapture.detachBackgroundPage = async () => {};
+    let viewerPage = 'unset';
+    eng._openTileViewer = async (task, hint, tag, pageOverride) => {
+      viewerPage = pageOverride;
+      return { opened: true, alreadyOpen: false, tileMissing: false, anchor: Date.now() };
+    };
+    const res = await eng._openHarvestEditor({ promptIndex: 0, captureKey: 'k-ih-a' }, 0, 'k-ih-a');
+    eq('IH (a) the harvest editor opens', res.editorOpen, true);
+    eq('IH (a) the harvest editor is the background one', res.bg, true);
+    eq('IH (a) capture attached to the background page', attachedPage, bgPage);
+    eq('IH (a) the tile viewer opened on the background page', viewerPage, bgPage);
+    eq('IH (a) the background page navigated to the project', bgPage.gotoCalls.length, 1);
+    eq('IH (a) the main page stayed on the grid, never navigated', mainPage.gotoCalls.length, 0);
+    ok('IH (a) the background session is live for the task', eng._bgHarvestActiveFor('k-ih-a'));
+    await eng._closeBgEditorSession();
+    // Page-parameter wale helpers asal me diye gaye
+    // page ko hi padhte hain (asal page ko nahi).
+    const engP = new FlowAutomationEngine({ onLog: () => {} });
+    engP.page = fakePage('main-a4', { evaluateResult: { found: false } });
+    const bgEditor = fakePage('bg-a4', { url: 'https://flow.google.com/project/test-project/edit/xyz', evaluateResult: { found: false } });
+    eq('IH (a) inEditorView reads the GIVEN page (editor url)', await engP._inEditorView(bgEditor), true);
+    eq('IH (a) inEditorView on the main page stays on the grid', await engP._inEditorView(), false);
+  }
+  {
+    // (b1) background page hi na bane → bg-failed line
+    // + purana (asal page wala) editor fallback.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+    eng.page = fakePage('main-b1');
+    eng._createBackgroundPage = async () => { throw new Error('boom'); };
+    let fallbackPageArg = 'unset';
+    eng._openTileViewer = async (task, hint, tag, pageOverride) => {
+      fallbackPageArg = pageOverride;
+      return { opened: true, alreadyOpen: false, tileMissing: false, anchor: Date.now() };
+    };
+    const res = await eng._openHarvestEditor({ promptIndex: 0, captureKey: 'k-ih-b' }, 0, 'k-ih-b');
+    eq('IH (b) the fallback still opens an editor', res.editorOpen, true);
+    eq('IH (b) the fallback editor is not the background one', res.bg, false);
+    eq('IH (b) the fallback opens the viewer on the main page (no override)', fallbackPageArg, undefined);
+    ok('IH (b) the bg-failed line was logged with its reason', logs.some(m => m.includes('[ROOT] editor-harvest bg-failed page-create-failed')));
+  }
+  {
+    // (b2) capture attach nakam → nakam background
+    // page band hota hai, session nahi rehta, aur
+    // bg-failed ke saath purana rasta chalta hai.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+    eng.page = fakePage('main-b2');
+    const bgPage = fakePage('bg-b2');
+    eng._createBackgroundPage = async () => bgPage;
+    eng.netCapture.attachBackgroundPage = async () => false;
+    eng.netCapture.detachBackgroundPage = async () => {};
+    eng._openTileViewer = async () => ({ opened: true, alreadyOpen: false, tileMissing: false, anchor: Date.now() });
+    const res = await eng._openHarvestEditor({ promptIndex: 0, captureKey: 'k-ih-b2' }, 0, 'k-ih-b2');
+    eq('IH (b) attach failure still opens the fallback editor', res.editorOpen, true);
+    eq('IH (b) attach failure is not the background route', res.bg, false);
+    ok('IH (b) attach failure logged bg-failed capture-attach-failed', logs.some(m => m.includes('[ROOT] editor-harvest bg-failed capture-attach-failed')));
+    eq('IH (b) the failed background page was closed, not left open', bgPage.closeCalls, 1);
+    eq('IH (b) no background session is left behind', eng._bgEditorSession, null);
+  }
+  {
+    // (c1) harvest wrapper: background page kamyaabi
+    // par bhi band, haar par bhi band — aur capture
+    // session bhi detach hota hai.
+    for (const innerResult of [{ done: true, editorOpen: true }, { done: false, editorOpen: true }]) {
+      const eng = new FlowAutomationEngine({ onLog: () => {} });
+      eng.page = fakePage('main-c1');
+      const bgPage = fakePage('bg-c1');
+      let detachCalls = 0;
+      eng.netCapture.detachBackgroundPage = async () => { detachCalls++; };
+      eng._bgEditorSession = { page: bgPage, key: 'k-ih-c', at: Date.now() };
+      eng._tryEditorHarvestInner = async () => innerResult;
+      const out = await eng._tryEditorHarvest({ promptIndex: 0 }, '/tmp', {}, [], 'k-ih-c', 0, {});
+      eq(`IH (c) the harvest result passes through (done=${innerResult.done})`, out.done, innerResult.done);
+      eq(`IH (c) the background page is closed after the attempt (done=${innerResult.done})`, bgPage.closeCalls, 1);
+      eq(`IH (c) the background capture is detached after the attempt (done=${innerResult.done})`, detachCalls, 1);
+      eq(`IH (c) no background session remains (done=${innerResult.done})`, eng._bgEditorSession, null);
+    }
+    const engIdle = new FlowAutomationEngine({ onLog: () => {} });
+    await engIdle._closeBgEditorSession();
+    eq('IH (c) closing with no session is a no-op', engIdle._bgEditorSession, null);
+  }
+  {
+    // (c2) capture ki asal wiring: background page ki
+    // stream wohi editor-khidki kitab me jati hai, aur
+    // detach par session band hota hai.
+    const nc = new NetworkCapture({});
+    const body = mp4Buffer(600000);
+    const client = fakeCdpClient(() => ({ body: body.toString('base64'), base64Encoded: true }));
+    const bgPage = fakePage('bg-c2', { cdpClient: client });
+    eq('IH (c) NC background attach succeeds', await nc.attachBackgroundPage(bgPage), true);
+    ok('IH (c) NC background session enabled Network', client.sent.some(s => s.method === 'Network.enable'));
+    nc.beginEditorWindow('k-ih-c2');
+    client.handlers['Network.responseReceived']({
+      requestId: 'bg-1',
+      response: { url: FC_FRESH, status: 200, headers: { 'content-type': 'video/mp4', 'content-length': String(body.length) } }
+    });
+    await client.handlers['Network.loadingFinished']({ requestId: 'bg-1', encodedDataLength: body.length });
+    const entries = nc.editorHarvestEntriesForKey('k-ih-c2');
+    eq('IH (c) NC background stream lands in the task editor book', entries.length, 1);
+    eq('IH (c) NC background entry keeps the exact bytes', entries.length === 1 ? entries[0].buffer.length : 0, body.length);
+    // Wahi stream cascade me 'editor-open' hai (editor
+    // khulne ke BAAD pehli dafa dikhi).
+    const casc = nc.cascadeForKey('k-ih-c2', FC_FRESH);
+    eq('IH (d) NC stream first seen inside the editor window is editor-open', casc.firstSeen, 'editor-open');
+    eq('IH (d) NC stream inside the editor is not pre-editor', casc.preEditorUrl, 'no');
+    nc.endEditorWindow('k-ih-c2');
+    await nc.detachBackgroundPage();
+    eq('IH (c) NC background session detached', client.detached, true);
+    const ncBad = new NetworkCapture({});
+    const badPage = { target: () => { throw new Error('no target'); } };
+    eq('IH (c) NC background attach failure is false, not a throw', await ncBad.attachBackgroundPage(badPage), false);
+  }
+  {
+    // (d) cascade ka khalis hisaab — har qisam, dono
+    // jawaab.
+    eq('IH (d) project-data before the editor — firstSeen', cascadeVerdict({ observation: { at: 1000, kind: 'project-data' }, editorOpenedAt: 2000 }).firstSeen, 'project-data');
+    eq('IH (d) project-data before the editor — preEditorUrl', cascadeVerdict({ observation: { at: 1000, kind: 'project-data' }, editorOpenedAt: 2000 }).preEditorUrl, 'yes');
+    eq('IH (d) mint-response before the editor — firstSeen', cascadeVerdict({ observation: { at: 1000, kind: 'mint-response' }, editorOpenedAt: 2000 }).firstSeen, 'mint-response');
+    eq('IH (d) mint-response before the editor — preEditorUrl', cascadeVerdict({ observation: { at: 1000, kind: 'mint-response' }, editorOpenedAt: 2000 }).preEditorUrl, 'yes');
+    eq('IH (d) stream before the editor stays stream-get', cascadeVerdict({ observation: { at: 1000, kind: 'stream-get' }, editorOpenedAt: 2000 }).firstSeen, 'stream-get');
+    eq('IH (d) stream before the editor — preEditorUrl', cascadeVerdict({ observation: { at: 1000, kind: 'stream-get' }, editorOpenedAt: 2000 }).preEditorUrl, 'yes');
+    eq('IH (d) stream first seen inside the editor is editor-open', cascadeVerdict({ observation: { at: 3000, kind: 'stream-get' }, editorOpenedAt: 2000 }).firstSeen, 'editor-open');
+    eq('IH (d) stream inside the editor — preEditorUrl no', cascadeVerdict({ observation: { at: 3000, kind: 'stream-get' }, editorOpenedAt: 2000 }).preEditorUrl, 'no');
+    eq('IH (d) mint-response after the editor keeps its label', cascadeVerdict({ observation: { at: 3000, kind: 'mint-response' }, editorOpenedAt: 2000 }).firstSeen, 'mint-response');
+    eq('IH (d) mint-response after the editor — preEditorUrl no', cascadeVerdict({ observation: { at: 3000, kind: 'mint-response' }, editorOpenedAt: 2000 }).preEditorUrl, 'no');
+    eq('IH (d) project-data after the editor — preEditorUrl no', cascadeVerdict({ observation: { at: 3000, kind: 'project-data' }, editorOpenedAt: 2000 }).preEditorUrl, 'no');
+    eq('IH (d) nothing seen — firstSeen none', cascadeVerdict({ observation: null, editorOpenedAt: 2000 }).firstSeen, 'none');
+    eq('IH (d) nothing seen — preEditorUrl no', cascadeVerdict({ observation: null, editorOpenedAt: 2000 }).preEditorUrl, 'no');
+    eq('IH (d) no editor ever opened — preEditorUrl yes', cascadeVerdict({ observation: { at: 1000, kind: 'project-data' }, editorOpenedAt: null }).preEditorUrl, 'yes');
+    eq('IH (d) garbage input — none/no', JSON.stringify(cascadeVerdict(null)), JSON.stringify({ firstSeen: 'none', preEditorUrl: 'no' }));
+    // Capture kitab: sirf PEHLI nazar rehti hai, aur
+    // naya attempt editor-ghadi taaza karta hai.
+    const nc = new NetworkCapture({});
+    nc._noteUrlFirstSeen(FC_FRESH, 'project-data', 1000);
+    nc._noteUrlFirstSeen(FC_FRESH, 'stream-get', 500);
+    eq('IH (d) NC the first sighting wins over later ones', nc._urlFirstSeen.get(FC_FRESH).kind, 'project-data');
+    nc._editorOpenedAtByKey.set('k-ih-d', 2000);
+    const c1 = nc.cascadeForKey('k-ih-d', FC_FRESH);
+    eq('IH (d) NC pre-editor project-data — firstSeen', c1.firstSeen, 'project-data');
+    eq('IH (d) NC pre-editor project-data — preEditorUrl', c1.preEditorUrl, 'yes');
+    eq('IH (d) NC unseen url — firstSeen none', nc.cascadeForKey('k-ih-d', FC_FRESH2).firstSeen, 'none');
+    nc.setDownloadAttempt('k-ih-d');
+    eq('IH (d) NC a fresh attempt clears the editor clock', nc._editorOpenedAtByKey.has('k-ih-d'), false);
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

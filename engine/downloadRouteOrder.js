@@ -95,6 +95,21 @@
 // editor khula rehta hai aur direct-viewer usi se aage
 // badhta hai — click/menu is raaste me bhi NAHI hota.
 //
+// v2.48.40 (INVISIBLE HARVEST PACK): tartib bilkul
+// wahi hai — badla sirf ye hai ke replay-context aur
+// editor-harvest ke liye editor ab worker ke ek
+// BACKGROUND page par khulta hai (wahi browser
+// context/session; asal page grid par hi rehta hai,
+// screen par kuch show nahi hota; jeet ki line par
+// bg=yes). Background page na bane to
+// '[ROOT] editor-harvest bg-failed <reason>' ke saath
+// purana dikha-hua editor hi fallback hai, aur
+// background page har koshish ke baad band hota hai.
+// Saath me cascade diagnostic (observe-only): har
+// attempt ke aakhir par '[ROOT] cascade firstSeen=…
+// preEditorUrl=…' — file ka address sab se pehle
+// kahan dekha gaya tha.
+//
 // Kram (video tasks):
 //   1. quick-check       — NO-WAIT: page-harvest (page ke
 //                          khinche hue bytes) + registry

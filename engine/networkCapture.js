@@ -624,6 +624,24 @@ class NetworkCapture {
     this._editorWindow = null; // { key, since }
     this._editorHarvest = new Map(); // captureKey -> [{ url, buffer, at, partial, status, contentRange }]
     this._downloadAttemptKey = null;
+    // v2.48.40 (INVISIBLE HARVEST PACK): CASCADE kitab —
+    // har media address ki SAB SE PEHLI nazar (pal +
+    // qisam: project-data | mint-response | stream-get;
+    // sirf pehli nazar rehti hai, baad wali use badal
+    // nahi sakti), aur har task ke liye pehle editor ke
+    // khulne ka pal (attempt ki shuruaat par
+    // setDownloadAttempt use taaza karta hai). Sirf
+    // mushahida hai — koi faisla is par nahi chalta.
+    this._urlFirstSeen = new Map(); // url -> { at, kind } (hadd 300)
+    this._editorOpenedAtByKey = new Map(); // captureKey -> at
+    // v2.48.40: BACKGROUND PAGE ka CDP session — editor-
+    // harvest ka editor ab ek alag background page par
+    // khulta hai (wahi browser context/session, kabhi
+    // front par nahi); us page ki flow-content stream
+    // yahi session pakadta hai aur wohi purani kitab
+    // (editor-khidki + harvest) me daalta hai.
+    this._bgClient = null;
+    this._bgHarvestPending = new Map(); // CDP requestId -> { url, declared, status, contentRange }
     // Engine har download round me apni duration ka size
     // floor yahan rakh deta hai (downloadFetch wala hisaab);
     // 0 = floor nahi (aam darwaze hi laagu).
@@ -932,6 +950,9 @@ class NetworkCapture {
             // flowContent ke exact-host matcher se hi hoti hai.
             if (flowContent.isFlowContentVideoUrl(u, rawType)) {
               this._recordFlowContentVideo(u, (rawType.split(';')[0] || '').trim().toLowerCase(), Date.now());
+              // v2.48.40 (CASCADE): stream wala jawab khud
+              // — 'stream-get' wali pehli nazar.
+              this._noteUrlFirstSeen(u, 'stream-get', Date.now());
               // v2.48.36 (ROOT PACK — D): harvest ummeedwaar —
               // loadingFinished par is jawab ka body CDP se
               // uthaya jayega (best-effort). Map had me rahe.
@@ -1082,6 +1103,89 @@ class NetworkCapture {
   }
 
   /**
+   * v2.48.40 (INVISIBLE HARVEST PACK): BACKGROUND PAGE
+   * par CDP sunna chalu karo. Editor-harvest ka editor
+   * ab ek background page par khulta hai (wahi browser
+   * context — wahi session/cookies — lekin wo page
+   * kabhi front par nahi aata; worker ka asal page grid
+   * par hi rehta hai). Is session ka kaam sirf itna
+   * hai: us page ke flow-content video jawabon ko
+   * pehchanna, un ka body loadingFinished par uthana,
+   * aur wohi purani kitab (page-harvest + editor-khidki
+   * + audit) me daalna jo asal page ke jawabon par
+   * chalti hai — editor-khidki ki nisbat task-key se
+   * hai, page se nahi, is liye background page ke jawab
+   * bhi usi task ke naam darj hote hain.
+   * Natija: session ban jaye to true, warna false —
+   * bulane wala haar par purane (dikhe hue editor)
+   * raste par girta hai; ye kabhi throw nahi karta.
+   */
+  async attachBackgroundPage(page) {
+    await this.detachBackgroundPage();
+    if (!page || typeof page.target !== 'function') return false;
+    let client = null;
+    try { client = await page.target().createCDPSession(); } catch (e) { return false; }
+    try { await client.send('Network.enable'); } catch (e) {
+      try { await client.detach(); } catch (err) {}
+      return false;
+    }
+    this._bgClient = client;
+    this._bgHarvestPending = new Map();
+    client.on('Network.responseReceived', (e) => {
+      try {
+        if (!e || !e.response || !e.response.url) return;
+        const u = e.response.url;
+        const rawType = headerValueOf(e.response.headers, 'content-type');
+        if (!flowContent.isFlowContentVideoUrl(u, rawType)) return;
+        this._recordFlowContentVideo(u, (rawType.split(';')[0] || '').trim().toLowerCase(), Date.now());
+        this._noteUrlFirstSeen(u, 'stream-get', Date.now());
+        if (this._bgHarvestPending.size > 20) {
+          const firstKey = this._bgHarvestPending.keys().next().value;
+          this._bgHarvestPending.delete(firstKey);
+        }
+        const declared = parseInt(headerValueOf(e.response.headers, 'content-length') || '', 10);
+        this._bgHarvestPending.set(e.requestId, {
+          url: u,
+          declared: Number.isFinite(declared) ? declared : 0,
+          status: Number.isFinite(e.response.status) ? e.response.status : 0,
+          contentRange: headerValueOf(e.response.headers, 'content-range') || ''
+        });
+      } catch (err) {}
+    });
+    client.on('Network.loadingFinished', async (e) => {
+      try {
+        if (!e || !this._bgHarvestPending.has(e.requestId)) return;
+        const pend = this._bgHarvestPending.get(e.requestId);
+        this._bgHarvestPending.delete(e.requestId);
+        let hbuf = null;
+        try {
+          const hres = await client.send('Network.getResponseBody', { requestId: e.requestId });
+          hbuf = decodeCdpBody(hres && hres.body, hres && hres.base64Encoded);
+        } catch (herr) { hbuf = null; }
+        let retained = false;
+        let editorStored = false;
+        if (hbuf && hbuf.length > 0) {
+          retained = this._retainHarvestBody(pend.url, hbuf, Date.now());
+          try { editorStored = this._recordEditorHarvest(pend.url, hbuf, pend, Date.now()); } catch (herr) { editorStored = false; }
+        }
+        try { this._emitHarvestAudit(pend, hbuf, retained || editorStored); } catch (herr) {}
+      } catch (err) {}
+    });
+    client.on('Network.loadingFailed', (e) => {
+      try { if (e) this._bgHarvestPending.delete(e.requestId); } catch (err) {}
+    });
+    return true;
+  }
+
+  /** v2.48.40: background page ka CDP session band karo (page band karna engine ka kaam hai). */
+  async detachBackgroundPage() {
+    const client = this._bgClient || null;
+    this._bgClient = null;
+    this._bgHarvestPending = new Map();
+    if (client) { try { await client.detach(); } catch (e) {} }
+  }
+
+  /**
    * Ek submission ki shuruaat — generate fire hone se THEEK pehle
    * engine bulata hai. Isi pal se capture armed bhi ho jata hai.
    */
@@ -1153,6 +1257,11 @@ class NetworkCapture {
   _sightUrl(url, source, at, coIds) {
     if (!url || !isMediaUrl(url, this.patterns)) return;
     const t = Number.isFinite(at) ? at : Date.now();
+    // v2.48.40 (CASCADE): API/project jawab ke ANDAR
+    // aaya address — 'project-data' wali pehli nazar.
+    if (source === 'api-body' || source === 'json-body') {
+      this._noteUrlFirstSeen(url, 'project-data', t);
+    }
     if (!this.sightings.has(url)) {
       this.sightings.set(url, { firstSeenAt: t, source, claimedBy: null });
       this.stats.mediaUrlsSeen++;
@@ -1403,7 +1512,13 @@ class NetworkCapture {
    * ka editor khula ho.
    */
   setDownloadAttempt(key) {
-    try { this._downloadAttemptKey = key || null; } catch (e) {}
+    try {
+      this._downloadAttemptKey = key || null;
+      // v2.48.40: naya attempt = cascade ke liye editor-
+      // ghadi taaza (is attempt se pehle khula editor is
+      // attempt ka nahi ginna jayega).
+      if (key) this._editorOpenedAtByKey.delete(key);
+    } catch (e) {}
   }
 
   /** v2.48.38: download attempt khatam — audit ki khidki band (editor wali alag rehti hai). */
@@ -1425,10 +1540,52 @@ class NetworkCapture {
   beginEditorWindow(key) {
     try {
       if (!key) return;
+      // v2.48.40: cascade ke liye is task ke PEHLE editor
+      // (dikha hua ya background) ke khulne ka pal —
+      // dobara khulne par pehla pal hi rehta hai.
+      if (!this._editorOpenedAtByKey.has(key)) this._editorOpenedAtByKey.set(key, Date.now());
       if (this._editorWindow && this._editorWindow.key === key) return;
       this._editorWindow = { key, since: Date.now() };
       this._editorHarvest.delete(key);
     } catch (e) {}
+  }
+
+  /**
+   * v2.48.40 (INVISIBLE HARVEST PACK — CASCADE): ek
+   * address ki sab se pehli nazar darj karo. Sirf PEHLI
+   * nazar rehti hai — baad ki nazar use badal nahi
+   * sakti (warna 'sab se pehle kahan' ka matlab hi
+   * khatam ho jayega). kind: 'project-data' |
+   * 'mint-response' | 'stream-get'. Asal address sirf
+   * is kitab ki kunji hai — log me kabhi nahi jata.
+   */
+  _noteUrlFirstSeen(url, kind, at) {
+    try {
+      if (!url || typeof kind !== 'string' || !kind) return;
+      if (this._urlFirstSeen.has(url)) return;
+      if (this._urlFirstSeen.size >= 300) {
+        const firstKey = this._urlFirstSeen.keys().next().value;
+        this._urlFirstSeen.delete(firstKey);
+      }
+      this._urlFirstSeen.set(url, { at: Number.isFinite(at) ? at : Date.now(), kind });
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.40 (CASCADE): is task/address ka cascade
+   * faisla — faisla saveGuard.cascadeVerdict (khalis)
+   * se; yahan sirf kitab se khabar ikatthi hoti hai.
+   * Address na mila ho to bhi ek saaf jawab ('none').
+   */
+  cascadeForKey(key, url) {
+    try {
+      const obs = url ? (this._urlFirstSeen.get(url) || null) : null;
+      const editorAt = key && this._editorOpenedAtByKey.has(key)
+        ? this._editorOpenedAtByKey.get(key) : null;
+      return saveGuard.cascadeVerdict({ observation: obs, editorOpenedAt: editorAt });
+    } catch (e) {
+      return { firstSeen: 'none', preEditorUrl: 'no' };
+    }
   }
 
   /** v2.48.38: editor band — khidki khatam (us ke baad ke jawab is task ke kabhi nahi). */
@@ -1700,6 +1857,14 @@ class NetworkCapture {
     if (!this.mintWatch) return;
     try {
       if (!mintWindow.responseCarriesFileUrl({ location, bodyText })) return;
+      // v2.48.40 (CASCADE): ye jawab ek MINT jawab hai —
+      // us ke le aaya address 'mint-response' wali pehli
+      // nazar hai (Location wali surat me wahi address).
+      try {
+        if (location && flowContent.isFlowContentVideoUrl(location)) {
+          this._noteUrlFirstSeen(location, 'mint-response', Date.now());
+        }
+      } catch (e) {}
       const entry = mintWindow.sanitizeRequestEntry({ method, url, at: Date.now() });
       if (entry) this._noteMintCarries({ method: entry.method, host: entry.host, path: entry.path });
       // v2.48.33 (ZEROCLICK): yahi woh darkhwast hai jis ka
@@ -1721,6 +1886,13 @@ class NetworkCapture {
           }
           reqTemplate.carriedUrls = carriedUrls;
         } catch (e) { reqTemplate.carriedUrls = []; }
+        // v2.48.40 (CASCADE): is mint jawab ke le aaye
+        // har address ki 'mint-response' pehli nazar.
+        try {
+          for (const cu of (reqTemplate.carriedUrls || [])) {
+            this._noteUrlFirstSeen(cu, 'mint-response', Date.now());
+          }
+        } catch (e) {}
         this._learnMintTemplate(reqTemplate);
       }
     } catch (e) {}

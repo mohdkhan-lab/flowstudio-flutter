@@ -390,4 +390,51 @@ function formatHarvestAudit(audit) {
   return `bytes=${Number.isFinite(a.bytes) ? a.bytes : 0} body=${a.body || 'fail'} hash=${a.hash || 'n/a'} vsTeacher=${a.vsTeacher || 'n/a'} decision=${a.decision || 'rejected'} reason=${a.reason || 'unknown'}`;
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, editorHarvestVerdict, promotedEditorHarvestPick, harvestAuditOf, formatHarvestAudit };
+// ---------------------------------------------------------------------------
+// v2.48.40 (INVISIBLE HARVEST PACK): CASCADE DIAGNOSTIC ka
+// khalis hisaab — sirf mushahida (observe-only), koi
+// vyavhaar is par nirbhar NAHI karta. Sawal: is task ki
+// file ka address (ya us ki stream) sab se PEHLE kahan
+// dekha gaya — aur kya wo kisi editor (dikha hua ya
+// background) ke khulne se PEHLE hi kisi jawab me aa
+// chuka tha? Agar haan, to aane wala koi rasta editor
+// khole baghair bhi chal sakta hai — ye line usi sawal
+// ka saboot jama karti hai.
+//   input = { observation, editorOpenedAt }
+//     observation    — capture ki pehli-nazar kitab se:
+//                      { at, kind } | null; kind =
+//                      'project-data' (project/API jawab
+//                      ke andar aaya address) |
+//                      'mint-response' (mint batchexecute
+//                      jawab le aaya) | 'stream-get'
+//                      (flow-content stream wala jawab
+//                      khud).
+//     editorOpenedAt — is task ke liye pehla editor
+//                      khulne ka pal (ms); kabhi na khula
+//                      ho to null.
+//   natija = { firstSeen, preEditorUrl }
+//     firstSeen — 'project-data' | 'editor-open' |
+//       'mint-response' | 'stream-get' | 'none'.
+//       Stream wala jawab PEHLI dafa editor khulne ke
+//       BAAD dikha ho to us ka naam 'editor-open' hai
+//       (wo editor ki apni playback thi); editor se
+//       pehle dikha ho to 'stream-get' hi rehta hai.
+//     preEditorUrl — 'yes' jab sab se pehli nazar kisi
+//       bhi editor ke khulne se pehle ki ho (ya editor
+//       is attempt me khula hi na ho aur address dikha
+//       ho); warna 'no'.
+// ---------------------------------------------------------------------------
+function cascadeVerdict(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const obs = o.observation && typeof o.observation === 'object' ? o.observation : null;
+  const editorAt = Number.isFinite(o.editorOpenedAt) ? o.editorOpenedAt : null;
+  if (!obs || !Number.isFinite(obs.at) || typeof obs.kind !== 'string' || !obs.kind) {
+    return { firstSeen: 'none', preEditorUrl: 'no' };
+  }
+  const beforeEditor = editorAt === null || obs.at < editorAt;
+  let firstSeen = obs.kind;
+  if (!beforeEditor && obs.kind === 'stream-get') firstSeen = 'editor-open';
+  return { firstSeen, preEditorUrl: beforeEditor ? 'yes' : 'no' };
+}
+
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, editorHarvestVerdict, promotedEditorHarvestPick, harvestAuditOf, formatHarvestAudit, cascadeVerdict };

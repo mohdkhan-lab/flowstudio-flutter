@@ -183,6 +183,15 @@ class FlowAutomationEngine {
     // bindings that landed before the task object was registered.
     this._captureTasks = new Map();
     this._earlyBackend = new Map();
+    // v2.48.40 (INVISIBLE HARVEST PACK): background-page
+    // editor session — editor-harvest (aur us ki seedhi
+    // replay-context) ka editor ab isi worker ke ek
+    // BACKGROUND page par khulta hai (wahi browser
+    // context/session, kabhi front par nahi), taaki
+    // download screen par kahin dikhe hi nahi. Session:
+    // { page, key, at } | null — stage-lock ki wajah se
+    // ek pal me ek hi hota hai.
+    this._bgEditorSession = null;
     // v2.48.13: direct-API pollers (videoId -> poll state). Har
     // submit ke baad ek poller us task ke workflow ki haal-jaanch
     // wali asal API request ko page ke andar se replay karke
@@ -2482,10 +2491,13 @@ class FlowAutomationEngine {
    * (normalized aria). Indices shift as new tiles arrive; fingerprints
    * do not. Returns -1 when the tile is not in the grid right now.
    */
-  async _resolveTileIndexByFingerprint(fingerprint) {
-    if (!fingerprint || !this.page || this.page.isClosed()) return -1;
+  async _resolveTileIndexByFingerprint(fingerprint, page) {
+    // v2.48.40: page diya jaye to wahi (background-page
+    // editor ke liye), warna worker ka apna page.
+    const pg = page || this.page;
+    if (!fingerprint || !pg || pg.isClosed()) return -1;
     try {
-      return await this.page.evaluate((fp) => {
+      return await pg.evaluate((fp) => {
         const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
         const containers = Array.from(document.querySelectorAll('flow-grid-tile-container'));
         for (let i = 0; i < containers.length; i++) {
@@ -2512,11 +2524,13 @@ class FlowAutomationEngine {
    * download/prompt mismatch the owner kept hitting even after tile
    * ASSIGNMENT was fixed in v1.5.0.
    */
-  async _resolveTileIndexForTask(task, fallbackIdx) {
-    if (!this.page || this.page.isClosed()) return -1;
+  async _resolveTileIndexForTask(task, fallbackIdx, page) {
+    // v2.48.40: page diya jaye to wahi, warna apna page.
+    const pg = page || this.page;
+    if (!pg || pg.isClosed()) return -1;
     const fp = task ? (task.lockedTileFingerprint || null) : null;
     if (fp) {
-      const byFp = await this._resolveTileIndexByFingerprint(fp);
+      const byFp = await this._resolveTileIndexByFingerprint(fp, pg);
       if (byFp >= 0) return byFp;
     }
     return (typeof fallbackIdx === 'number' && fallbackIdx >= 0) ? fallbackIdx : -1;
@@ -4166,9 +4180,11 @@ class FlowAutomationEngine {
    * button ke liye hai. Overlay (menu) ke andar ke controls yahan
    * nahi ginne jate — wo menu wale roop ki jagah hai.
    */
-  async _findEditorDownloadControl() {
+  async _findEditorDownloadControl(page) {
+    // v2.48.40: page diya jaye to wahi, warna apna page.
+    const pg = page || this.page;
     try {
-      return await this.page.evaluate(() => {
+      return await pg.evaluate(() => {
         const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
         const all = Array.from(document.querySelectorAll('button, [role="button"]'));
         for (const b of all) {
@@ -4189,9 +4205,11 @@ class FlowAutomationEngine {
   }
 
   /** Tile ke center ke coordinates (hover/click ke liye). */
-  async _tileCenterCoords(tileIndex) {
+  async _tileCenterCoords(tileIndex, page) {
+    // v2.48.40: page diya jaye to wahi, warna apna page.
+    const pg = page || this.page;
     try {
-      return await this.page.evaluate(({ idx }) => {
+      return await pg.evaluate(({ idx }) => {
         const tiles = Array.from(document.querySelectorAll('flow-grid-tile-container'));
         const target = (typeof idx === 'number') ? tiles[idx] : null;
         if (!target) return { found: false };
@@ -4219,13 +4237,15 @@ class FlowAutomationEngine {
    * to editor khulne ke baad bhi "grid par hi raha" padh sakta tha
    * (owner ke v2.8.0 PC run me native-editor theek yahin mara).
    */
-  async _inEditorView() {
+  async _inEditorView(page) {
+    // v2.48.40: page diya jaye to wahi, warna apna page.
+    const pg = page || this.page;
     try {
-      const u = this.page.url() || '';
+      const u = pg.url() || '';
       if (u.includes('/edit/')) return true;
     } catch (e) {}
     try {
-      const ctl = await this._findEditorDownloadControl();
+      const ctl = await this._findEditorDownloadControl(pg);
       if (ctl && ctl.found) return true;
     } catch (e) {}
     return false;
@@ -5090,8 +5110,36 @@ class FlowAutomationEngine {
           if (typeof this.netCapture.evictEditorHarvest === 'function') this.netCapture.evictEditorHarvest(roundKey);
         }
       } catch (e) {}
+      // v2.48.40 (INVISIBLE HARVEST PACK): background
+      // editor page ka aakhri bachav — koi bhi rasta
+      // (timeout sameet) use khula chhod kar na jaye.
+      // Aam haal me harvest wrapper use pehle hi band
+      // kar chuka hota hai; ye sirf hifazat hai.
+      try { await this._closeBgEditorSession(); } catch (e) {}
       if (stageHandle) { try { stageHandle.release(); } catch (e) {} }
     }
+    // v2.48.40 (CASCADE DIAGNOSTIC — observe-only): is
+    // attempt ke aakhir par ek line — is task ki file
+    // ka address sab se pehle KAHAN dekha gaya tha aur
+    // kya wo kisi editor ke khulne se pehle hi aa chuka
+    // tha. Koi faisla is par nahi chalta; ye sirf agli
+    // tehqeeq ka saboot hai (preEditorUrl=yes bane to
+    // editor khole baghair wala rasta mumkin hai).
+    try {
+      if (!(settings && settings.type === 'Image')
+        && this.netCapture && typeof this.netCapture.cascadeForKey === 'function') {
+        const cKey = task.captureKey || task.videoId || null;
+        let cUrl = task.completedVideoUrl || task.backendVideoUrl || null;
+        if (!cUrl && cKey) {
+          try {
+            const bound = this.netCapture.urlForKey(cKey);
+            if (bound && bound.url) cUrl = bound.url;
+          } catch (e) {}
+        }
+        const c = this.netCapture.cascadeForKey(cKey, cUrl);
+        this.log(`[ROOT] cascade firstSeen=${c.firstSeen} preEditorUrl=${c.preEditorUrl}`, 'info');
+      }
+    } catch (e) {}
     // Settle the round in the persisted ledger — success resets the
     // budget to 0, failure records the round and its reason (in the
     // SAME channel the round was spent from, v2.48.0).
@@ -5984,13 +6032,17 @@ class FlowAutomationEngine {
    * aur khaali buf. Jawab se yahan kuch save/claim NAHI
    * hota — faisla bulane wale ka hai.
    */
-  async _fireMintReplay(tpl) {
+  async _fireMintReplay(tpl, pageOverride) {
+    // v2.48.40: pageOverride diya jaye to replay usi
+    // page ke andar se (background editor wali surat
+    // me wahi asal editor context hai), warna asal page.
+    const pg = pageOverride || this.page;
     try {
-      if (!tpl || !tpl.url || !tpl.body || !this.page || this.page.isClosed()) {
+      if (!tpl || !tpl.url || !tpl.body || !pg || pg.isClosed()) {
         return { status: 'error', buf: Buffer.alloc(0) };
       }
       const res = await downloadGuard.withTimeout(
-        this.page.evaluate(async (u, m, h, b64) => {
+        pg.evaluate(async (u, m, h, b64) => {
           const bin = atob(b64);
           const bytes = new Uint8Array(bin.length);
           for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
@@ -6534,8 +6586,13 @@ class FlowAutomationEngine {
       } catch (e) {}
     }
     if (!editorOpen) {
-      const openedRes = await this._openTileViewer(task, tileIndexHint, 'ROOT');
-      editorOpen = !!openedRes.opened;
+      // v2.48.40 (INVISIBLE HARVEST PACK): editor ab
+      // pehle BACKGROUND page par khulta hai (screen
+      // par kuch show nahi hota); background na bane
+      // to _openHarvestEditor khud bg-failed line ke
+      // saath purane dikhe-hue raste par girta hai.
+      const openedHarvest = await this._openHarvestEditor(task, tileIndexHint, captureKey);
+      editorOpen = !!openedHarvest.editorOpen;
       if (!editorOpen) {
         attempts.push({ strategy: 'replay-context', ok: false, note: 'the tile viewer did not open — the editor-context replay was skipped and the viewer route will try opening it itself' });
         return { done: false, editorOpen: false };
@@ -6549,11 +6606,20 @@ class FlowAutomationEngine {
     // gaye hon to wohi exact file hai — replay se pehle.
     try {
       const okHarvest = await this._pollHarvestSave(task, downloadFolder, settings, attempts, 3000);
-      if (okHarvest || task.mediaSaved) return { done: true, editorOpen: true };
+      if (okHarvest || task.mediaSaved) {
+        // v2.48.40: save ho gaya — background page ka
+        // kaam khatam, use yahin band karo.
+        await this._closeBgEditorSession();
+        return { done: true, editorOpen: true };
+      }
     } catch (e) {}
     if (this.isStopping || task.mediaSaved) return { done: !!task.mediaSaved, editorOpen: true };
 
-    const { status, buf } = await this._fireMintReplay(tpl);
+    // v2.48.40: replay usi page ke andar se jis par
+    // editor khula hai — background session chalu ho
+    // to background page, warna asal page.
+    const replayPage = this._bgHarvestActiveFor(captureKey) ? this._bgEditorSession.page : this.page;
+    const { status, buf } = await this._fireMintReplay(tpl, replayPage);
     if (status === 'error' || (typeof status === 'number' && status >= 400)) {
       attempts.push({ strategy: 'replay-context', ok: false, note: `the editor-context replay was not answered (${status === 'error' ? 'no response' : `http-${status}`}) — the viewer route continues from the open editor` });
       return { done: false, editorOpen: true };
@@ -6571,6 +6637,8 @@ class FlowAutomationEngine {
       return { done: false, editorOpen: true };
     }
     if (res.outcome === 'saved') {
+      // v2.48.40: save ho gaya — background page band.
+      await this._closeBgEditorSession();
       // v2.48.39 (HARVEST-FIRST): save asal me editor-
       // harvest ki promoted body se hui hai (replay
       // address fetch hua hi nahi) — kamyaabi usi route
@@ -6598,9 +6666,15 @@ class FlowAutomationEngine {
    */
   async _fetchEditorHarvestFullInPage(url) {
     try {
-      if (!url || !this.page || this.page.isClosed()) return null;
+      // v2.48.40: poora fetch usi page ke andar se jis
+      // par editor khula hai — background session chalu
+      // ho to background page (wahi session/cookies
+      // wahan bhi hain, lekin stream wahi ki hai).
+      const pg = (this._bgEditorSession && this._bgEditorSession.page && !this._bgEditorSession.page.isClosed())
+        ? this._bgEditorSession.page : this.page;
+      if (!url || !pg || pg.isClosed()) return null;
       const res = await downloadGuard.withTimeout(
-        this.page.evaluate(async (u) => {
+        pg.evaluate(async (u) => {
           const r = await fetch(u, { method: 'GET', credentials: 'include' });
           if (!r.ok) return { status: r.status, b64: '' };
           const rbuf = await r.arrayBuffer();
@@ -6674,10 +6748,220 @@ class FlowAutomationEngine {
     try { ok = await this._saveBufferForTask(task, downloadFolder, settings, buffer, url); } catch (e) { ok = false; }
     if (ok || task.mediaSaved) {
       const gapSec = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
-      this.log(`[ROOT] via=editor-harvest gap=${gapSec}s`, 'success');
+      // v2.48.40: background page istemal hua ho to
+      // jeet ki line par bg=yes — live log khud saboot
+      // hai ke download screen par dikha hi nahi.
+      const bgMark = this._bgHarvestActiveFor(captureKey) ? ' bg=yes' : '';
+      this.log(`[ROOT] via=editor-harvest gap=${gapSec}s${bgMark}`, 'success');
       return { saved: true, gapSec };
     }
     return null;
+  }
+
+  /**
+   * v2.48.40 (INVISIBLE HARVEST PACK): is worker ke
+   * browser context me ek BACKGROUND page banao — wahi
+   * session/cookies, lekin page kabhi front par NAHI
+   * aata: pehle CDP Target.createTarget apne
+   * background jhande ke saath (tab bandle hi nahi
+   * hota — asal page bandle baghair waisa hi rehta
+   * hai); wo rasta na bane to context.newPage() aur
+   * asal page ko FORAN bringToFront se wapas front par
+   * (naya tab ek pal ke liye active ho bhi jaye to
+   * nazar asal page par hi lot aati hai, aur asal page
+   * kabhi navigate NAHI hota). Kabhi safal na ho to
+   * throw — bulane wala purane raste par girta hai.
+   */
+  async _createBackgroundPage() {
+    const ctx = (this.page && typeof this.page.browserContext === 'function')
+      ? this.page.browserContext() : null;
+    // (1) CDP background target — tab bandle hi nahi hota.
+    try {
+      const browser = (this.page && typeof this.page.browser === 'function')
+        ? this.page.browser() : this.browser;
+      const bt = browser && typeof browser.target === 'function' ? browser.target() : null;
+      if (bt && typeof bt.createCDPSession === 'function' && ctx && typeof ctx.pages === 'function') {
+        const session = await bt.createCDPSession();
+        try {
+          const before = await ctx.pages();
+          await session.send('Target.createTarget', { url: 'about:blank', background: true });
+          const deadline = Date.now() + 5000;
+          while (Date.now() < deadline) {
+            const nowPages = await ctx.pages();
+            const fresh = nowPages.find(p => before.indexOf(p) === -1);
+            if (fresh) return fresh;
+            await sleep(100);
+          }
+        } finally {
+          try { await session.detach(); } catch (e) {}
+        }
+      }
+    } catch (e) { /* (2) wala rasta neeche hai */ }
+    // (2) context.newPage() + asal page foran wapas front par.
+    if (ctx && typeof ctx.newPage === 'function') {
+      const p = await ctx.newPage();
+      try { await this.page.bringToFront(); } catch (e) {}
+      return p;
+    }
+    if (this.browser && typeof this.browser.newPage === 'function') {
+      const p = await this.browser.newPage();
+      try { if (this.page) await this.page.bringToFront(); } catch (e) {}
+      return p;
+    }
+    throw new Error('no background page factory available');
+  }
+
+  /** v2.48.40: is pal is task ke liye background editor session chalu hai kya. */
+  _bgHarvestActiveFor(captureKey) {
+    try {
+      const s = this._bgEditorSession;
+      if (!s || !s.page || s.page.isClosed()) return false;
+      if (captureKey && s.key && s.key !== captureKey) return false;
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /**
+   * v2.48.40 (INVISIBLE HARVEST PACK): background
+   * editor session band karo — capture ka CDP pehle,
+   * phir page. Do dafa bulane par bhi mehfooz (session
+   * pehle hi saaf ho to khamosh wapsi). Ye har harvest
+   * koshish ke aakhir par chalta hai — kamyaabi ho ya
+   * haar — taaki background page kabhi khula na reh
+   * jaye.
+   */
+  async _closeBgEditorSession() {
+    const sess = this._bgEditorSession;
+    if (!sess) return;
+    this._bgEditorSession = null;
+    try {
+      if (this.netCapture && typeof this.netCapture.detachBackgroundPage === 'function') {
+        await this.netCapture.detachBackgroundPage();
+      }
+    } catch (e) {}
+    try { if (sess.page && !sess.page.isClosed()) await sess.page.close(); } catch (e) {}
+  }
+
+  /**
+   * v2.48.40 (INVISIBLE HARVEST PACK): is task ka
+   * editor ek BACKGROUND page par kholo — asal page
+   * grid par bilkul waisa hi rehta hai, kuch show nahi
+   * hota. Tasalsul: background page banao → us par
+   * capture ka CDP lagao → wahi project kholo → grid
+   * tayyar hone ka intezaar → _openTileViewer usi page
+   * par (editor-khidki capture me waisi hi darj hoti
+   * hai — nisbat task-key se hai, page se nahi).
+   * Kisi bhi mor par nakami = session saaf karke
+   * { ok:false, reason } — bulane wala
+   * '[ROOT] editor-harvest bg-failed <reason>' likh
+   * kar purane (dikhe hue editor) raste par girta hai;
+   * download kabhi peeche nahi jata.
+   * reason sirf: no-main-page | no-project-url |
+   *   page-create-failed | capture-attach-failed |
+   *   nav-failed | grid-not-ready | tile-missing |
+   *   editor-not-open | error
+   */
+  async _tryOpenEditorOnBackgroundPage(task, tileIndexHint, captureKey) {
+    const cap = this.netCapture;
+    if (!this.page || this.page.isClosed()) return { ok: false, reason: 'no-main-page' };
+    let mainUrl = '';
+    try { mainUrl = this.page.url() || ''; } catch (e) { mainUrl = ''; }
+    if (!/^https:\/\/flow\.google\.com\//.test(mainUrl)) return { ok: false, reason: 'no-project-url' };
+    let bgPage = null;
+    try { bgPage = await this._createBackgroundPage(); } catch (e) { bgPage = null; }
+    if (!bgPage) return { ok: false, reason: 'page-create-failed' };
+    this._bgEditorSession = { page: bgPage, key: captureKey || null, at: Date.now() };
+    try {
+      try { bgPage.on('dialog', async (d) => { try { await d.dismiss(); } catch (e) {} }); } catch (e) {}
+      if (cap && typeof cap.attachBackgroundPage === 'function') {
+        const attached = await cap.attachBackgroundPage(bgPage);
+        if (!attached) {
+          await this._closeBgEditorSession();
+          return { ok: false, reason: 'capture-attach-failed' };
+        }
+      }
+      // Asal page wali hi hifazatein (webdriver nishaan)
+      // aur focus emulation — background tab ko Flow
+      // sust na samjhe. Dono best-effort hain.
+      try {
+        await bgPage.evaluateOnNewDocument(() => {
+          try { delete Object.getPrototypeOf(navigator).webdriver; } catch (e) {}
+          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        });
+      } catch (e) {}
+      try {
+        const s = await bgPage.target().createCDPSession();
+        await s.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+      } catch (e) {}
+      let navOk = true;
+      try { await bgPage.goto(mainUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (e) { navOk = false; }
+      if (!navOk || bgPage.isClosed()) {
+        await this._closeBgEditorSession();
+        return { ok: false, reason: 'nav-failed' };
+      }
+      // Grid tayyar hone ka intezaar (tile containers).
+      let gridReady = false;
+      const gDeadline = Date.now() + 15000;
+      while (Date.now() < gDeadline) {
+        if (this.isStopping) break;
+        try {
+          const cnt = await bgPage.evaluate(() => document.querySelectorAll('flow-grid-tile-container').length);
+          if (cnt > 0) { gridReady = true; break; }
+        } catch (e) {}
+        await sleep(300);
+      }
+      if (!gridReady) {
+        await this._closeBgEditorSession();
+        return { ok: false, reason: 'grid-not-ready' };
+      }
+      const openedRes = await this._openTileViewer(task, tileIndexHint, 'ROOT', bgPage);
+      if (!openedRes.opened) {
+        const reason = openedRes.tileMissing ? 'tile-missing' : 'editor-not-open';
+        await this._closeBgEditorSession();
+        return { ok: false, reason };
+      }
+      task._viewerOpenedByRoot = true;
+      return { ok: true };
+    } catch (e) {
+      await this._closeBgEditorSession();
+      return { ok: false, reason: 'error' };
+    }
+  }
+
+  /**
+   * v2.48.40 (INVISIBLE HARVEST PACK): replay-context
+   * aur editor-harvest ke liye editor kholne ka
+   * mushtarak darwaza — PEHLE background page (kuch
+   * show nahi hota); na bane to
+   * '[ROOT] editor-harvest bg-failed <reason>' ke
+   * saath purana rasta (asal page par _openTileViewer,
+   * bilkul aaj jaisa). Natija: { editorOpen, bg }.
+   */
+  async _openHarvestEditor(task, tileIndexHint, captureKey) {
+    const bg = await this._tryOpenEditorOnBackgroundPage(task, tileIndexHint, captureKey);
+    if (bg.ok) return { editorOpen: true, bg: true };
+    this.log(`[ROOT] editor-harvest bg-failed ${bg.reason}`, 'warn');
+    const openedRes = await this._openTileViewer(task, tileIndexHint, 'ROOT');
+    return { editorOpen: !!openedRes.opened, bg: false };
+  }
+
+  /**
+   * v2.48.40 (INVISIBLE HARVEST PACK): editor-harvest
+   * ka wrapper — asal kaam _tryEditorHarvestInner ka
+   * hai; yahan sirf ek pakki zimmedari hai:
+   * BACKGROUND PAGE HAR HAAL ME BAND hoga (kamyaabi
+   * ho, haar ho, ya exception) — background session
+   * sirf replay-context/editor-harvest ke marhale tak
+   * ka hai; us ke baad ke raste (direct-viewer, menu)
+   * asal page par chalte hain aur khula background
+   * page peeche kabhi nahi rehna chahiye.
+   */
+  async _tryEditorHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, opts) {
+    try {
+      return await this._tryEditorHarvestInner(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, opts);
+    } finally {
+      await this._closeBgEditorSession();
+    }
   }
 
   /**
@@ -6714,7 +6998,7 @@ class FlowAutomationEngine {
    * bheja jata (sacred rule barkarar).
    * Natija: { done, editorOpen }.
    */
-  async _tryEditorHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, opts) {
+  async _tryEditorHarvestInner(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, opts) {
     const o = opts || {};
     const n = task.promptIndex + 1;
     if (task._editorHarvestTried) return { done: false, editorOpen: !!o.editorOpen };
@@ -6727,8 +7011,13 @@ class FlowAutomationEngine {
     if (editorOpen) {
       try { if (typeof cap.beginEditorWindow === 'function') cap.beginEditorWindow(captureKey); } catch (e) {}
     } else {
-      const openedRes = await this._openTileViewer(task, tileIndexHint, 'ROOT');
-      editorOpen = !!openedRes.opened;
+      // v2.48.40 (INVISIBLE HARVEST PACK): editor yahan
+      // kholna pade to pehle BACKGROUND page par
+      // (screen par kuch show nahi hota); na bane to
+      // _openHarvestEditor bg-failed line ke saath
+      // purane dikhe-hue raste par girta hai.
+      const openedHarvest = await this._openHarvestEditor(task, tileIndexHint, captureKey);
+      editorOpen = !!openedHarvest.editorOpen;
       if (!editorOpen) {
         this.log(`[ROOT] editor-harvest no-url`, 'info');
         attempts.push({ strategy: 'editor-harvest', ok: false, note: 'the tile viewer did not open, so no editor playback response could be observed — the viewer route will try opening it itself' });
@@ -6828,7 +7117,11 @@ class FlowAutomationEngine {
     try { ok = await this._saveBufferForTask(task, downloadFolder, settings, buffer, url); } catch (e) { ok = false; }
     if (ok || task.mediaSaved) {
       const gapSec = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
-      this.log(`[ROOT] via=editor-harvest gap=${gapSec}s`, 'success');
+      // v2.48.40: background page istemal hua ho to
+      // jeet ki line par bg=yes — live log khud saboot
+      // hai ke editor screen par kabhi dikha hi nahi.
+      const bgMark = this._bgHarvestActiveFor(captureKey) ? ' bg=yes' : '';
+      this.log(`[ROOT] via=editor-harvest gap=${gapSec}s${bgMark}`, 'success');
       attempts.push({ strategy: 'editor-harvest', ok: true, note: `the exact file was saved from the flow-content response the editor itself fetched for playback while this video's editor was open — the Download button was NOT clicked and no menu was used; render→save gap ${gapSec}s` });
       return { done: true, editorOpen: true };
     }
@@ -6852,11 +7145,16 @@ class FlowAutomationEngine {
    * anchor = khulne ki koshish ke aaghaz ka pal (mint
    * khidki ka langar).
    */
-  async _openTileViewer(task, tileIndexHint, logTag) {
+  async _openTileViewer(task, tileIndexHint, logTag, pageOverride) {
     const n = task.promptIndex + 1;
     const tag = logTag || 'DIRECT';
+    // v2.48.40 (INVISIBLE HARVEST PACK): pageOverride
+    // diya jaye to viewer USI page par khulta hai
+    // (background page — worker ka asal page grid par
+    // hi rehta hai); warna hamesha ki tarah apna page.
+    const pg = pageOverride || this.page;
     let viewerOpen = false;
-    try { viewerOpen = await this._inEditorView(); } catch (e) { viewerOpen = false; }
+    try { viewerOpen = await this._inEditorView(pg); } catch (e) { viewerOpen = false; }
     if (viewerOpen) {
       // v2.48.38 (EDITOR-HARVEST PACK): editor khula hai —
       // khidki capture me darj karo (pehle se darj ho to
@@ -6877,8 +7175,8 @@ class FlowAutomationEngine {
       }
       return { opened: true, alreadyOpen: true, tileMissing: false, anchor: Date.now() };
     }
-    const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
-    const coords = idx >= 0 ? await this._tileCenterCoords(idx) : { found: false };
+    const idx = await this._resolveTileIndexForTask(task, tileIndexHint, pg);
+    const coords = idx >= 0 ? await this._tileCenterCoords(idx, pg) : { found: false };
     if (!coords.found) return { opened: false, alreadyOpen: false, tileMissing: true, anchor: Date.now() };
     if (tag === 'DIRECT') {
       this.log(`[DIRECT] [Prompt #${n}] Opening this video's tile viewer (no menu) — the viewer's own Download button is the primary download route…`, 'info');
@@ -6886,10 +7184,10 @@ class FlowAutomationEngine {
       this.log(`[${tag}] [Prompt #${n}] Opening this video's tile viewer (no menu) — the Download button will NOT be clicked; the learned mint call is replayed from this editor context…`, 'info');
     }
     const anchor = Date.now();
-    await this.page.mouse.click(coords.x, coords.y);
+    await pg.mouse.click(coords.x, coords.y);
     for (let r = 0; r < 10 && !viewerOpen; r++) {
       await sleep(250);
-      try { viewerOpen = await this._inEditorView(); } catch (e) { viewerOpen = false; }
+      try { viewerOpen = await this._inEditorView(pg); } catch (e) { viewerOpen = false; }
     }
     // v2.48.38 (EDITOR-HARVEST PACK): naya khula editor —
     // khidki yahin se shuru (is se pehle ke jawab is task

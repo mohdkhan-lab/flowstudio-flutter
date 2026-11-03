@@ -26,6 +26,7 @@ const flowContent = require('./flowContent');
 const downloadEventMatch = require('./downloadEventMatch');
 const mintWindow = require('./mintWindow');
 const mintReplay = require('./mintReplay');
+const saveGuard = require('./saveGuard');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -274,6 +275,13 @@ class FlowAutomationEngine {
     // file, each overwriting the previous (live-proven 2026-10-26).
     this.savedPathOwners = new Map();
     this.consumedVideoUrls = new Set();
+    // v2.48.35 (GUARD): is run/session me save hue files ke
+    // content hashes ki kitab (hash -> {key, promptIndex}) —
+    // saveGuard ka per-run registry. Kisi AUR task jaisi
+    // byte-identical file dobara save hone ki koshish yahin
+    // pakdi jati hai (ZEROCLICK2 cross-task contamination).
+    // Hash kabhi log nahi hota — sirf andarooni hisaab hai.
+    this._runSavedContentHashes = new Map();
     // v2.38.0: the browser session's REAL User-Agent, read once per
     // launch and reused by every direct fetch — the cookies a fetch
     // carries come from this same session, so the UA must name the
@@ -2941,6 +2949,26 @@ class FlowAutomationEngine {
         return false;
       }
     }
+    // v2.48.35 (CONTENT-HASH GUARD): is run me kisi AUR task
+    // ke naam par save hue bytes ke HU-BAHU yehi bytes dobara
+    // aaye hain to ye is task ki video ho hi nahi sakti —
+    // save reject, file likhi hi nahi jati, raaste aage
+    // chalte hain. ZEROCLICK2 (v2.48.34) ka cross-task
+    // contamination yahin rukta hai: registry wala rasta
+    // Prompt #1 ke bytes Prompt #2 ke naam par de raha tha
+    // aur koi jaanch use pakad nahi rahi thi. Apne hi task
+    // ki dobara save (race / retry) jaiz hai — faisla
+    // saveGuard ke khalis hisaab se hota hai, hash kabhi
+    // log nahi hota.
+    const bufHash = (!isImageMode && buffer && buffer.length > 0) ? saveGuard.contentHash(buffer) : null;
+    if (bufHash) {
+      const verdict = saveGuard.checkDuplicate(this._runSavedContentHashes, this._taskKey(task), bufHash);
+      if (verdict.duplicate) {
+        this.log(`[GUARD] duplicate-content rejected for Prompt #${task.promptIndex + 1} — fetched bytes are identical to Prompt #${verdict.otherPromptIndex + 1}'s saved file`, 'warn');
+        task._saveRejectedReason = 'duplicate-content';
+        return false;
+      }
+    }
     // v1.7.0: never silently overwrite a file this engine did not
     // itself save — a previous run's same-named video stays intact
     // and this save takes a suffixed name.
@@ -2985,6 +3013,10 @@ class FlowAutomationEngine {
     // liye wahi purani galti jhooti success line bana rahi thi).
     task.mediaSaved = true;
     this._recordSavedPath(task, finalSavedFilePath);
+    // v2.48.35 (GUARD): kamyaab save ki hash-kitab bandhi —
+    // is run ke baaki tasks ke liye yahi hisaab duplicate
+    // jaanch ka langar hai.
+    if (bufHash) saveGuard.recordSave(this._runSavedContentHashes, this._taskKey(task), bufHash, task.promptIndex);
     this._markTaskUrlConsumed(task, sourceUrl);
     if (sourceUrl && this.capturedVideoBuffers && this.capturedVideoBuffers.has(sourceUrl)) {
       this.capturedVideoBytes -= this.capturedVideoBuffers.get(sourceUrl).length;
@@ -4026,6 +4058,25 @@ class FlowAutomationEngine {
       return false;
     }
 
+    // v2.48.35 (GUARD — browser-download wala rasta bhi):
+    // zameen par utri file ka hash is run ki kitab se mila
+    // kar dekho — kisi AUR task ki save hue bytes ki hu-bahu
+    // copy ho to ye is task ki save NAHI hai: file hatao,
+    // haar maano, baaki raaste chalein. Apne hi task ki
+    // dobara-utri copy jaiz hai (faisla saveGuard se).
+    let nativeHash = null;
+    if (!isImageMode) {
+      try { nativeHash = saveGuard.contentHash(fs.readFileSync(finalSavedFilePath)); } catch (e) { nativeHash = null; }
+      if (nativeHash) {
+        const verdict = saveGuard.checkDuplicate(this._runSavedContentHashes, this._taskKey(task), nativeHash);
+        if (verdict.duplicate) {
+          try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
+          this.log(`[GUARD] duplicate-content rejected for Prompt #${task.promptIndex + 1} — fetched bytes are identical to Prompt #${verdict.otherPromptIndex + 1}'s saved file`, 'warn');
+          return false;
+        }
+      }
+    }
+
     const fileStats = fs.statSync(finalSavedFilePath);
     const sizeMb = (fileStats.size / (1024 * 1024)).toFixed(2);
     this.log(`Video saved: ${task.fileName} (${sizeMb} MB).`, 'success');
@@ -4040,6 +4091,10 @@ class FlowAutomationEngine {
     task.completed = true;
     task.mediaSaved = true;
     this._recordSavedPath(task, finalSavedFilePath);
+    // v2.48.35 (GUARD): browser-download se utri file ki
+    // hash-kitab bandhi bhi wahi registry me — taaki baad
+    // wale tasks ki jaanch is save ko bhi pehchane.
+    if (nativeHash) saveGuard.recordSave(this._runSavedContentHashes, this._taskKey(task), nativeHash, task.promptIndex);
 
     const result = {
       filePath: finalSavedFilePath,
@@ -4432,7 +4487,10 @@ class FlowAutomationEngine {
         const pick = flowContent.pickRaceFlowContentUrl(entries, {
           sinceMs: clickTime,
           isClaimed: (u) => {
-            try { return !!(this.netCapture && this.netCapture.isFlowContentClaimed(u)); } catch (e) { return false; }
+            // v2.48.35: sirf claimed-set hi nahi — capture me
+            // kisi AUR task ke naam bandha URL bhi "claimed"
+            // hai (_pickServerFetchUrl wali hi discipline).
+            try { return !!((this.netCapture && this.netCapture.isFlowContentClaimed(u)) || this._urlClaimedByOtherTask(u, task.captureKey || task.videoId || null)); } catch (e) { return false; }
           },
           isOwnUrl: (u) => this._isTaskOwnUrl(task, u)
         });
@@ -5155,6 +5213,24 @@ class FlowAutomationEngine {
    */
   async _extractAndSaveBlobCandidate(task, downloadFolder, settings, candidate) {
     if (!this._fastDlConsumedBlobs) this._fastDlConsumedBlobs = new Set();
+    // v2.48.35 (CLAIM GATE — registry wala rasta bhi wohi
+    // pehchan-discipline jo _pickServerFetchUrl ki hai):
+    // candidate ki asal URL flow-content wali ho to wohi
+    // darwaze — capture me kisi AUR task ke naam bandhi ho,
+    // ya is task ki apni hi na ho (purani / istemal-shuda),
+    // to bytes nikale hi nahi jate. ZEROCLICK2 (v2.48.34)
+    // me yahi rukawat ghayab thi: page ke registry me
+    // Prompt #1 ke address se aaye bytes Prompt #2 ke
+    // attempt me "taaza candidate" ban kar save ho gaye.
+    // (blob: URL wale candidate par ye gate nahi lagta —
+    // un ke bytes ki hifazat _saveBufferForTask ke
+    // content-hash guard ke paas hai.)
+    if (candidate && candidate.url && flowContent.isFlowContentVideoUrl(candidate.url)) {
+      const capKey = task.captureKey || task.videoId || null;
+      if (this._urlClaimedByOtherTask(candidate.url, capKey) || !this._isTaskOwnUrl(task, candidate.url)) {
+        return { ok: false, stage: 'claimed' };
+      }
+    }
     const extractStart = Date.now();
     const chunks = blobHarvest.planChunks(candidate.size, blobHarvest.CHUNK_BYTES);
     const parts = [];
@@ -5206,6 +5282,10 @@ class FlowAutomationEngine {
       // saath wapas jati hai — bulane wala use ffprobe-nakami se
       // alag naam de sakta hai.
       if (task._saveRejectedReason === 'quality-gate') return { ok: false, stage: 'quality' };
+      // v2.48.35: content-hash guard ki rukawat bhi apni
+      // stage ke saath (asal [GUARD] line _saveBufferForTask
+      // ne pehle hi log kar di hai).
+      if (task._saveRejectedReason === 'duplicate-content') return { ok: false, stage: 'duplicate' };
       return { ok: false, stage: 'save' };
     }
     this._fastDlConsumedBlobs.add(blobHarvest.candidateKey(candidate));
@@ -5213,6 +5293,28 @@ class FlowAutomationEngine {
       try { if (this.netCapture) this.netCapture.claimFlowContentVideo(srcUrl); } catch (e) {}
     }
     return { ok: true, extractMs };
+  }
+
+  /**
+   * v2.48.35 (CLAIM DISCIPLINE EVERYWHERE): capture ke
+   * bandhan (keyByUrl) me ye URL kisi AUR task ke naam hai
+   * kya? Faisla saveGuard ke khalis usool se hota hai; ye
+   * helper sirf kitab (map) tak pahunch deta hai. Har
+   * opportunistic / registry / race wala rasta jo koi
+   * URL ummeedwaar banata hai, isi darwaze se guzrega —
+   * _pickServerFetchUrl pehle se yahi karta tha, ab
+   * registry (blob) wala rasta aur race-pickeron ke
+   * isClaimed callback bhi yahi karte hain (ZEROCLICK2:
+   * registry ne Prompt #1 ke bandhe hue address ke bytes
+   * Prompt #2 ke naam par save kar diye the).
+   */
+  _urlClaimedByOtherTask(url, captureKey) {
+    try {
+      if (!url || !this.netCapture || !this.netCapture.keyByUrl) return false;
+      return saveGuard.claimedByOtherTask(this.netCapture.keyByUrl.get(url), captureKey || null);
+    } catch (e) {
+      return false;
+    }
   }
 
   /**
@@ -5246,7 +5348,7 @@ class FlowAutomationEngine {
       if (!this._isTaskOwnUrl(task, url)) continue;
       let claimedBy = null;
       try { claimedBy = (this.netCapture && this.netCapture.keyByUrl) ? this.netCapture.keyByUrl.get(url) : null; } catch (err) {}
-      if (claimedBy && claimedBy !== captureKey) continue;
+      if (saveGuard.claimedByOtherTask(claimedBy, captureKey)) continue;
       usable.push({ url, at: (e && e.at) || 0, bound: !!claimedBy });
     }
     if (usable.length === 0) return null;
@@ -5448,6 +5550,11 @@ class FlowAutomationEngine {
       } else if (res.stage === 'quality') {
         this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes were a preview-quality copy (below the size floor for the duration) — not saved as the final file; the existing download routes will run.`, 'warn');
         attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were preview quality (below the size floor) — not saved as final, the existing routes ran as fallback' });
+      } else if (res.stage === 'claimed') {
+        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes belong to a server address claimed by another task in this run — NOT extracted; the existing download routes will run.`, 'warn');
+        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were bound to another task\'s server address (claim discipline) — not extracted, the existing routes ran as fallback' });
+      } else if (res.stage === 'duplicate') {
+        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were identical to another task\'s already-saved file in this run (content guard) — not saved, the existing routes ran as fallback' });
       } else {
         this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes failed the video check on save — the existing download routes will run.`, 'warn');
         attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes failed the video check (ffprobe) on save — the existing routes ran as fallback' });
@@ -5549,6 +5656,12 @@ class FlowAutomationEngine {
    */
   async _pollViewerFlowContent(task, anchorMs, waitMs, opts) {
     const o = opts || {};
+    // v2.48.35: bulane wala ikhtiyari diag object de sakta
+    // hai — poll ke dauraan koi bhi flow-content entry dikhi
+    // thi kya (sawEntries), taaki haar par wajah alag batayi
+    // ja sake: khidki me kuch aaya hi nahi बनाम aaya lekin
+    // picker ne pehchan-darwazon par rok diya.
+    if (o.diag && typeof o.diag === 'object') o.diag.sawEntries = false;
     const pollMs = Math.max(50, Number(o.pollMs) || 200);
     const detourAtMs = Number.isFinite(o.overlayDetourAtMs) ? o.overlayDetourAtMs : -1;
     const startedAt = Date.now();
@@ -5563,10 +5676,14 @@ class FlowAutomationEngine {
           : [];
       } catch (e) { entries = []; }
       if (entries && entries.length > 0) {
+        if (o.diag) o.diag.sawEntries = true;
         const pick = flowContent.pickRaceFlowContentUrl(entries, {
           sinceMs: anchorMs,
           isClaimed: (u) => {
-            try { return !!(this.netCapture && this.netCapture.isFlowContentClaimed(u)); } catch (e) { return false; }
+            // v2.48.35: claimed-set ke saath capture ke
+            // bandhan (kisi AUR task ke naam) wali rukawat
+            // bhi — _pickServerFetchUrl wali hi discipline.
+            try { return !!((this.netCapture && this.netCapture.isFlowContentClaimed(u)) || this._urlClaimedByOtherTask(u, task.captureKey || task.videoId || null)); } catch (e) { return false; }
           },
           isOwnUrl: (u) => this._isTaskOwnUrl(task, u)
         });
@@ -5676,6 +5793,84 @@ class FlowAutomationEngine {
         && typeof e.host === 'string'
         && (e.host === 'googlevideo.com' || e.host.endsWith('.googlevideo.com')));
     } catch (e) { return false; }
+  }
+
+  /**
+   * v2.48.35 (VERBATIM PROBE — OBSERVE-ONLY, kabhi save
+   * NAHI): ZEROCLICK2 (v2.48.34, live) ne sabit kar diya ke
+   * seekhi hui mint call teacher ki id NA body me rakhti
+   * hai NA URL me (idsInBody=0, idsInUrl=0) — tabdeeli
+   * (substitution) wala replay mumkin hi nahi. Bachi hui
+   * ek theory: call CONTEXT-bound ho — jawab usi media ka
+   * address laata ho jo us pal session ke liye current
+   * hai. Us ka imtihaan: kisi GHER-teacher task ke
+   * download attempt par, quick-check se bhi PEHLE, wahi
+   * call HU-BAHU (koi tabdeeli nahi) page ke andar se ek
+   * dafa bhej kar sirf ye dekho ke jawab kya kehta hai.
+   *
+   * Usool sakht hain:
+   *   - session (capture) me HAD EK dafa — nishaan pehle
+   *     lagta hai, nakami par bhi dobara nahi;
+   *   - jawab se kuch SAVE nahi hota, capture me ingest
+   *     bhi nahi hota, koi claim nahi banta — sirf ek log
+   *     line: status / address aaya ya nahi / aaya to
+   *     teacher ke address jaisa (same) ya alag
+   *     (different) — asal URL/id/body kabhi log nahi;
+   *   - har nakami/timeout (hadd ~8s) chup-chaap guzar
+   *     jati hai — download ki tartib bilkul nahi rukti.
+   * Faisla mintReplay.classifyVerbatimProbe (khalis) se.
+   */
+  async _verbatimReplayProbe(task, captureKey) {
+    try {
+      const cap = this.netCapture;
+      if (!cap || cap._verbatimProbeDone) return;
+      const tpl = cap.mintTemplate ? cap.mintTemplate : null;
+      if (!tpl || !tpl.body || !tpl.url) return; // template hi nahi — pehla task khud teacher bane ga
+      if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return; // teacher khud hai
+      if (!this.page || this.page.isClosed()) return;
+      cap._verbatimProbeDone = true; // nishaan PEHLE — ek session, ek probe
+      let status = 'error';
+      let buf = Buffer.alloc(0);
+      try {
+        const res = await downloadGuard.withTimeout(
+          this.page.evaluate(async (u, m, h, b64) => {
+            const bin = atob(b64);
+            const bytes = new Uint8Array(bin.length);
+            for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+            const r = await fetch(u, { method: m || 'POST', headers: h, body: bytes, credentials: 'include' });
+            const rbuf = await r.arrayBuffer();
+            const u8 = new Uint8Array(rbuf);
+            let s = '';
+            for (let i = 0; i < u8.length; i += 8192) {
+              s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+            }
+            return { status: r.status, b64: btoa(s) };
+          }, tpl.url, tpl.method || 'POST', tpl.headers, tpl.body.toString('base64')),
+          8000, 'verbatim replay probe');
+        if (res) {
+          status = res.status;
+          try { buf = res.b64 ? Buffer.from(res.b64, 'base64') : Buffer.alloc(0); } catch (e) { buf = Buffer.alloc(0); }
+        }
+      } catch (e) { status = 'error'; buf = Buffer.alloc(0); }
+      let verdict = { carriesUrl: false, urlVsTeacher: 'n/a' };
+      try {
+        const carries = buf.length > 0 && mintWindow.responseCarriesFileUrl({ bodyText: buf });
+        let urls = [];
+        let teacherUrl = null;
+        if (carries) {
+          try {
+            const scan = networkCapture.scanBatchExecuteBody(buf, cap.patterns);
+            urls = (scan.allUrls || []).filter(u => flowContent.isFlowContentVideoUrl(u));
+          } catch (e) { urls = []; }
+          try {
+            const bound = (typeof cap.urlForKey === 'function') ? cap.urlForKey(tpl.taskKey) : null;
+            teacherUrl = bound && bound.url ? bound.url : null;
+          } catch (e) { teacherUrl = null; }
+        }
+        verdict = mintReplay.classifyVerbatimProbe({ carriesUrl: carries, urls, teacherUrl });
+      } catch (e) {}
+      this.log(`[ZEROCLICK] verbatim-probe status=${status} carriesUrl=${verdict.carriesUrl ? 'yes' : 'no'} urlVsTeacher=${verdict.urlVsTeacher}`, 'info');
+    } catch (e) {}
   }
 
   /**
@@ -5819,7 +6014,9 @@ class FlowAutomationEngine {
     const pick = flowContent.pickRaceFlowContentUrl(entries, {
       sinceMs: gapBase,
       isClaimed: (u) => {
-        try { return !!(cap && cap.isFlowContentClaimed(u)); } catch (e) { return false; }
+        // v2.48.35: claimed-set ke saath kisi AUR task ke
+        // naam bandha URL bhi rukawat hai (wahi discipline).
+        try { return !!((cap && cap.isFlowContentClaimed(u)) || this._urlClaimedByOtherTask(u, captureKey)); } catch (e) { return false; }
       },
       isOwnUrl: (u) => this._isTaskOwnUrl(task, u)
     });
@@ -5933,6 +6130,12 @@ class FlowAutomationEngine {
 
     let pick = null;
     let via = 'viewer-open';
+    // v2.48.35: haar ki wajah ka hisaab — poll ne khidki me
+    // kuch dekha tha kya (diag), aur aakhir me ek hi line:
+    // viewer route failed at=<stage> reason=<category>.
+    const pollDiag = {};
+    let failStage = 'pick';
+    let failReason = 'no-url-in-window';
     if (btn && btn.found) {
       // Qadam 2: click ke baad ~6s tak address ka intezaar;
       // ~2.5s par overlay detour (⚠️ UNPROVEN bachav —
@@ -5940,12 +6143,12 @@ class FlowAutomationEngine {
       // kuch karta hi nahi).
       await this.page.mouse.click(btn.x, btn.y);
       this.log(`[DIRECT] [Prompt #${n}] button-clicked at +${atPlus(Date.now())}s`, 'info');
-      pick = await this._pollViewerFlowContent(task, anchor, 6000, { pollMs: 175, overlayDetourAtMs: 2500 });
+      pick = await this._pollViewerFlowContent(task, anchor, 6000, { pollMs: 175, overlayDetourAtMs: 2500, diag: pollDiag });
       via = 'viewer-button';
     } else {
       // Qadam 3: button hi nahi — sirf kholne se address
       // aaya kya? (3.5s passive poll, .31 wala hi saboot.)
-      pick = await this._pollViewerFlowContent(task, anchor, 3500);
+      pick = await this._pollViewerFlowContent(task, anchor, 3500, { diag: pollDiag });
       via = 'viewer-open';
     }
 
@@ -5966,17 +6169,30 @@ class FlowAutomationEngine {
       // li jati hai), is liye false = save verify nahi hua;
       // exception aaye to us ki alag qisam.
       this.log(`[DIRECT] [Prompt #${n}] fetch-save failed reason=${fetchThrew ? 'fetch-threw' : 'unverified-save'}`, 'warn');
+      // v2.48.35: route-haar wali aakhri line ke liye stage
+      // bhi yahi darj hota hai (neeche).
+      failStage = 'fetch';
+      failReason = fetchThrew ? 'fetch-threw' : 'unverified-save';
       // Fetch haar gaya — viewer band karke menu fallback (neeche).
     }
     if (pick && pick.ambiguous) {
       this.log(`[DIRECT] [Prompt #${n}] ${pick.count} fresh server addresses appeared in the viewer and none could be proven to be this task's own — the direct fetch was NOT used.`, 'warn');
+      failStage = 'pick';
+      failReason = 'ambiguous';
     }
-    // Haar ka saboot: preview-only alag naam se, warna aam line.
-    if (this._viewerSawPreviewStream(anchor)) {
-      this.log(`[DIRECT] [Prompt #${n}] viewer yielded preview-only — the viewer fetched only a googlevideo preview stream, not the file's server address; falling back to menu`, 'warn');
-    } else {
-      this.log(`[DIRECT] [Prompt #${n}] viewer route failed — falling back to menu`, 'warn');
+    // v2.48.35: pick stage ki haar ki qisam — khidki me
+    // entries dikhi theen lekin picker ne sab rok diye
+    // (picker-rejected), ya viewer ne sirf preview stream
+    // khincha (preview-only), ya khidki me kuch aaya hi
+    // nahi (no-url-in-window). ZEROCLICK2 me yahi farq
+    // ghayab tha: route fail hua lekin wajah log me kahin
+    // thi hi nahi (fetch wali line bhi nahi aayi thi —
+    // haar pick stage par thi).
+    if (failStage === 'pick' && failReason === 'no-url-in-window') {
+      if (pollDiag.sawEntries) failReason = 'picker-rejected';
+      else if (this._viewerSawPreviewStream(anchor)) failReason = 'preview-only';
     }
+    this.log(`[DIRECT] [Prompt #${n}] viewer route failed at=${failStage} reason=${failReason} — falling back to menu`, 'warn');
     attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the direct viewer route produced no usable server address — the existing routes ran as fallback' });
     try { await this.page.keyboard.press('Escape'); } catch (e) {}
     try { await this._returnToProjectGrid(); } catch (e) {}
@@ -6007,6 +6223,18 @@ class FlowAutomationEngine {
 
     // Ranneeti-tartib ka ek-matra sach (tests wahi jaanchte hain):
     task.downloadRouteOrder = downloadRouteOrder.DOWNLOAD_ROUTE_ORDER.slice();
+
+    // --- v2.48.35 (VERBATIM PROBE — OBSERVE-ONLY): quick-
+    // check se bhi PEHLE, session me had ek dafa, sirf tab
+    // jab template maujood ho aur ye task teacher na ho.
+    // Seekhi hui mint-call hu-bahu bhejna hai (koi tabdeeli
+    // nahi — ZEROCLICK2 ne sabit kiya badalne ko id hai hi
+    // nahi); jawab se kuch save/claim NAHI hota, sirf ek
+    // [ZEROCLICK] verbatim-probe line banti hai. Andar se
+    // har nakami nigal li jati hai — tartib nahi rukti. ---
+    if (!isImage) {
+      try { await this._verbatimReplayProbe(task, captureKey); } catch (e) {}
+    }
 
     // --- v2.48.30 (QUICK-CHECK HEAD): attempt ka SAB SE PEHLA
     // qadam sirf ek NO-WAIT nazar hai ---

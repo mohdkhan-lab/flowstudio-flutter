@@ -14,6 +14,7 @@ const stallWatch = require('./stallWatch');
 const downloadGuard = require('./downloadGuard');
 const tagNaming = require('./tagNaming');
 const fs = require('fs');
+const crypto = require('crypto');
 const sequenceReport = require('./sequenceReport');
 const browserMode = require('./browserMode');
 const windowStyle = require('./windowStyle');
@@ -2227,13 +2228,31 @@ class WorkerPool {
         }
         const report = sequenceReport.buildSequenceReport(allRows, {
           exists: (p) => fs.existsSync(p),
+          // v2.48.35 (GUARD): byte-identical jodiyon ki jaanch
+          // ke liye asal file ka hash — hash khud kabhi log
+          // nahi hota, sirf jodi ki khabar jati hai.
+          hashOf: (p) => {
+            try { return crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'); } catch (e) { return null; }
+          },
           namingMode: (settings && settings.namingPattern === 'tag') ? 'tag' : 'other'
         });
         this.lastRunReport = report;
         if (report.total > 0) {
-          if (report.missing.length === 0 && report.wrongName.length === 0) {
+          // v2.48.35 (GUARD): do scenes ki files byte-identical
+          // hon to run INCOMPLETE hai — kamyaabi wali line
+          // kabhi nahi (ZEROCLICK2 ki jhooti "all 2 saved"
+          // dobara na ho).
+          if (Array.isArray(report.duplicateContent) && report.duplicateContent.length > 0) {
+            for (const pair of report.duplicateContent) {
+              const guardMsg = `[GUARD] sequence check: Prompt #${(pair.a.promptIndex || 0) + 1} and Prompt #${(pair.b.promptIndex || 0) + 1} saved identical bytes — treating the run as INCOMPLETE`;
+              this.log(guardMsg, 'error');
+              recordActivity({ category: 'generation', level: 'error', message: guardMsg });
+            }
+          }
+          if (report.missing.length === 0 && report.wrongName.length === 0
+            && (!Array.isArray(report.duplicateContent) || report.duplicateContent.length === 0)) {
             this.log(`Sequence check: all ${report.total} scene(s) are saved — nothing is missing.`, 'success');
-          } else {
+          } else if (report.missing.length > 0 || report.wrongName.length > 0) {
             let msg = `Sequence check: ${report.presentCount} of ${report.total} scene(s) saved`;
             if (report.missing.length > 0) {
               msg += ` — MISSING: ${report.missing.map(mn => mn.tag).join(', ')}`;

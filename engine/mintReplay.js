@@ -215,4 +215,47 @@ function substituteIdsInUrl(url, pairs) {
   return { url: cur, replacements };
 }
 
-module.exports = { findIdOccurrences, countOccurrences, substituteIds, findIdOccurrencesInText, substituteIdsInUrl };
+/**
+ * v2.48.35 (VERBATIM PROBE): bina-tabdeeli replay ke jawab ki
+ * khalis warg-bandi (classification). ZEROCLICK2 (v2.48.34,
+ * live) ne sabit kar diya ke seekhi hui mint call teacher ki
+ * id NA body me rakhti hai, NA URL me (idsInBody=0,
+ * idsInUrl=0) — tabdeeli wala replay mumkin hi nahi. Bachi
+ * hui ek hi theory: call CONTEXT-bound ho — yani jawab usi
+ * media ka address laata ho jo us pal page/session ke liye
+ * "current" hai. Us ka saboot sirf ye hai ke dusre task ke
+ * download ke pal wahi call HU-BAHU (verbatim) bhej kar dekha
+ * jaye ke jawab me kya aata hai:
+ *   input:  { carriesUrl, urls, teacherUrl }
+ *     carriesUrl — jawab ke matan me file-address wala host
+ *                  hai kya (mintWindow.responseCarriesFileUrl);
+ *     urls       — jawab se nikle hue flow-content video
+ *                  address (sirf andarooni muqabla — kabhi
+ *                  log nahi hote);
+ *     teacherUrl — teacher task ka apna bandha/mint hua
+ *                  address (capture se; na maloom ho to null).
+ *   output: { carriesUrl, urlVsTeacher }
+ *     urlVsTeacher:
+ *       'same'      — jawab TEACHER ke hi address ko le aaya:
+ *                     call context-bound NAHI, wo apni bandhi
+ *                     hui media hi deti hai (dusre task ke
+ *                     kaam ki nahi);
+ *       'different' — jawab kisi AUR address ko le aaya:
+ *                     context-bound hone ka saboot — call us
+ *                     pal ke current media ka address deti
+ *                     hai;
+ *       'n/a'       — muqabla mumkin nahi (jawab me address
+ *                     hi nahi, ya teacher ka address maloom
+ *                     nahi, ya address nikle hi nahi).
+ */
+function classifyVerbatimProbe(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const carries = !!o.carriesUrl;
+  if (!carries) return { carriesUrl: false, urlVsTeacher: 'n/a' };
+  const urls = Array.isArray(o.urls) ? o.urls.filter(u => typeof u === 'string' && u) : [];
+  const teacherUrl = typeof o.teacherUrl === 'string' && o.teacherUrl ? o.teacherUrl : null;
+  if (!teacherUrl || urls.length === 0) return { carriesUrl: true, urlVsTeacher: 'n/a' };
+  return { carriesUrl: true, urlVsTeacher: urls.includes(teacherUrl) ? 'same' : 'different' };
+}
+
+module.exports = { findIdOccurrences, countOccurrences, substituteIds, findIdOccurrencesInText, substituteIdsInUrl, classifyVerbatimProbe };

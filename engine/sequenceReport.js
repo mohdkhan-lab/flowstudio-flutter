@@ -22,6 +22,13 @@ const { splitLabelPrefix } = require('./promptParser');
  *               scene-style name) — offered a one-click rename to the
  *               tag name when that name is free (never overwriting).
  *
+ *   duplicateContent — (v2.48.35) two present files that are
+ *               BYTE-IDENTICAL: one scene's video was saved
+ *               under another scene's name (cross-task
+ *               contamination). Only checked when the caller
+ *               injects `hashOf(absPath)`; the run is NOT
+ *               complete while any such pair exists.
+ *
  * Pure module: `exists(absPath)` is injected (fs.existsSync in main,
  * a Set in tests).
  */
@@ -33,8 +40,9 @@ function displayTag(row) {
   return `scene${String(idx + 1).padStart(3, '0')}`;
 }
 
-function buildSequenceReport(rows, { exists, namingMode = 'tag' } = {}) {
+function buildSequenceReport(rows, { exists, namingMode = 'tag', hashOf } = {}) {
   const existsFn = typeof exists === 'function' ? exists : () => false;
+  const hashFn = typeof hashOf === 'function' ? hashOf : null;
   const list = (Array.isArray(rows) ? rows : [])
     .filter(r => r && typeof r === 'object')
     .slice()
@@ -101,13 +109,41 @@ function buildSequenceReport(rows, { exists, namingMode = 'tag' } = {}) {
     present.push({ ...base, filePath, fileName: path.basename(filePath) });
   }
 
+  // v2.48.35 (GUARD): do maujood files BYTE-IDENTICAL hon to
+  // ek asal video dusre ke naam par save hua hai (ZEROCLICK2,
+  // v2.48.34 par live pakda gaya cross-task contamination) —
+  // jhooti "sab save ho gaya" kabhi nahi. hashOf ikhtiyari
+  // hai: bulane wala asal files ka hash de to hi ye jaanch
+  // chalti hai; hash na mile (null) wali file is jaanch se
+  // bahar rehti hai. Hash khud report me KABHI nahi aata —
+  // sirf jodiyon (pairs) ki pehchan aati hai.
+  const duplicateContent = [];
+  if (hashFn && present.length > 1) {
+    const ownerByHash = new Map();
+    for (const p of present) {
+      let h = null;
+      try { h = hashFn(p.filePath); } catch (e) { h = null; }
+      if (!h || typeof h !== 'string') continue;
+      const first = ownerByHash.get(h);
+      if (!first) {
+        ownerByHash.set(h, p);
+      } else if (first.taskId !== p.taskId) {
+        duplicateContent.push({
+          a: { taskId: first.taskId, tag: first.tag, promptIndex: first.promptIndex, filePath: first.filePath },
+          b: { taskId: p.taskId, tag: p.tag, promptIndex: p.promptIndex, filePath: p.filePath }
+        });
+      }
+    }
+  }
+
   return {
     total: list.length,
     presentCount: present.length,
     present,
     missing,
     wrongName,
-    complete: list.length > 0 && missing.length === 0 && wrongName.length === 0
+    duplicateContent,
+    complete: list.length > 0 && missing.length === 0 && wrongName.length === 0 && duplicateContent.length === 0
   };
 }
 

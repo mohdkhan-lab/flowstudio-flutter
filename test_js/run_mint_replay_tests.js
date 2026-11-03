@@ -21,7 +21,8 @@ const {
   countOccurrences,
   substituteIds,
   findIdOccurrencesInText,
-  substituteIdsInUrl
+  substituteIdsInUrl,
+  classifyVerbatimProbe
 } = require('../engine/mintReplay');
 const { NetworkCapture } = require('../engine/networkCapture');
 
@@ -283,6 +284,45 @@ const STUDENT = 'bbbbbbbb-5555-6666-7777-888888888888';
   nc.setMintWatch(false);
   eq('LEARN watch off clears the round task key', nc._mintTaskKey, null);
   ok('LEARN template survives watch off', !!nc.mintTemplate);
+}
+
+// ---------------------------------------------------------------------------
+// v2.48.35: classifyVerbatimProbe — hu-bahu (verbatim) replay
+// ke jawab ki warg-bandi. Jawab address le aaye aur wo
+// TEACHER ka hi ho → 'same' (call context-bound nahi);
+// alag address → 'different' (context-bound ka saboot);
+// address hi na aaye ya muqabla mumkin na ho → 'n/a'.
+// ---------------------------------------------------------------------------
+{
+  const T = 'https://flow-content.google/video/teacher-media';
+  const O = 'https://flow-content.google/video/other-media';
+
+  let v = classifyVerbatimProbe({ carriesUrl: false, urls: [], teacherUrl: T });
+  eq('PROBE no url carried — carriesUrl', v.carriesUrl, false);
+  eq('PROBE no url carried — verdict', v.urlVsTeacher, 'n/a');
+
+  v = classifyVerbatimProbe({ carriesUrl: true, urls: [T], teacherUrl: T });
+  eq('PROBE teacher url back — carriesUrl', v.carriesUrl, true);
+  eq('PROBE teacher url back — verdict same', v.urlVsTeacher, 'same');
+
+  v = classifyVerbatimProbe({ carriesUrl: true, urls: [O], teacherUrl: T });
+  eq('PROBE different url back — verdict different', v.urlVsTeacher, 'different');
+
+  v = classifyVerbatimProbe({ carriesUrl: true, urls: [O, T], teacherUrl: T });
+  eq('PROBE teacher among several — verdict same', v.urlVsTeacher, 'same');
+
+  v = classifyVerbatimProbe({ carriesUrl: true, urls: [O], teacherUrl: null });
+  eq('PROBE teacher url unknown — verdict n/a', v.urlVsTeacher, 'n/a');
+
+  v = classifyVerbatimProbe({ carriesUrl: true, urls: [], teacherUrl: T });
+  eq('PROBE carried host but no url extracted — verdict n/a', v.urlVsTeacher, 'n/a');
+
+  v = classifyVerbatimProbe(null);
+  eq('PROBE garbage input — carriesUrl', v.carriesUrl, false);
+  eq('PROBE garbage input — verdict', v.urlVsTeacher, 'n/a');
+
+  v = classifyVerbatimProbe({});
+  eq('PROBE empty input — verdict', v.urlVsTeacher, 'n/a');
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

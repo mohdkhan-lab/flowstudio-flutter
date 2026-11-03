@@ -41,28 +41,44 @@
 // me hai. Na bane to viewer band karke baaki tartib bilkul
 // pehle ki tarah (menu ab fallback #2 hai).
 //
+// v2.48.33 (ZEROCLICK — PROBE, abhi LIVE PROVEN NAHI):
+// quick-check ke baad naya qadam 'zero-click' — session ke
+// kisi pehle task ke download me seekhi hui mint-call
+// (batchexecute darkhwast jis ka jawab file-address le aaya
+// tha) ko teacher ke ID ki jagah is task ka ID rakh kar page
+// ke andar se replay karna, bina kisi UI click ke. Jawab
+// address le aaye to wahi verified server-fetch se save;
+// na aaye (H2) ya replay nakam ho to 'direct-viewer' wali
+// tartib bilkul pehle ki tarah. Pehle task par template
+// hota hi nahi — ye qadam khamoshi se guzar jata hai.
+//
 // Kram (video tasks):
 //   1. quick-check       — NO-WAIT: pehle se pakde hue registry
 //                          bytes / flow-content URL ka turant
 //                          save (v2.48.29 ka opportunistic
 //                          check, ab attempt ka pehla qadam)
-//   2. direct-viewer     — PRIMARY (v2.48.32): tile viewer ka
+//   2. zero-click        — PROBE (v2.48.33): seekhi hui
+//                          mint-call ka bina-click replay —
+//                          jawab ka address verified
+//                          server-fetch se save
+//   3. direct-viewer     — PRIMARY (v2.48.32): tile viewer ka
 //                          apna Download button (bina menu) —
 //                          click se mint hua server address,
 //                          app ki server-fetch se save
-//   3. native-menu       — ⋮ menu → Download → resolution select
+//   4. native-menu       — ⋮ menu → Download → resolution select
 //                          (+ v2.48.30 post-click server race)
-//   4. blob-harvest      — page ke andar ke bytes (v2.48.26 FAST-DL)
-//   5. backend-fetch     — bandha backend link seedha fetch
-//   6. backend-order     — kram se bandhan (claimByOrder)
-//   7. tile-readiness    — tile media ready hone ka intezaar
-//   8. backend-fetch-retry — readiness ke baad backend ek aur baar
-//   9. tile-src-fast     — tile ka apna src, turant fetch (v2.47.4)
-//  10. tile-src          — tile/stream ka src
-//  11. native-editor     — editor ki top bar ka "Download media"
+//   5. blob-harvest      — page ke andar ke bytes (v2.48.26 FAST-DL)
+//   6. backend-fetch     — bandha backend link seedha fetch
+//   7. backend-order     — kram se bandhan (claimByOrder)
+//   8. tile-readiness    — tile media ready hone ka intezaar
+//   9. backend-fetch-retry — readiness ke baad backend ek aur baar
+//  10. tile-src-fast     — tile ka apna src, turant fetch (v2.47.4)
+//  11. tile-src          — tile/stream ka src
+//  12. native-editor     — editor ki top bar ka "Download media"
 //      (native-menu yahan dobara NAHI chalta — wo pehle hi ho gaya)
 const DOWNLOAD_ROUTE_ORDER = Object.freeze([
   'quick-check',
+  'zero-click',
   'direct-viewer',
   'native-menu',
   'blob-harvest',

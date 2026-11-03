@@ -2,6 +2,7 @@
 
 const flowContent = require('./flowContent');
 const mintWindow = require('./mintWindow');
+const mintReplay = require('./mintReplay');
 
 /**
  * FlowStudio Lite — NETWORK CAPTURE LAYER (v2.8.0).
@@ -454,6 +455,11 @@ class NetworkCapture {
     // [MINT] lines me badalta hai. Na hon to watch khamosh hai.
     this.onMintRequest = typeof opts.onMintRequest === 'function' ? opts.onMintRequest : null;
     this.onMintCarriesUrl = typeof opts.onMintCarriesUrl === 'function' ? opts.onMintCarriesUrl : null;
+    // v2.48.33 (ZEROCLICK): mint-call ka replay template seekh
+    // lene ki khabar — engine use [ZEROCLICK] line me badalta
+    // hai (sirf shakal: rpcids + body size + ID ginti; asal
+    // URL/ID/body kabhi callback se bahar nahi jata).
+    this.onMintTemplate = typeof opts.onMintTemplate === 'function' ? opts.onMintTemplate : null;
     this._page = null;
     this._reqHandler = null;
     this._resHandler = null;
@@ -535,6 +541,17 @@ class NetworkCapture {
     this.mintWatch = false;
     this.mintRequests = []; // [{ method, host, path, at }]
     this._mintCarriesSeen = new Set();
+    // v2.48.33 (ZEROCLICK): seekha hua mint-call template —
+    // status templates (v2.48.13) wali hi hifazat: asal URL
+    // (query sameet) + method + whitelist headers + raw body
+    // bytes SIRF is object me rehte hain (log me kabhi nahi),
+    // taaki engine agle task par usi darkhwast ko is task ke
+    // ID ke saath replay kar sake. _mintTaskKey woh task hai
+    // jis ke download round me watch chalu hai (seekhne wale
+    // task ki pehchan). Template roundon ke paar rehta hai —
+    // sirf reset() (naya session) use saaf karta hai.
+    this.mintTemplate = null; // { url, method, headers, body, at, taskKey, primaryId, ids, idOccurrences }
+    this._mintTaskKey = null;
   }
 
   arm() { this.armed = true; }
@@ -691,8 +708,32 @@ class NetworkCapture {
         if (batch) this.batchStats.bodiesFetched++;
         // v2.48.31 (MINT): padhe gaye body me file ke server
         // address ka nishan hai kya (sirf haan/na darj hota hai).
+        // v2.48.33 (ZEROCLICK): batchexecute jawab ho to asal
+        // darkhwast (is response ka apna request) ka template
+        // bhi banao — carries sabit hone par wahi seekha
+        // jayega. Body bytes wahi tareeka jo ingestRequest ka
+        // hai (postDataBuffer pehle, warna text ka Buffer);
+        // headers sirf whitelist wale.
         try {
-          if (this.mintWatch) this._checkMintCarries(resMethod, url, null, buf);
+          if (this.mintWatch) {
+            let reqTemplate = null;
+            if (batch) {
+              try {
+                const rq = res.request();
+                if (rq) {
+                  let postBuf = null;
+                  try { postBuf = typeof rq.postDataBuffer === 'function' ? rq.postDataBuffer() : null; } catch (e2) {}
+                  if (!postBuf) {
+                    try { const pd = rq.postData(); if (pd) postBuf = Buffer.from(pd, 'utf8'); } catch (e2) {}
+                  }
+                  let hdrs = {};
+                  try { hdrs = rq.headers() || {}; } catch (e2) {}
+                  reqTemplate = { url, method: resMethod, headers: pickReplayHeaders(hdrs, this.patterns), body: postBuf };
+                }
+              } catch (e2) { reqTemplate = null; }
+            }
+            this._checkMintCarries(resMethod, url, null, buf, reqTemplate);
+          }
         } catch (e) {}
         this.ingestResponse({ url, contentType: ct, bodyBuffer: buf, at: Date.now() });
       } catch (e) {}
@@ -754,7 +795,18 @@ class NetworkCapture {
       client.on('Network.requestWillBeSent', (e) => {
         try {
           if (e && e.request && isBatchExecuteUrl(e.request.url)) {
-            this._cdpBatch.set(e.requestId, { rpcids: rpcidsOf(e.request.url), at: Date.now(), method: e.request.method || 'GET' });
+            this._cdpBatch.set(e.requestId, {
+              rpcids: rpcidsOf(e.request.url), at: Date.now(), method: e.request.method || 'GET',
+              // v2.48.33 (ZEROCLICK): asal darkhwast ki shakal
+              // bhi yaad rakho — is request ka jawab file-address
+              // le aaye to yahi mint template banta hai (headers
+              // sirf whitelist wale, status-template wali tarz;
+              // cookie CDP se kabhi nahi uthayi jati — replay
+              // page ke apne session se hota hai).
+              reqUrl: e.request.url,
+              reqHeaders: pickReplayHeaders(e.request.headers || {}, this.patterns),
+              reqPostData: typeof e.request.postData === 'string' ? e.request.postData : null
+            });
           }
         } catch (err) {}
       });
@@ -842,9 +894,12 @@ class NetworkCapture {
                 // v2.48.31 (MINT): CDP se mile batchexecute body
                 // me bhi file-address ki jaanch (wahi darwaza jo
                 // [MINT] sawal ka markaz hai).
+                // v2.48.33 (ZEROCLICK): asal darkhwast ka template
+                // bhi saath do — carries sabit ho to wahi seekha
+                // jayega.
                 try {
                   if (this.mintWatch) {
-                    this._checkMintCarries((batchMeta && batchMeta.method) || 'POST', 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute', null, buf);
+                    this._checkMintCarries((batchMeta && batchMeta.method) || 'POST', 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute', null, buf, this._reqTemplateFromCdpMeta(batchMeta));
                   }
                 } catch (err) {}
                 this.ingestResponse({
@@ -1105,13 +1160,19 @@ class NetworkCapture {
    * request darj hoti hai, na carries-khabar — baaki capture
    * bilkul pehle ki tarah.
    */
-  setMintWatch(on) {
+  setMintWatch(on, taskKey) {
     const v = !!on;
     if (v && !this.mintWatch) {
       this.mintRequests = [];
       this._mintCarriesSeen = new Set();
     }
     this.mintWatch = v;
+    // v2.48.33 (ZEROCLICK): is round ka task — carries wala
+    // jawab aaye to mint template ISI task ke naam seekha
+    // jata hai (us ke apne ID body me dhoondhe jate hain).
+    // Watch band hone par pehchan bhi saaf (template rehta
+    // hai — wo session bhar ke liye seekha gaya hai).
+    this._mintTaskKey = v ? (taskKey || null) : null;
   }
 
   /** v2.48.31 (MINT): `sinceMs` ke baad darj requests (mint khidki ke backfill ke liye). */
@@ -1155,13 +1216,111 @@ class NetworkCapture {
   }
 
   /** v2.48.31 (MINT): ek jawab ki Location/body jaanch — file-address mile to carries-khabar. */
-  _checkMintCarries(method, url, location, bodyText) {
+  _checkMintCarries(method, url, location, bodyText, reqTemplate) {
     if (!this.mintWatch) return;
     try {
       if (!mintWindow.responseCarriesFileUrl({ location, bodyText })) return;
       const entry = mintWindow.sanitizeRequestEntry({ method, url, at: Date.now() });
       if (entry) this._noteMintCarries({ method: entry.method, host: entry.host, path: entry.path });
+      // v2.48.33 (ZEROCLICK): yahi woh darkhwast hai jis ka
+      // jawab file-address le aaya — use replay template ke
+      // roop me seekh lo (asal darkhwast saath aayi ho tab hi;
+      // Location-wali khabar par template nahi banta).
+      if (reqTemplate) this._learnMintTemplate(reqTemplate);
     } catch (e) {}
+  }
+
+  /** v2.48.33 (ZEROCLICK): CDP meta (requestWillBeSent) se replay template ki shakal. */
+  _reqTemplateFromCdpMeta(meta) {
+    if (!meta || !meta.reqUrl) return null;
+    return {
+      url: meta.reqUrl,
+      method: meta.method || 'POST',
+      headers: meta.reqHeaders || {},
+      body: meta.reqPostData ? Buffer.from(meta.reqPostData, 'utf8') : null
+    };
+  }
+
+  /**
+   * v2.48.33 (ZEROCLICK): mint-call ko replay template ke roop
+   * me seekhna — status templates (v2.48.13) wali hi hifazat:
+   *   - sirf batchexecute darkhwast; body size ki hadd wahi
+   *     (patterns.maxTemplateBodyBytes) jo status templates
+   *     ki hai;
+   *   - is round ke task (_mintTaskKey) ke jaane hue ID(s)
+   *     body me dhoondhe jate hain (mintReplay ke khalis
+   *     hisaab se) — offsets aur primaryId (pehla mila ID)
+   *     darj hote hain, taaki replay ke pal teacher ke ID ki
+   *     jagah agle task ka ID rakha ja sake;
+   *   - ID body me na mile to bhi template banta hai lekin
+   *     primaryId null rehta hai — idsInBody=0 wali khabar
+   *     khud ek saboot hai (call shayad per-media replayable
+   *     nahi), aur replay us haal me khud ruk jayega;
+   *   - bilkul waisa hi template (wahi task + wahi body)
+   *     dobara aaye to khabar dobara nahi (round ke andar
+   *     wahi call kai baar jawab de sakti hai).
+   * Callback me sirf shakal jati hai — rpcids (function ke
+   * naam), body ki size, aur ID occurrences ki GINTI. Asal
+   * URL/headers/body/ID kabhi bahar nahi jate.
+   */
+  _learnMintTemplate(reqTemplate) {
+    try {
+      if (!reqTemplate || !reqTemplate.url || !Buffer.isBuffer(reqTemplate.body)) return;
+      if (!isBatchExecuteUrl(reqTemplate.url)) return;
+      const body = reqTemplate.body;
+      if (body.length === 0 || body.length > this.patterns.maxTemplateBodyBytes) return;
+      const key = this._mintTaskKey || null;
+      // Is task ke jaane hue ID(s): submission par bandha
+      // workflowId sab se pehle, phir keyById me is key ke
+      // naam ke baaki IDs. Sirf idMinLength se lambe wale.
+      const ids = [];
+      if (key) {
+        const sub = this._submissionForKey(key);
+        if (sub && sub.id) ids.push(sub.id);
+        for (const [id, k] of this.keyById) {
+          if (k === key && !ids.includes(id)) ids.push(id);
+        }
+      }
+      const usableIds = ids.filter(id => typeof id === 'string' && id.length >= this.patterns.idMinLength);
+      const occurrences = mintReplay.findIdOccurrences(body, usableIds);
+      const primaryId = occurrences.length ? occurrences[0].id : null;
+      if (this.mintTemplate && this.mintTemplate.taskKey === key
+        && Buffer.isBuffer(this.mintTemplate.body) && this.mintTemplate.body.equals(body)) {
+        return; // wahi template pehle se hai — khabar dobara nahi
+      }
+      this.mintTemplate = {
+        url: reqTemplate.url,
+        method: String(reqTemplate.method || 'POST').toUpperCase(),
+        headers: reqTemplate.headers || {},
+        body: Buffer.from(body),
+        at: Date.now(),
+        taskKey: key,
+        primaryId,
+        ids: occurrences.map(o => o.id),
+        idOccurrences: occurrences
+      };
+      if (this.onMintTemplate) {
+        try {
+          this.onMintTemplate({
+            taskKey: key,
+            rpcids: rpcidsOf(reqTemplate.url),
+            bodyBytes: body.length,
+            idsInBody: mintReplay.countOccurrences(occurrences)
+          });
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.33 (ZEROCLICK): is task (captureKey) ka bandha hua
+   * workflowId — replay ke pal agle task ki pehchan yahi se
+   * aati hai. Na bandha ho to null (replay ruk jata hai).
+   */
+  workflowIdForKey(key) {
+    if (!key) return null;
+    const sub = this._submissionForKey(key);
+    return sub && sub.id ? sub.id : null;
   }
 
   /**
@@ -1179,9 +1338,10 @@ class NetworkCapture {
     // v2.48.31 (MINT): behta (streaming) jawab kabhi khatam hi
     // nahi hota — uske jama-shuda text me file-address dikhe to
     // wahi carries-khabar hai (dedupe ki wajah se ek hi baar).
+    // v2.48.33 (ZEROCLICK): is darkhwast ka template bhi saath.
     try {
       if (this.mintWatch) {
-        this._checkMintCarries(meta.method || 'POST', 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute', null, meta.text);
+        this._checkMintCarries(meta.method || 'POST', 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute', null, meta.text, this._reqTemplateFromCdpMeta(meta));
       }
     } catch (e) {}
     if (!this.armed) return [];

@@ -344,10 +344,14 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   // the second step; the menu route moved to third.
   // v2.48.32 (SWITCH): same order — direct-viewer is now the
   // PRIMARY route and the menu is fallback #2.
-  eq('SWITCH viewer route is primary (second)', DOWNLOAD_ROUTE_ORDER[1], 'direct-viewer');
-  eq('QUICK-CHECK menu route is third', DOWNLOAD_ROUTE_ORDER[2], 'native-menu');
+  // v2.48.33 (ZEROCLICK probe): the learned-mint-call replay
+  // is the new second step; direct-viewer moves to third and
+  // the menu to fourth (their aapas-tartib barkarar hai).
+  eq('ZEROCLICK replay route is second', DOWNLOAD_ROUTE_ORDER[1], 'zero-click');
+  eq('SWITCH viewer route is primary (third)', DOWNLOAD_ROUTE_ORDER[2], 'direct-viewer');
+  eq('QUICK-CHECK menu route is fourth', DOWNLOAD_ROUTE_ORDER[3], 'native-menu');
   eq('QUICK-CHECK order ends with native-editor', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'native-editor');
-  eq('QUICK-CHECK route count', DOWNLOAD_ROUTE_ORDER.length, 11);
+  eq('QUICK-CHECK route count', DOWNLOAD_ROUTE_ORDER.length, 12);
   ok('QUICK-CHECK order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
   ok('QUICK-CHECK order has no server-first watch', !DOWNLOAD_ROUTE_ORDER.includes('server-first'));
 
@@ -356,7 +360,7 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   eq('QUICK-CHECK fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
   ok('QUICK-CHECK fallback has no quick-check', !fb.includes('quick-check'));
   ok('QUICK-CHECK fallback has no server-first', !fb.includes('server-first'));
-  ok('QUICK-CHECK fallback starts with direct-viewer', fb[0] === 'direct-viewer');
+  ok('QUICK-CHECK fallback starts with zero-click', fb[0] === 'zero-click');
   const prev = ['native-menu', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'backend-fetch-retry', 'tile-src-fast', 'tile-src', 'native-editor'];
   let idx = -1;
   let inOrder = true;

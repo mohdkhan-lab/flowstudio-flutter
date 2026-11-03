@@ -25,6 +25,7 @@ const downloadRouteOrder = require('./downloadRouteOrder');
 const flowContent = require('./flowContent');
 const downloadEventMatch = require('./downloadEventMatch');
 const mintWindow = require('./mintWindow');
+const mintReplay = require('./mintReplay');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -137,6 +138,23 @@ class FlowAutomationEngine {
       onMintCarriesUrl: (info) => {
         try {
           this.log(`[MINT] response-carries-file-url method=${info.method} host=${info.host} path=${info.path}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.33 (ZEROCLICK): wohi carries wali darkhwast ab
+      // replay template ke roop me seekh li gayi hai — khabar
+      // me sirf shakal hai (rpcids = backend function ke naam,
+      // body ki size, aur is task ke ID ki occurrences ki
+      // ginti). Ek task se ek hi dafa (round ke andar wahi
+      // call kai jawab de sakti hai; capture khud bhi waisa
+      // template dobara nahi bhejta).
+      onMintTemplate: (info) => {
+        try {
+          if (!this._mintLearnedKeys) this._mintLearnedKeys = new Set();
+          const k = info.taskKey || '(unknown)';
+          if (this._mintLearnedKeys.has(k)) return;
+          this._mintLearnedKeys.add(k);
+          const rpcids = Array.isArray(info.rpcids) && info.rpcids.length ? info.rpcids.join(',') : '(none)';
+          this.log(`[ZEROCLICK] mint-template learned rpcids=${rpcids} bodyBytes=${info.bodyBytes} idsInBody=${info.idsInBody}`, 'info');
         } catch (e) {}
       }
     });
@@ -5453,11 +5471,13 @@ class FlowAutomationEngine {
    * worker ka apna capture + apna tracker). Band round ke
    * aakhir me hota hai (bulane wale ke finally me _mintEndWatch).
    */
-  _mintBeginWatch() {
+  _mintBeginWatch(taskKey) {
     try {
       this._mintTracker = mintWindow.createMintWindow({ cap: mintWindow.DEFAULT_WINDOW_CAP });
       if (this.netCapture && typeof this.netCapture.setMintWatch === 'function') {
-        this.netCapture.setMintWatch(true);
+        // v2.48.33 (ZEROCLICK): round ka task bhi saath —
+        // mint template isi task ke naam seekha jayega.
+        this.netCapture.setMintWatch(true, taskKey || null);
       }
     } catch (e) {}
   }
@@ -5659,6 +5679,144 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.33 (ZEROCLICK — PROBE, abhi LIVE PROVEN NAHI):
+   * seekhi hui mint-call ko bina kisi UI click ke replay
+   * karna. Tasalsul: is session ke kisi PEHLE task ke download
+   * me jo batchexecute darkhwast file-address le aayi thi,
+   * capture ne use template bana kar rakha hai (asal URL +
+   * headers + body; teacher task ke ID ki jaghein darj hain).
+   * Is task ke render-complete par, direct-viewer se PEHLE:
+   * teacher ke ID ki har jagah IS task ka workflowId rakh kar
+   * wahi darkhwast page ke andar se (page.evaluate fetch —
+   * session page ka apna hai, app cookies kabhi nahi chhuta)
+   * bhej do, aur jawab ko wahi pehchan-darwazon se guzaaro.
+   *
+   * Teen natije, teeno log hote hain (yehi is probe ka saboot
+   * hai — H1 banam H2 ka faisla live run se hoga):
+   *   (a) jawab me is task ke qabil flow-content address →
+   *       verified server-fetch se save, koi UI download
+   *       interaction NAHI hua. [ZEROCLICK] replay SUCCESS
+   *   (b) jawab aaya lekin file-address nahi → H2 saboot
+   *       (call sirf click ke baad hi address laati hai) —
+   *       aam direct-viewer rasta chalega.
+   *   (c) replay error/timeout (hadd ~8s) → aam rasta.
+   * Replay har task par HAD EK dafa; nakami fallback ko 8s
+   * se zyada nahi rokti. Download-stage ki haar par prompt
+   * dobara KABHI nahi bheja jata (sacred rule barkarar).
+   */
+  async _tryZeroClickReplay(task, downloadFolder, settings, attempts, captureKey) {
+    const n = task.promptIndex + 1;
+    if (task._zeroClickTried) return false;
+    task._zeroClickTried = true;
+    if (this.isStopping || task.mediaSaved) return false;
+    const cap = this.netCapture;
+    const tpl = cap && cap.mintTemplate ? cap.mintTemplate : null;
+    if (!tpl || !tpl.body) return false; // pehla task — seekhne wala koi nahi, khamosh aage
+    if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return false; // apna hi template — ye task khud teacher hai
+    if (!this.page || this.page.isClosed()) return false;
+    if (!tpl.primaryId) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — the learned mint call carries none of its own task's ids in the body (idsInBody was 0), so there is nothing to substitute for this task`, 'info');
+      attempts.push({ strategy: 'zero-click', ok: false, note: 'the learned mint-call template carries no substitutable task id — the replay was skipped and the normal routes ran' });
+      return false;
+    }
+    let thisId = null;
+    try { thisId = (cap && typeof cap.workflowIdForKey === 'function') ? cap.workflowIdForKey(captureKey) : null; } catch (e) { thisId = null; }
+    if (!thisId && task.videoId) thisId = task.videoId;
+    if (!thisId) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — this task's workflow id is not known yet`, 'info');
+      attempts.push({ strategy: 'zero-click', ok: false, note: 'this task\'s workflow id was not known at render-complete — the replay was skipped and the normal routes ran' });
+      return false;
+    }
+    const sub = mintReplay.substituteIds(tpl.body, [[tpl.primaryId, thisId]]);
+    if (!sub || sub.replacements === 0) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — the learned template body holds no occurrence of its task's id to substitute`, 'info');
+      attempts.push({ strategy: 'zero-click', ok: false, note: 'the learned template body held no substitutable id occurrence — the replay was skipped and the normal routes ran' });
+      return false;
+    }
+    const gapBase = task.renderCompletedAt || task.startTime || Date.now();
+    let res = null;
+    let failReason = '';
+    try {
+      res = await downloadGuard.withTimeout(
+        this.page.evaluate(async (u, m, h, b64) => {
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const r = await fetch(u, { method: m || 'POST', headers: h, body: bytes, credentials: 'include' });
+          const buf = await r.arrayBuffer();
+          const u8 = new Uint8Array(buf);
+          let s = '';
+          for (let i = 0; i < u8.length; i += 8192) {
+            s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+          }
+          return { status: r.status, b64: btoa(s) };
+        }, tpl.url, tpl.method || 'POST', tpl.headers, sub.body.toString('base64')),
+        8000, 'zero-click replay');
+    } catch (e) {
+      failReason = e && e.message ? String(e.message).slice(0, 80) : 'no response';
+      res = null;
+    }
+    if (!res) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay failed ${failReason || 'no response'} — falling back to the viewer route`, 'warn');
+      attempts.push({ strategy: 'zero-click', ok: false, note: `the zero-click replay did not answer (${failReason || 'no response'}) — the normal routes ran as fallback` });
+      return false;
+    }
+    if (res.status >= 400) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay failed http-${res.status} — falling back to the viewer route`, 'warn');
+      attempts.push({ strategy: 'zero-click', ok: false, note: `the zero-click replay was answered http-${res.status} — the normal routes ran as fallback` });
+      return false;
+    }
+    let buf = null;
+    try { buf = res.b64 ? Buffer.from(res.b64, 'base64') : Buffer.alloc(0); } catch (e) { buf = Buffer.alloc(0); }
+    // Jawab ko maujood capture pipeline se bhi guzaaro
+    // (direct-API poll wali hi tarz) — is me bandhe hue
+    // koi bhi link aam pehchan-usoolon se hi bandhta hai.
+    try {
+      if (buf.length > 0 && cap && typeof cap.ingestResponse === 'function') {
+        cap.ingestResponse({ url: tpl.url, contentType: 'application/json', bodyBuffer: buf, at: Date.now() });
+      }
+    } catch (e) {}
+    const carries = mintWindow.responseCarriesFileUrl({ bodyText: buf });
+    if (!carries) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay answered without file url (H2 evidence) status=${res.status} bodyBytes=${buf.length}`, 'warn');
+      attempts.push({ strategy: 'zero-click', ok: false, note: 'the zero-click replay was answered but carried no file address (H2 evidence — the mint call may only carry the address after a click) — the normal routes ran as fallback' });
+      return false;
+    }
+    // Address jawab ke andar hai — ummeedwaar nikalo aur
+    // post-click race wale pehchan-darwaze (taaza / claimed
+    // nahi / apna) lagao.
+    let candUrls = [];
+    try {
+      const scan = networkCapture.scanBatchExecuteBody(buf, cap.patterns);
+      candUrls = (scan.allUrls || []).filter(u => flowContent.isFlowContentVideoUrl(u));
+    } catch (e) { candUrls = []; }
+    const entries = candUrls.map(u => ({ url: u, type: '', at: Date.now() }));
+    const pick = flowContent.pickRaceFlowContentUrl(entries, {
+      sinceMs: gapBase,
+      isClaimed: (u) => {
+        try { return !!(cap && cap.isFlowContentClaimed(u)); } catch (e) { return false; }
+      },
+      isOwnUrl: (u) => this._isTaskOwnUrl(task, u)
+    });
+    if (!pick || !pick.url) {
+      const why = pick && pick.ambiguous ? `${pick.count} fresh candidates appeared and none could be proven to be this task's own` : 'no usable own address could be picked from it';
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay response carried the file address host but ${why} — falling back to the viewer route`, 'warn');
+      attempts.push({ strategy: 'zero-click', ok: false, note: 'the zero-click replay response carried the file-address host but no single address could be proven to be this task\'s own — the normal routes ran as fallback' });
+      return false;
+    }
+    let okFetch = false;
+    try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: pick.url, via: 'zero-click' }); } catch (e) { okFetch = false; }
+    if (okFetch || task.mediaSaved) {
+      const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
+      this.log(`[ZEROCLICK] replay SUCCESS via=zero-click gap=${gapSec}s`, 'success');
+      attempts.push({ strategy: 'zero-click', ok: true, note: `the file was fetched straight from Flow's server after the app replayed the learned mint call itself — no UI download click happened for this video; render→save gap ${gapSec}s` });
+      return true;
+    }
+    attempts.push({ strategy: 'zero-click', ok: false, note: 'the zero-click replay produced this task\'s server address but the verified fetch did not save the file — the normal routes ran as fallback' });
+    return false;
+  }
+
+  /**
    * v2.48.32 (SWITCH — .31 ka DIRECT-PROBE ab PRIMARY rasta):
    * ⋮ menu ke baghair, tile ke bare view (viewer — is app me
    * tile click se khulne wala editor view) ke apne "Download
@@ -5807,7 +5965,9 @@ class FlowAutomationEngine {
     // v2.48.31 (MINT): is round ki render→save khidki ke liye
     // enhanced capture chalu (sirf video) — band bulane wale
     // ke finally me hota hai (_mintEndWatch).
-    if (!isImage) this._mintBeginWatch();
+    // v2.48.33 (ZEROCLICK): captureKey bhi saath — mint
+    // template is task ke naam seekha jayega.
+    if (!isImage) this._mintBeginWatch(captureKey);
 
     if (!fs.existsSync(downloadFolder)) {
       try { fs.mkdirSync(downloadFolder, { recursive: true }); } catch (e) {}
@@ -5844,6 +6004,29 @@ class FlowAutomationEngine {
       } catch (e) {}
     }
 
+    // --- v2.48.33 (ZEROCLICK — PROBE, abhi LIVE PROVEN
+    // NAHI): quick-check ke baad, viewer se bhi PEHLE —
+    // session ke kisi pehle task se seekhi hui mint-call ko
+    // bina kisi UI click ke replay karo (teacher ke ID ki
+    // jagah is task ka ID). Template na ho (pehla task) ya
+    // replay nakam ho to waqt ki hadd (~8s) ke andar haar
+    // maan kar agli tartib bilkul pehle ki tarah chalti hai.
+    // (Image tasks par ye qadam nahi hai.) ---
+    if (!isImage) {
+      try {
+        const okZero = await this._tryZeroClickReplay(task, downloadFolder, settings, attempts, captureKey);
+        if (okZero || task.mediaSaved) {
+          try {
+            this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
+          } catch (e) {}
+          const wonZero = attempts.filter(a => a.ok).pop();
+          return { ok: true, strategy: wonZero ? wonZero.strategy : 'zero-click', attempts };
+        }
+      } catch (e) {
+        attempts.push({ strategy: 'zero-click', ok: false, note: 'the zero-click replay hit a problem — the existing routes ran as fallback' });
+      }
+    }
+
     // --- v2.48.32 (SWITCH): ⋮ menu se PEHLE tile ke viewer
     // ka apna Download button — ab ye PRIMARY download rasta
     // hai (DIRECTTEST1, v2.48.31 par LIVE PROVEN: menu kabhi
@@ -5868,9 +6051,10 @@ class FlowAutomationEngine {
       }
     }
 
-    // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download — ab TEESRA
-    // qadam aur fallback #2 (quick-check sab se pehle, direct
-    // viewer route dusra — v2.48.32 se primary) ---
+    // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download — ab
+    // CHAHTHA qadam aur fallback #2 (quick-check sab se pehle,
+    // zero-click replay dusra — v2.48.33 probe, direct viewer
+    // route teesra — v2.48.32 se primary) ---
     // FASTTEST1 (2026-11-02, owner ke PC par sabit): render ke pal
     // page me bytes hote hi NAHI; file sirf menu ke Download click
     // ke baad aati hai. To jo rasta file LAATA hai, wahi pehle —

@@ -608,6 +608,16 @@ class FlowAutomationEngine {
         this._earlyBackend.clear();
         this._backendNoteLogged = false;
         this.netCapture.attach(this.page);
+        // v2.48.37 (SESSION-WIDE MINT WATCH): page/session
+        // tayyar hai — mint watch ab poore session ke liye
+        // chalu. Template kisi bhi pal seekha ja sakta hai
+        // (round ke andar ya bahar); band account chhodne /
+        // sweep / browser band hone par hota hai. ZEROCLICK4
+        // me round-gated watch ki wajah se ROOT routes ek
+        // bhi dafa chal hi nahi paye the.
+        if (typeof this.netCapture.setMintSessionWatch === 'function') {
+          this.netCapture.setMintSessionWatch(true);
+        }
       } catch (e) {}
 
       this.currentAccount = account;
@@ -668,6 +678,8 @@ class FlowAutomationEngine {
     const hadBrowser = !!(this.browser && this.page && !this.page.isClosed());
     const wasArmed = !!(this.captureArmed || (this.netCapture && this.netCapture.armed));
     try { if (this.netCapture) this.netCapture.disarm(); } catch (e) {}
+    // v2.48.37: session mint watch bhi band (worker account chhod raha hai).
+    try { if (this.netCapture && typeof this.netCapture.setMintSessionWatch === 'function') this.netCapture.setMintSessionWatch(false); } catch (e) {}
     try { if (this.netCapture) this.netCapture.detach(); } catch (e) {}
     this.captureArmed = false;
     if (this.capturedVideoBuffers) {
@@ -699,6 +711,8 @@ class FlowAutomationEngine {
     // koi listener leak nahi, koi purana binding naye session me nahi.
     try { this.netCapture.detach(); } catch (e) {}
     try { this.netCapture.disarm(); } catch (e) {}
+    // v2.48.37: session mint watch bhi band.
+    try { if (typeof this.netCapture.setMintSessionWatch === 'function') this.netCapture.setMintSessionWatch(false); } catch (e) {}
     if (this._captureTasks) this._captureTasks.clear();
     if (this._earlyBackend) this._earlyBackend.clear();
     if (this.browser) {
@@ -5054,6 +5068,16 @@ class FlowAutomationEngine {
     if (taskId) {
       try {
         if (result && result.ok) {
+          // v2.48.37: kamyaab download ka bandha hua address
+          // session ka teacher langar bane (template seekha
+          // gaya ho ya na ho) — replay muqabla ab langar ke
+          // baghair nahi rahega jab kam se kam ek download
+          // ho chuka ho.
+          try {
+            if (this.netCapture && typeof this.netCapture.noteTeacherUrlForKey === 'function') {
+              this.netCapture.noteTeacherUrlForKey(task.captureKey || task.videoId || null);
+            }
+          } catch (e) {}
           this.downloadPort.roundSettled(taskId, true, '', channel);
         } else {
           const failedNotes = (result && Array.isArray(result.attempts))
@@ -5997,7 +6021,11 @@ class FlowAutomationEngine {
         cap.ingestResponse({ url: replayUrl, contentType: 'application/json', bodyBuffer: buf, at: Date.now() });
       }
     } catch (e) {}
-    const tpl = cap && cap.mintTemplate ? cap.mintTemplate : null;
+    // v2.48.37: muqable ka template ab asar-daar wala
+    // (learned warna candidate) — teacher langar usi se.
+    const tpl = (cap && typeof cap.replayTemplate === 'function')
+      ? cap.replayTemplate().template
+      : (cap && cap.mintTemplate ? cap.mintTemplate : null);
     const teacherUrl = cap && typeof cap.teacherMintUrlForTemplate === 'function'
       ? cap.teacherMintUrlForTemplate(tpl) : null;
     const verdict = saveGuard.replayUrlVerdict({
@@ -6026,7 +6054,11 @@ class FlowAutomationEngine {
     try {
       const cap = this.netCapture;
       if (!cap || cap._verbatimProbeDone) return;
-      const tpl = cap.mintTemplate ? cap.mintTemplate : null;
+      // v2.48.37: probe bhi asar-daar template par (learned
+      // warna candidate) — jaal ab chauda hai.
+      const tpl = (typeof cap.replayTemplate === 'function')
+        ? cap.replayTemplate().template
+        : (cap.mintTemplate ? cap.mintTemplate : null);
       if (!tpl || !tpl.body || !tpl.url) return; // template hi nahi — pehla task khud teacher bane ga
       if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return; // teacher khud hai
       if (!this.page || this.page.isClosed()) return;
@@ -6357,7 +6389,13 @@ class FlowAutomationEngine {
     if (task._gridReplayTried) return { done: false, editorOpen: false };
     task._gridReplayTried = true;
     const cap = this.netCapture;
-    const tpl = cap && cap.mintTemplate ? cap.mintTemplate : null;
+    // v2.48.37: route ab candidate template par bhi
+    // chalta hai (learned hamesha pehle) — jawab ka
+    // URL + teacher-muqabla + hash guard hi exactness
+    // ka darwaza hai, template ka darja nahi.
+    const tpl = (cap && typeof cap.replayTemplate === 'function')
+      ? cap.replayTemplate().template
+      : (cap && cap.mintTemplate ? cap.mintTemplate : null);
     if (!tpl || !tpl.body || !tpl.url) return { done: false, editorOpen: false }; // pehla task — seekhne wala koi nahi
     if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return { done: false, editorOpen: false }; // apna hi template — ye task khud teacher hai
     if (!this.page || this.page.isClosed() || this.isStopping || task.mediaSaved) return { done: false, editorOpen: false };
@@ -6427,7 +6465,10 @@ class FlowAutomationEngine {
     if (task._replayContextTried) return { done: false, editorOpen: !!o.editorOpen };
     task._replayContextTried = true;
     const cap = this.netCapture;
-    const tpl = cap && cap.mintTemplate ? cap.mintTemplate : null;
+    // v2.48.37: candidate template bhi chalega (learned pehle).
+    const tpl = (cap && typeof cap.replayTemplate === 'function')
+      ? cap.replayTemplate().template
+      : (cap && cap.mintTemplate ? cap.mintTemplate : null);
     if (!tpl || !tpl.body || !tpl.url) return { done: false, editorOpen: !!o.editorOpen }; // pehla task — khamosh skip
     if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return { done: false, editorOpen: !!o.editorOpen }; // teacher khud
     if (!this.page || this.page.isClosed() || this.isStopping || task.mediaSaved) return { done: false, editorOpen: !!o.editorOpen };
@@ -6654,6 +6695,22 @@ class FlowAutomationEngine {
     // v2.48.33 (ZEROCLICK): captureKey bhi saath — mint
     // template is task ke naam seekha jayega.
     if (!isImage) this._mintBeginWatch(captureKey);
+
+    // v2.48.37 (TEMPLATE-STATE LINE): har attempt ke
+    // aaghaz par ek line — is pal replay routes (B/C) ke
+    // liye template maujood hai ya nahi (learned /
+    // candidate / none) aur teacher langar maloom hai
+    // ya nahi. ZEROCLICK4 me ROOT routes khamoshi se
+    // skip ho gaye the; ab log khud wajah batayega.
+    if (!isImage) {
+      try {
+        const cap = this.netCapture;
+        if (cap && typeof cap.templateState === 'function') {
+          const st = cap.templateState();
+          this.log(`[ROOT] [Prompt #${n}] template-state template=${st.template} teacherUrl=${st.teacherUrl}`, 'info');
+        }
+      } catch (e) {}
+    }
 
     if (!fs.existsSync(downloadFolder)) {
       try { fs.mkdirSync(downloadFolder, { recursive: true }); } catch (e) {}
@@ -7884,7 +7941,18 @@ class FlowAutomationEngine {
               // v2.48.26 (FAST-DL): the render→save gap is measured
               // from THIS moment, and the blob harvest anchors its
               // freshness on it (see blobHarvest.freshnessCutoff).
-              if (!task.renderCompletedAt) task.renderCompletedAt = Date.now();
+              if (!task.renderCompletedAt) {
+                task.renderCompletedAt = Date.now();
+                // v2.48.37: capture ko render-poora khabar —
+                // session watch me round ke bahar seekha gaya
+                // template isi task ke naam hoga (nisbat ka
+                // sab se taza langar).
+                try {
+                  if (this.netCapture && typeof this.netCapture.noteRenderCompleted === 'function') {
+                    this.netCapture.noteRenderCompleted(task.captureKey || task.videoId || null);
+                  }
+                } catch (e) {}
+              }
               this.onVideoProgress({
                 id: task.videoId,
                 state: 'downloading',

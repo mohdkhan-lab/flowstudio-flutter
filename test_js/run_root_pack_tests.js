@@ -28,7 +28,8 @@ const {
   HARVEST_MAX_BYTES,
   harvestGenericGates,
   harvestCandidateVerdict,
-  replayUrlVerdict
+  replayUrlVerdict,
+  templateStateOf
 } = require('../engine/saveGuard');
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
 const { NetworkCapture } = require('../engine/networkCapture');
@@ -248,6 +249,153 @@ async function main() {
     // Kuch darj hi na hua ho to imaandari se null (muqabla tab 'n/a' banta hai).
     const nc = new NetworkCapture({});
     eq('TEACHER nothing recorded — null', nc.teacherMintUrlForTemplate(), null);
+  }
+
+  // ---------------------------------------------------------------------------
+  // F. v2.48.37 — SESSION-WIDE MINT WATCH ka sulah-naama:
+  // round ka band hona session watch ko NAHI bandta;
+  // session ka band hona chal rahe round ko NAHI bandta;
+  // dono band hon tab hi asal watch band hoti hai.
+  // ---------------------------------------------------------------------------
+  {
+    const nc = new NetworkCapture({});
+    eq('WATCH fresh capture — off', nc.mintWatch, false);
+    nc.setMintSessionWatch(true);
+    eq('WATCH session arm — on', nc.mintWatch, true);
+    nc.setMintWatch(true, 'task-w'); // round begin
+    eq('WATCH round begin over session — on', nc.mintWatch, true);
+    nc.setMintWatch(false); // round end
+    eq('WATCH round end does NOT disarm session watch', nc.mintWatch, true);
+    nc.setMintWatch(true, 'task-w2');
+    nc.setMintSessionWatch(false); // session disarm mid-round
+    eq('WATCH session disarm does NOT kill a live round', nc.mintWatch, true);
+    nc.setMintWatch(false);
+    eq('WATCH both owners off — off', nc.mintWatch, false);
+  }
+  {
+    // Session ke baghair purana round-only vyavhaar bilkul waisa hi.
+    const nc = new NetworkCapture({});
+    nc.setMintWatch(true, 'task-r');
+    eq('WATCH round-only begin — on', nc.mintWatch, true);
+    nc.setMintWatch(false);
+    eq('WATCH round-only end — off', nc.mintWatch, false);
+    // Round begin par kitab (ring) taaza hoti hai — session
+    // chalu ho tab bhi.
+    nc.setMintSessionWatch(true);
+    nc._noteMintRequest({ method: 'POST', url: BATCH_URL });
+    ok('WATCH session-on request is noted', nc.mintRequests.length >= 1);
+    nc.setMintWatch(true, 'task-r2');
+    eq('WATCH round begin resets the ring', nc.mintRequests.length, 0);
+    nc.setMintWatch(false);
+    nc.setMintSessionWatch(false);
+  }
+  {
+    // Round ke BAHAR seekhna: session watch + render-poora
+    // nisbat. Template session context ke saath banta hai.
+    const nc = new NetworkCapture({});
+    nc.setMintSessionWatch(true);
+    nc.beginSubmission('task-s', Date.now());
+    nc._bindId(TEACHER_ID, Date.now());
+    nc.noteRenderCompleted('task-s');
+    const reqBody = Buffer.from('f.req=[["as29s","[]"]]', 'utf8');
+    nc._checkMintCarries('POST', BATCH_URL, null, `prefix ${FC_TEACHER} suffix`,
+      { url: BATCH_URL, method: 'POST', headers: {}, body: reqBody });
+    ok('WATCH session learn — template learned outside a round', !!nc.mintTemplate);
+    eq('WATCH session learn — attributed to the render-completed task', nc.mintTemplate && nc.mintTemplate.taskKey, 'task-s');
+    eq('WATCH session learn — learnContext is session', nc.mintTemplate && nc.mintTemplate.learnContext, 'session');
+    // Nisbat ka dusra darja: render khabar na ho to sab se
+    // taza monitored (submitted) task.
+    const nc2 = new NetworkCapture({});
+    nc2.setMintSessionWatch(true);
+    nc2.beginSubmission('task-m', Date.now());
+    eq('WATCH attribution falls back to latest submission', nc2._mintAttributionKey(), 'task-m');
+    // Aur round ke andar nisbat round ke task ki hi rehti hai.
+    const nc3 = new NetworkCapture({});
+    nc3.beginSubmission('task-q', Date.now());
+    nc3.noteRenderCompleted('task-q');
+    nc3.setMintWatch(true, 'task-round');
+    eq('WATCH attribution prefers the round task', nc3._mintAttributionKey(), 'task-round');
+    nc3.setMintWatch(false);
+  }
+
+  // ---------------------------------------------------------------------------
+  // G. v2.48.37 — CANDIDATE TEMPLATE: sirf rpcids me
+  // 'as29s' wali darkhwast; sab se taza jeet-ti hai;
+  // seekha template hamesha candidate se bhaari.
+  // ---------------------------------------------------------------------------
+  const CAND_URL_1 = 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=as29s&f.sid=111';
+  const CAND_URL_2 = 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=as29s,zz99&f.sid=222';
+  const OTHER_URL = 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=AbCdEf&f.sid=333';
+  {
+    const nc = new NetworkCapture({});
+    eq('CAND no template at start — source none', nc.mintTemplateSource(), 'none');
+    // rpcids me as29s NAHI — candidate nahi banta.
+    eq('CAND non-as29s rpcids rejected', nc._noteMintCandidate({ url: OTHER_URL, method: 'POST', headers: {}, body: Buffer.from('x=1') }), false);
+    eq('CAND rejection leaves no candidate', nc.mintCandidateTemplate, null);
+    // batchexecute hi nahi — nahi banta.
+    eq('CAND non-batchexecute rejected', nc._noteMintCandidate({ url: 'https://flow.google.com/other?rpcids=as29s', method: 'POST', headers: {}, body: Buffer.from('x=1') }), false);
+    // Khaali body / hadd se badi body — nahi banti.
+    eq('CAND empty body rejected', nc._noteMintCandidate({ url: CAND_URL_1, method: 'POST', headers: {}, body: Buffer.alloc(0) }), false);
+    eq('CAND oversize body rejected', nc._noteMintCandidate({ url: CAND_URL_1, method: 'POST', headers: {}, body: Buffer.alloc(256 * 1024 + 1) }), false);
+    // Theek darkhwast — candidate banta hai.
+    eq('CAND as29s request accepted', nc._noteMintCandidate({ url: CAND_URL_1, method: 'POST', headers: {}, body: Buffer.from('f.req=one') }), true);
+    ok('CAND candidate stored', !!nc.mintCandidateTemplate);
+    eq('CAND source is candidate', nc.mintTemplateSource(), 'candidate');
+    eq('CAND replay template is the candidate', nc.replayTemplate().template, nc.mintCandidateTemplate);
+    eq('CAND replay template source', nc.replayTemplate().source, 'candidate');
+    // Sab se taza jeet-ti hai.
+    eq('CAND second request accepted', nc._noteMintCandidate({ url: CAND_URL_2, method: 'POST', headers: {}, body: Buffer.from('f.req=two') }), true);
+    eq('CAND latest wins', nc.mintCandidateTemplate.url, CAND_URL_2);
+    // ingestRequest (Puppeteer) wale raste se bhi darj hota hai.
+    const ncP = new NetworkCapture({});
+    ncP.ingestRequest({ url: CAND_URL_1, method: 'POST', headers: {}, postDataBuffer: Buffer.from('f.req=via-ingest'), at: Date.now() });
+    ok('CAND noted via ingestRequest too', !!ncP.mintCandidateTemplate);
+    // Seekha template candidate ko peeche chhod deta hai.
+    nc.setMintSessionWatch(true);
+    nc.beginSubmission('task-l', Date.now());
+    nc._bindId(TEACHER_ID, Date.now());
+    nc.noteRenderCompleted('task-l');
+    nc._checkMintCarries('POST', BATCH_URL, null, `prefix ${FC_FRESH} suffix`,
+      { url: BATCH_URL, method: 'POST', headers: {}, body: Buffer.from('f.req=[["AbCdEf","[]"]]') });
+    ok('CAND learned template exists alongside candidate', !!nc.mintTemplate);
+    eq('CAND learned beats candidate — source', nc.mintTemplateSource(), 'learned');
+    eq('CAND learned beats candidate — replay template', nc.replayTemplate().template, nc.mintTemplate);
+  }
+
+  // ---------------------------------------------------------------------------
+  // H. v2.48.37 — TEMPLATE-STATE (khalis + capture kitab):
+  // template ke baghair bhi bandha address langar banta
+  // hai; state line ka hisaab har surat me saaf.
+  // ---------------------------------------------------------------------------
+  {
+    eq('STATE garbage — none/unknown', JSON.stringify(templateStateOf(null)), JSON.stringify({ template: 'none', teacherUrl: 'unknown' }));
+    eq('STATE empty — none/unknown', JSON.stringify(templateStateOf({})), JSON.stringify({ template: 'none', teacherUrl: 'unknown' }));
+    eq('STATE candidate only', JSON.stringify(templateStateOf({ candidate: true })), JSON.stringify({ template: 'candidate', teacherUrl: 'unknown' }));
+    eq('STATE learned beats candidate', JSON.stringify(templateStateOf({ learned: true, candidate: true })), JSON.stringify({ template: 'learned', teacherUrl: 'unknown' }));
+    eq('STATE teacher known', JSON.stringify(templateStateOf({ teacherUrl: FC_TEACHER })), JSON.stringify({ template: 'none', teacherUrl: 'known' }));
+    eq('STATE empty-string teacher is unknown', templateStateOf({ teacherUrl: '' }).teacherUrl, 'unknown');
+  }
+  {
+    const nc = new NetworkCapture({});
+    eq('STATE-NC fresh — none/unknown', JSON.stringify(nc.templateState()), JSON.stringify({ template: 'none', teacherUrl: 'unknown' }));
+    // Item 3: koi template NAHI, lekin ek task ka
+    // flow-content address bandh gaya — langar maujood.
+    nc.beginSubmission('task-a', Date.now());
+    nc._bindId(TEACHER_ID, Date.now());
+    nc._bindUrlToKey('task-a', FC_TEACHER, 'workflow-id', Date.now());
+    eq('STATE-NC bound url anchors teacher without any template', nc.mintTeacherUrl, FC_TEACHER);
+    eq('STATE-NC state — none/known', JSON.stringify(nc.templateState()), JSON.stringify({ template: 'none', teacherUrl: 'known' }));
+    eq('STATE-NC teacherMintUrlForTemplate uses the anchor', nc.teacherMintUrlForTemplate(), FC_TEACHER);
+    // Engine ki kamyaabi-khabar (noteTeacherUrlForKey) bhi
+    // wahi langar pakka karti hai.
+    nc.mintTeacherUrl = null;
+    nc.noteTeacherUrlForKey('task-a');
+    eq('STATE-NC noteTeacherUrlForKey restores the anchor', nc.mintTeacherUrl, FC_TEACHER);
+    nc.noteTeacherUrlForKey('task-nope');
+    eq('STATE-NC unknown key leaves the anchor untouched', nc.mintTeacherUrl, FC_TEACHER);
+    // Candidate aate hi state candidate/known.
+    nc._noteMintCandidate({ url: CAND_URL_1, method: 'POST', headers: {}, body: Buffer.from('f.req=one') });
+    eq('STATE-NC candidate — candidate/known', JSON.stringify(nc.templateState()), JSON.stringify({ template: 'candidate', teacherUrl: 'known' }));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

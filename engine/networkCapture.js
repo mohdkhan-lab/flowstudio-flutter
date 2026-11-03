@@ -552,8 +552,38 @@ class NetworkCapture {
     // jis ke download round me watch chalu hai (seekhne wale
     // task ki pehchan). Template roundon ke paar rehta hai —
     // sirf reset() (naya session) use saaf karta hai.
-    this.mintTemplate = null; // { url, method, headers, body, at, taskKey, primaryId, ids, idOccurrences, urlPrimaryId, urlIds, urlIdOccurrences, teacherUrl }
+    this.mintTemplate = null; // { url, method, headers, body, at, taskKey, primaryId, ids, idOccurrences, urlPrimaryId, urlIds, urlIdOccurrences, teacherUrl, learnContext }
     this._mintTaskKey = null;
+    // v2.48.37 (SESSION-WIDE MINT WATCH): watch ke ab DO
+    // maalik hain — SESSION (worker ka page tayyar hote hi
+    // engine setMintSessionWatch(true) bulata hai; account
+    // chhodne / run khatam par band) aur ROUND (ek download
+    // round ki khidki — setMintWatch ka purana istemal).
+    // this.mintWatch ASAR-daar haalat hai (dono me se koi
+    // ek bhi chalu to watch chalu). ZEROCLICK4 ki seekh:
+    // template sirf round ke andar seekha jata tha, aur
+    // pehle download karne wale task ke round me kabhi
+    // kabhi koi mint jawab aata hi nahi (Flow ke page ke
+    // paas us media ka address pehle se hota hai) — to
+    // template us pal tak ghayab rehta tha jab tak koi
+    // agla task bacha hi nahi hota tha.
+    this._mintSessionOn = false;
+    this._mintRoundOn = false;
+    // Round ke bahar seekhne par template ki nisbat: sab
+    // se aakhir me render-poora hua task (engine
+    // noteRenderCompleted se khabar deta hai); wo bhi na
+    // ho to sab se taza monitored (submitted) task.
+    this._mintLastRenderKey = null;
+    // v2.48.37 (CANDIDATE TEMPLATE): sab se taza
+    // batchexecute darkhwast jis ke rpcids me 'as29s'
+    // hai — jawab file-address le aaya ho ya NAHI, ye
+    // darkhwast kitab me rehti hai. Carrying-jawab wala
+    // seekha template (mintTemplate) hamesha is par
+    // bhaari hai; candidate sirf tab kaam aata hai jab
+    // seekha template abhi bana hi na ho. Hifazat wahi
+    // (whitelist headers, body size hadd, asal data
+    // sirf is object me — log me kabhi nahi).
+    this.mintCandidateTemplate = null; // { url, method, headers, body, at, taskKey: null, source: 'candidate' }
     // v2.48.36 (ROOT PACK — E): teacher task ka ASAL mint
     // hua flow-content URL — sirf is capture ki yaad me
     // rehta hai (kabhi log nahi), taaki verbatim replay ke
@@ -832,6 +862,12 @@ class NetworkCapture {
               reqHeaders: pickReplayHeaders(e.request.headers || {}, this.patterns),
               reqPostData: typeof e.request.postData === 'string' ? e.request.postData : null
             });
+            // v2.48.37 (CANDIDATE TEMPLATE): jawab ka
+            // intezaar kiye baghair — rpcids me as29s
+            // wali darkhwast usi pal candidate ban jati
+            // hai (ZEROCLICK4 me carrying jawab aaya hi
+            // nahi tha, lekin darkhwast zaroor gayi thi).
+            try { this._noteMintCandidate(this._reqTemplateFromCdpMeta(this._cdpBatch.get(e.requestId))); } catch (err) {}
           }
         } catch (err) {}
       });
@@ -1046,11 +1082,19 @@ class NetworkCapture {
     // seekhne ke pal jawab ke andar se na mila ho to yahi
     // uski jagah lega, taaki replay muqabla kabhi 'n/a'
     // na bane jab address asal me maloom hai.
+    // v2.48.37: langar ab TEMPLATE KE BAGHAIR bhi bandhta
+    // hai — kisi bhi task ka flow-content address bandhte
+    // hi wo session ka sab se taza mint kehlata hai
+    // (last-wins). Wajah: ZEROCLICK4 me template aakhir
+    // tak ghayab raha, lekin bandhe hue address maujood
+    // the — muqable ko langar phir bhi milna chahiye tha.
     try {
-      if (this.mintTemplate && this.mintTemplate.taskKey === key
-        && flowContent.isFlowContentVideoUrl(url) && !this.mintTeacherUrl) {
+      if (flowContent.isFlowContentVideoUrl(url)) {
         this.mintTeacherUrl = url;
-        if (!this.mintTemplate.teacherUrl) this.mintTemplate.teacherUrl = url;
+        if (this.mintTemplate && this.mintTemplate.taskKey === key
+          && !this.mintTemplate.teacherUrl) {
+          this.mintTemplate.teacherUrl = url;
+        }
       }
     } catch (e) {}
     if (sight) sight.claimedBy = key;
@@ -1095,6 +1139,18 @@ class NetworkCapture {
       for (const id of extractWorkflowIdsFromText(bodyText, this.patterns)) ids.add(id);
     }
     for (const id of ids) { this.stats.idsSeen++; this._bindId(id, at); }
+    // v2.48.37 (CANDIDATE TEMPLATE): Puppeteer wale
+    // raste se bhi wahi darj — CDP session na bane to
+    // bhi candidate kitab na ruke (headers whitelist
+    // se guzar kar; asal faisla _noteMintCandidate ka).
+    if (evt.postDataBuffer && evt.postDataBuffer.length > 0 && isBatchExecuteUrl(evt.url)) {
+      this._noteMintCandidate({
+        url: evt.url,
+        method: String(evt.method || 'POST').toUpperCase(),
+        headers: pickReplayHeaders(evt.headers, this.patterns),
+        body: evt.postDataBuffer
+      });
+    }
     // v2.48.13: STATUS TEMPLATE yaad rakho — status-shaped API
     // request (asal URL + whitelist headers + asal body bytes).
     // Engine isay replay karke backend ko seedha poochhta hai.
@@ -1316,25 +1372,85 @@ class NetworkCapture {
   }
 
   /**
-   * v2.48.31 (MINT): mint watch chalu/band. Chalu karne par
-   * ring aur carries-dedupe saaf hote hain (har download round
-   * apni taaza khidki rakhta hai). Watch band ho to na koi
-   * request darj hoti hai, na carries-khabar — baaki capture
-   * bilkul pehle ki tarah.
+   * v2.48.31 (MINT): mint watch chalu/band — v2.48.37 se
+   * ye ROUND wali kamaan hai. Round chalu karne par ring
+   * aur carries-dedupe saaf hote hain (har download round
+   * apni taaza khidki rakhta hai). Round band hone par
+   * watch sirf tab band hoti hai jab SESSION wali kamaan
+   * bhi band ho — warna session bhar jaari rehti hai
+   * (yahi ZEROCLICK4 ka asal fix hai: seekhna ab kisi ek
+   * round ki qismat par nahi chhoda gaya). Watch (asar-
+   * daar) band ho to na koi request darj hoti hai, na
+   * carries-khabar — baaki capture bilkul pehle ki tarah.
    */
   setMintWatch(on, taskKey) {
     const v = !!on;
-    if (v && !this.mintWatch) {
-      this.mintRequests = [];
-      this._mintCarriesSeen = new Set();
+    if (v) {
+      if (!this._mintRoundOn) {
+        // Naye round ki kitab taaza (ring + dedupe) —
+        // session watch pehle se chalu ho tab bhi round
+        // ki khidki apni saaf shuruaat rakhti hai.
+        this.mintRequests = [];
+        this._mintCarriesSeen = new Set();
+      }
+      this._mintRoundOn = true;
+      // v2.48.33 (ZEROCLICK): is round ka task — carries wala
+      // jawab aaye to mint template ISI task ke naam seekha
+      // jata hai (us ke apne ID body me dhoondhe jate hain).
+      this._mintTaskKey = taskKey || null;
+      this.mintWatch = true;
+    } else {
+      this._mintRoundOn = false;
+      // Pehchan saaf (template rehta hai — wo session bhar
+      // ke liye seekha gaya hai).
+      this._mintTaskKey = null;
+      this.mintWatch = !!this._mintSessionOn;
     }
-    this.mintWatch = v;
-    // v2.48.33 (ZEROCLICK): is round ka task — carries wala
-    // jawab aaye to mint template ISI task ke naam seekha
-    // jata hai (us ke apne ID body me dhoondhe jate hain).
-    // Watch band hone par pehchan bhi saaf (template rehta
-    // hai — wo session bhar ke liye seekha gaya hai).
-    this._mintTaskKey = v ? (taskKey || null) : null;
+  }
+
+  /**
+   * v2.48.37 (SESSION-WIDE MINT WATCH): session wali
+   * kamaan. Engine worker ka page tayyar hote hi (capture
+   * attach hone par) chalu karta hai aur account chhodne
+   * / run khatam hone par band. Is se mint template kisi
+   * bhi pal seekha ja sakta hai — round ke andar ho ya
+   * bahar. Band karne par asal watch sirf tab band hoti
+   * hai jab koi round bhi na chal raha ho.
+   */
+  setMintSessionWatch(on) {
+    const v = !!on;
+    this._mintSessionOn = v;
+    if (v) {
+      this.mintWatch = true;
+    } else {
+      this.mintWatch = !!this._mintRoundOn;
+    }
+  }
+
+  /**
+   * v2.48.37: engine ka khabar-naama — is page par is
+   * task ka render poora hua. Round ke bahar seekha gaya
+   * template isi task ke naam hota hai (sab se aakhri
+   * render-poora task hi wo media hai jis ka mint jawab
+   * is pal aana sab se zyada maqool hai).
+   */
+  noteRenderCompleted(key) {
+    if (key) this._mintLastRenderKey = key;
+  }
+
+  /**
+   * v2.48.37: is pal seekha jane wala template kis task
+   * ke naam hoga — pehle round ka task (sab se pakka),
+   * warna sab se aakhri render-poora task, warna sab se
+   * taza monitored (submitted) task, warna koi nahi.
+   */
+  _mintAttributionKey() {
+    if (this._mintTaskKey) return this._mintTaskKey;
+    if (this._mintLastRenderKey) return this._mintLastRenderKey;
+    if (Array.isArray(this.submissions) && this.submissions.length) {
+      return this.submissions[this.submissions.length - 1].key || null;
+    }
+    return null;
   }
 
   /** v2.48.31 (MINT): `sinceMs` ke baad darj requests (mint khidki ke backfill ke liye). */
@@ -1455,7 +1571,14 @@ class NetworkCapture {
       if (!isBatchExecuteUrl(reqTemplate.url)) return;
       const body = reqTemplate.body;
       if (body.length === 0 || body.length > this.patterns.maxTemplateBodyBytes) return;
-      const key = this._mintTaskKey || null;
+      // v2.48.37: nisbat ab _mintAttributionKey se — round
+      // ke andar round ka task, round ke bahar sab se
+      // aakhri render-poora (ya monitored) task. Session
+      // watch ki wajah se seekhna ab kisi bhi pal ho
+      // sakta hai; learnContext wahi farq darj rakhta
+      // hai (andarooni kitab — log me nahi jata).
+      const inRound = !!this._mintTaskKey;
+      const key = this._mintAttributionKey();
       // Is task ke jaane hue ID(s): submission par bandha
       // workflowId sab se pehle, phir keyById me is key ke
       // naam ke baaki IDs. Sirf idMinLength se lambe wale.
@@ -1493,9 +1616,13 @@ class NetworkCapture {
         // Wahi template pehle se hai — khabar dobara nahi,
         // lekin teacher ka address is dafa mila ho aur
         // pehle ghayab raha ho to kitab poori kar do.
-        if (teacherUrl && !this.mintTemplate.teacherUrl) {
-          this.mintTemplate.teacherUrl = teacherUrl;
-          if (!this.mintTeacherUrl) this.mintTeacherUrl = teacherUrl;
+        // v2.48.37: session langar (mintTeacherUrl) ab
+        // sab se TAZA mint par rehta hai (last-wins) —
+        // muqabla hamesha sab se haaliya purani video se
+        // hona chahiye, sab se pehli se nahi.
+        if (teacherUrl) {
+          if (!this.mintTemplate.teacherUrl) this.mintTemplate.teacherUrl = teacherUrl;
+          this.mintTeacherUrl = teacherUrl;
         }
         return;
       }
@@ -1512,9 +1639,11 @@ class NetworkCapture {
         urlPrimaryId,
         urlIds: urlOccurrences.map(o => o.id),
         urlIdOccurrences: urlOccurrences,
-        teacherUrl
+        teacherUrl,
+        learnContext: inRound ? 'round' : 'session'
       };
-      if (teacherUrl && !this.mintTeacherUrl) this.mintTeacherUrl = teacherUrl;
+      // v2.48.37: session langar sab se taza mint par (last-wins).
+      if (teacherUrl) this.mintTeacherUrl = teacherUrl;
       if (this.onMintTemplate) {
         try {
           this.onMintTemplate({
@@ -1525,6 +1654,93 @@ class NetworkCapture {
             idsInUrl: mintReplay.countOccurrences(urlOccurrences)
           });
         } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.37 (CANDIDATE TEMPLATE): ek batchexecute
+   * darkhwast ko candidate template ke roop me darj
+   * karo — sirf tab jab us ke rpcids me 'as29s' ho (har
+   * dekhi gayi mint darkhwast me yahi rpcid raha hai).
+   * Jawab ka intezaar NAHI hota: darkhwast dikhte hi
+   * kitab me aa jati hai, sab se taza wali hi rehti hai
+   * (latest wins). Hifazat seekhe template wali hi hai:
+   * batchexecute URL, body size ki wahi hadd, asal URL/
+   * headers/body sirf is object me (log me kabhi nahi).
+   * Watch ki haalat se is ka koi lena-dena nahi — ye
+   * session bhar ka safety-net hai, is liye hi woh pal
+   * bhi pakad leta hai jab carrying jawab kabhi aaya
+   * hi na ho (ZEROCLICK4).
+   */
+  _noteMintCandidate(tpl) {
+    try {
+      if (!tpl || !tpl.url || !Buffer.isBuffer(tpl.body)) return false;
+      if (!isBatchExecuteUrl(tpl.url)) return false;
+      if (!rpcidsOf(tpl.url).includes('as29s')) return false;
+      if (tpl.body.length === 0 || tpl.body.length > this.patterns.maxTemplateBodyBytes) return false;
+      this.mintCandidateTemplate = {
+        url: tpl.url,
+        method: String(tpl.method || 'POST').toUpperCase(),
+        headers: tpl.headers || {},
+        body: Buffer.from(tpl.body),
+        at: Date.now(),
+        taskKey: null,
+        source: 'candidate'
+      };
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /** v2.48.37: is pal ka template darja — 'learned' | 'candidate' | 'none'. */
+  mintTemplateSource() {
+    if (this.mintTemplate) return 'learned';
+    if (this.mintCandidateTemplate) return 'candidate';
+    return 'none';
+  }
+
+  /**
+   * v2.48.37: replay routes (B/C + verbatim probe) ke
+   * liye qabil template — seekha hua hamesha pehle,
+   * warna candidate. Natija { template, source }.
+   */
+  replayTemplate() {
+    return {
+      template: this.mintTemplate || this.mintCandidateTemplate || null,
+      source: this.mintTemplateSource()
+    };
+  }
+
+  /**
+   * v2.48.37: [ROOT] template-state line ka hisaab
+   * (saveGuard.templateStateOf — khalis). Teacher
+   * address ki maujoodgi teacherMintUrlForTemplate se
+   * aati hai (template ke baghair bhi bandha/langar
+   * wala address gina jata hai).
+   */
+  templateState() {
+    let teacherUrl = null;
+    try { teacherUrl = this.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
+    return saveGuard.templateStateOf({
+      learned: !!this.mintTemplate,
+      candidate: !!this.mintCandidateTemplate,
+      teacherUrl
+    });
+  }
+
+  /**
+   * v2.48.37: engine ki khabar — is task ka download
+   * kamyaab hua; us ke bandhe hue flow-content address
+   * ko session ka taza teacher langar bana do (template
+   * seekha gaya ho ya na ho). Address sirf yaad me
+   * rehta hai, kabhi log nahi hota.
+   */
+  noteTeacherUrlForKey(key) {
+    try {
+      if (!key) return;
+      const bound = this.urlByKey.get(key);
+      if (bound && bound.url && flowContent.isFlowContentVideoUrl(bound.url)) {
+        this.mintTeacherUrl = bound.url;
       }
     } catch (e) {}
   }

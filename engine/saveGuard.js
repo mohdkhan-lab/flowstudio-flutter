@@ -185,4 +185,30 @@ function replayUrlVerdict(input) {
   return { action: 'save', url: fresh[0], freshCount: 1 };
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict };
+/**
+ * v2.48.37: TEMPLATE-STATE ka khalis hisaab — har download
+ * attempt ke aaghaz par engine ek [ROOT] template-state
+ * line likhta hai, taaki log khud bataye ke routes B/C
+ * (grid/editor replay) is pal chal sakte hain ya nahi aur
+ * kyun. Faisla sirf maujoodgi par hai:
+ *   input = { learned, candidate, teacherUrl }
+ *     learned   — carrying-response se seekha template hai
+ *     candidate — rpcids=as29s wali sabse taza darkhwast
+ *                 (jawab pakda gaya ho ya na ho)
+ *     teacherUrl — session ka darj-shuda teacher address
+ *                  (asal URL yahan sirf haan/na me badalta
+ *                  hai — qeemat is hisaab se bahar kabhi
+ *                  nahi jati)
+ *   natija = { template: 'learned'|'candidate'|'none',
+ *              teacherUrl: 'known'|'unknown' }
+ * Learned hamesha candidate se upar hai (jawab-seekha
+ * saboot darkhwast-andaze se pakka hai).
+ */
+function templateStateOf(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const template = o.learned ? 'learned' : (o.candidate ? 'candidate' : 'none');
+  const teacherUrl = (typeof o.teacherUrl === 'string' && o.teacherUrl) ? 'known' : 'unknown';
+  return { template, teacherUrl };
+}
+
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf };

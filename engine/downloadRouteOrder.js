@@ -31,26 +31,45 @@
 // download SIRF usi project/grid page se hoga jis par video
 // banti hai. Editor kahin bhi NAHI khulega — na main tab, na
 // dusra tab, na CDP background page/tab. Koi fallback kuch
-// nahi dikhayega. Tartib bas do qadmon ki hai:
+// nahi dikhayega. Us waqt tartib bas do qadmon ki thi:
+// mainpage-harvest, phir grid-replay.
 //
-//   1. 'mainpage-harvest' — render-complete par sab se pehle
-//      MAIN page ki apni kitab: jo flow-content / googlevideo
-//      (videoplayback) stream is task se bandhi hui main page
-//      par pehle se dikhi ho, us ke bytes — pehle se pakdi hui
-//      mukammal body ho to wohi; warna usi URL ka POORA fetch
-//      main page ke apne JS context se (page.evaluate fetch,
-//      credentials sameet). Adhoora (googlevideo range) jawab
-//      ho to usi page-context se poora fetch (range hisse
-//      hata kar ya Range: bytes=0- se). Kuch nahi khulta,
-//      kuch click nahi hota — audit lineain ('[ROOT]
-//      mainpage-audit …') har video-jese jawab ko darj karti
-//      hain taaki saboot log se hi mile.
-//   2. 'grid-replay' — seekhi hui mint darkhwast ka hu-bahu
+// v2.48.44 (HEADLESS HARVEST PACK — owner sequence,
+// 2026-11-04): Option 1 (main-page family) ZEROCLICK9/10/11
+// ke baad khatam — grid hover sabit taur par sirf ~91–128KB
+// ki preview stream laata hai; asal ~1.2MB file grid par
+// kabhi load hi nahi hoti. Option 3 (visible/background
+// editor-harvest) owner ki tarteeb me SAB SE AAKHRI chaara
+// hai aur is pack me NAHI hai. Ab tartib teen qadmon ki hai:
+//
+//   1. 'headless-harvest' — account ke Chrome profile ki
+//      ek throwaway COPY par BILKUL BINA-WINDOW (headless)
+//      Chrome: screen par kuch aa hi nahi sakta kyunki
+//      window banti hi nahi. PROBE-FIRST: copied session
+//      pehle ek jaanch se guzregi ('[ROOT] headless-probe
+//      state=<logged-in|logged-out|blocked>'); qubool na
+//      ho to rasta EMAANDARI se, editor khole baghair,
+//      haar kar aage badhega. Qubool ho to usi adrishya
+//      browser me task ka editor khulta hai aur editor
+//      ki apni playback stream (ZEROCLICK6/7 ka sabit
+//      bytes-zariya) capture/saveGuard mashineri se save
+//      hoti hai. Clone har koshish ke baad mit jata hai;
+//      asal profile kabhi khulta/likha nahi jata.
+//   2. 'mainpage-harvest' — MAIN page ki apni kitab: jo
+//      flow-content / googlevideo (videoplayback) stream
+//      is task se bandhi hui main page par pehle se dikhi
+//      ho, us ke bytes — pehle se pakdi hui mukammal body
+//      ho to wohi; warna usi URL ka POORA fetch main page
+//      ke apne JS context se (page.evaluate fetch,
+//      credentials sameet). Kuch nahi khulta, kuch click
+//      nahi hota — audit lineain ('[ROOT] mainpage-audit
+//      …') har video-jese jawab ko darj karti hain.
+//   3. 'grid-replay' — seekhi hui mint darkhwast ka hu-bahu
 //      (verbatim) replay MAIN page se — teacher-guarded:
 //      teacher ka address aaye to fetch KABHI nahi.
 //
-// Is ke baad KOI rasta nahi. Dono haar jayein to attempt
-// EMAANDARI se FAIL hota hai (retry rounds phir yahi do
+// Is ke baad KOI rasta nahi. Teeno haar jayein to attempt
+// EMAANDARI se FAIL hota hai (retry rounds phir yahi teen
 // raaste aazmate hain); prompt dobara KABHI nahi bheja jata
 // (sacred rule barkarar). Editor-harvest (visible + bg),
 // replay-context, direct-viewer, ⋮ menu (native-menu /
@@ -62,6 +81,7 @@
 // ---------------------------------------------------------------------------
 
 const DOWNLOAD_ROUTE_ORDER = Object.freeze([
+  'headless-harvest',
   'mainpage-harvest',
   'grid-replay'
 ]);

@@ -335,20 +335,24 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   const { DOWNLOAD_ROUTE_ORDER, fallbackRouteOrder, firstRoute } = routeOrder;
 
   // Tareekh (mukhtasar): .30 quick-check head → .36 verbatim
-  // replays → .38 editor-harvest → .40 invisible (bg) harvest.
-  // v2.48.41 (owner order 2026-11-04, ZEROCLICK8 eye-verdict):
-  // editor kahin bhi nahi khulega — na main tab, na dusra
-  // tab, na background page. Video ki tartib ab SIRF do
-  // raaste hain, dono main project page par: pehle
-  // mainpage-harvest (main page ki apni stream kitab +
-  // usi page ke andar se poora fetch), phir grid-replay
+  // replays → .38 editor-harvest → .40 invisible (bg) harvest
+  // → .41 main-page harvest → .42 binding → .43 hover+patience.
+  // v2.48.44 (HEADLESS HARVEST PACK — owner sequence
+  // 2026-11-04): Option 1 (main-page family) ZEROCLICK9/10/11
+  // ke baad khatam; Option 3 (editor-harvest wapsi) sab se
+  // aakhri chaara hai, is tartib me NAHI. Video ki tartib ab
+  // teen raaste hain: pehle headless-harvest (profile copy
+  // par bina-window Chrome, probe-first), phir
+  // mainpage-harvest (main page ki apni stream kitab + usi
+  // page ke andar se poora fetch), aakhir grid-replay
   // (teacher-guarded verbatim mint replay). Is ke baad
   // kuch nahi — attempt emaandari se FAIL hota hai.
-  eq('MAINPAGE first route is mainpage-harvest', firstRoute(), 'mainpage-harvest');
-  eq('MAINPAGE order starts with mainpage-harvest', DOWNLOAD_ROUTE_ORDER[0], 'mainpage-harvest');
-  eq('MAINPAGE grid-replay route is second', DOWNLOAD_ROUTE_ORDER[1], 'grid-replay');
+  eq('MAINPAGE first route is headless-harvest', firstRoute(), 'headless-harvest');
+  eq('MAINPAGE order starts with headless-harvest', DOWNLOAD_ROUTE_ORDER[0], 'headless-harvest');
+  eq('MAINPAGE mainpage-harvest route is second', DOWNLOAD_ROUTE_ORDER[1], 'mainpage-harvest');
+  eq('MAINPAGE grid-replay route is third', DOWNLOAD_ROUTE_ORDER[2], 'grid-replay');
   eq('MAINPAGE order ends with grid-replay', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'grid-replay');
-  eq('MAINPAGE route count', DOWNLOAD_ROUTE_ORDER.length, 2);
+  eq('MAINPAGE route count', DOWNLOAD_ROUTE_ORDER.length, 3);
   ok('MAINPAGE order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
   // Banned raaste — editor/menu/viewer/backend — tartib
   // me kahin nahi:
@@ -359,8 +363,8 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   // Fallback = tartib ka pehla rasta chhor kar baaki.
   const fb = fallbackRouteOrder();
   eq('MAINPAGE fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
-  ok('MAINPAGE fallback has no mainpage-harvest', !fb.includes('mainpage-harvest'));
-  ok('MAINPAGE fallback starts with grid-replay', fb[0] === 'grid-replay');
+  ok('MAINPAGE fallback has no headless-harvest', !fb.includes('headless-harvest'));
+  ok('MAINPAGE fallback starts with mainpage-harvest', fb[0] === 'mainpage-harvest');
   eq('MAINPAGE fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
 }
 

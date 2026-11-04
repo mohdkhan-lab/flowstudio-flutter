@@ -49,6 +49,7 @@ const { classifyVerbatimProbe } = require('../engine/mintReplay');
 const { NetworkCapture, isGooglevideoPlaybackUrl } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
 const { FlowAutomationEngine } = require('../engine/flowAutomation');
+const headlessHarvest = require('../engine/headlessHarvest');
 
 let passed = 0;
 let failed = 0;
@@ -479,7 +480,7 @@ async function main() {
   const FC_FRESH3 = 'https://flow-content.google/video/fresh-media-3?Expires=999&KeyName=k&Signature=s';
   {
     // (a) tartib — sirf do raaste, baaki sab gayab
-    eq('MP-ORDER order is exactly mainpage-harvest then grid-replay', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['mainpage-harvest', 'grid-replay']));
+    eq('MP-ORDER order is exactly headless-harvest then mainpage-harvest then grid-replay', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['headless-harvest', 'mainpage-harvest', 'grid-replay']));
     for (const banned of ['editor-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'tile-src', 'quick-check']) {
       ok(`MP-ORDER ${banned} is absent from the order`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
     }
@@ -741,7 +742,7 @@ async function main() {
     const task = { promptIndex: 0, captureKey: 'k-mp-fail', videoId: 'k-mp-fail', startTime: Date.now(), renderCompletedAt: Date.now() };
     const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
     eq('MP-FAIL inner returns not-ok', res.ok, false);
-    eq('MP-FAIL the task route order is the two-step order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['mainpage-harvest', 'grid-replay']));
+    eq('MP-FAIL the task route order is the three-step order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['headless-harvest', 'mainpage-harvest', 'grid-replay']));
     ok('MP-FAIL attempts carry mainpage-harvest', res.attempts.some(a => a.strategy === 'mainpage-harvest'));
     ok('MP-FAIL attempts carry no banned strategy', !res.attempts.some(a => ['editor-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-src', 'tile-src-fast', 'quick-check'].includes(a.strategy)));
     ok('MP-FAIL the honest-fail line was logged', logs.some(m => m.includes('Download failed honestly')));
@@ -1294,6 +1295,207 @@ async function main() {
     eq('HOV-ENG the saved file is that stream', task.completedVideoUrl, GV_URL);
     ok('HOV-ENG promoted audit carries bindReason=order', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=order')));
     eq('HOV-ENG the stream is claimed by my task', nc.mainpageClaimedKey(GV_URL), 'k-zc-me');
+  }
+
+  // ---------------------------------------------------------------------------
+  // O. v2.48.44 — HEADLESS HARVEST PACK (OPTION 2):
+  //   (a) clone tarteeb: sirf session ke buniyadi hisse,
+  //       lock kabhi nahi, asal profile bilkul na-badla,
+  //       clone koshish ke baad mit jata hai; cookies na
+  //       hon to copy bekaar — error;
+  //   (b) probe faisla: logged-in / logged-out / blocked
+  //       fixtures — blocked sab par bhaari, anjaan
+  //       haalat = qubool NAHI;
+  //   (c) probe cache: ek account, ek run, ek faisla;
+  //   (d) windowless darwaza: headed launch kabhi
+  //       qubool nahi; probe-reject ki ibarat pin ki hui;
+  //   (e) ENGINE: probe reject → wahi thahra strategy
+  //       note, editor khulta hi NAHI, aur dusri dafa
+  //       launch/probe bilkul nahi (cache);
+  //   (f) ENGINE: probe qubool + editor stream ki
+  //       mukammal body → save, via=headless-harvest
+  //       line, session band;
+  //   (g) ENGINE: stream waqt par na aaye to haar, aur
+  //       cascade ki tartib headless → mainpage → grid
+  //       (fall-through), probe phir bhi ek hi dafa.
+  // ---------------------------------------------------------------------------
+  {
+    const fsx = require('fs');
+    const osx = require('os');
+    const pathx = require('path');
+    const { cloneFilePlan, buildHeadlessClone, removeHeadlessClone } = headlessHarvest;
+    // Khalis tarteeb — jaali detectors ke saath.
+    const planPure = cloneFilePlan('/nowhere', {
+      exists: (rel) => ['Local State', pathx.join('Default', 'Cookies')].includes(rel),
+      isDir: () => false
+    });
+    eq('HH-CLONE pure plan picks only existing essentials', planPure.length, 2);
+    ok('HH-CLONE pure plan has Local State', planPure.some(p => p.rel === 'Local State'));
+    // Asal jaali profile.
+    const root = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'hh-prof-'));
+    const cloneDir = pathx.join(osx.tmpdir(), `hh-clone-${Date.now()}`);
+    const w = (rel, content) => { const p = pathx.join(root, rel); fsx.mkdirSync(pathx.dirname(p), { recursive: true }); fsx.writeFileSync(p, content); };
+    w('Local State', '{"os_crypt":{}}');
+    w(pathx.join('Default', 'Network', 'Cookies'), 'COOKIES-DB');
+    w(pathx.join('Default', 'Preferences'), '{"p":1}');
+    w(pathx.join('Default', 'Local Storage', 'leveldb', '000003.log'), 'LS-DATA');
+    w(pathx.join('Default', 'Session Storage', '000003.log'), 'SS-DATA');
+    w(pathx.join('Default', 'Cache', 'cache-data'), 'CACHE-BULK');
+    w('SingletonLock', 'lock');
+    const plan = cloneFilePlan(root);
+    ok('HH-CLONE plan includes Local State', plan.some(p => p.rel === 'Local State'));
+    ok('HH-CLONE plan includes Network Cookies', plan.some(p => p.rel === pathx.join('Default', 'Network', 'Cookies')));
+    ok('HH-CLONE plan includes Local Storage as a dir', plan.some(p => p.rel === pathx.join('Default', 'Local Storage') && p.kind === 'dir'));
+    ok('HH-CLONE plan never includes the lock file', !plan.some(p => p.rel.includes('Singleton')));
+    await buildHeadlessClone(root, cloneDir);
+    eq('HH-CLONE cookies copied', fsx.readFileSync(pathx.join(cloneDir, 'Default', 'Network', 'Cookies'), 'utf8'), 'COOKIES-DB');
+    eq('HH-CLONE local state copied', fsx.readFileSync(pathx.join(cloneDir, 'Local State'), 'utf8'), '{"os_crypt":{}}');
+    eq('HH-CLONE preferences copied', fsx.readFileSync(pathx.join(cloneDir, 'Default', 'Preferences'), 'utf8'), '{"p":1}');
+    eq('HH-CLONE local storage content copied', fsx.readFileSync(pathx.join(cloneDir, 'Default', 'Local Storage', 'leveldb', '000003.log'), 'utf8'), 'LS-DATA');
+    eq('HH-CLONE session storage content copied', fsx.readFileSync(pathx.join(cloneDir, 'Default', 'Session Storage', '000003.log'), 'utf8'), 'SS-DATA');
+    ok('HH-CLONE lock file is never copied', !fsx.existsSync(pathx.join(cloneDir, 'SingletonLock')));
+    ok('HH-CLONE cache bulk is never copied', !fsx.existsSync(pathx.join(cloneDir, 'Default', 'Cache')));
+    eq('HH-CLONE source profile is untouched', fsx.readFileSync(pathx.join(root, 'Default', 'Network', 'Cookies'), 'utf8'), 'COOKIES-DB');
+    ok('HH-CLONE source keeps its own lock file', fsx.existsSync(pathx.join(root, 'SingletonLock')));
+    await removeHeadlessClone(cloneDir);
+    ok('HH-CLONE clone dir is deleted after the attempt', !fsx.existsSync(cloneDir));
+    // Cookies ke baghair copy bekaar — error laazmi.
+    const bareRoot = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'hh-bare-'));
+    fsx.writeFileSync(pathx.join(bareRoot, 'Local State'), '{}');
+    let threw = false;
+    try { await buildHeadlessClone(bareRoot, pathx.join(osx.tmpdir(), `hh-bare-clone-${Date.now()}`)); } catch (e) { threw = true; }
+    ok('HH-CLONE a copy without Cookies is refused', threw);
+    fsx.rmSync(root, { recursive: true, force: true });
+    fsx.rmSync(bareRoot, { recursive: true, force: true });
+  }
+  {
+    const { classifyProbeSnapshot } = headlessHarvest;
+    eq('HH-PROBE prompt box means logged-in', classifyProbeSnapshot({ url: 'https://flow.google.com/', hasPromptBox: true }), 'logged-in');
+    eq('HH-PROBE gallery tiles mean logged-in', classifyProbeSnapshot({ url: 'https://flow.google.com/', hasTiles: true }), 'logged-in');
+    eq('HH-PROBE avatar means logged-in', classifyProbeSnapshot({ url: 'https://flow.google.com/', hasAvatar: true }), 'logged-in');
+    eq('HH-PROBE sign-in wall means logged-out', classifyProbeSnapshot({ url: 'https://flow.google.com/', hasSignIn: true }), 'logged-out');
+    eq('HH-PROBE google accounts url means logged-out', classifyProbeSnapshot({ url: 'https://accounts.google.com/ServiceLogin' }), 'logged-out');
+    eq('HH-PROBE unusual traffic is blocked', classifyProbeSnapshot({ url: 'https://flow.google.com/', text: 'Our systems have detected unusual traffic from your computer network' }), 'blocked');
+    eq('HH-PROBE captcha is blocked even with a prompt box', classifyProbeSnapshot({ url: 'https://flow.google.com/', hasCaptcha: true, hasPromptBox: true }), 'blocked');
+    eq('HH-PROBE blocked beats logged-in markers', classifyProbeSnapshot({ url: 'https://flow.google.com/', hasPromptBox: true, text: 'please verify your identity to continue' }), 'blocked');
+    eq('HH-PROBE sign-in beats tiles', classifyProbeSnapshot({ url: 'https://flow.google.com/', hasSignIn: true, hasTiles: true }), 'logged-out');
+    eq('HH-PROBE an unknown page is not accepted', classifyProbeSnapshot({ url: 'https://flow.google.com/' }), 'logged-out');
+    eq('HH-PROBE garbage input is not accepted', classifyProbeSnapshot(null), 'logged-out');
+  }
+  {
+    const cache = headlessHarvest.createProbeCache();
+    eq('HH-CACHE empty get is null', cache.get('acc-1'), null);
+    cache.set('acc-1', 'logged-out');
+    eq('HH-CACHE verdict stored per account', cache.get('acc-1'), 'logged-out');
+    eq('HH-CACHE another account is unaffected', cache.get('acc-2'), null);
+    cache.clear();
+    eq('HH-CACHE clear empties the run cache', cache.get('acc-1'), null);
+    eq('HH-GUARD headless new is windowless', headlessHarvest.launchIsWindowless({ headless: 'new' }), true);
+    eq('HH-GUARD headless true is windowless', headlessHarvest.launchIsWindowless({ headless: true }), true);
+    eq('HH-GUARD headless false is NOT windowless', headlessHarvest.launchIsWindowless({ headless: false }), false);
+    eq('HH-GUARD a missing headless flag is NOT windowless', headlessHarvest.launchIsWindowless({}), false);
+    eq('HH-GUARD garbage is NOT windowless', headlessHarvest.launchIsWindowless(null), false);
+    eq('HH-GUARD the pack mode constant is new', headlessHarvest.HEADLESS_MODE, 'new');
+    eq('HH-GUARD the probe-reject note is the pinned strategy text', headlessHarvest.PROBE_REJECT_NOTE, 'headless-harvest: failed (the copied session was not accepted in the invisible browser — see the headless-probe line)');
+  }
+  function stubHeadlessSession(eng, opts = {}) {
+    const state = { launchCount: 0, probeCount: 0, editorOpened: false, closed: false, snapshot: opts.snapshot };
+    const stubCap = {
+      harvestFloorBytes: 0,
+      harvestForKey: opts.harvestForKey || (() => null),
+      urlForKey: () => null,
+      recentFlowContentVideos: () => [],
+      beginSubmission() {}, arm() {}, setDownloadAttempt() {}, clearDownloadAttempt() {},
+      evictHarvest() {}, claimFlowContentVideo() {}, detach() {}
+    };
+    eng._headlessLaunch = async () => {
+      state.launchCount++;
+      return {
+        browser: { close: async () => { state.closed = true; } },
+        page: fakePage('headless-stub'),
+        capture: stubCap,
+        cloneDir: null
+      };
+    };
+    eng._headlessProbeSnapshot = async () => { state.probeCount++; return state.snapshot; };
+    eng._headlessOpenTaskEditor = async () => { state.editorOpened = true; return opts.editorOpen !== false; };
+    return state;
+  }
+  {
+    // (e) probe reject — editor NAHI khulta, dusri
+    // dafa launch/probe bhi NAHI (cache), note wahi
+    // thahra hua.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { headlessHarvestWaitMs: 300 });
+    eq('HH-ENG the headless route exists', typeof eng._tryHeadlessHarvest, 'function');
+    eng.currentAccount = { id: 'acc-hh-reject', name: 'HH Reject' };
+    eng.page = fakePage('main-hh-reject');
+    const st = stubHeadlessSession(eng, { snapshot: { url: 'https://flow.google.com/', hasSignIn: true } });
+    const task = { promptIndex: 0, captureKey: 'k-hh-reject', videoId: 'k-hh-reject', startTime: Date.now(), renderCompletedAt: Date.now() };
+    const attempts1 = [];
+    const r1 = await eng._tryHeadlessHarvest(task, '/tmp', { duration: '10s' }, attempts1, 'k-hh-reject', 0);
+    eq('HH-REJECT the route fails', r1, false);
+    eq('HH-REJECT the strategy note is the exact pinned text', attempts1.length === 1 && attempts1[0].note, headlessHarvest.PROBE_REJECT_NOTE);
+    eq('HH-REJECT the strategy is headless-harvest', attempts1.length === 1 && attempts1[0].strategy, 'headless-harvest');
+    ok('HH-REJECT the probe line was logged', logs.some(m => m.includes('[ROOT] headless-probe state=logged-out account=HH Reject')));
+    eq('HH-REJECT the editor was never opened', st.editorOpened, false);
+    eq('HH-REJECT the session was closed', st.closed, true);
+    const attempts2 = [];
+    const r2 = await eng._tryHeadlessHarvest(task, '/tmp', { duration: '10s' }, attempts2, 'k-hh-reject', 0);
+    eq('HH-REJECT the second task also fails from cache', r2, false);
+    eq('HH-REJECT the second note is the same pinned text', attempts2.length === 1 && attempts2[0].note, headlessHarvest.PROBE_REJECT_NOTE);
+    eq('HH-REJECT no second launch happened', st.launchCount, 1);
+    eq('HH-REJECT no second probe happened', st.probeCount, 1);
+  }
+  {
+    // (f) probe qubool + mukammal body — save jeet.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { headlessHarvestWaitMs: 2000 });
+    eng.currentAccount = { id: 'acc-hh-win', name: 'HH Win' };
+    eng.page = fakePage('main-hh-win');
+    const st = stubHeadlessSession(eng, {
+      snapshot: { url: 'https://flow.google.com/', hasPromptBox: true },
+      harvestForKey: () => ({ url: FC_FRESH, buffer: mp4Buffer(600000), at: Date.now() })
+    });
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-hh-win', videoId: 'k-hh-win', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+    const attempts = [];
+    const r = await eng._tryHeadlessHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-hh-win', 0);
+    eq('HH-WIN the route saves', r, true);
+    eq('HH-WIN the task is marked saved', task.mediaSaved, true);
+    eq('HH-WIN the saved url is the editor stream', task.completedVideoUrl, FC_FRESH);
+    ok('HH-WIN the probe line says logged-in', logs.some(m => m.includes('[ROOT] headless-probe state=logged-in account=HH Win')));
+    ok('HH-WIN the win line is via=headless-harvest', logs.some(m => m.includes('[ROOT] via=headless-harvest gap=')));
+    ok('HH-WIN the attempt strategy is headless-harvest ok', attempts.some(a => a.strategy === 'headless-harvest' && a.ok));
+    eq('HH-WIN the session was closed after the win', st.closed, true);
+  }
+  {
+    // (g) stream waqt par NAHI — haar, aur cascade
+    // ki tartib headless → mainpage → grid (probe
+    // cache ki wajah se phir bhi ek hi dafa).
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { headlessHarvestWaitMs: 300, mainpagePatienceMs: 600, mainpageViewportWaitMs: 200, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
+    eng.currentAccount = { id: 'acc-hh-fall', name: 'HH Fall' };
+    eng.page = fakePage('main-hh-fall');
+    eng._readTileMediaState = async () => null;
+    const st = stubHeadlessSession(eng, { snapshot: { url: 'https://flow.google.com/', hasPromptBox: true } });
+    const task = { promptIndex: 0, captureKey: 'k-hh-fall', videoId: 'k-hh-fall', startTime: Date.now(), renderCompletedAt: Date.now() };
+    const attempts0 = [];
+    const r0 = await eng._tryHeadlessHarvest(task, '/tmp', { duration: '10s' }, attempts0, 'k-hh-fall', 0);
+    eq('HH-FALL the route fails when no stream completes', r0, false);
+    ok('HH-FALL the timeout was logged honestly', logs.some(m => m.includes('headless-harvest: no complete editor stream arrived')));
+    const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
+    eq('HH-FALL the cascade still fails honestly overall', res.ok, false);
+    const seq = res.attempts.map(a => a.strategy);
+    ok('HH-FALL headless ran first in the cascade', seq.indexOf('headless-harvest') >= 0 && seq.indexOf('headless-harvest') < seq.indexOf('mainpage-harvest'));
+    // grid-replay template na hone par khamoshi se skip
+    // hota hai (koi attempt entry nahi) — entry ho to
+    // mainpage ke BAAD hi hoga, aur haar ki line teeno
+    // raaston ka naam leti hai.
+    ok('HH-FALL mainpage ran, and any grid-replay attempt came after it', seq.indexOf('mainpage-harvest') >= 0 && (seq.indexOf('grid-replay') === -1 || seq.indexOf('mainpage-harvest') < seq.indexOf('grid-replay')));
+    ok('HH-FALL the honest-fail line names all three routes', logs.some(m => m.includes('Download failed honestly') && m.includes('invisible-browser harvest') && m.includes('grid replay')));
+    eq('HH-FALL the probe still ran only once across rounds', st.probeCount, 1);
+    eq('HH-FALL the task route order is the three-step order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['headless-harvest', 'mainpage-harvest', 'grid-replay']));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

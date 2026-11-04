@@ -28,6 +28,8 @@ const mintWindow = require('./mintWindow');
 const mintReplay = require('./mintReplay');
 const saveGuard = require('./saveGuard');
 const stageLock = require('./stageLock');
+const headlessHarvest = require('./headlessHarvest');
+const os = require('os');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -288,6 +290,18 @@ class FlowAutomationEngine {
     this.mainpagePatienceMs = Number(options.mainpagePatienceMs) > 0 ? Number(options.mainpagePatienceMs) : 60000;
     this.mainpageHoverGraceMs = Number(options.mainpageHoverGraceMs) > 0 ? Number(options.mainpageHoverGraceMs) : 4000;
     this.mainpagePointerGraceMs = Number(options.mainpagePointerGraceMs) > 0 ? Number(options.mainpagePointerGraceMs) : 4000;
+    // v2.48.44 (HEADLESS HARVEST PACK — OPTION 2):
+    // adrishya (bina-window) browser me editor ki
+    // playback stream ke mukammal hone ka intezaar
+    // (production 30s) aur headless navigation ki hadd
+    // (production 45s). Probe ka faisla per-run cache
+    // me rehta hai — ek account, ek run, ek probe;
+    // naya browser launch (naya run) cache saaf kar
+    // deta hai. Constructor options taaki test ghata
+    // saken.
+    this.headlessHarvestWaitMs = Number(options.headlessHarvestWaitMs) > 0 ? Number(options.headlessHarvestWaitMs) : 30000;
+    this.headlessNavTimeoutMs = Number(options.headlessNavTimeoutMs) > 0 ? Number(options.headlessNavTimeoutMs) : 45000;
+    this._headlessProbeCache = headlessHarvest.createProbeCache();
     this.nativeDownloadStallMs = Number(options.nativeDownloadStallMs) > 0 ? Number(options.nativeDownloadStallMs) : 45000;
     this.watcherSweepDelayMs = Number(options.watcherSweepDelayMs) > 0 ? Number(options.watcherSweepDelayMs) : 300000;
     this._watcherSweepTimer = null;
@@ -414,6 +428,10 @@ class FlowAutomationEngine {
     this._browserUA = null;
     // v2.48.12: remember where this run's files belong.
     this.currentDownloadDir = downloadDir || null;
+    // v2.48.44: naya browser launch = naya run — headless
+    // probe ka per-run cache yahin saaf (ek run me ek
+    // account ka probe sirf ek dafa hota hai).
+    try { if (this._headlessProbeCache) this._headlessProbeCache.clear(); } catch (e) {}
 
     const chromePath = getChromeExecutablePath();
     const profilePath = getAccountProfilePath(account.id);
@@ -5464,16 +5482,19 @@ class FlowAutomationEngine {
    * verdict karega). Kuch na mile to null.
    * Natija: { buf, status } | null.
    */
-  async _fetchMainpageFullInPage(url) {
+  async _fetchMainpageFullInPage(url, page) {
     try {
-      if (!this.page || this.page.isClosed() || !url) return null;
+      // v2.48.44: page diya jaye to wahi (headless-harvest
+      // apna adrishya page deta hai), warna apna MAIN page.
+      const pg = page || this.page;
+      if (!pg || pg.isClosed() || !url) return null;
       const candidates = saveGuard.fullFetchUrlCandidates(url);
       let best = null;
       for (const u of candidates) {
         for (const useRange of [false, true]) {
           try {
             const res = await downloadGuard.withTimeout(
-              this.page.evaluate(async (uu, withRange) => {
+              pg.evaluate(async (uu, withRange) => {
                 const headers = {};
                 if (withRange) headers['Range'] = 'bytes=0-';
                 const r = await fetch(uu, { method: 'GET', headers, credentials: 'include' });
@@ -5706,6 +5727,310 @@ class FlowAutomationEngine {
     }
     attempts.push({ strategy: 'mainpage-harvest', ok: false, note: `the main-page stream for this video did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'})` });
     return false;
+  }
+
+  /**
+   * v2.48.44 (HEADLESS HARVEST PACK — OPTION 2): profile
+   * ki throwaway COPY par BILKUL BINA-WINDOW Chrome
+   * chalao — clone sirf session ke buniyadi hisse leta
+   * hai (engine/headlessHarvest), asal profile sirf
+   * PADHA jata hai (kabhi khola/likha nahi jata). Launch
+   * se pehle windowless darwaza (launchIsWindowless)
+   * fail ho to browser banta hi nahi — visible window
+   * par girne ka khatra kabhi nahi liya jata.
+   * Lautta hai: { browser, page, capture, cloneDir }.
+   */
+  async _headlessLaunch(account) {
+    const profileRoot = getAccountProfilePath(account.id);
+    const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-headless-'));
+    try {
+      await headlessHarvest.buildHeadlessClone(profileRoot, cloneDir);
+    } catch (e) {
+      await headlessHarvest.removeHeadlessClone(cloneDir);
+      throw e;
+    }
+    const launchOpts = {
+      executablePath: getChromeExecutablePath(),
+      headless: headlessHarvest.HEADLESS_MODE,
+      userDataDir: cloneDir,
+      defaultViewport: { width: 1366, height: 900 },
+      args: [
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-session-crashed-bubble',
+        '--hide-crash-restore-bubble',
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-notifications',
+        '--deny-permission-prompts',
+        '--disable-popup-blocking',
+        '--disable-features=NotificationTriggers,PushMessaging',
+        '--mute-audio',
+        '--disk-cache-size=104857600'
+      ],
+      ignoreDefaultArgs: ['--enable-automation']
+    };
+    if (!headlessHarvest.launchIsWindowless(launchOpts)) {
+      await headlessHarvest.removeHeadlessClone(cloneDir);
+      this.log('[ROOT] headless-harvest aborted — a windowless launch is not guaranteed here, so no browser was started at all', 'warn');
+      const err = new Error('a windowless (headless) launch is not guaranteed on this platform');
+      err.code = 'HEADLESS_NOT_WINDOWLESS';
+      throw err;
+    }
+    let browser = null;
+    try {
+      browser = await puppeteer.launch(launchOpts);
+    } catch (e) {
+      await headlessHarvest.removeHeadlessClone(cloneDir);
+      throw e;
+    }
+    const pages = await browser.pages();
+    const page = pages.length > 0 ? pages[0] : await browser.newPage();
+    try {
+      await page.evaluateOnNewDocument(() => {
+        try { delete Object.getPrototypeOf(navigator).webdriver; } catch (e) {}
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      });
+    } catch (e) {}
+    const capture = new networkCapture.NetworkCapture({});
+    try { capture.attach(page); } catch (e) {}
+    return { browser, page, capture, cloneDir };
+  }
+
+  /** Headless session band karo + clone mita do (hamesha, har surat me). */
+  async _headlessCloseSession(session) {
+    if (!session) return;
+    try { if (session.capture) session.capture.detach(); } catch (e) {}
+    try { if (session.browser) await session.browser.close(); } catch (e) {}
+    try { await headlessHarvest.removeHeadlessClone(session.cloneDir); } catch (e) {}
+  }
+
+  /** Headless page ke DOM se probe ke nishan (ek nazar). */
+  async _headlessReadProbeDom(page) {
+    try {
+      return await page.evaluate(() => {
+        const vis = (el) => { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return false; } };
+        const anyVis = (sel) => Array.from(document.querySelectorAll(sel)).some(vis);
+        const hasPromptBox = anyVis('.ProseMirror, div[contenteditable="true"], div[role="textbox"]');
+        const hasTiles = document.querySelectorAll('flow-grid-tile-container').length > 0;
+        const hasAvatar = anyVis('[data-testid*="avatar"], img[alt*="ccount"]');
+        let hasSignIn = false;
+        for (const el of Array.from(document.querySelectorAll('a, button'))) {
+          const t = (el.textContent || '').trim().toLowerCase();
+          const href = (el.getAttribute && el.getAttribute('href')) || '';
+          if (href.includes('accounts.google.com')) { hasSignIn = true; break; }
+          if ((t === 'sign in' || t === 'log in') && vis(el)) { hasSignIn = true; break; }
+        }
+        const hasCaptcha = !!document.querySelector('iframe[src*="recaptcha"], .g-recaptcha, [data-sitekey]');
+        const text = ((document.body && document.body.innerText) || '').slice(0, 6000);
+        return { url: window.location.href, hasPromptBox, hasTiles, hasAvatar, hasSignIn, hasCaptcha, text };
+      });
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * PROBE ka asal kaam: headless page Flow ke home par
+   * jata hai, nishaanon ka chhota intezaar karta hai,
+   * aur snapshot ka faisla headlessHarvest ke khalis
+   * hisaab se hota hai. Tests _headlessProbeSnapshot
+   * ko stub karke asal classifier chalate hain.
+   */
+  async _headlessProbeSnapshot(page) {
+    try {
+      await page.goto('https://flow.google.com/', { waitUntil: 'domcontentloaded', timeout: this.headlessNavTimeoutMs || 45000 });
+    } catch (e) {}
+    const deadline = Date.now() + 10000;
+    let snap = null;
+    for (;;) {
+      snap = await this._headlessReadProbeDom(page);
+      if (!snap) break;
+      if (snap.hasPromptBox || snap.hasTiles || snap.hasAvatar || snap.hasSignIn || snap.hasCaptcha) break;
+      if (Date.now() >= deadline || this.isStopping) break;
+      await sleep(500);
+    }
+    return snap;
+  }
+
+  /** Probe: snapshot lo aur faisla wapas karo ('logged-in' sirf pakke nishan par). */
+  async _headlessProbeOnce(account, page) {
+    const snap = await this._headlessProbeSnapshot(page);
+    if (!snap) return 'logged-out';
+    return headlessHarvest.classifyProbeSnapshot(snap);
+  }
+
+  /**
+   * Is task ka editor ADRISHYA browser me kholo: pehle
+   * wahi project (visible page ka pata), phir
+   * fingerprint se tile, phir tile click — bilkul wahi
+   * tareeqa jo visible editor kholne ka hai, lekin ye
+   * page ek bina-window browser me hai: screen par kuch
+   * aa hi nahi sakta. Lautta hai: true (editor khula).
+   */
+  async _headlessOpenTaskEditor(hpage, task, tileIndexHint) {
+    let projectUrl = null;
+    try {
+      const u = this.page && !this.page.isClosed() ? (this.page.url() || '') : '';
+      if (u.includes('/project/')) projectUrl = u.split('/edit/')[0];
+    } catch (e) {}
+    if (!projectUrl) return false;
+    try {
+      await hpage.goto(projectUrl, { waitUntil: 'domcontentloaded', timeout: this.headlessNavTimeoutMs || 45000 });
+    } catch (e) {}
+    const deadline = Date.now() + 15000;
+    let tileCount = 0;
+    for (;;) {
+      try { tileCount = await hpage.evaluate(() => document.querySelectorAll('flow-grid-tile-container').length); } catch (e) { tileCount = 0; }
+      if (tileCount > 0) break;
+      if (Date.now() >= deadline || this.isStopping) return false;
+      await sleep(500);
+    }
+    const idx = await this._resolveTileIndexForTask(task, tileIndexHint, hpage);
+    if (!Number.isFinite(idx) || idx < 0) return false;
+    const coords = await this._tileCenterCoords(idx, hpage);
+    if (!coords || !coords.found) return false;
+    for (let clickTry = 0; clickTry < 2; clickTry++) {
+      try { await hpage.mouse.click(coords.x, coords.y); } catch (e) {}
+      await sleep(1500);
+      if (await this._inEditorView(hpage)) return true;
+    }
+    return await this._inEditorView(hpage);
+  }
+
+  /**
+   * v2.48.44 (HEADLESS HARVEST PACK — OPTION 2): VIDEO
+   * download ka NAYA PEHLA rasta. Tarteeb:
+   *   0. per-run probe cache me is account ka reject
+   *      pehle se ho to launch/probe dobara NAHI —
+   *      wahi thahra hua strategy note, foran aage;
+   *   1. profile ki copy par bina-window Chrome +
+   *      PROBE (ek run me ek account ka ek hi probe):
+   *      '[ROOT] headless-probe state=<...> account=<...>';
+   *      qubool na ho to PROBE_REJECT_NOTE ke saath
+   *      haar — editor khulta hi nahi;
+   *   2. qubool ho to usi adrishya browser me is task
+   *      ka editor, aur editor ki apni playback stream
+   *      capture kitab se (mukammal body pehle; bandha
+   *      address ho to editor page ke andar poora
+   *      fetch) — saveGuard darwaze (teacher-url yahan,
+   *      quality gate + content-hash duplicate
+   *      _saveBufferForTask ke andar) guzar kar save.
+   * Jeet: '[ROOT] via=headless-harvest gap=<X>s'.
+   * Session har surat me band + clone mita hua.
+   * Prompt yahan KABHI dobara submit nahi hota.
+   */
+  async _tryHeadlessHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint) {
+    const n = task.promptIndex + 1;
+    if (!task || task.mediaSaved) return false;
+    const account = this.currentAccount;
+    const fail = (note) => {
+      attempts.push({ strategy: 'headless-harvest', ok: false, note });
+      return false;
+    };
+    if (!account || !account.id) {
+      return fail('no account session is attached to this worker, so the invisible-browser harvest could not run — the main-page routes ran next');
+    }
+    const label = account.name || account.id;
+    const cached = this._headlessProbeCache ? this._headlessProbeCache.get(account.id) : null;
+    if (cached && cached !== 'logged-in') {
+      return fail(headlessHarvest.PROBE_REJECT_NOTE);
+    }
+    let session = null;
+    try {
+      session = await this._headlessLaunch(account);
+    } catch (e) {
+      this.log(`[ROOT] [Prompt #${n}] headless-harvest: the invisible browser could not be started from the copied session — the main-page routes will run`, 'warn');
+      return fail('the invisible browser could not be started from the copied session — the main-page routes ran next');
+    }
+    try {
+      const hcap = session.capture;
+      const hpage = session.page;
+      try { if (hcap) hcap.harvestFloorBytes = downloadFetch.minBytesForDuration(settings && settings.duration); } catch (e) {}
+      try { if (hcap) hcap.beginSubmission(captureKey, Date.now()); } catch (e) {}
+      let verdict = cached;
+      if (!verdict) {
+        verdict = await this._headlessProbeOnce(account, hpage);
+        try { if (this._headlessProbeCache) this._headlessProbeCache.set(account.id, verdict); } catch (e) {}
+        this.log(`[ROOT] headless-probe state=${verdict} account=${label}`, verdict === 'logged-in' ? 'success' : 'warn');
+      }
+      if (verdict !== 'logged-in') {
+        return fail(headlessHarvest.PROBE_REJECT_NOTE);
+      }
+      try { if (hcap) hcap.setDownloadAttempt(captureKey); } catch (e) {}
+      let editorOpen = false;
+      try { editorOpen = await this._headlessOpenTaskEditor(hpage, task, tileIndexHint); } catch (e) { editorOpen = false; }
+      if (!editorOpen) {
+        this.log(`[ROOT] [Prompt #${n}] headless-harvest: this video's editor did not open in the invisible browser — the main-page routes will run`, 'warn');
+        return fail('the copied session was accepted, but this video\'s editor did not open in the invisible browser — the main-page routes ran next');
+      }
+      let teacherUrl = null;
+      try { teacherUrl = this.netCapture ? this.netCapture.teacherMintUrlForTemplate(null) : null; } catch (e) { teacherUrl = null; }
+      const gapSec = () => Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+      const win = () => {
+        const g = gapSec();
+        this.log(`[ROOT] via=headless-harvest gap=${g}s`, 'success');
+        attempts.push({ strategy: 'headless-harvest', ok: true, note: `the file was captured from this video's own editor playback stream inside a window-less copy of the account's browser — nothing was opened or shown anywhere; render→save gap ${g}s` });
+        return true;
+      };
+      const saveFromHeadless = async (url, buffer) => {
+        if (teacherUrl && url === teacherUrl) {
+          this.log(`[ROOT] [Prompt #${n}] headless-harvest: the captured stream address is the previous task's (teacher) — not saving it`, 'warn');
+          return 'teacher';
+        }
+        try { if (hcap) hcap.claimFlowContentVideo(url); } catch (e) {}
+        try { if (this.netCapture) this.netCapture.claimFlowContentVideo(url); } catch (e) {}
+        task.completedVideoUrl = url;
+        const ok = await this._saveBufferForTask(task, downloadFolder, settings, buffer, url);
+        return (ok || task.mediaSaved) ? 'saved' : 'rejected';
+      };
+      const waitMs = Math.max(1000, this.headlessHarvestWaitMs || 30000);
+      const deadline = Date.now() + waitMs;
+      const triedFetchUrls = new Set();
+      for (;;) {
+        if (task.mediaSaved) return true;
+        let entry = null;
+        try { entry = hcap ? hcap.harvestForKey(captureKey) : null; } catch (e) { entry = null; }
+        if (entry && entry.buffer && entry.buffer.length > 0) {
+          try { hcap.evictHarvest(captureKey); } catch (e) {}
+          const r = await saveFromHeadless(entry.url, entry.buffer);
+          if (r === 'saved') return win();
+          if (r === 'teacher') {
+            return fail('the stream captured in the invisible browser was the previous task\'s file address (teacher) and was not saved — the main-page routes ran next');
+          }
+          return fail(`the stream captured in the invisible browser did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the main-page routes ran next`);
+        }
+        let boundUrl = null;
+        try { const b = hcap ? hcap.urlForKey(captureKey) : null; if (b && b.url) boundUrl = b.url; } catch (e) {}
+        if (!boundUrl) {
+          try {
+            const rec = hcap ? hcap.recentFlowContentVideos(Date.now() - waitMs - 60000) : [];
+            if (rec && rec.length) boundUrl = rec[rec.length - 1].url;
+          } catch (e) {}
+        }
+        if (boundUrl && !triedFetchUrls.has(boundUrl)) {
+          triedFetchUrls.add(boundUrl);
+          const fetched = await this._fetchMainpageFullInPage(boundUrl, hpage);
+          if (fetched && fetched.buf && fetched.buf.length > 0 && fetched.status !== 206 && downloadFetch.looksLikeVideoBuffer(fetched.buf)) {
+            const r = await saveFromHeadless(boundUrl, fetched.buf);
+            if (r === 'saved') return win();
+            if (r === 'teacher') {
+              return fail('the stream captured in the invisible browser was the previous task\'s file address (teacher) and was not saved — the main-page routes ran next');
+            }
+            return fail(`the stream captured in the invisible browser did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the main-page routes ran next`);
+          }
+        }
+        if (Date.now() >= deadline || this.isStopping) break;
+        await sleep(300);
+      }
+      this.log(`[ROOT] [Prompt #${n}] headless-harvest: no complete editor stream arrived in the invisible browser within ${Math.round(waitMs / 1000)}s — the main-page routes will run`, 'warn');
+      return fail('the copied session was accepted, but the editor playback stream did not complete in the invisible browser in time — the main-page routes ran next');
+    } catch (e) {
+      return fail('the invisible-browser harvest hit a problem — the main-page routes ran next');
+    } finally {
+      try { if (session && session.capture) session.capture.clearDownloadAttempt(captureKey); } catch (e) {}
+      await this._headlessCloseSession(session);
+    }
   }
 
   /**
@@ -6635,31 +6960,48 @@ class FlowAutomationEngine {
       try { await this._verbatimReplayProbe(task, captureKey); } catch (e) {}
     }
 
-    // --- v2.48.41 (MAIN-PAGE HARVEST PACK — OWNER ORDER
-    // 2026-11-04): VIDEO ki poori tartib ab bas do qadam
-    // hai, dono MAIN project page par, kuch khole ya
-    // click kiye baghair:
-    //   1. mainpage-harvest — main page ki apni stream
+    // --- v2.48.41 (MAIN-PAGE HARVEST PACK) →
+    // v2.48.44 (HEADLESS HARVEST PACK — OWNER SEQUENCE
+    // 2026-11-04): VIDEO ki tartib ab teen qadam hai:
+    //   1. headless-harvest — profile ki copy par
+    //      BILKUL BINA-WINDOW Chrome me is task ka
+    //      editor + us ki playback stream (probe-first:
+    //      copied session qubool na ho to editor khule
+    //      baghair haar; screen par kuch aa hi nahi
+    //      sakta kyunki window banti hi nahi);
+    //   2. mainpage-harvest — main page ki apni stream
     //      kitab se is task ki file: pehle se pakdi hui
     //      mukammal body, warna usi page ke apne JS
     //      context se poora fetch (range jawab ko bhi
     //      wahi poora karta hai);
-    //   2. grid-replay — seekhi hui mint call ka hu-bahu
+    //   3. grid-replay — seekhi hui mint call ka hu-bahu
     //      (verbatim) replay grid page se; teacher ka
     //      address aaye to fetch kabhi nahi.
-    // Dono haar jayein to attempt EMAANDARI se FAIL hota
-    // hai — editor-harvest (visible + background),
+    // Teeno haar jayein to attempt EMAANDARI se FAIL
+    // hota hai — editor-harvest (visible + background),
     // replay-context, direct-viewer, ⋮ menu, blob-
     // harvest, backend-fetch aur tile-src sab video ke
     // attempt path se HAMESHA ke liye bahar hain; koi
     // fallback kuch nahi dikhata. Retry rounds phir yahi
-    // do raaste aazmate hain. Prompt dobara KABHI submit
-    // nahi hota (sacred rule barkarar).
+    // teen raaste aazmate hain. Prompt dobara KABHI
+    // submit nahi hota (sacred rule barkarar).
     // IMAGE tasks is hisse ko chhute hi nahi — un ki
     // purani tartib (backend → kram-bandhan → readiness
     // → tile-src → native UI) neeche bilkul waisi hi
     // chalti hai. ---
     if (!isImage) {
+      try {
+        const okHh = await this._tryHeadlessHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
+        if (okHh || task.mediaSaved) {
+          try {
+            this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
+          } catch (e) {}
+          const wonHh = attempts.filter(a => a.ok).pop();
+          return { ok: true, strategy: wonHh ? wonHh.strategy : 'headless-harvest', attempts };
+        }
+      } catch (e) {
+        attempts.push({ strategy: 'headless-harvest', ok: false, note: 'the invisible-browser harvest hit a problem — the main-page routes ran next' });
+      }
       try {
         const okMp = await this._tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
         if (okMp || task.mediaSaved) {
@@ -6688,7 +7030,7 @@ class FlowAutomationEngine {
         attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid replay hit a problem' });
       }
       // EMAANDAR FAIL: is ke baad koi rasta nahi bacha.
-      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: no usable stream for this video was seen on the main project page, and grid replay did not produce its file. Nothing was opened or clicked anywhere; the prompt was NOT resubmitted.`, 'warn');
+      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: the invisible-browser harvest did not produce this video's file, no usable stream for this video was seen on the main project page, and grid replay did not produce its file. Nothing was opened or clicked anywhere; the prompt was NOT resubmitted.`, 'warn');
       try {
         this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
       } catch (e) {}
@@ -6890,8 +7232,9 @@ class FlowAutomationEngine {
     // backend-first qadam bhi gaya — bandha hua backend
     // link (lh3 wala, hamesha HTML poision sabit hua)
     // fetch karna video ke raaston me nahi raha; video
-    // ki retry sirf mainpage-harvest + grid-replay
-    // chalati hai (neeche downloadTaskMedia se). Register
+    // ki retry wahi tartib chalati hai jo cascade ki hai
+    // (v2.48.44 se: headless-harvest + mainpage-harvest
+    // + grid-replay — neeche downloadTaskMedia se). Register
     // barkarar hai — bandhan ki kitab mainpage-harvest
     // ke ummeedwaaron ko bandhti hai. IMAGE ke liye
     // backend-first bilkul pehle jaisa hai.

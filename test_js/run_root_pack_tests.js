@@ -35,6 +35,7 @@ const {
   isPartialHarvestResponse,
   mainpageHarvestVerdict,
   mainpageEntryPick,
+  mainpageBindingPlan,
   fullFetchUrlCandidates,
   mainpageAuditOf,
   formatMainpageAudit,
@@ -813,6 +814,244 @@ async function main() {
     eq('CS NC main-page stream stays stream-get', c2.firstSeen, 'stream-get');
     eq('CS NC main-page stream — preEditorUrl yes', c2.preEditorUrl, 'yes');
     eq('CS NC unseen url — firstSeen none', nc.cascadeForKey('k-cs', FC_FRESH3).firstSeen, 'none');
+  }
+
+  // ---------------------------------------------------------------------------
+  // M. v2.48.42 — MAIN-PAGE BINDING PACK:
+  //   (a) mainpageBindingPlan (khalis): first-appearance
+  //       jeet, exclusion jeet, ambiguity inkaar, aur ki
+  //       khidki wala stream kabhi mera nahi;
+  //   (b) capture kitab: firstSeenAt pehli nazar par
+  //       rukta hai, claim-once label, khidkiyan +
+  //       pendingOthers hisaab;
+  //   (c) audit lines me bindReason/claimedBy (aur un
+  //       ke baghair .41 wali shakal barkarar);
+  //   (d) ENGINE: first-appearance save, viewport-
+  //       trigger ke baad completion fetch + save,
+  //       exclusion save, ambiguity par ZERO fetch,
+  //       claimed stream doosri task ko kabhi nahi,
+  //       viewport intezaar me do naye = inkaar.
+  // ---------------------------------------------------------------------------
+  {
+    const W = [{ key: 'k1', start: 1000 }, { key: 'k2', start: 2000 }];
+    const cand = (url, t) => ({ url, firstSeenAt: t });
+    // first-appearance: meri khidki wala akela stream
+    const pFa = mainpageBindingPlan({ candidates: [cand('u-old', 1500), cand('u-mine', 2500)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 1 });
+    eq('BIND-PLAN first-appearance binds', pFa.bind, true);
+    eq('BIND-PLAN first-appearance reason', pFa.reason, 'first-appearance');
+    eq('BIND-PLAN first-appearance picks my window stream', pFa.url, 'u-mine');
+    // khidkiyan be-tarteeb aayen to bhi wahi faisla
+    const pFa2 = mainpageBindingPlan({ candidates: [cand('u-mine', 2500)], windows: [W[1], W[0]], ownKey: 'k2', windowStart: 2000, pendingOthers: 0 });
+    eq('BIND-PLAN unsorted windows still bind first-appearance', pFa2.url, 'u-mine');
+    // sirf aur ki khidki wala — mera nahi, exclusion bhi nahi (aur baqi hai)
+    const pOther = mainpageBindingPlan({ candidates: [cand('u-old', 1500)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 1 });
+    eq('BIND-PLAN earlier-window stream does not bind', pOther.bind, false);
+    eq('BIND-PLAN earlier-window reason is none', pOther.reason, 'none');
+    // exclusion: akela bacha (kisi khidki se pehle ka), akela baqi download
+    const pEx = mainpageBindingPlan({ candidates: [cand('u-early', 500)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 0 });
+    eq('BIND-PLAN exclusion binds', pEx.bind, true);
+    eq('BIND-PLAN exclusion reason', pEx.reason, 'exclusion');
+    // exclusion band: aur ki khidki wala akela bacha bhi mera nahi
+    const pExNo = mainpageBindingPlan({ candidates: [cand('u-old', 1500)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 0 });
+    eq('BIND-PLAN exclusion never takes another window stream', pExNo.bind, false);
+    // exclusion band: doosra download baqi ho to bhi nahi
+    const pExPend = mainpageBindingPlan({ candidates: [cand('u-early', 500)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 1 });
+    eq('BIND-PLAN exclusion blocked while another download pends', pExPend.bind, false);
+    // ambiguity: meri khidki me do naye — koi nahi
+    const pAmb = mainpageBindingPlan({ candidates: [cand('u-a', 2500), cand('u-b', 2600)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 0 });
+    eq('BIND-PLAN two in my window is ambiguous', pAmb.reason, 'ambiguous');
+    eq('BIND-PLAN ambiguous binds nothing', pAmb.bind, false);
+    eq('BIND-PLAN ambiguous count is 2', pAmb.count, 2);
+    // khaali kitab / ghalat input
+    eq('BIND-PLAN empty book is none', mainpageBindingPlan({ candidates: [], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 0 }).reason, 'none');
+    eq('BIND-PLAN garbage input is none', mainpageBindingPlan(null).reason, 'none');
+  }
+  {
+    // (b) capture kitab — firstSeenAt, claim, khidkiyan
+    const nc = new NetworkCapture({});
+    nc.arm();
+    const t1 = Date.now() - 5000;
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, t1);
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, t1 + 900);
+    const e1 = nc.mainpageEntries().find(x => x.url === GV_URL);
+    eq('BIND-NC firstSeenAt survives a re-sighting', e1.firstSeenAt, t1);
+    eq('BIND-NC last-seen still advances', e1.at, t1 + 900);
+    nc.mainpageNoteWindow('k-w1', t1 + 1000);
+    nc.mainpageNoteWindow('k-w1', t1 + 500);
+    nc.mainpageNoteWindow('k-w1', t1 + 1500);
+    eq('BIND-NC window keeps its earliest start', nc.mainpageWindowsList().find(w => w.key === 'k-w1').start, t1 + 500);
+    nc.mainpageNoteWindow('k-w2', t1 + 2000);
+    eq('BIND-NC pendingOthers counts the unbound other', nc.mainpagePendingOthers('k-w1'), 1);
+    nc.claimMainpageVideo(FC_FRESH, { key: 'k-w2', label: '2' });
+    eq('BIND-NC a claimed window is no longer pending', nc.mainpagePendingOthers('k-w1'), 0);
+    eq('BIND-NC claim label recorded', nc.mainpageClaimedByLabel(FC_FRESH), '2');
+    eq('BIND-NC claim key recorded', nc.mainpageClaimedKey(FC_FRESH), 'k-w2');
+    nc.claimMainpageVideo(FC_FRESH, { key: 'k-w9', label: '9' });
+    eq('BIND-NC claim-once — second claim never overwrites', nc.mainpageClaimedByLabel(FC_FRESH), '2');
+    nc.mainpageNoteWindow('k-w3', t1 + 3000);
+    eq('BIND-NC a fresh window pends again', nc.mainpagePendingOthers('k-w1'), 1);
+    nc.mainpageMarkWindowDone('k-w3');
+    eq('BIND-NC a done window is no longer pending', nc.mainpagePendingOthers('k-w1'), 0);
+    const nc2 = new NetworkCapture({});
+    nc2.noteRenderCompleted('k-rc');
+    eq('BIND-NC render-complete registers the window', nc2.mainpageWindowsList().length, 1);
+    eq('BIND-NC audit fields ride the sighting audit', (() => {
+      const audits = [];
+      const nc3 = new NetworkCapture({});
+      nc3.onMainpageAudit = (a) => audits.push(a);
+      nc3.arm();
+      nc3._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, Date.now());
+      return audits.length === 1 && audits[0].bindReason === 'none' && audits[0].claimedBy === 'none';
+    })(), true);
+  }
+  {
+    // (c) audit line ki shakal
+    const aB = mainpageAuditOf({ host: 'h.googlevideo.com', bytes: 5, src: 'googlevideo', decision: 'captured', reason: 'partial-stream', bindReason: 'exclusion', claimedBy: '2' });
+    eq('BIND-AUDIT bindReason passes through', aB.bindReason, 'exclusion');
+    eq('BIND-AUDIT claimedBy passes through', aB.claimedBy, '2');
+    const lineB = formatMainpageAudit(aB);
+    ok('BIND-AUDIT line carries bindReason + claimedBy', lineB.includes('bindReason=exclusion') && lineB.includes('claimedBy=2'));
+    const lineOld = formatMainpageAudit(mainpageAuditOf({ host: 'h.googlevideo.com', bytes: 5, src: 'googlevideo', decision: 'captured', reason: 'partial-stream' }));
+    ok('BIND-AUDIT line without binding fields keeps the .41 shape', !lineOld.includes('bindReason='));
+  }
+  {
+    // (d1) ENGINE first-appearance — padosi task ka
+    // stream kitab me hai, mera bhi; mera bandhta hai,
+    // padosi ka haath nahi lagta.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpageViewportSettleMs: 100 });
+    const full = mp4Buffer(1250000); full[100] = 0xCD;
+    eng.page = fakePage('main-bind-fa', { evaluateResult: { status: 200, b64: full.toString('base64') } });
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    const now = Date.now();
+    nc.mainpageNoteWindow('k-bind-other', now - 2000);
+    const GV_OTHER = 'https://rr9---sn-zzz999.googlevideo.com/videoplayback?expire=999&id=other&itag=18';
+    nc._recordMainpageSighting({ url: GV_OTHER, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, now - 1500);
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, now - 100);
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-bind-mine', videoId: 'k-bind-mine', startTime: now - 3000, renderCompletedAt: now - 500 };
+    const attempts = [];
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-bind-mine', 0);
+    eq('BIND-ENG first-appearance stream saves', okSave, true);
+    ok('BIND-ENG promoted audit carries bindReason=first-appearance', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=first-appearance')));
+    ok('BIND-ENG promoted audit carries claimedBy=1', logs.some(m => m.includes('decision=promoted') && m.includes('claimedBy=1')));
+    eq('BIND-ENG my stream is claimed', nc.isMainpageClaimed(GV_URL), true);
+    eq('BIND-ENG the earlier task stream stays unclaimed', nc.isMainpageClaimed(GV_OTHER), false);
+    eq('BIND-ENG claim label is my task', nc.mainpageClaimedByLabel(GV_URL), '1');
+  }
+  {
+    // (d2) ENGINE viewport-trigger — kitab khaali hai;
+    // tile nazar me aane ke baad stream aata hai,
+    // completion fetch usi page ke andar, phir save.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 3000, mainpageViewportSettleMs: 300 });
+    const full = mp4Buffer(1250000); full[100] = 0xCE;
+    eng.page = fakePage('main-bind-vp', { evaluateResult: { status: 200, b64: full.toString('base64') } });
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-bind-vp', videoId: 'k-bind-vp', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const attempts = [];
+    const p = eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-bind-vp', 0);
+    setTimeout(() => {
+      nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, Date.now());
+    }, 500);
+    const okSave = await p;
+    eq('BIND-ENG viewport-trigger stream saves after the completion fetch', okSave, true);
+    ok('BIND-ENG viewport trigger was logged', logs.some(m => m.includes('viewport trigger')));
+    ok('BIND-ENG promoted audit carries bindReason=viewport-trigger', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=viewport-trigger')));
+    ok('BIND-ENG win line is via=mainpage-harvest', logs.some(m => m.includes('[ROOT] via=mainpage-harvest gap=')));
+    ok('BIND-ENG the attempt strategy is mainpage-harvest', attempts.some(a => a.strategy === 'mainpage-harvest' && a.ok));
+  }
+  {
+    // (d3) ENGINE exclusion — stream har khidki se
+    // pehle ka hai, kitab me akela hai, download bhi
+    // akela baqi hai: bandhta hai.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpageViewportSettleMs: 100 });
+    const full = mp4Buffer(1250000); full[100] = 0xCF;
+    eng.page = fakePage('main-bind-ex', { evaluateResult: { status: 200, b64: full.toString('base64') } });
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    const now = Date.now();
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, now - 3000);
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-bind-ex', videoId: 'k-bind-ex', startTime: now - 4000, renderCompletedAt: now - 500 };
+    const attempts = [];
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-bind-ex', 0);
+    eq('BIND-ENG exclusion stream saves', okSave, true);
+    ok('BIND-ENG promoted audit carries bindReason=exclusion', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=exclusion')));
+  }
+  {
+    // (d4) ENGINE ambiguity — meri khidki me do naye
+    // stream: inkaar, aur fetch ki koshish ZERO.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpageViewportSettleMs: 100 });
+    eng.page = fakePage('main-bind-amb');
+    eng._readTileMediaState = async () => null;
+    let fetchCalls = 0;
+    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return { buf: mp4Buffer(1250000), status: 200 }; };
+    const nc = eng.netCapture;
+    nc.arm();
+    const now = Date.now();
+    const GV_A = 'https://rr1---sn-aaa111.googlevideo.com/videoplayback?expire=999&id=a&itag=18';
+    const GV_B = 'https://rr3---sn-bbb222.googlevideo.com/videoplayback?expire=999&id=b&itag=18';
+    nc._recordMainpageSighting({ url: GV_A, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, now - 200);
+    nc._recordMainpageSighting({ url: GV_B, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, now - 100);
+    const task = { promptIndex: 0, captureKey: 'k-bind-amb', videoId: 'k-bind-amb', startTime: now - 3000, renderCompletedAt: now - 500 };
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-bind-amb', 0);
+    eq('BIND-ENG ambiguous attempt saves nothing', okSave, false);
+    eq('BIND-ENG ambiguity attempted NO fetch', fetchCalls, 0);
+    ok('BIND-ENG refusal line logged', logs.some(m => m.includes('not fetching any of them')));
+    eq('BIND-ENG neither ambiguous stream claimed', nc.isMainpageClaimed(GV_A) || nc.isMainpageClaimed(GV_B), false);
+  }
+  {
+    // (d5) ENGINE claim-once — pehli task ke naam hua
+    // stream doosri task ki retry ko kabhi nahi milta.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpageViewportSettleMs: 100 });
+    const full = mp4Buffer(1250000);
+    eng.page = fakePage('main-bind-once', { evaluateResult: { status: 200, b64: full.toString('base64') } });
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    const now = Date.now();
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, now - 100);
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const t1 = { promptIndex: 0, captureKey: 'k-once-1', videoId: 'k-once-1', startTime: now - 3000, renderCompletedAt: now - 500 };
+    const ok1 = await eng._tryMainpageHarvest(t1, '/tmp', { duration: '10s' }, [], 'k-once-1', 0);
+    eq('BIND-ENG first task claims and saves', ok1, true);
+    eq('BIND-ENG claim label after the first save', nc.mainpageClaimedByLabel(GV_URL), '1');
+    const t2 = { promptIndex: 1, captureKey: 'k-once-2', videoId: 'k-once-2', startTime: now - 3000, renderCompletedAt: now - 50 };
+    const ok2 = await eng._tryMainpageHarvest(t2, '/tmp', { duration: '10s' }, [], 'k-once-2', 0);
+    eq('BIND-ENG claimed stream is never offered to the second task', ok2, false);
+    eq('BIND-ENG claim label is still the first task', nc.mainpageClaimedByLabel(GV_URL), '1');
+  }
+  {
+    // (d6) ENGINE viewport ambiguity — intezaar me DO
+    // naye stream: inkaar, fetch ZERO.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 3000, mainpageViewportSettleMs: 1500 });
+    eng.page = fakePage('main-bind-vp2');
+    eng._readTileMediaState = async () => null;
+    let fetchCalls = 0;
+    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return { buf: mp4Buffer(1250000), status: 200 }; };
+    const nc = eng.netCapture;
+    nc.arm();
+    const GV_C = 'https://rr5---sn-ccc333.googlevideo.com/videoplayback?expire=999&id=c&itag=18';
+    const GV_D = 'https://rr7---sn-ddd444.googlevideo.com/videoplayback?expire=999&id=d&itag=18';
+    const task = { promptIndex: 0, captureKey: 'k-bind-vp2', videoId: 'k-bind-vp2', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const p = eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-bind-vp2', 0);
+    setTimeout(() => { nc._recordMainpageSighting({ url: GV_C, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, Date.now()); }, 400);
+    setTimeout(() => { nc._recordMainpageSighting({ url: GV_D, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, Date.now()); }, 650);
+    const okSave = await p;
+    eq('BIND-ENG two new streams in the viewport wait save nothing', okSave, false);
+    eq('BIND-ENG viewport ambiguity attempted NO fetch', fetchCalls, 0);
+    ok('BIND-ENG viewport refusal line logged', logs.some(m => m.includes('not fetching any of them')));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

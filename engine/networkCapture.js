@@ -663,6 +663,15 @@ class NetworkCapture {
     // naam ho chuka address (doosra phir nahi lega).
     this.mainpageVideos = []; // taaza peeche, hadd 50
     this.mainpageClaimed = new Set(); // url
+    // v2.48.42 (MAIN-PAGE BINDING PACK): bandhan ki
+    // kitab — kaun sa address KIS task ke naam hua
+    // (key = captureKey, label = log wala task#), aur
+    // har task ki apni khidki (render-complete ka pal)
+    // jis ke andar pehli baar dikha stream usi ka
+    // bandhta hai. Dono run ke andar attempts aur
+    // download-retry rounds ke paar rehte hain.
+    this.mainpageClaimedBy = new Map(); // url -> { key, label }
+    this.mainpageWindows = new Map(); // captureKey -> { start, done }
     this._mainpagePending = new Map(); // CDP requestId -> { url, src, declared, status, contentRange }
     this._mainpageBodies = new Map(); // url -> { buffer, at } (googlevideo tukde)
     // Engine har download round me apni duration ka size
@@ -1656,7 +1665,13 @@ class NetworkCapture {
         if (!this.onMainpageAudit) return;
         try {
           const a = saveGuard.mainpageAuditOf({
-            host: hostOf(pend.url), bytes, src: pend.src, decision, reason
+            host: hostOf(pend.url), bytes, src: pend.src, decision, reason,
+            // v2.48.42: kitab me darj ke pal bandhan ka
+            // haal — pakda gaya stream abhi kisi ka nahi
+            // bandha (bindReason=none); naam ho chuka ho
+            // to us task ka label.
+            bindReason: 'none',
+            claimedBy: this.mainpageClaimedByLabel(pend.url) || 'none'
           });
           a.timing = bucket;
           a.partial = partial;
@@ -1666,6 +1681,12 @@ class NetworkCapture {
       let teacherUrl = null;
       try { teacherUrl = this.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
       if (teacherUrl && pend.url === teacherUrl) { emit('ignored', 'teacher-url'); return; }
+      // v2.48.42: PEHLI nazar ka pal — dobara dikhne par
+      // entry taaza hoti hai (at aage badhta hai) lekin
+      // firstSeenAt sab se pehle wala hi rehta hai;
+      // bandhan ka faisla isi par hota hai.
+      const prevIdx = this.mainpageVideos.findIndex(e => e.url === pend.url);
+      const prevEntry = prevIdx >= 0 ? this.mainpageVideos[prevIdx] : null;
       const entry = {
         url: pend.url,
         src: pend.src === 'googlevideo' ? 'googlevideo' : 'flow-content',
@@ -1673,14 +1694,15 @@ class NetworkCapture {
         bytes,
         bodyBytes: bodyLen,
         at: now,
+        firstSeenAt: prevEntry ? (Number.isFinite(prevEntry.firstSeenAt) ? prevEntry.firstSeenAt : prevEntry.at) : now,
+        claimedBy: this.mainpageClaimedByLabel(pend.url) || null,
         timing: bucket,
         status: Number.isFinite(pend.status) ? pend.status : 0,
         contentRange: cr,
         declared: total > 0 ? total : (pend.declared || 0),
         partial
       };
-      const prev = this.mainpageVideos.findIndex(e => e.url === pend.url);
-      if (prev >= 0) this.mainpageVideos.splice(prev, 1);
+      if (prevIdx >= 0) this.mainpageVideos.splice(prevIdx, 1);
       this.mainpageVideos.push(entry);
       while (this.mainpageVideos.length > 50) this.mainpageVideos.shift();
       // googlevideo tukda kitab me — hadd 2, size hadd
@@ -1702,7 +1724,15 @@ class NetworkCapture {
 
   /** v2.48.41: mainpage kitab ki nakal (purane se naye ki taraf; buffer kabhi andar nahi). */
   mainpageEntries() {
-    try { return this.mainpageVideos.slice(); } catch (e) { return []; }
+    try {
+      // v2.48.42: claimedBy hamesha taza — entry darj
+      // hone ke BAAD naam hua ho to bhi dikhe.
+      return this.mainpageVideos.map(e => ({
+        ...e,
+        firstSeenAt: Number.isFinite(e.firstSeenAt) ? e.firstSeenAt : e.at,
+        claimedBy: this.mainpageClaimedByLabel(e.url) || e.claimedBy || null
+      }));
+    } catch (e) { return []; }
   }
 
   /**
@@ -1723,13 +1753,105 @@ class NetworkCapture {
     } catch (e) { return null; }
   }
 
-  /** v2.48.41: mainpage address kisi task ke naam karo (flow-content wali purani kitab me bhi nishaan). */
-  claimMainpageVideo(url) {
+  /**
+   * v2.48.41: mainpage address kisi task ke naam karo (flow-content wali purani kitab me bhi nishaan).
+   * v2.48.42: claim = { key, label } diya jaye to naam
+   * kis task ka hai wo bhi darj hota hai (claim-once:
+   * pehla naam hi rehta hai, doosra kabhi nahi chadhta).
+   */
+  claimMainpageVideo(url, claim) {
     try {
       if (!url) return;
       this.mainpageClaimed.add(url);
       this.flowContentClaimed.add(url);
+      if (claim && (claim.key != null || claim.label != null) && !this.mainpageClaimedBy.has(url)) {
+        this.mainpageClaimedBy.set(url, {
+          key: claim.key != null ? String(claim.key) : null,
+          label: claim.label != null ? String(claim.label) : null
+        });
+      }
     } catch (e) {}
+  }
+
+  /** v2.48.42: is address ko kis task ke key ne naam kiya (nahi to null). */
+  mainpageClaimedKey(url) {
+    try {
+      const info = url ? this.mainpageClaimedBy.get(url) : null;
+      return info && info.key ? info.key : null;
+    } catch (e) { return null; }
+  }
+
+  /** v2.48.42: is address ke naam ka log-label (task#) — nahi to null. */
+  mainpageClaimedByLabel(url) {
+    try {
+      const info = url ? this.mainpageClaimedBy.get(url) : null;
+      return info && info.label ? info.label : null;
+    } catch (e) { return null; }
+  }
+
+  /**
+   * v2.48.42: ek task ki khidki darj karo (us ke
+   * render-complete ka pal). Sab se pehle wala aaghaz
+   * hi rehta hai — retry round khidki ko aage nahi
+   * dhakelta. Purani khidkiyan (6 ghante se zyada)
+   * saaf hoti rehti hain taaki kitab na bhare.
+   */
+  mainpageNoteWindow(key, start) {
+    try {
+      if (!key) return;
+      const t = Number.isFinite(start) ? start : Date.now();
+      const prev = this.mainpageWindows.get(key);
+      if (!prev) this.mainpageWindows.set(key, { start: t, done: false });
+      else if (t < prev.start) prev.start = t;
+      for (const [k, w] of this.mainpageWindows) {
+        if (k !== key && Number.isFinite(w.start) && t - w.start > 6 * 60 * 60 * 1000) {
+          this.mainpageWindows.delete(k);
+        }
+      }
+      while (this.mainpageWindows.size > 100) {
+        this.mainpageWindows.delete(this.mainpageWindows.keys().next().value);
+      }
+    } catch (e) {}
+  }
+
+  /** v2.48.42: is task ka download mukammal — khidki band. */
+  mainpageMarkWindowDone(key) {
+    try {
+      if (!key) return;
+      const w = this.mainpageWindows.get(key);
+      if (w) w.done = true;
+      else this.mainpageWindows.set(key, { start: 0, done: true });
+    } catch (e) {}
+  }
+
+  /** v2.48.42: saari darj khidkiyon ki nakal: [{ key, start, done }] (aaghaz ki tartib me). */
+  mainpageWindowsList() {
+    try {
+      return Array.from(this.mainpageWindows.entries())
+        .map(([key, w]) => ({ key, start: w.start, done: !!w.done }))
+        .sort((a, b) => a.start - b.start);
+    } catch (e) { return []; }
+  }
+
+  /**
+   * v2.48.42: MERI khidki ke alawa aur kitni khidkiyan
+   * abhi unbound (koi stream un ke naam nahi) aur
+   * na-mukammal (download baqi) hain — exclusion
+   * bandhan ki shart ka hisaab.
+   */
+  mainpagePendingOthers(ownKey) {
+    try {
+      let count = 0;
+      for (const [key, w] of this.mainpageWindows) {
+        if (key === ownKey || w.done) continue;
+        let bound = false;
+        for (const info of this.mainpageClaimedBy.values()) {
+          if (info && info.key === key) { bound = true; break; }
+        }
+        if (!bound) count++;
+      }
+      return count;
+    } catch (e) { return 0; }
   }
 
   /** v2.48.41: ye mainpage address pehle se kisi ke naam hai kya? */
@@ -1824,7 +1946,13 @@ class NetworkCapture {
    * is pal aana sab se zyada maqool hai).
    */
   noteRenderCompleted(key) {
-    if (key) this._mintLastRenderKey = key;
+    if (key) {
+      this._mintLastRenderKey = key;
+      // v2.48.42: yahi pal is task ki bandhan-khidki ka
+      // aaghaz hai (engine task.renderCompletedAt yahi
+      // pal rakhta hai — dono ek hi ghari).
+      this.mainpageNoteWindow(key, Date.now());
+    }
   }
 
   /**

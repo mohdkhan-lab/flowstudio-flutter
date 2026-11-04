@@ -265,6 +265,15 @@ class FlowAutomationEngine {
     // download whose file stops growing for 45s is abandoned as
     // stalled, and the post-run watcher sweep fires after 5 minutes.
     this.downloadRoundTimeoutMs = Number(options.downloadRoundTimeoutMs) > 0 ? Number(options.downloadRoundTimeoutMs) : 150000;
+    // v2.48.42 (MAIN-PAGE BINDING PACK): viewport
+    // trigger ki hadd bandhi intezaar khidki — tile ko
+    // nazar me laane ke baad stream ke aane ka intezaar
+    // (production 9s) aur pehle naye stream ke baad ka
+    // settle (1.2s — doosra aane wala ho to ambiguity
+    // pakdi jaye). Constructor options taaki test
+    // ghata saken.
+    this.mainpageViewportWaitMs = Number(options.mainpageViewportWaitMs) > 0 ? Number(options.mainpageViewportWaitMs) : 9000;
+    this.mainpageViewportSettleMs = Number(options.mainpageViewportSettleMs) > 0 ? Number(options.mainpageViewportSettleMs) : 1200;
     this.nativeDownloadStallMs = Number(options.nativeDownloadStallMs) > 0 ? Number(options.nativeDownloadStallMs) : 45000;
     this.watcherSweepDelayMs = Number(options.watcherSweepDelayMs) > 0 ? Number(options.watcherSweepDelayMs) : 300000;
     this._watcherSweepTimer = null;
@@ -5381,18 +5390,21 @@ class FlowAutomationEngine {
       const n = task.promptIndex + 1;
       try { cap.evictHarvest(captureKey); } catch (e) {}
       // Ye address ab is task ke naam claim bhi kar do —
-      // koi aur task use is run me dobara na le.
+      // koi aur task use is run me dobara na le
+      // (v2.48.42: naam kis task ka hai wo bhi darj —
+      // claim-once kitab).
       try {
-        if (typeof cap.claimMainpageVideo === 'function') cap.claimMainpageVideo(entry.url);
+        if (typeof cap.claimMainpageVideo === 'function') cap.claimMainpageVideo(entry.url, { key: captureKey || null, label: String(n) });
         else cap.claimFlowContentVideo(entry.url);
       } catch (e) {}
       task.completedVideoUrl = entry.url;
       const ok = await this._saveBufferForTask(task, downloadFolder, settings, entry.buffer, entry.url);
       if (ok || task.mediaSaved) {
         const gapSec = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+        try { if (typeof cap.mainpageMarkWindowDone === 'function') cap.mainpageMarkWindowDone(captureKey); } catch (e) {}
         this.log(`[ROOT] via=mainpage-harvest gap=${gapSec}s`, 'success');
         try {
-          this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(saveGuard.mainpageAuditOf({ host: networkCapture.hostOf(entry.url), bytes: entry.buffer.length, src: 'flow-content', decision: 'promoted', reason: 'ok' }))} timing=${cap && typeof cap._mainpageTimingBucket === 'function' ? cap._mainpageTimingBucket() : 'download-attempt'}`, 'info');
+          this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(saveGuard.mainpageAuditOf({ host: networkCapture.hostOf(entry.url), bytes: entry.buffer.length, src: 'flow-content', decision: 'promoted', reason: 'ok', bindReason: 'bound', claimedBy: String(n) }))} timing=${cap && typeof cap._mainpageTimingBucket === 'function' ? cap._mainpageTimingBucket() : 'download-attempt'}`, 'info');
         } catch (e) {}
         attempts.push({ strategy: 'mainpage-harvest', ok: true, note: `the exact file was saved from the complete body the main project page itself had already fetched from Flow's server — no editor, no download click, no menu, no second fetch; render→save gap ${gapSec}s` });
         return true;
@@ -5477,6 +5489,145 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.42 (MAIN-PAGE BINDING PACK): VIEWPORT TRIGGER —
+   * is task ki tile ko main project page par sirf
+   * scrollIntoView se viewport me lao. Page grid par hi
+   * rehta hai; ye CLICK nahi hai, kuch khulta nahi, koi
+   * naya tab/page nahi banta — download ke dauraan
+   * ijaazat-shuda ek-matra page interaction yahi hai.
+   * Flow apne grid tiles ki preview stream aksar sirf
+   * tab bhejta hai jab tile nazar ke saamne ho
+   * (ZEROCLICK9: pehli koshish me koi stream nahi,
+   * retry me tile nazar aate hi stream aa gaya) — is
+   * scroll ke baad pehli baar dikha stream is task ke
+   * liye bandhta hai (bulane wala faisla karta hai).
+   * Lautta hai: true (scroll hua) | false.
+   */
+  async _scrollMainpageTileIntoView(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return false;
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return false;
+      const r = await this.page.evaluate((tileIdx) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (!el || typeof el.scrollIntoView !== 'function') return false;
+          el.scrollIntoView({ block: 'center', inline: 'nearest' });
+          return true;
+        } catch (e) { return false; }
+      }, idx);
+      return !!r;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.42: ek BANDHE hue mainpage ummeedwaar ko
+   * mukammal karna — kitab me mukammal body ho to wohi,
+   * warna usi URL ka POORA fetch MAIN page ke andar se
+   * (_fetchMainpageFullInPage); phir saveGuard ke
+   * darwaze (teacher-url / content-hash / duplicate)
+   * aur save. Yahi .41 wala completion rasta hai, sirf
+   * alag function me taaki har bandhan-raasta
+   * (bound / first-appearance / viewport-trigger /
+   * exclusion) isi ek se guzre. ctx = { captureKey,
+   * bindReason, floorBytes, teacherUrl, teacherHash,
+   * timingBucket, gapSec }. Jeet par address is task
+   * ke naam claim hota hai (claim-once) aur khidki
+   * band hoti hai. Lautta hai: true (save) | false.
+   */
+  async _mainpageCompleteCandidate(task, downloadFolder, settings, attempts, entry, ctx) {
+    const n = task.promptIndex + 1;
+    const cap = this.netCapture;
+    const captureKey = ctx.captureKey;
+    const floorBytes = ctx.floorBytes;
+    const teacherUrl = ctx.teacherUrl;
+    const teacherHash = ctx.teacherHash;
+    let buf = null;
+    let haveBody = false;
+    // kitab me pehle se pakdi hui body (mukammal ho to).
+    try {
+      const held = typeof cap.mainpageBodyForUrl === 'function' ? cap.mainpageBodyForUrl(entry.url) : null;
+      if (held && held.buffer && held.buffer.length > 0) { buf = held.buffer; haveBody = true; }
+    } catch (e) {}
+    if (haveBody && entry.partial && entry.src === 'googlevideo') {
+      // googlevideo tukda mukammal nahi — poora fetch
+      // hi asal rasta hai.
+      buf = null; haveBody = false;
+    }
+    if (!haveBody) {
+      const fetched = await this._fetchMainpageFullInPage(entry.url);
+      if (fetched && fetched.buf) {
+        buf = fetched.buf;
+        haveBody = true;
+        entry.status = fetched.status || entry.status;
+        if (fetched.status === 206) entry.partial = true;
+      }
+    }
+    if (!haveBody || !buf) return false;
+    const verdictFor = (b, statusOverride) => {
+      const hash = saveGuard.contentHash(b);
+      let dup = false;
+      try { dup = !!saveGuard.checkDuplicate(b, captureKey || null).dup; } catch (e) { dup = false; }
+      return saveGuard.mainpageHarvestVerdict({
+        bound: true,
+        url: entry.url,
+        teacherUrl,
+        byteLength: b.length,
+        floorBytes,
+        headerOk: downloadFetch.looksLikeVideoBuffer(b),
+        partial: (statusOverride || entry.status) === 206 ? true : false,
+        status: statusOverride || entry.status,
+        contentRange: entry.contentRange,
+        declaredLength: entry.declaredLength,
+        duplicate: dup,
+        hash,
+        teacherHash
+      });
+    };
+    let verdict = verdictFor(buf);
+    if (verdict.action === 'fetch-full') {
+      // kitab wali body adhoori nikli — usi URL ka
+      // poora fetch MAIN page ke andar se, phir
+      // faisla dobara.
+      const fetched = await this._fetchMainpageFullInPage(entry.url);
+      if (fetched && fetched.buf && fetched.buf.length > 0) {
+        buf = fetched.buf;
+        verdict = verdictFor(buf, fetched.status);
+      }
+    }
+    if (verdict.action !== 'save') {
+      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest candidate rejected (${verdict.reason}) — trying the remaining main-page candidates`, 'warn');
+      return false;
+    }
+    try {
+      cap.claimMainpageVideo(entry.url, { key: captureKey || null, label: String(n) });
+    } catch (e) {}
+    task.completedVideoUrl = entry.url;
+    const ok = await this._saveBufferForTask(task, downloadFolder, settings, buf, entry.url);
+    if (ok || task.mediaSaved) {
+      const g = ctx.gapSec();
+      try { if (typeof cap.mainpageMarkWindowDone === 'function') cap.mainpageMarkWindowDone(captureKey); } catch (e) {}
+      this.log(`[ROOT] via=mainpage-harvest gap=${g}s`, 'success');
+      try {
+        const audit = saveGuard.mainpageAuditOf({
+          host: networkCapture.hostOf(entry.url), bytes: buf.length,
+          src: entry.src === 'googlevideo' ? 'googlevideo' : 'flow-content',
+          decision: 'promoted', reason: 'ok',
+          bindReason: ctx.bindReason || 'none', claimedBy: String(n)
+        });
+        this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${ctx.timingBucket()}`, 'info');
+      } catch (e) {}
+      attempts.push({ strategy: 'mainpage-harvest', ok: true, note: `the file was captured from the main project page's own stream (${entry.src}), bound to this video by ${ctx.bindReason || 'binding'}, and completed with a full fetch inside that same page — no editor opened anywhere, no click, no menu; render→save gap ${g}s` });
+      return true;
+    }
+    attempts.push({ strategy: 'mainpage-harvest', ok: false, note: `the main-page stream for this video did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'})` });
+    return false;
+  }
+
+  /**
    * v2.48.41 (MAIN-PAGE HARVEST PACK — OWNER ORDER
    * 2026-11-04): VIDEO download ka PEHLA aur asal rasta.
    * Download SIRF usi project/grid page se hota hai jis
@@ -5484,38 +5635,43 @@ class FlowAutomationEngine {
    * (na main tab, na dusra tab, na background page), koi
    * button/menu click nahi hota.
    *
-   * Qadam:
+   * v2.48.42 (MAIN-PAGE BINDING PACK): ZEROCLICK9 ne
+   * sabit kiya ke streams main page par aate hain —
+   * rukawat BANDHAN tha (do unbound stream, koi bandha
+   * nahi, engine ne durust inkaar kiya). Ab bandhan
+   * QAAIDE se hota hai (saveGuard.mainpageBindingPlan +
+   * capture ki khidki/claim kitab):
    *   (a) kitab me is task ke naam pehle se MUKAMMAL
    *       body ho to wohi save (_tryHarvestSave);
    *   (b) tile ki apni <video> alamat ki audit — grid par
    *       is task ki tile me <video> hai kya, us ka src
    *       kis host ka hai ('[ROOT] mainpage-audit …
-   *       reason=tile-video-src'); src flow-content /
-   *       googlevideo ka ho to wo is task ka sab se
-   *       mazboot ummeedwaar hai (tile khud is task ki
-   *       hai — fingerprint bandish);
-   *   (c) mainpage kitab (capture.mainpageEntries) ke
-   *       ummeedwaar — bandhe hue (urlByKey) pehle, phir
-   *       tile-src wala, phir timing wale (render ke
-   *       dauraan dikhe, unclaimed, kisi aur task ke
-   *       naam nahi). Faisla saveGuard.mainpageEntryPick
-   *       + mainpageHarvestVerdict (teacher-url / hash /
-   *       duplicate darwaze barkarar). Kai unbound
-   *       timing ummeedwaar hon aur koi cross-match na
-   *       ho to DOUBT me fetch nahi hota (ghalat video
-   *       lene se behtar hai haar);
-   *   (d) ummeedwaar ki body kitab me mukammal ho to
-   *       wohi; warna usi URL ka POORA fetch MAIN page
-   *       ke andar se (_fetchMainpageFullInPage) —
-   *       adhoora mile to bhi verdict hi faisla karega;
-   *   (e) stream render-complete ke chand second baad
-   *       bhi aa sakti hai — is liye poora qadam ~6s ki
-   *       hadd bandhi poll me dobara hota hai.
+   *       reason=tile-video-src'); tile-src / urlByKey
+   *       wale MAZBOOT bandhe hue ummeedwaar pehle;
+   *   (c) BINDING PLAN: jo stream pehli baar MERI
+   *       khidki (mere render-complete se agli khidki
+   *       tak) me dikha, wo mera (first-appearance);
+   *       akela bacha unclaimed + akela baqi download =
+   *       exclusion; meri khidki me do ya zyada naye =
+   *       AMBIGUOUS inkaar (koi fetch nahi — ghalat
+   *       video miss se bura hai, ZEROCLICK2 sabak);
+   *   (d) koi bandhne wala na ho to VIEWPORT TRIGGER:
+   *       sirf is task ki tile scrollIntoView se
+   *       viewport me (koi click nahi, kuch khulta
+   *       nahi), hadd bandhi khidki (~9s) ka intezaar;
+   *       intezaar me pehli baar dikha akela stream
+   *       bandhta hai (viewport-trigger), do ya zyada
+   *       aayen to inkaar;
+   *   (e) bandha ummeedwaar
+   *       _mainpageCompleteCandidate se mukammal hota
+   *       hai (kitab body ya usi page ke andar poora
+   *       fetch; saveGuard darwaze barkarar).
    * Jeet par: '[ROOT] via=mainpage-harvest gap=<X>s' +
-   * mainpage-audit 'promoted' wali line. Kuch na mile
-   * to false — attempt EMAANDARI se aage badhta hai
-   * (grid-replay), aur wahan bhi na bane to FAIL.
-   * Prompt yahan KABHI dobara submit nahi hota.
+   * mainpage-audit 'promoted' line (bindReason +
+   * claimedBy ke saath). Kuch na mile to false —
+   * attempt EMAANDARI se aage badhta hai (grid-replay),
+   * aur wahan bhi na bane to FAIL. Prompt yahan KABHI
+   * dobara submit nahi hota.
    */
   async _tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint) {
     const n = task.promptIndex + 1;
@@ -5525,6 +5681,13 @@ class FlowAutomationEngine {
     const floorBytes = cap.harvestFloorBytes || downloadFetch.minBytesForDuration(settings && settings.duration);
     const gapSec = () => Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
     const timingBucket = () => (typeof cap._mainpageTimingBucket === 'function' ? cap._mainpageTimingBucket() : 'download-attempt');
+    const attemptStart = Date.now();
+    const windowStart = (Number.isFinite(task.renderCompletedAt) && task.renderCompletedAt > 0)
+      ? task.renderCompletedAt : attemptStart;
+    // Meri khidki darj karo — render-watch ne pehle hi
+    // darj ki ho to sab se pehla aaghaz barkarar rehta
+    // hai; retry round khidki aage nahi dhakelta.
+    try { if (typeof cap.mainpageNoteWindow === 'function') cap.mainpageNoteWindow(captureKey, windowStart); } catch (e) {}
     let teacherUrl = null;
     try { teacherUrl = cap.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
     let teacherHash = null;
@@ -5537,22 +5700,20 @@ class FlowAutomationEngine {
       if (raw && flowContent.isFlowContentVideoUrl(raw)) { tileSrcKind = 'flow-content'; tileSrcUrl = raw; }
       else if (raw && networkCapture.isGooglevideoPlaybackUrl(raw)) { tileSrcKind = 'googlevideo'; tileSrcUrl = raw; }
       const audit = tileSrcUrl
-        ? saveGuard.mainpageAuditOf({ host: networkCapture.hostOf(tileSrcUrl), bytes: 0, src: tileSrcKind, decision: 'captured', reason: 'tile-video-src' })
-        : saveGuard.mainpageAuditOf({ host: 'none', bytes: 0, src: 'none', decision: 'ignored', reason: raw ? 'tile-src-not-video-stream' : 'no-tile-video' });
+        ? saveGuard.mainpageAuditOf({ host: networkCapture.hostOf(tileSrcUrl), bytes: 0, src: tileSrcKind, decision: 'captured', reason: 'tile-video-src', bindReason: 'none', claimedBy: 'none' })
+        : saveGuard.mainpageAuditOf({ host: 'none', bytes: 0, src: 'none', decision: 'ignored', reason: raw ? 'tile-src-not-video-stream' : 'no-tile-video', bindReason: 'none', claimedBy: 'none' });
       this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${timingBucket()}`, 'info');
     } catch (e) {}
     const triedUrls = new Set();
-    const deadline = Date.now() + 6000;
-    let ambiguousNoted = false;
-    for (;;) {
-      if (task.mediaSaved) return true;
-      if (this.isStopping) return false;
-      // (a) mukammal bandhi hui body — sab se tez jeet.
-      try {
-        const okBody = await this._tryHarvestSave(task, downloadFolder, settings, attempts);
-        if (okBody || task.mediaSaved) return true;
-      } catch (e) {}
-      // (c) ummeedwaar ikatthe karo.
+    const failOut = () => {
+      attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'no usable stream for this video was seen on the main project page (see the mainpage-audit lines) — grid replay ran next; nothing was opened or clicked' });
+      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: no usable stream for this video on the main project page — grid replay will run`, 'warn');
+      return false;
+    };
+    // Ummeedwaar ikatthe karo — kitab se (teacher /
+    // claimed / doosri task ke naam hue / pehle aazmaye
+    // hue bahar) + tile-src wala mazboot ummeedwaar.
+    const buildCandidates = () => {
       let boundUrl = null;
       try {
         const b = cap.urlForKey(captureKey);
@@ -5577,7 +5738,9 @@ class FlowAutomationEngine {
           teacherHash,
           bound: !!bound,
           bodyBytes: e.bodyBytes || 0,
-          at: e.at || 0
+          at: e.at || 0,
+          firstSeenAt: Number.isFinite(e.firstSeenAt) ? e.firstSeenAt : (e.at || 0),
+          claimedBy: e.claimedBy || null
         });
       };
       for (const e of cap.mainpageEntries()) {
@@ -5590,9 +5753,11 @@ class FlowAutomationEngine {
         const isBound = !!boundUrl && e.url === boundUrl;
         const isTile = !!tileSrcUrl && e.url === tileSrcUrl;
         if (!isBound && !isTile) {
-          // timing bandish: render shuru se pehle ka jawab
-          // is task ka nahi ho sakta.
-          if ((task.startTime || 0) > 0 && e.at < task.startTime) continue;
+          // timing bandish: meri PEHLI nazar mere render
+          // se pehle ki hai to ye stream mera nahi ho
+          // sakta (kisi aur ki khidki ka hai ya purana).
+          const seenAt = Number.isFinite(e.firstSeenAt) ? e.firstSeenAt : (e.at || 0);
+          if ((task.startTime || 0) > 0 && seenAt > 0 && seenAt < task.startTime) continue;
         }
         pushEntry(e, isBound || isTile);
       }
@@ -5602,106 +5767,132 @@ class FlowAutomationEngine {
         // ummeedwaar hai — bandish tile khud hai.
         pushEntry({
           url: tileSrcUrl, src: tileSrcKind, bytes: 0, bodyBytes: 0,
-          status: 0, contentRange: '', declared: 0, partial: true, at: Date.now()
+          status: 0, contentRange: '', declared: 0, partial: true,
+          at: Date.now(), firstSeenAt: Date.now()
         }, true);
       }
-      const unboundCount = annotated.filter(a => !a.bound).length;
-      const anyBound = annotated.some(a => a.bound);
-      let pickRes = { pick: false, index: -1, url: null, verdict: null };
-      if (annotated.length > 0 && (anyBound || unboundCount <= 1)) {
-        pickRes = saveGuard.mainpageEntryPick({ entries: annotated, teacherUrl, floorBytes });
-      } else if (annotated.length > 0 && !ambiguousNoted) {
-        ambiguousNoted = true;
-        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: ${unboundCount} unbound streams seen on the main page and none is bound to this video — not fetching any of them (a wrong video is worse than a miss)`, 'warn');
+      return annotated;
+    };
+    const completeWith = (entry, bindReason) => this._mainpageCompleteCandidate(
+      task, downloadFolder, settings, attempts, entry,
+      { captureKey, bindReason, floorBytes, teacherUrl, teacherHash, timingBucket, gapSec }
+    );
+    // Binding plan ek dafa chalao (maujooda kitab par):
+    // 'saved' | 'ambiguous' | 'none'.
+    const tryBindingPlan = async () => {
+      const live = buildCandidates().filter(a => !a.bound);
+      if (live.length === 0) return 'none';
+      const plan = saveGuard.mainpageBindingPlan({
+        candidates: live.map(a => ({ url: a.url, firstSeenAt: a.firstSeenAt })),
+        windows: typeof cap.mainpageWindowsList === 'function' ? cap.mainpageWindowsList() : [],
+        ownKey: captureKey,
+        windowStart,
+        pendingOthers: typeof cap.mainpagePendingOthers === 'function' ? cap.mainpagePendingOthers(captureKey) : 0
+      });
+      if (plan.reason === 'ambiguous') {
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: ${plan.count} unbound streams seen on the main page and none is bound to this video — not fetching any of them (a wrong video is worse than a miss)`, 'warn');
+        return 'ambiguous';
       }
-      if (pickRes.pick && pickRes.url) {
-        const entry = annotated[pickRes.index];
-        triedUrls.add(entry.url);
-        let buf = null;
-        let haveBody = false;
-        // kitab me pehle se pakdi hui body (mukammal ho to).
-        try {
-          const held = typeof cap.mainpageBodyForUrl === 'function' ? cap.mainpageBodyForUrl(entry.url) : null;
-          if (held && held.buffer && held.buffer.length > 0) { buf = held.buffer; haveBody = true; }
-        } catch (e) {}
-        if (haveBody && entry.partial && entry.src === 'googlevideo') {
-          // googlevideo tukda mukammal nahi — poora fetch
-          // hi asal rasta hai.
-          buf = null; haveBody = false;
-        }
-        if (!haveBody) {
-          const fetched = await this._fetchMainpageFullInPage(entry.url);
-          if (fetched && fetched.buf) {
-            buf = fetched.buf;
-            haveBody = true;
-            entry.status = fetched.status || entry.status;
-            if (fetched.status === 206) entry.partial = true;
-          }
-        }
-        if (haveBody && buf) {
-          const verdictFor = (b, statusOverride) => {
-            const hash = saveGuard.contentHash(b);
-            let dup = false;
-            try { dup = !!saveGuard.checkDuplicate(b, captureKey || null).dup; } catch (e) { dup = false; }
-            return saveGuard.mainpageHarvestVerdict({
-              bound: true,
-              url: entry.url,
-              teacherUrl,
-              byteLength: b.length,
-              floorBytes,
-              headerOk: downloadFetch.looksLikeVideoBuffer(b),
-              partial: (statusOverride || entry.status) === 206 ? true : false,
-              status: statusOverride || entry.status,
-              contentRange: entry.contentRange,
-              declaredLength: entry.declaredLength,
-              duplicate: dup,
-              hash,
-              teacherHash
-            });
-          };
-          let verdict = verdictFor(buf);
-          if (verdict.action === 'fetch-full') {
-            // kitab wali body adhoori nikli — usi URL ka
-            // poora fetch MAIN page ke andar se, phir
-            // faisla dobara.
-            const fetched = await this._fetchMainpageFullInPage(entry.url);
-            if (fetched && fetched.buf && fetched.buf.length > 0) {
-              buf = fetched.buf;
-              verdict = verdictFor(buf, fetched.status);
-            }
-          }
-          if (verdict.action === 'save') {
-            try { cap.claimMainpageVideo(entry.url); } catch (e) {}
-            task.completedVideoUrl = entry.url;
-            const ok = await this._saveBufferForTask(task, downloadFolder, settings, buf, entry.url);
-            if (ok || task.mediaSaved) {
-              const g = gapSec();
-              this.log(`[ROOT] via=mainpage-harvest gap=${g}s`, 'success');
-              try {
-                const audit = saveGuard.mainpageAuditOf({
-                  host: networkCapture.hostOf(entry.url), bytes: buf.length,
-                  src: entry.src === 'googlevideo' ? 'googlevideo' : 'flow-content',
-                  decision: 'promoted', reason: 'ok'
-                });
-                this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${timingBucket()}`, 'info');
-              } catch (e) {}
-              attempts.push({ strategy: 'mainpage-harvest', ok: true, note: `the file was captured from the main project page's own stream (${entry.src}) and completed with a full fetch inside that same page — no editor opened anywhere, no click, no menu; render→save gap ${g}s` });
-              return true;
-            }
-            attempts.push({ strategy: 'mainpage-harvest', ok: false, note: `the main-page stream for this video did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'})` });
-          } else {
-            this.log(`[ROOT] [Prompt #${n}] mainpage-harvest candidate rejected (${verdict.reason}) — trying the remaining main-page candidates`, 'warn');
-          }
+      if (plan.bind && plan.url) {
+        const entry = live.find(a => a.url === plan.url);
+        if (entry) {
+          triedUrls.add(entry.url);
+          const saved = await completeWith(entry, plan.reason);
+          if (saved || task.mediaSaved) return 'saved';
         }
       }
-      if (Date.now() >= deadline) break;
-      await sleep(250);
+      return 'none';
+    };
+    if (this.isStopping) return false;
+    // (a) mukammal bandhi hui body — sab se tez jeet.
+    try {
+      const okBody = await this._tryHarvestSave(task, downloadFolder, settings, attempts);
+      if (okBody || task.mediaSaved) return true;
+    } catch (e) {}
+    // (b) mazboot bandhe hue (urlByKey / tile-src) pehle.
+    {
+      const strong = buildCandidates().filter(a => a.bound);
+      if (strong.length > 0) {
+        const pickRes = saveGuard.mainpageEntryPick({ entries: strong, teacherUrl, floorBytes });
+        if (pickRes.pick && pickRes.url) {
+          const entry = strong[pickRes.index];
+          triedUrls.add(entry.url);
+          const saved = await completeWith(entry, 'bound');
+          if (saved || task.mediaSaved) return true;
+        }
+      }
     }
-    attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'no usable stream for this video was seen on the main project page (see the mainpage-audit lines) — grid replay ran next; nothing was opened or clicked' });
-    this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: no usable stream for this video on the main project page — grid replay will run`, 'warn');
-    return false;
+    // (c) binding plan — first-appearance / exclusion.
+    {
+      const r = await tryBindingPlan();
+      if (r === 'saved') return true;
+      if (r === 'ambiguous') return failOut();
+    }
+    // (d) VIEWPORT TRIGGER — tile nazar me lao aur
+    // hadd bandhi khidki tak naye stream ka intezaar.
+    const waitMs = Number.isFinite(this.mainpageViewportWaitMs) && this.mainpageViewportWaitMs > 0
+      ? this.mainpageViewportWaitMs : 9000;
+    const settleMs = Number.isFinite(this.mainpageViewportSettleMs) && this.mainpageViewportSettleMs > 0
+      ? this.mainpageViewportSettleMs : 1200;
+    const beforeUrls = new Set();
+    try { for (const e of cap.mainpageEntries()) if (e && e.url) beforeUrls.add(e.url); } catch (e) {}
+    const scrolled = await this._scrollMainpageTileIntoView(task, tileIndexHint);
+    this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: viewport trigger — this video's tile ${scrolled ? 'was scrolled' : 'could not be scrolled'} into view on the main page (scroll only; nothing opened, nothing clicked); waiting up to ${(waitMs / 1000).toFixed(0)}s for its stream`, 'info');
+    let newEntries = [];
+    {
+      const deadline = Date.now() + waitMs;
+      let firstNewAt = 0;
+      for (;;) {
+        if (this.isStopping || task.mediaSaved) break;
+        const fresh = [];
+        try {
+          for (const e of cap.mainpageEntries()) {
+            if (!e || !e.url || beforeUrls.has(e.url) || triedUrls.has(e.url)) continue;
+            if (teacherUrl && e.url === teacherUrl) continue;
+            let claimed = false;
+            try { claimed = cap.isMainpageClaimed(e.url); } catch (err) { claimed = false; }
+            if (claimed) continue;
+            if (this._urlClaimedByOtherTask(e.url, captureKey)) continue;
+            fresh.push(e);
+          }
+        } catch (e) {}
+        newEntries = fresh;
+        if (fresh.length > 0) {
+          if (!firstNewAt) firstNewAt = Date.now();
+          if (fresh.length >= 2) break;
+          if (Date.now() - firstNewAt >= settleMs) break;
+        }
+        if (Date.now() >= deadline) break;
+        await sleep(250);
+      }
+    }
+    this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: viewport wait finished — ${newEntries.length} new stream(s) first seen while this tile was in view`, 'info');
+    if (newEntries.length >= 2) {
+      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: ${newEntries.length} unbound streams seen on the main page and none is bound to this video — not fetching any of them (a wrong video is worse than a miss)`, 'warn');
+      return failOut();
+    }
+    if (newEntries.length === 1) {
+      const entry = buildCandidates().find(a => a.url === newEntries[0].url);
+      if (entry) {
+        triedUrls.add(entry.url);
+        const saved = await completeWith(entry, 'viewport-trigger');
+        if (saved || task.mediaSaved) return true;
+      }
+    }
+    // Intezaar ke dauraan kitab badal sakti hai —
+    // bandhi body ka ek aur mauqa, phir plan dobara
+    // (exclusion ab laagu ho sakta hai).
+    try {
+      const okBody = await this._tryHarvestSave(task, downloadFolder, settings, attempts);
+      if (okBody || task.mediaSaved) return true;
+    } catch (e) {}
+    {
+      const r = await tryBindingPlan();
+      if (r === 'saved') return true;
+      if (r === 'ambiguous') return failOut();
+    }
+    return failOut();
   }
-
   /**
    * v2.48.31 (MINT): ek download round ki render→save khidki
    * ke liye enhanced capture chalu karo — capture har request
@@ -6363,6 +6554,10 @@ class FlowAutomationEngine {
       try {
         const g = await this._tryGridReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
         if (g && g.done) {
+          // v2.48.42: is task ka download mukammal —
+          // bandhan khidki band (exclusion hisaab ke
+          // liye ye task ab 'baqi' nahi).
+          try { if (typeof this.netCapture.mainpageMarkWindowDone === 'function') this.netCapture.mainpageMarkWindowDone(captureKey); } catch (e) {}
           try {
             this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
           } catch (e) {}

@@ -429,13 +429,108 @@ function mainpageAuditOf(input) {
   const decision = o.decision === 'promoted' || o.decision === 'captured' || o.decision === 'ignored'
     ? o.decision : 'ignored';
   const reason = typeof o.reason === 'string' && o.reason ? o.reason : 'unknown';
-  return { host, bytes, src, decision, reason };
+  const out = { host, bytes, src, decision, reason };
+  // v2.48.42: binding ka saboot — jab diya jaye to barkarar
+  // rehta hai (purane caller bina in ke chalte rehte hain
+  // aur un ki lines bilkul waisi hi rehti hain jaisi .41
+  // me thi).
+  if (typeof o.bindReason === 'string' && o.bindReason) out.bindReason = o.bindReason;
+  if (typeof o.claimedBy === 'string' && o.claimedBy) out.claimedBy = o.claimedBy;
+  return out;
 }
 
 /** Mainpage-audit natije ki ek-line shakal (bina '[ROOT] mainpage-audit' prefix ke). */
 function formatMainpageAudit(audit) {
   const a = audit && typeof audit === 'object' ? audit : {};
-  return `host=${a.host || 'none'} bytes=${Number.isFinite(a.bytes) ? a.bytes : 0} src=${a.src || 'none'} decision=${a.decision || 'ignored'} reason=${a.reason || 'unknown'}`;
+  let line = `host=${a.host || 'none'} bytes=${Number.isFinite(a.bytes) ? a.bytes : 0} src=${a.src || 'none'} decision=${a.decision || 'ignored'} reason=${a.reason || 'unknown'}`;
+  // v2.48.42: bindReason/claimedBy sirf tab jab maujood hon.
+  if (a.bindReason) line += ` bindReason=${a.bindReason}`;
+  if (a.claimedBy) line += ` claimedBy=${a.claimedBy}`;
+  return line;
+}
+
+/**
+ * v2.48.42 (MAIN-PAGE BINDING PACK): BINDING PLAN —
+ * ZEROCLICK9 ka asal rukawat bandhan tha: main page par
+ * do naye stream baithe the, koi bandha nahi tha, aur
+ * engine ne durust mana kar diya (ghalat video uthana
+ * miss se bura hai — ZEROCLICK2 ki aaloodgi dobara
+ * kabhi nahi). Ye khalis function usi kataar ko
+ * QAAIDE me badalta hai:
+ *   - har task ki apni khidki (window) hai: us ke
+ *     render-complete se agli task ki khidki tak;
+ *   - FIRST-APPEARANCE: jo stream pehli baar MERI
+ *     khidki me dikha (aur kisi pehli khidki me nahi),
+ *     wo mera hai — claim-once.
+ *   - EXCLUSION: bilkul ek unclaimed stream bacha ho
+ *     aur main hi akela baqi unbound download hun, aur
+ *     wo stream kisi AUR task ki khidki me pehli baar
+ *     na dikha ho — tab wo mera hai.
+ *   - AMBIGUOUS: meri khidki me do ya zyada naye —
+ *     koi nahi uthega (inkaar barkarar).
+ * input = {
+ *   candidates: [{ url, firstSeenAt }],   // unclaimed,
+ *     // teacher se alag, mazboot-bandhe hue bahar
+ *   windows: [{ key, start }],            // saari
+ *     // darj khidkiyan (meri samet), tartib jo bhi ho
+ *   ownKey,                               // meri khidki
+ *   windowStart,                          // meri khidki
+ *     // ka aaghaz (windows me meri entry na mile to)
+ *   pendingOthers                         // aur kitni
+ *     // khidkiyan abhi unbound + na-mukammal hain
+ * }
+ * natija = { bind, reason, url, count }:
+ *   reason 'first-appearance' | 'exclusion' |
+ *     'ambiguous' | 'none'; bind sirf pehli do par.
+ */
+function mainpageBindingPlan(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const candidates = (Array.isArray(o.candidates) ? o.candidates : [])
+    .filter(c => c && typeof c.url === 'string' && c.url && Number.isFinite(c.firstSeenAt));
+  const windows = (Array.isArray(o.windows) ? o.windows : [])
+    .filter(w => w && Number.isFinite(w.start))
+    .slice()
+    .sort((a, b) => a.start - b.start);
+  // Meri khidki: darj entry, warna diya gaya aaghaz.
+  let ownStart = Number.isFinite(o.windowStart) ? o.windowStart : null;
+  const ownEntry = o.ownKey != null ? windows.find(w => w.key === o.ownKey) : null;
+  if (ownEntry) ownStart = ownEntry.start;
+  const pendingOthers = Number.isFinite(o.pendingOthers) ? Math.max(0, Math.floor(o.pendingOthers)) : 0;
+
+  // Khidki ki malkiyat: t us khidki ka hai jis ka start
+  // sab se bada ho lekin t se chhota ya barabar — agli
+  // khidki ka start mere hisse ki hadd hai. Pehli
+  // khidki se pehle dikha stream kisi ka nahi (null).
+  const ownerOf = (t) => {
+    let owner = null;
+    for (const w of windows) {
+      if (w.start <= t) owner = w;
+      else break;
+    }
+    return owner;
+  };
+  const isOwnWindow = (w) => !!w && (ownEntry ? w === ownEntry
+    : (ownStart != null && w.start === ownStart));
+
+  const mine = candidates.filter(c => isOwnWindow(ownerOf(c.firstSeenAt)));
+  if (mine.length === 1) {
+    return { bind: true, reason: 'first-appearance', url: mine[0].url, count: mine.length };
+  }
+  if (mine.length > 1) {
+    return { bind: false, reason: 'ambiguous', url: null, count: mine.length };
+  }
+  // Exclusion: akela bacha hua stream, akela baqi
+  // download — basharte ke wo kisi aur ki khidki me
+  // pehli baar na dikha ho (aur ki file meri nahi ho
+  // sakti, chahe wo task mukammal ho chuka ho).
+  if (candidates.length === 1 && pendingOthers === 0) {
+    const only = candidates[0];
+    const owner = ownerOf(only.firstSeenAt);
+    if (!owner || isOwnWindow(owner)) {
+      return { bind: true, reason: 'exclusion', url: only.url, count: 1 };
+    }
+  }
+  return { bind: false, reason: 'none', url: null, count: mine.length };
 }
 
 /**
@@ -530,4 +625,4 @@ function cascadeVerdict(input) {
   return { firstSeen, preEditorUrl: beforeEditor ? 'yes' : 'no' };
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };

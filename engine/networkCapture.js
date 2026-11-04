@@ -671,6 +671,12 @@ class NetworkCapture {
     // bandhta hai. Dono run ke andar attempts aur
     // download-retry rounds ke paar rehte hain.
     this.mainpageClaimedBy = new Map(); // url -> { key, label }
+    // v2.48.43: mainpage kitab ki capture tartib —
+    // har NAYI entry ko ek badhta number (seq) milta
+    // hai; pehli-nazar ke ek hi pal par bhi asal
+    // pakadne ki tarteeb is se rehti hai (tarteeb
+    // bandhan ka faisla-kun).
+    this._mainpageSeq = 0;
     this.mainpageWindows = new Map(); // captureKey -> { start, done }
     this._mainpagePending = new Map(); // CDP requestId -> { url, src, declared, status, contentRange }
     this._mainpageBodies = new Map(); // url -> { buffer, at } (googlevideo tukde)
@@ -1013,7 +1019,10 @@ class NetworkCapture {
                 src: 'flow-content',
                 declared: Number.isFinite(declared) ? declared : 0,
                 status: Number.isFinite(e.response.status) ? e.response.status : 0,
-                contentRange: headerValueOf(e.response.headers, 'content-range') || ''
+                contentRange: headerValueOf(e.response.headers, 'content-range') || '',
+                // v2.48.43: ummeedwaar darwaze ke liye
+                // jawab ki asal type.
+                contentType: (rawType.split(';')[0] || '').trim().toLowerCase()
               });
             }
             // v2.48.41 (MAIN-PAGE HARVEST PACK): googlevideo
@@ -1036,7 +1045,10 @@ class NetworkCapture {
                 src: 'googlevideo',
                 declared: Number.isFinite(gdeclared) ? gdeclared : 0,
                 status: Number.isFinite(e.response.status) ? e.response.status : 0,
-                contentRange: headerValueOf(e.response.headers, 'content-range') || ''
+                contentRange: headerValueOf(e.response.headers, 'content-range') || '',
+                // v2.48.43: ummeedwaar darwaze ke liye
+                // jawab ki asal type.
+                contentType: (rawType.split(';')[0] || '').trim().toLowerCase()
               });
             }
           }
@@ -1681,10 +1693,29 @@ class NetworkCapture {
       let teacherUrl = null;
       try { teacherUrl = this.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
       if (teacherUrl && pend.url === teacherUrl) { emit('ignored', 'teacher-url'); return; }
+      // v2.48.43 (HOVER + PATIENCE PACK): UMMEEDWAAR
+      // DARWAZA — kul size ka behtareen pata: Content-
+      // Range ka kul, warna mukammal (na-adhoore) jawab
+      // ki asal body hi kul hai. Us ke baghair kul na
+      // maloom. Darwaza (saveGuard.mainpageCandidateGate):
+      // maloom kul hadd se chhota ho to ye stream
+      // ummeedwaar KABHI nahi banta — kitab me darj hi
+      // nahi hota, audit 'ignored / stream-too-small'
+      // (ZEROCLICK10 ki 87,478-byte wali hit isi me
+      // rukti hai).
+      const knownTotal = total > 0 ? total : (bodyLen > 0 && !partial ? bodyLen : null);
+      const gate = saveGuard.mainpageCandidateGate({
+        knownTotal,
+        src: pend.src === 'googlevideo' ? 'googlevideo' : 'flow-content',
+        contentType: typeof pend.contentType === 'string' && pend.contentType ? pend.contentType : null
+      });
+      if (!gate.candidate && gate.reason === 'stream-too-small') { emit('ignored', 'stream-too-small'); return; }
       // v2.48.42: PEHLI nazar ka pal — dobara dikhne par
       // entry taaza hoti hai (at aage badhta hai) lekin
       // firstSeenAt sab se pehle wala hi rehta hai;
-      // bandhan ka faisla isi par hota hai.
+      // bandhan ka faisla isi par hota hai. v2.48.43:
+      // capture tartib (seq) bhi pehli nazar ki hi
+      // rehti hai.
       const prevIdx = this.mainpageVideos.findIndex(e => e.url === pend.url);
       const prevEntry = prevIdx >= 0 ? this.mainpageVideos[prevIdx] : null;
       const entry = {
@@ -1695,11 +1726,15 @@ class NetworkCapture {
         bodyBytes: bodyLen,
         at: now,
         firstSeenAt: prevEntry ? (Number.isFinite(prevEntry.firstSeenAt) ? prevEntry.firstSeenAt : prevEntry.at) : now,
+        seq: prevEntry && Number.isFinite(prevEntry.seq) ? prevEntry.seq : ++this._mainpageSeq,
         claimedBy: this.mainpageClaimedByLabel(pend.url) || null,
         timing: bucket,
         status: Number.isFinite(pend.status) ? pend.status : 0,
         contentRange: cr,
         declared: total > 0 ? total : (pend.declared || 0),
+        knownTotal,
+        contentType: typeof pend.contentType === 'string' && pend.contentType ? pend.contentType : null,
+        candidate: gate.candidate,
         partial
       };
       if (prevIdx >= 0) this.mainpageVideos.splice(prevIdx, 1);
@@ -1716,6 +1751,10 @@ class NetworkCapture {
         }
         this._mainpageBodies.set(pend.url, { buffer, at: now });
       }
+      // v2.48.43: darwaza na pass karne wali entry
+      // kitab me rehti hai (dobara nazar ka hisaab)
+      // lekin ummeedwaar nahi — audit 'ignored'.
+      if (!gate.candidate) { emit('ignored', gate.reason); return; }
       if (this.isMainpageClaimed(pend.url)) { emit('ignored', 'already-claimed'); return; }
       if (bodyLen === 0) { emit('ignored', 'body-fail'); return; }
       emit('captured', partial ? 'partial-stream' : 'ok');
@@ -1829,6 +1868,22 @@ class NetworkCapture {
     try {
       return Array.from(this.mainpageWindows.entries())
         .map(([key, w]) => ({ key, start: w.start, done: !!w.done }))
+        .sort((a, b) => a.start - b.start);
+    } catch (e) { return []; }
+  }
+
+  /**
+   * v2.48.43: TARTEEB bandhan ke liye baqi downloads
+   * ki kataar — jo khidkiyan abhi mukammal (done)
+   * nahi, un ke render-complete (start) ki tartib
+   * me: [{ key, start }]. Pehla = sab se pehle
+   * render hua baqi download.
+   */
+  mainpagePendingOrder() {
+    try {
+      return Array.from(this.mainpageWindows.entries())
+        .filter(([, w]) => w && !w.done)
+        .map(([key, w]) => ({ key, start: w.start }))
         .sort((a, b) => a.start - b.start);
     } catch (e) { return []; }
   }

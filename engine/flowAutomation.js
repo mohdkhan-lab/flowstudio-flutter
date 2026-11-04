@@ -274,6 +274,20 @@ class FlowAutomationEngine {
     // ghata saken.
     this.mainpageViewportWaitMs = Number(options.mainpageViewportWaitMs) > 0 ? Number(options.mainpageViewportWaitMs) : 9000;
     this.mainpageViewportSettleMs = Number(options.mainpageViewportSettleMs) > 0 ? Number(options.mainpageViewportSettleMs) : 1200;
+    // v2.48.43 (HOVER + PATIENCE PACK): SABR ki khidki
+    // — download attempt apne render-complete se itni
+    // der (production 60s) main page par stream ka
+    // intezaar karta hai (Flow ke previews render ke
+    // 15–45s baad apni marzi se aate hain — ZEROCLICK9/
+    // 10 ka saboot). Hover trigger ki seedhi: scroll ke
+    // baad itni der me stream na aaye to synthetic
+    // mouse ishara (hoverGrace), us ke baad itni aur
+    // der me na aaye to asal pointer hover (pointer
+    // Grace) — pointer baqi intezaar wahi ruka rehta
+    // hai. Constructor options taaki test ghata saken.
+    this.mainpagePatienceMs = Number(options.mainpagePatienceMs) > 0 ? Number(options.mainpagePatienceMs) : 60000;
+    this.mainpageHoverGraceMs = Number(options.mainpageHoverGraceMs) > 0 ? Number(options.mainpageHoverGraceMs) : 4000;
+    this.mainpagePointerGraceMs = Number(options.mainpagePointerGraceMs) > 0 ? Number(options.mainpagePointerGraceMs) : 4000;
     this.nativeDownloadStallMs = Number(options.nativeDownloadStallMs) > 0 ? Number(options.nativeDownloadStallMs) : 45000;
     this.watcherSweepDelayMs = Number(options.watcherSweepDelayMs) > 0 ? Number(options.watcherSweepDelayMs) : 300000;
     this._watcherSweepTimer = null;
@@ -5524,6 +5538,73 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.43 (HOVER + PATIENCE PACK): HOVER TRIGGER
+   * seedhi ki dusri seedhi — tile par page ke andar
+   * se synthetic mouse ishare (mouseover + mouseenter
+   * + mousemove) bhejo. OS cursor HILTA nahi, kuch
+   * click nahi hota, kuch khulta nahi; page grid par
+   * hi rehta hai. Flow ka grid preview loader aksar
+   * hover par jaagta hai — scroll akela ZEROCLICK10
+   * me teen dafa nakam raha. Lautta hai: true
+   * (ishare gaye) | false.
+   */
+  async _syntheticHoverMainpageTile(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return false;
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return false;
+      const r = await this.page.evaluate((tileIdx) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (!el || typeof el.dispatchEvent !== 'function') return false;
+          const opts = { bubbles: true, cancelable: true, view: window };
+          try { el.dispatchEvent(new MouseEvent('mouseover', opts)); } catch (e) {}
+          try { el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false, cancelable: true, view: window })); } catch (e) {}
+          try { el.dispatchEvent(new MouseEvent('mousemove', opts)); } catch (e) {}
+          return true;
+        } catch (e) { return false; }
+      }, idx);
+      return !!r;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.43 (HOVER + PATIENCE PACK): HOVER TRIGGER
+   * seedhi ki aakhri seedhi — page ke mouse ko tile
+   * ke WAST par le jaa kar WAHI roke rakho (bulane
+   * wala watch khatam hone tak dobara hilata nahi).
+   * Ye asal hover hai lekin CLICK kabhi nahi; kuch
+   * khulta nahi, page grid par hi rehta hai. Lautta
+   * hai: true (pointer tile par hai) | false.
+   */
+  async _pointerHoverMainpageTile(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return false;
+      if (!this.page.mouse || typeof this.page.mouse.move !== 'function') return false;
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return false;
+      const pt = await this.page.evaluate((tileIdx) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (!el || typeof el.getBoundingClientRect !== 'function') return null;
+          const r = el.getBoundingClientRect();
+          if (!r || !(r.width > 0) || !(r.height > 0)) return null;
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        } catch (e) { return null; }
+      }, idx);
+      if (!pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return false;
+      await this.page.mouse.move(pt.x, pt.y);
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
    * v2.48.42: ek BANDHE hue mainpage ummeedwaar ko
    * mukammal karna — kitab me mukammal body ho to wohi,
    * warna usi URL ka POORA fetch MAIN page ke andar se
@@ -5648,20 +5729,30 @@ class FlowAutomationEngine {
    *       kis host ka hai ('[ROOT] mainpage-audit …
    *       reason=tile-video-src'); tile-src / urlByKey
    *       wale MAZBOOT bandhe hue ummeedwaar pehle;
-   *   (c) BINDING PLAN: jo stream pehli baar MERI
-   *       khidki (mere render-complete se agli khidki
-   *       tak) me dikha, wo mera (first-appearance);
-   *       akela bacha unclaimed + akela baqi download =
-   *       exclusion; meri khidki me do ya zyada naye =
+   *   (c) BINDING PLAN — v2.48.43 me TARTEEB
+   *       (ORDER): ummeedwaaron ki kataar pehli-nazar
+   *       + capture tartib se, baqi downloads ki
+   *       kataar render-complete ki tartib se; meri
+   *       jodi kataar me meri jagah wala ummeedwaar
+   *       hai (order); akela bacha unclaimed + akela
+   *       baqi download = exclusion (purana fallback);
+   *       meri jodi par ASAL bandh-ganth (ek hi pal,
+   *       capture tartib bhi alag na kar sake) =
    *       AMBIGUOUS inkaar (koi fetch nahi — ghalat
-   *       video miss se bura hai, ZEROCLICK2 sabak);
-   *   (d) koi bandhne wala na ho to VIEWPORT TRIGGER:
-   *       sirf is task ki tile scrollIntoView se
-   *       viewport me (koi click nahi, kuch khulta
-   *       nahi), hadd bandhi khidki (~9s) ka intezaar;
-   *       intezaar me pehli baar dikha akela stream
-   *       bandhta hai (viewport-trigger), do ya zyada
-   *       aayen to inkaar;
+   *       video miss se bura hai, ZEROCLICK2 sabak).
+   *       Ummeedwaar wahi hai jo capture ke darwaze
+   *       (kul size >= 500,000, warna video-type) se
+   *       guzra ho;
+   *   (d) koi bandhne wala na ho to HOVER + PATIENCE
+   *       WATCH: tile scrollIntoView se nazar me
+   *       (level=scroll), waqt par synthetic mouse
+   *       ishare (level=synthetic), phir asal pointer
+   *       tile par roke hue (level=pointer) — aur
+   *       intezaar render-complete se
+   *       mainpagePatienceMs (~60s) tak; intezaar me
+   *       bandha stream 'viewport-trigger' kehlata
+   *       hai. Kuch khulta nahi, click kabhi nahi —
+   *       hover hi wahid naya ishara hai;
    *   (e) bandha ummeedwaar
    *       _mainpageCompleteCandidate se mukammal hota
    *       hai (kitab body ya usi page ke andar poora
@@ -5740,11 +5831,16 @@ class FlowAutomationEngine {
           bodyBytes: e.bodyBytes || 0,
           at: e.at || 0,
           firstSeenAt: Number.isFinite(e.firstSeenAt) ? e.firstSeenAt : (e.at || 0),
+          seq: Number.isFinite(e.seq) ? e.seq : null,
           claimedBy: e.claimedBy || null
         });
       };
       for (const e of cap.mainpageEntries()) {
         if (!e || !e.url) continue;
+        // v2.48.43: ummeedwaar darwaze se bahar wali
+        // entry (chhoti stream / video-type na ho)
+        // bandhan ke liye kabhi nahi uth ti.
+        if (e.candidate === false) continue;
         if (teacherUrl && e.url === teacherUrl) continue;
         let claimed = false;
         try { claimed = cap.isMainpageClaimed(e.url); } catch (err) { claimed = false; }
@@ -5778,15 +5874,27 @@ class FlowAutomationEngine {
       { captureKey, bindReason, floorBytes, teacherUrl, teacherHash, timingBucket, gapSec }
     );
     // Binding plan ek dafa chalao (maujooda kitab par):
-    // 'saved' | 'ambiguous' | 'none'.
-    const tryBindingPlan = async () => {
+    // 'saved' | 'ambiguous' | 'none'. v2.48.43: plan
+    // ab TARTEEB par hai (saveGuard.mainpageBindingPlan)
+    // — ummeedwaaron ki kataar pehli-nazar + capture
+    // tartib se, baqi downloads ki kataar render-
+    // complete ki tartib se. opts.watchStart diya ho
+    // to us pal ke BAAD pehli baar dikha stream bandhe
+    // to wajah 'viewport-trigger' kehlata hai (wo
+    // MERE hover intezaar me aaya — jodi meri hi hai).
+    const tryBindingPlan = async (opts) => {
       const live = buildCandidates().filter(a => !a.bound);
       if (live.length === 0) return 'none';
+      const pendingOrder = typeof cap.mainpagePendingOrder === 'function'
+        ? cap.mainpagePendingOrder()
+        : (typeof cap.mainpageWindowsList === 'function'
+          ? cap.mainpageWindowsList().filter(w => !w.done).map(w => ({ key: w.key, start: w.start }))
+          : []);
       const plan = saveGuard.mainpageBindingPlan({
-        candidates: live.map(a => ({ url: a.url, firstSeenAt: a.firstSeenAt })),
-        windows: typeof cap.mainpageWindowsList === 'function' ? cap.mainpageWindowsList() : [],
+        candidates: live.map(a => ({ url: a.url, firstSeenAt: a.firstSeenAt, seq: a.seq })),
         ownKey: captureKey,
-        windowStart,
+        ownStart: windowStart,
+        pendingOrder,
         pendingOthers: typeof cap.mainpagePendingOthers === 'function' ? cap.mainpagePendingOthers(captureKey) : 0
       });
       if (plan.reason === 'ambiguous') {
@@ -5797,7 +5905,11 @@ class FlowAutomationEngine {
         const entry = live.find(a => a.url === plan.url);
         if (entry) {
           triedUrls.add(entry.url);
-          const saved = await completeWith(entry, plan.reason);
+          let bindReason = plan.reason;
+          if (opts && Number.isFinite(opts.watchStart) && entry.firstSeenAt >= opts.watchStart) {
+            bindReason = 'viewport-trigger';
+          }
+          const saved = await completeWith(entry, bindReason);
           if (saved || task.mediaSaved) return 'saved';
         }
       }
@@ -5828,57 +5940,66 @@ class FlowAutomationEngine {
       if (r === 'saved') return true;
       if (r === 'ambiguous') return failOut();
     }
-    // (d) VIEWPORT TRIGGER — tile nazar me lao aur
-    // hadd bandhi khidki tak naye stream ka intezaar.
-    const waitMs = Number.isFinite(this.mainpageViewportWaitMs) && this.mainpageViewportWaitMs > 0
+    // (d) HOVER + PATIENCE WATCH (v2.48.43) —
+    // ZEROCLICK10 ka saboot: sirf scroll se Flow ka
+    // grid preview loader 9s me NAHI jaagta; streams
+    // render ke ~15–45s baad apni marzi se aate hain.
+    // Ab koshish SABR ke saath chalti hai: tile nazar
+    // me (level=scroll), phir synthetic mouse ishare
+    // (level=synthetic), phir asal pointer tile par
+    // roke hue (level=pointer) — aur poora intezaar
+    // render-complete se mainpagePatienceMs tak.
+    // Intezaar ke dauraan har pal plan dobara banta
+    // hai; MERI jodi wala ummeedwaar dikhte hi foran
+    // bandhta hai (mere intezaar me pehli baar dikha
+    // ho to wajah 'viewport-trigger', warna plan ki
+    // 'order'/'exclusion'). Kuch khulta nahi, click
+    // kabhi nahi hota — hover hi wahid naya ishara
+    // hai.
+    const patienceMs = Number.isFinite(this.mainpagePatienceMs) && this.mainpagePatienceMs > 0
+      ? this.mainpagePatienceMs : 60000;
+    const floorMs = Number.isFinite(this.mainpageViewportWaitMs) && this.mainpageViewportWaitMs > 0
       ? this.mainpageViewportWaitMs : 9000;
-    const settleMs = Number.isFinite(this.mainpageViewportSettleMs) && this.mainpageViewportSettleMs > 0
-      ? this.mainpageViewportSettleMs : 1200;
-    const beforeUrls = new Set();
-    try { for (const e of cap.mainpageEntries()) if (e && e.url) beforeUrls.add(e.url); } catch (e) {}
+    const hoverGraceMs = Number.isFinite(this.mainpageHoverGraceMs) && this.mainpageHoverGraceMs > 0
+      ? this.mainpageHoverGraceMs : 4000;
+    const pointerGraceMs = Number.isFinite(this.mainpagePointerGraceMs) && this.mainpagePointerGraceMs > 0
+      ? this.mainpagePointerGraceMs : 4000;
+    const watchStart = Date.now();
+    let watchDeadline = windowStart + patienceMs;
+    if (watchDeadline < watchStart + floorMs) watchDeadline = watchStart + floorMs;
     const scrolled = await this._scrollMainpageTileIntoView(task, tileIndexHint);
-    this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: viewport trigger — this video's tile ${scrolled ? 'was scrolled' : 'could not be scrolled'} into view on the main page (scroll only; nothing opened, nothing clicked); waiting up to ${(waitMs / 1000).toFixed(0)}s for its stream`, 'info');
-    let newEntries = [];
-    {
-      const deadline = Date.now() + waitMs;
-      let firstNewAt = 0;
-      for (;;) {
-        if (this.isStopping || task.mediaSaved) break;
-        const fresh = [];
-        try {
-          for (const e of cap.mainpageEntries()) {
-            if (!e || !e.url || beforeUrls.has(e.url) || triedUrls.has(e.url)) continue;
-            if (teacherUrl && e.url === teacherUrl) continue;
-            let claimed = false;
-            try { claimed = cap.isMainpageClaimed(e.url); } catch (err) { claimed = false; }
-            if (claimed) continue;
-            if (this._urlClaimedByOtherTask(e.url, captureKey)) continue;
-            fresh.push(e);
-          }
-        } catch (e) {}
-        newEntries = fresh;
-        if (fresh.length > 0) {
-          if (!firstNewAt) firstNewAt = Date.now();
-          if (fresh.length >= 2) break;
-          if (Date.now() - firstNewAt >= settleMs) break;
-        }
-        if (Date.now() >= deadline) break;
-        await sleep(250);
+    this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=scroll (this video's tile ${scrolled ? 'was scrolled' : 'could not be scrolled'} into view on the main page; nothing opened, nothing clicked); watching up to ${Math.max(1, Math.round((watchDeadline - watchStart) / 1000))}s for its stream`, 'info');
+    let level = 'scroll';
+    const syntheticAt = watchStart + hoverGraceMs;
+    const pointerAt = syntheticAt + pointerGraceMs;
+    for (;;) {
+      if (this.isStopping || task.mediaSaved) break;
+      const r = await tryBindingPlan({ watchStart });
+      if (r === 'saved') return true;
+      if (r === 'ambiguous') return failOut();
+      const nowT = Date.now();
+      if (nowT >= watchDeadline) break;
+      if (level === 'scroll' && nowT >= syntheticAt && syntheticAt < watchDeadline) {
+        level = 'synthetic';
+        const sent = await this._syntheticHoverMainpageTile(task, tileIndexHint);
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=synthetic (mouseover/mouseenter ${sent ? 'sent to' : 'could not be sent to'} this video's tile; nothing opened, nothing clicked)`, 'info');
+        continue;
       }
-    }
-    this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: viewport wait finished — ${newEntries.length} new stream(s) first seen while this tile was in view`, 'info');
-    if (newEntries.length >= 2) {
-      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: ${newEntries.length} unbound streams seen on the main page and none is bound to this video — not fetching any of them (a wrong video is worse than a miss)`, 'warn');
-      return failOut();
-    }
-    if (newEntries.length === 1) {
-      const entry = buildCandidates().find(a => a.url === newEntries[0].url);
-      if (entry) {
-        triedUrls.add(entry.url);
-        const saved = await completeWith(entry, 'viewport-trigger');
-        if (saved || task.mediaSaved) return true;
+      if (level === 'synthetic' && nowT >= pointerAt && pointerAt < watchDeadline) {
+        level = 'pointer';
+        const held = await this._pointerHoverMainpageTile(task, tileIndexHint);
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=pointer (pointer ${held ? 'held over' : 'could not be held over'} this video's tile; nothing opened, nothing clicked)`, 'info');
+        continue;
       }
+      await sleep(250);
     }
+    let newCount = 0;
+    try {
+      for (const e of cap.mainpageEntries()) {
+        if (e && e.url && e.candidate !== false && Number.isFinite(e.firstSeenAt) && e.firstSeenAt >= watchStart) newCount++;
+      }
+    } catch (e) {}
+    this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover watch finished — ${newCount} new stream(s) first seen during the watch`, 'info');
     // Intezaar ke dauraan kitab badal sakti hai —
     // bandhi body ka ek aur mauqa, phir plan dobara
     // (exclusion ab laagu ho sakta hai).
@@ -5887,7 +6008,7 @@ class FlowAutomationEngine {
       if (okBody || task.mediaSaved) return true;
     } catch (e) {}
     {
-      const r = await tryBindingPlan();
+      const r = await tryBindingPlan({ watchStart });
       if (r === 'saved') return true;
       if (r === 'ambiguous') return failOut();
     }

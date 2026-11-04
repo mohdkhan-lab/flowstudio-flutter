@@ -36,6 +36,8 @@ const {
   mainpageHarvestVerdict,
   mainpageEntryPick,
   mainpageBindingPlan,
+  MAINPAGE_MIN_CANDIDATE_BYTES,
+  mainpageCandidateGate,
   fullFetchUrlCandidates,
   mainpageAuditOf,
   formatMainpageAudit,
@@ -733,7 +735,7 @@ async function main() {
   {
     // (b) EMAANDAR FAIL — main page par kuch nahi mila
     const logs = [];
-    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpagePatienceMs: 600, mainpageViewportWaitMs: 200, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
     eng.page = fakePage('main-mp-fail');
     eng._readTileMediaState = async () => null;
     const task = { promptIndex: 0, captureKey: 'k-mp-fail', videoId: 'k-mp-fail', startTime: Date.now(), renderCompletedAt: Date.now() };
@@ -817,53 +819,89 @@ async function main() {
   }
 
   // ---------------------------------------------------------------------------
-  // M. v2.48.42 — MAIN-PAGE BINDING PACK:
-  //   (a) mainpageBindingPlan (khalis): first-appearance
-  //       jeet, exclusion jeet, ambiguity inkaar, aur ki
-  //       khidki wala stream kabhi mera nahi;
+  // M. v2.48.42 — MAIN-PAGE BINDING PACK → v2.48.43
+  // HOVER + PATIENCE PACK:
+  //   (a) mainpageBindingPlan (khalis) — v2.48.43 me
+  //       TARTEEB (ORDER): ummeedwaaron ki kataar
+  //       pehli-nazar + capture seq se, baqi downloads
+  //       ki kataar render-complete se; meri jodi
+  //       kataar me meri jagah wala; exclusion
+  //       fallback barkarar; ambiguity sirf ASAL
+  //       bandh-ganth (ek pal + seq bhi alag na kare)
+  //       par. (.42 ki khidki-taqseem ZEROCLICK10 me
+  //       nakam rahi — us ke test yahin naye qaaide se
+  //       badle gaye hain.)
   //   (b) capture kitab: firstSeenAt pehli nazar par
   //       rukta hai, claim-once label, khidkiyan +
   //       pendingOthers hisaab;
   //   (c) audit lines me bindReason/claimedBy (aur un
   //       ke baghair .41 wali shakal barkarar);
-  //   (d) ENGINE: first-appearance save, viewport-
-  //       trigger ke baad completion fetch + save,
-  //       exclusion save, ambiguity par ZERO fetch,
-  //       claimed stream doosri task ko kabhi nahi,
-  //       viewport intezaar me do naye = inkaar.
+  //   (d) ENGINE: order save (padosi stream ko haath
+  //       nahi), hover-watch ke baad completion fetch
+  //       + save, exclusion save, claimed stream
+  //       doosri task ko kabhi nahi;
+  //   (e) v2.48.43 HOV test alag section N me hain.
   // ---------------------------------------------------------------------------
   {
-    const W = [{ key: 'k1', start: 1000 }, { key: 'k2', start: 2000 }];
-    const cand = (url, t) => ({ url, firstSeenAt: t });
-    // first-appearance: meri khidki wala akela stream
-    const pFa = mainpageBindingPlan({ candidates: [cand('u-old', 1500), cand('u-mine', 2500)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 1 });
-    eq('BIND-PLAN first-appearance binds', pFa.bind, true);
-    eq('BIND-PLAN first-appearance reason', pFa.reason, 'first-appearance');
-    eq('BIND-PLAN first-appearance picks my window stream', pFa.url, 'u-mine');
-    // khidkiyan be-tarteeb aayen to bhi wahi faisla
-    const pFa2 = mainpageBindingPlan({ candidates: [cand('u-mine', 2500)], windows: [W[1], W[0]], ownKey: 'k2', windowStart: 2000, pendingOthers: 0 });
-    eq('BIND-PLAN unsorted windows still bind first-appearance', pFa2.url, 'u-mine');
-    // sirf aur ki khidki wala — mera nahi, exclusion bhi nahi (aur baqi hai)
-    const pOther = mainpageBindingPlan({ candidates: [cand('u-old', 1500)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 1 });
-    eq('BIND-PLAN earlier-window stream does not bind', pOther.bind, false);
-    eq('BIND-PLAN earlier-window reason is none', pOther.reason, 'none');
-    // exclusion: akela bacha (kisi khidki se pehle ka), akela baqi download
-    const pEx = mainpageBindingPlan({ candidates: [cand('u-early', 500)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 0 });
+    const PO = [{ key: 'k1', start: 1000 }, { key: 'k2', start: 2000 }];
+    const cand = (url, t, seq) => ({ url, firstSeenAt: t, seq });
+    // ORDER (ZEROCLICK10 wala asal manzar): akela
+    // stream baad-render wale sibling ki khidki ke
+    // pal par aaya — purani taqseem use sibling ka
+    // bana kar pehle task ke liye zaya karti thi;
+    // tarteeb use sab se pehle baqi download (k1)
+    // ko deti hai.
+    const pOrd = mainpageBindingPlan({ candidates: [cand('u-late', 2500, 1)], ownKey: 'k1', ownStart: 1000, pendingOrder: PO, pendingOthers: 1 });
+    eq('BIND-PLAN order binds the only stream to the earliest pending', pOrd.bind, true);
+    eq('BIND-PLAN order reason', pOrd.reason, 'order');
+    eq('BIND-PLAN order picks the stream', pOrd.url, 'u-late');
+    // tartib ki dusri jodi: k2 ke liye kataar ka
+    // dusra ummeedwaar (pehla k1 ke hisse ka hai).
+    const pOrd2 = mainpageBindingPlan({ candidates: [cand('u-first', 1500, 1), cand('u-second', 2500, 2)], ownKey: 'k2', ownStart: 2000, pendingOrder: PO, pendingOthers: 1 });
+    eq('BIND-PLAN ordinal second pair binds', pOrd2.bind, true);
+    eq('BIND-PLAN ordinal second pair picks the second stream', pOrd2.url, 'u-second');
+    // kataar ka pehla ummeedwaar pehle baqi download
+    // ke hisse ka hai — k2 use nahi le sakta.
+    const pHead = mainpageBindingPlan({ candidates: [cand('u-first', 1500, 1)], ownKey: 'k2', ownStart: 2000, pendingOrder: PO, pendingOthers: 1 });
+    eq('BIND-PLAN head stream stays reserved for the earlier pending task', pHead.bind, false);
+    eq('BIND-PLAN head-reserved reason is none', pHead.reason, 'none');
+    // ek hi pal par do — capture seq tarteeb alag
+    // karta hai (input be-tarteeb diya gaya hai).
+    const pSeq = mainpageBindingPlan({ candidates: [cand('u-b', 3000, 2), cand('u-a', 3000, 1)], ownKey: 'k1', ownStart: 1000, pendingOrder: [PO[0]], pendingOthers: 0 });
+    eq('BIND-PLAN capture seq breaks a same-moment tie', pSeq.bind, true);
+    eq('BIND-PLAN seq tie-break picks the earlier capture', pSeq.url, 'u-a');
+    // ASAL bandh-ganth: ek hi pal, seq bhi nahi —
+    // koi nahi uthega.
+    const pTie = mainpageBindingPlan({ candidates: [{ url: 'u-a', firstSeenAt: 3000 }, { url: 'u-b', firstSeenAt: 3000 }], ownKey: 'k1', ownStart: 1000, pendingOrder: [PO[0]], pendingOthers: 0 });
+    eq('BIND-PLAN genuine tie is ambiguous', pTie.reason, 'ambiguous');
+    eq('BIND-PLAN genuine tie binds nothing', pTie.bind, false);
+    eq('BIND-PLAN genuine tie count is 2', pTie.count, 2);
+    // meri jodi ke BAAD wali bandh-ganth mujhe nahi
+    // rokti (meri jodi agle se saaf alag hai).
+    const pTieAfter = mainpageBindingPlan({ candidates: [cand('u-a', 3000, 1), { url: 'u-b', firstSeenAt: 4000 }, { url: 'u-c', firstSeenAt: 4000 }], ownKey: 'k1', ownStart: 1000, pendingOrder: [PO[0]], pendingOthers: 0 });
+    eq('BIND-PLAN a tie beyond my pair does not block me', pTieAfter.bind, true);
+    eq('BIND-PLAN tie-beyond picks my pair', pTieAfter.url, 'u-a');
+    // exclusion fallback: tartib kataar me meri
+    // jagah hi nahi (kataar me sirf pehle se bandhi
+    // hui ek aur khidki hai), kitab me akela
+    // ummeedwaar, aur koi baqi download nahi.
+    const pEx = mainpageBindingPlan({ candidates: [cand('u-early', 500, 1)], ownKey: 'k-me', ownStart: 2000, pendingOrder: [{ key: 'k-x', start: 900 }], pendingOthers: 0 });
     eq('BIND-PLAN exclusion binds', pEx.bind, true);
     eq('BIND-PLAN exclusion reason', pEx.reason, 'exclusion');
-    // exclusion band: aur ki khidki wala akela bacha bhi mera nahi
-    const pExNo = mainpageBindingPlan({ candidates: [cand('u-old', 1500)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 0 });
-    eq('BIND-PLAN exclusion never takes another window stream', pExNo.bind, false);
-    // exclusion band: doosra download baqi ho to bhi nahi
-    const pExPend = mainpageBindingPlan({ candidates: [cand('u-early', 500)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 1 });
+    // exclusion band: doosra download baqi ho to nahi
+    const pExPend = mainpageBindingPlan({ candidates: [cand('u-early', 500, 1)], ownKey: 'k-me', ownStart: 2000, pendingOrder: [{ key: 'k-x', start: 900 }], pendingOthers: 1 });
     eq('BIND-PLAN exclusion blocked while another download pends', pExPend.bind, false);
-    // ambiguity: meri khidki me do naye — koi nahi
-    const pAmb = mainpageBindingPlan({ candidates: [cand('u-a', 2500), cand('u-b', 2600)], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 0 });
-    eq('BIND-PLAN two in my window is ambiguous', pAmb.reason, 'ambiguous');
-    eq('BIND-PLAN ambiguous binds nothing', pAmb.bind, false);
-    eq('BIND-PLAN ambiguous count is 2', pAmb.count, 2);
+    // claim-once tarteeb ke saath: pehli jodi bandhne
+    // ke baad wo ummeedwaar kataar se bahar hai —
+    // agli task ki plan use kabhi nahi deti; kataar
+    // aage badhti hai aur dusri task dusra leti hai.
+    const pClaim1 = mainpageBindingPlan({ candidates: [cand('u-s1', 100, 1), cand('u-s2', 200, 2)], ownKey: 'k1', ownStart: 1000, pendingOrder: PO, pendingOthers: 1 });
+    eq('BIND-PLAN claim-once setup — first task takes the first stream', pClaim1.url, 'u-s1');
+    const pClaim2 = mainpageBindingPlan({ candidates: [cand('u-s2', 200, 2)], ownKey: 'k2', ownStart: 2000, pendingOrder: [PO[1]], pendingOthers: 0 });
+    eq('BIND-PLAN claimed stream is never re-offered', pClaim2.url, 'u-s2');
+    eq('BIND-PLAN second task still pairs in order', pClaim2.reason, 'order');
     // khaali kitab / ghalat input
-    eq('BIND-PLAN empty book is none', mainpageBindingPlan({ candidates: [], windows: W, ownKey: 'k2', windowStart: 2000, pendingOthers: 0 }).reason, 'none');
+    eq('BIND-PLAN empty book is none', mainpageBindingPlan({ candidates: [], ownKey: 'k2', ownStart: 2000, pendingOrder: PO, pendingOthers: 0 }).reason, 'none');
     eq('BIND-PLAN garbage input is none', mainpageBindingPlan(null).reason, 'none');
   }
   {
@@ -935,7 +973,7 @@ async function main() {
     const attempts = [];
     const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-bind-mine', 0);
     eq('BIND-ENG first-appearance stream saves', okSave, true);
-    ok('BIND-ENG promoted audit carries bindReason=first-appearance', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=first-appearance')));
+    ok('BIND-ENG promoted audit carries bindReason=order', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=order')));
     ok('BIND-ENG promoted audit carries claimedBy=1', logs.some(m => m.includes('decision=promoted') && m.includes('claimedBy=1')));
     eq('BIND-ENG my stream is claimed', nc.isMainpageClaimed(GV_URL), true);
     eq('BIND-ENG the earlier task stream stays unclaimed', nc.isMainpageClaimed(GV_OTHER), false);
@@ -961,23 +999,27 @@ async function main() {
     }, 500);
     const okSave = await p;
     eq('BIND-ENG viewport-trigger stream saves after the completion fetch', okSave, true);
-    ok('BIND-ENG viewport trigger was logged', logs.some(m => m.includes('viewport trigger')));
+    ok('BIND-ENG hover trigger was logged', logs.some(m => m.includes('hover trigger level=scroll')));
     ok('BIND-ENG promoted audit carries bindReason=viewport-trigger', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=viewport-trigger')));
     ok('BIND-ENG win line is via=mainpage-harvest', logs.some(m => m.includes('[ROOT] via=mainpage-harvest gap=')));
     ok('BIND-ENG the attempt strategy is mainpage-harvest', attempts.some(a => a.strategy === 'mainpage-harvest' && a.ok));
   }
   {
-    // (d3) ENGINE exclusion — stream har khidki se
-    // pehle ka hai, kitab me akela hai, download bhi
-    // akela baqi hai: bandhta hai.
+    // (d3) ENGINE exclusion — tartib kataar me ek
+    // aur khidki mujh se pehle hai lekin wo apna
+    // stream pehle hi naam kar chuki hai (is liye
+    // koi aur baqi UNBOUND download nahi); kitab me
+    // akela bacha stream exclusion se bandhta hai.
     const logs = [];
-    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpageViewportSettleMs: 100 });
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpageViewportSettleMs: 100, mainpagePatienceMs: 800 });
     const full = mp4Buffer(1250000); full[100] = 0xCF;
     eng.page = fakePage('main-bind-ex', { evaluateResult: { status: 200, b64: full.toString('base64') } });
     eng._readTileMediaState = async () => null;
     const nc = eng.netCapture;
     nc.arm();
     const now = Date.now();
+    nc.mainpageNoteWindow('k-ex-other', now - 2500);
+    nc.claimMainpageVideo(FC_FRESH2, { key: 'k-ex-other', label: '9' });
     nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, now - 3000);
     eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
     const task = { promptIndex: 0, captureKey: 'k-bind-ex', videoId: 'k-bind-ex', startTime: now - 4000, renderCompletedAt: now - 500 };
@@ -987,14 +1029,18 @@ async function main() {
     ok('BIND-ENG promoted audit carries bindReason=exclusion', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=exclusion')));
   }
   {
-    // (d4) ENGINE ambiguity — meri khidki me do naye
-    // stream: inkaar, aur fetch ki koshish ZERO.
+    // (d4) ENGINE order — kitab me do stream alag
+    // alag pal par: v2.48.43 ki tarteeb pehle ko
+    // bandhti hai (sirf wahi fetch hota hai), dusra
+    // kitab me bila-naam rehta hai. (.42 me yahi
+    // manzar ambiguity inkaar tha — khidki-taqseem
+    // ZEROCLICK10 me nakam hone par qaaida badla.)
     const logs = [];
-    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpageViewportSettleMs: 100 });
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpageViewportSettleMs: 100, mainpagePatienceMs: 800 });
     eng.page = fakePage('main-bind-amb');
     eng._readTileMediaState = async () => null;
-    let fetchCalls = 0;
-    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return { buf: mp4Buffer(1250000), status: 200 }; };
+    const fetchedUrls = [];
+    eng._fetchMainpageFullInPage = async (u) => { fetchedUrls.push(u); return { buf: mp4Buffer(1250000), status: 200 }; };
     const nc = eng.netCapture;
     nc.arm();
     const now = Date.now();
@@ -1002,18 +1048,20 @@ async function main() {
     const GV_B = 'https://rr3---sn-bbb222.googlevideo.com/videoplayback?expire=999&id=b&itag=18';
     nc._recordMainpageSighting({ url: GV_A, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, now - 200);
     nc._recordMainpageSighting({ url: GV_B, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, now - 100);
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
     const task = { promptIndex: 0, captureKey: 'k-bind-amb', videoId: 'k-bind-amb', startTime: now - 3000, renderCompletedAt: now - 500 };
     const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-bind-amb', 0);
-    eq('BIND-ENG ambiguous attempt saves nothing', okSave, false);
-    eq('BIND-ENG ambiguity attempted NO fetch', fetchCalls, 0);
-    ok('BIND-ENG refusal line logged', logs.some(m => m.includes('not fetching any of them')));
-    eq('BIND-ENG neither ambiguous stream claimed', nc.isMainpageClaimed(GV_A) || nc.isMainpageClaimed(GV_B), false);
+    eq('BIND-ENG order attempt saves', okSave, true);
+    eq('BIND-ENG order saved the earliest stream', task.completedVideoUrl, GV_A);
+    ok('BIND-ENG order fetched only the earliest stream', fetchedUrls.length > 0 && fetchedUrls.every(u => u === GV_A));
+    ok('BIND-ENG promoted audit carries bindReason=order', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=order')));
+    eq('BIND-ENG the later stream stays unclaimed', nc.isMainpageClaimed(GV_B), false);
   }
   {
     // (d5) ENGINE claim-once — pehli task ke naam hua
     // stream doosri task ki retry ko kabhi nahi milta.
     const logs = [];
-    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpageViewportSettleMs: 100 });
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpageViewportSettleMs: 100, mainpagePatienceMs: 800, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
     const full = mp4Buffer(1250000);
     eng.page = fakePage('main-bind-once', { evaluateResult: { status: 200, b64: full.toString('base64') } });
     eng._readTileMediaState = async () => null;
@@ -1032,14 +1080,19 @@ async function main() {
     eq('BIND-ENG claim label is still the first task', nc.mainpageClaimedByLabel(GV_URL), '1');
   }
   {
-    // (d6) ENGINE viewport ambiguity — intezaar me DO
-    // naye stream: inkaar, fetch ZERO.
+    // (d6) ENGINE hover watch — intezaar me do stream
+    // tartib se aate hain: v2.48.43 me PEHLA mere
+    // intezaar me aaya hai, is liye wahi bandhta hai
+    // (viewport-trigger); dusra kitab me bila-naam
+    // rehta hai. (.42 ka do-naye-inkaar wala qaaida
+    // tarteeb bandhan ke saath badal gaya.)
     const logs = [];
-    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 3000, mainpageViewportSettleMs: 1500 });
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 3000, mainpageViewportSettleMs: 1500, mainpagePatienceMs: 5000, mainpageHoverGraceMs: 200, mainpagePointerGraceMs: 200 });
     eng.page = fakePage('main-bind-vp2');
     eng._readTileMediaState = async () => null;
-    let fetchCalls = 0;
-    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return { buf: mp4Buffer(1250000), status: 200 }; };
+    const fetchedUrls = [];
+    eng._fetchMainpageFullInPage = async (u) => { fetchedUrls.push(u); return { buf: mp4Buffer(1250000), status: 200 }; };
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
     const nc = eng.netCapture;
     nc.arm();
     const GV_C = 'https://rr5---sn-ccc333.googlevideo.com/videoplayback?expire=999&id=c&itag=18';
@@ -1047,11 +1100,200 @@ async function main() {
     const task = { promptIndex: 0, captureKey: 'k-bind-vp2', videoId: 'k-bind-vp2', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
     const p = eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-bind-vp2', 0);
     setTimeout(() => { nc._recordMainpageSighting({ url: GV_C, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, Date.now()); }, 400);
-    setTimeout(() => { nc._recordMainpageSighting({ url: GV_D, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, Date.now()); }, 650);
+    setTimeout(() => { nc._recordMainpageSighting({ url: GV_D, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, Date.now()); }, 900);
     const okSave = await p;
-    eq('BIND-ENG two new streams in the viewport wait save nothing', okSave, false);
-    eq('BIND-ENG viewport ambiguity attempted NO fetch', fetchCalls, 0);
-    ok('BIND-ENG viewport refusal line logged', logs.some(m => m.includes('not fetching any of them')));
+    eq('BIND-ENG first stream in the hover watch saves', okSave, true);
+    eq('BIND-ENG the watch saved the first arrival', task.completedVideoUrl, GV_C);
+    ok('BIND-ENG the watch fetched only the first arrival', fetchedUrls.length > 0 && fetchedUrls.every(u => u === GV_C));
+    ok('BIND-ENG promoted audit carries bindReason=viewport-trigger', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=viewport-trigger')));
+    eq('BIND-ENG the later watch stream stays unclaimed', nc.isMainpageClaimed(GV_D), false);
+  }
+
+  // ---------------------------------------------------------------------------
+  // N. v2.48.43 — HOVER + PATIENCE PACK:
+  //   (a) ummeedwaar darwaza (khalis): maloom kul
+  //       size ki hadd, na-maloom par host + video
+  //       type ki shart;
+  //   (b) capture wiring: chhoti stream kitab me
+  //       aati hi nahi (audit stream-too-small), seq
+  //       tartib, candidate nishaan;
+  //   (c) ENGINE: filter (chhoti kabhi fetch nahi),
+  //       synthetic-hover jodi, pointer-hover jodi,
+  //       sabr ki khidki me der se aaya stream,
+  //       uljhe renderon me tarteeb jodi (ZEROCLICK10
+  //       ka asal manzar).
+  // ---------------------------------------------------------------------------
+  {
+    // (a) darwaza — khalis hisaab
+    eq('HOV-GATE threshold is 500000', MAINPAGE_MIN_CANDIDATE_BYTES, 500000);
+    eq('HOV-GATE 87478 total is too small', mainpageCandidateGate({ knownTotal: 87478, src: 'googlevideo', contentType: 'video/mp4' }).candidate, false);
+    eq('HOV-GATE too-small reason', mainpageCandidateGate({ knownTotal: 87478, src: 'googlevideo', contentType: 'video/mp4' }).reason, 'stream-too-small');
+    eq('HOV-GATE exactly at the threshold passes', mainpageCandidateGate({ knownTotal: 500000, src: 'googlevideo', contentType: 'video/mp4' }).candidate, true);
+    eq('HOV-GATE 1213784 total passes', mainpageCandidateGate({ knownTotal: 1213784, src: 'googlevideo', contentType: 'video/mp4' }).candidate, true);
+    eq('HOV-GATE unknown total + googlevideo + video type passes', mainpageCandidateGate({ knownTotal: null, src: 'googlevideo', contentType: 'video/mp4' }).candidate, true);
+    eq('HOV-GATE unknown total + flow-content + video type passes', mainpageCandidateGate({ knownTotal: null, src: 'flow-content', contentType: 'video/mp4' }).candidate, true);
+    eq('HOV-GATE unknown total + non-video type fails', mainpageCandidateGate({ knownTotal: null, src: 'googlevideo', contentType: 'text/html' }).candidate, false);
+    eq('HOV-GATE non-video reason', mainpageCandidateGate({ knownTotal: null, src: 'googlevideo', contentType: 'text/html' }).reason, 'not-video-candidate');
+    eq('HOV-GATE unknown total + wrong host fails', mainpageCandidateGate({ knownTotal: null, src: 'none', contentType: 'video/mp4' }).candidate, false);
+  }
+  {
+    // (b) capture wiring — darwaza, seq, candidate
+    const audits = [];
+    const nc = new NetworkCapture({});
+    nc.onMainpageAudit = (a) => audits.push(a);
+    nc.arm();
+    const GV_SMALL = 'https://rr1---sn-small1.googlevideo.com/videoplayback?expire=999&id=small&itag=18';
+    nc._recordMainpageSighting({ url: GV_SMALL, src: 'googlevideo', declared: 87478, status: 206, contentRange: 'bytes 0-87477/87478', contentType: 'video/mp4' }, mp4Buffer(87478), 87478, Date.now());
+    eq('HOV-NC the 87KB stream never enters the book', nc.mainpageEntries().some(e => e.url === GV_SMALL), false);
+    ok('HOV-NC small stream audit is ignored/stream-too-small', audits.some(a => a.decision === 'ignored' && a.reason === 'stream-too-small'));
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000', contentType: 'video/mp4' }, mp4Buffer(224692), 224692, Date.now());
+    const eBig = nc.mainpageEntries().find(e => e.url === GV_URL);
+    eq('HOV-NC the 1.2MB stream is a candidate', eBig.candidate, true);
+    ok('HOV-NC first candidate carries seq 1', eBig.seq === 1);
+    nc._recordMainpageSighting({ url: FC_FRESH, src: 'flow-content', declared: 0, status: 200, contentRange: '', contentType: 'video/mp4' }, mp4Buffer(600000), 600000, Date.now());
+    const eFc = nc.mainpageEntries().find(e => e.url === FC_FRESH);
+    eq('HOV-NC a complete flow-content body is a candidate', eFc.candidate, true);
+    ok('HOV-NC second new entry carries a later seq', eFc.seq > eBig.seq);
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000', contentType: 'video/mp4' }, mp4Buffer(224692), 224692, Date.now());
+    eq('HOV-NC a re-sighting keeps its first seq', nc.mainpageEntries().find(e => e.url === GV_URL).seq, eBig.seq);
+    const GV_UNK = 'https://rr4---sn-unk444.googlevideo.com/videoplayback?expire=999&id=unk&itag=18';
+    nc._recordMainpageSighting({ url: GV_UNK, src: 'googlevideo', declared: 0, status: 206, contentRange: '', contentType: 'video/mp4' }, mp4Buffer(100000), 100000, Date.now());
+    const eUnk = nc.mainpageEntries().find(e => e.url === GV_UNK);
+    eq('HOV-NC unknown-total video stream is a candidate', eUnk.candidate, true);
+    eq('HOV-NC unknown-total stays unknown', eUnk.knownTotal, null);
+    const GV_HTML = 'https://rr6---sn-html66.googlevideo.com/videoplayback?expire=999&id=html&itag=18';
+    nc._recordMainpageSighting({ url: GV_HTML, src: 'googlevideo', declared: 0, status: 206, contentRange: '', contentType: 'text/html' }, mp4Buffer(100000), 100000, Date.now());
+    eq('HOV-NC unknown-total non-video is not a candidate', nc.mainpageEntries().find(e => e.url === GV_HTML).candidate, false);
+    ok('HOV-NC non-video audit reason logged', audits.some(a => a.decision === 'ignored' && a.reason === 'not-video-candidate'));
+  }
+  {
+    // (c1) ENGINE filter — kitab me sirf chhoti
+    // stream: attempt fail, fetch ZERO; phir asal
+    // stream aane par wahi attempt-raasta use save
+    // karta hai (chhoti ko haath nahi lagta).
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 700, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
+    eng.page = fakePage('main-hov-filter');
+    eng._readTileMediaState = async () => null;
+    let fetchCalls = 0;
+    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return { buf: mp4Buffer(1213784), status: 200 }; };
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const nc = eng.netCapture;
+    nc.arm();
+    const GV_SMALL = 'https://rr1---sn-small1.googlevideo.com/videoplayback?expire=999&id=small&itag=18';
+    nc._recordMainpageSighting({ url: GV_SMALL, src: 'googlevideo', declared: 87478, status: 206, contentRange: 'bytes 0-87477/87478', contentType: 'video/mp4' }, mp4Buffer(87478), 87478, Date.now());
+    ok('HOV-ENG the engine log carries the stream-too-small audit', logs.some(m => m.includes('[ROOT] mainpage-audit') && m.includes('reason=stream-too-small')));
+    const task = { promptIndex: 0, captureKey: 'k-hov-filter', videoId: 'k-hov-filter', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const okSmall = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-hov-filter', 0);
+    eq('HOV-ENG a too-small stream alone saves nothing', okSmall, false);
+    eq('HOV-ENG a too-small stream is never fetched', fetchCalls, 0);
+    const GV_BIG = 'https://rr2---sn-big222.googlevideo.com/videoplayback?expire=999&id=big&itag=18';
+    nc._recordMainpageSighting({ url: GV_BIG, src: 'googlevideo', declared: 230769, status: 206, contentRange: 'bytes 0-230768/1213784', contentType: 'video/mp4' }, mp4Buffer(230769), 230769, Date.now());
+    const okBig = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-hov-filter', 0);
+    eq('HOV-ENG the real stream saves on the retry', okBig, true);
+    eq('HOV-ENG the saved file is the big stream', task.completedVideoUrl, GV_BIG);
+  }
+  {
+    // (c2) ENGINE synthetic-hover jodi — scroll par
+    // kuch nahi; synthetic ishare ke baad stream
+    // aata hai aur bandhta hai (viewport-trigger).
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 5000, mainpageHoverGraceMs: 150, mainpagePointerGraceMs: 10000 });
+    const full = mp4Buffer(1250000); full[100] = 0xD1;
+    eng.page = fakePage('main-hov-syn', { evaluateResult: { status: 200, b64: full.toString('base64') } });
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    let syntheticCalled = false;
+    eng._syntheticHoverMainpageTile = async () => {
+      syntheticCalled = true;
+      setTimeout(() => { nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000', contentType: 'video/mp4' }, mp4Buffer(224692), 224692, Date.now()); }, 100);
+      return true;
+    };
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-hov-syn', videoId: 'k-hov-syn', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-hov-syn', 0);
+    eq('HOV-ENG synthetic-hover stream saves', okSave, true);
+    eq('HOV-ENG the synthetic hover actually fired', syntheticCalled, true);
+    ok('HOV-ENG level=synthetic was logged', logs.some(m => m.includes('hover trigger level=synthetic')));
+    ok('HOV-ENG promoted audit carries bindReason=viewport-trigger', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=viewport-trigger')));
+  }
+  {
+    // (c3) ENGINE pointer-hover jodi — synthetic par
+    // bhi kuch nahi; asal pointer tile par rukne ke
+    // baad stream aata hai aur bandhta hai.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 5000, mainpageHoverGraceMs: 150, mainpagePointerGraceMs: 150 });
+    const full = mp4Buffer(1250000); full[100] = 0xD2;
+    eng.page = fakePage('main-hov-ptr', { evaluateResult: { status: 200, b64: full.toString('base64') } });
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    let pointerCalled = false;
+    eng._syntheticHoverMainpageTile = async () => true;
+    eng._pointerHoverMainpageTile = async () => {
+      pointerCalled = true;
+      setTimeout(() => { nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000', contentType: 'video/mp4' }, mp4Buffer(224692), 224692, Date.now()); }, 100);
+      return true;
+    };
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-hov-ptr', videoId: 'k-hov-ptr', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-hov-ptr', 0);
+    eq('HOV-ENG pointer-hover stream saves', okSave, true);
+    eq('HOV-ENG the pointer hover actually fired', pointerCalled, true);
+    ok('HOV-ENG level=pointer was logged', logs.some(m => m.includes('hover trigger level=pointer')));
+    ok('HOV-ENG promoted audit carries bindReason=viewport-trigger', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=viewport-trigger')));
+  }
+  {
+    // (c4) ENGINE sabr — patience ki khidki (12s)
+    // me DER se aaya stream (10s par) bhi bandhta
+    // hai; watch jodi milte hi foran khatam hota
+    // hai (poori khidki nahi rukta).
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 12000, mainpageHoverGraceMs: 150, mainpagePointerGraceMs: 150 });
+    const full = mp4Buffer(1250000); full[100] = 0xD3;
+    eng.page = fakePage('main-hov-patience', { evaluateResult: { status: 200, b64: full.toString('base64') } });
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-hov-patience', videoId: 'k-hov-patience', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const t0 = Date.now();
+    const p = eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-hov-patience', 0);
+    setTimeout(() => { nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000', contentType: 'video/mp4' }, mp4Buffer(224692), 224692, Date.now()); }, 10000);
+    const okSave = await p;
+    const elapsed = Date.now() - t0;
+    eq('HOV-ENG a late stream inside the patience window saves', okSave, true);
+    ok('HOV-ENG the watch really waited for it (past the old scroll-only wait)', elapsed >= 9000);
+    ok('HOV-ENG the watch exited on pairing, not at the deadline', elapsed < 12000);
+    ok('HOV-ENG the patience budget was logged', logs.some(m => m.includes('hover trigger level=scroll') && m.includes('watching up to')));
+    ok('HOV-ENG the pointer level was reached during the long watch', logs.some(m => m.includes('hover trigger level=pointer')));
+  }
+  {
+    // (c5) ENGINE tarteeb — ZEROCLICK10 ka asal
+    // manzar: main pehle render hua, sibling baad
+    // me; akeli poori stream sibling ke render ke
+    // BAAD aayi (purani khidki-taqseem use sibling
+    // ki bana kar mere liye zaya karti thi). Ab wo
+    // sab se pehle baqi download — mujhe — milti
+    // hai (bindReason=order).
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 800, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
+    const full = mp4Buffer(1213784); full[100] = 0xD4;
+    eng.page = fakePage('main-hov-zc', { evaluateResult: { status: 200, b64: full.toString('base64') } });
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    const now = Date.now();
+    nc.mainpageNoteWindow('k-zc-sib', now - 1000);
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 230769, status: 206, contentRange: 'bytes 0-230768/1213784', contentType: 'video/mp4' }, mp4Buffer(230769), 230769, now - 100);
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-zc-me', videoId: 'k-zc-me', startTime: now - 4000, renderCompletedAt: now - 2000 };
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-zc-me', 0);
+    eq('HOV-ENG interleaved-render stream saves for the earliest pending task', okSave, true);
+    eq('HOV-ENG the saved file is that stream', task.completedVideoUrl, GV_URL);
+    ok('HOV-ENG promoted audit carries bindReason=order', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=order')));
+    eq('HOV-ENG the stream is claimed by my task', nc.mainpageClaimedKey(GV_URL), 'k-zc-me');
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

@@ -450,87 +450,145 @@ function formatMainpageAudit(audit) {
 }
 
 /**
- * v2.48.42 (MAIN-PAGE BINDING PACK): BINDING PLAN —
- * ZEROCLICK9 ka asal rukawat bandhan tha: main page par
- * do naye stream baithe the, koi bandha nahi tha, aur
- * engine ne durust mana kar diya (ghalat video uthana
- * miss se bura hai — ZEROCLICK2 ki aaloodgi dobara
- * kabhi nahi). Ye khalis function usi kataar ko
- * QAAIDE me badalta hai:
- *   - har task ki apni khidki (window) hai: us ke
- *     render-complete se agli task ki khidki tak;
- *   - FIRST-APPEARANCE: jo stream pehli baar MERI
- *     khidki me dikha (aur kisi pehli khidki me nahi),
- *     wo mera hai — claim-once.
- *   - EXCLUSION: bilkul ek unclaimed stream bacha ho
- *     aur main hi akela baqi unbound download hun, aur
- *     wo stream kisi AUR task ki khidki me pehli baar
- *     na dikha ho — tab wo mera hai.
- *   - AMBIGUOUS: meri khidki me do ya zyada naye —
- *     koi nahi uthega (inkaar barkarar).
+ * v2.48.43 (HOVER + PATIENCE PACK): UMMEEDWAAR DARWAZA —
+ * main page par dikha har stream asal video ka
+ * ummeedwaar NAHI hota. ZEROCLICK10 ka saboot: render-
+ * watch par 87,478 bytes ki ek chhoti googlevideo hit
+ * aayi — poori video ~1.2MB ki hoti hai; itni chhoti
+ * stream file ho hi nahi sakti. Qaaida:
+ *   - kul size MALOOM ho: ummeedwaar sirf tab jab kul
+ *     size >= MAINPAGE_MIN_CANDIDATE_BYTES (500,000);
+ *     is se chhota = 'stream-too-small' — kitab me
+ *     ummeedwaar kabhi nahi banta.
+ *   - kul size NA maloom ho: ummeedwaar sirf tab jab
+ *     host googlevideo / flow-content ho AUR content-
+ *     type video/* ho (content-type hi na diya gaya
+ *     ho to host hi kafi hai — asal CDP raaste par
+ *     type hamesha aata hai).
+ * input = { knownTotal, src, contentType }
+ * natija = { candidate, reason } — reason 'ok' |
+ *   'stream-too-small' | 'not-video-candidate'.
+ */
+const MAINPAGE_MIN_CANDIDATE_BYTES = 500000;
+function mainpageCandidateGate(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  if (Number.isFinite(o.knownTotal)) {
+    return o.knownTotal >= MAINPAGE_MIN_CANDIDATE_BYTES
+      ? { candidate: true, reason: 'ok' }
+      : { candidate: false, reason: 'stream-too-small' };
+  }
+  const videoHost = o.src === 'googlevideo' || o.src === 'flow-content';
+  const type = typeof o.contentType === 'string' ? o.contentType.toLowerCase() : null;
+  const typeOk = type === null || type.startsWith('video/');
+  return videoHost && typeOk
+    ? { candidate: true, reason: 'ok' }
+    : { candidate: false, reason: 'not-video-candidate' };
+}
+
+/**
+ * v2.48.42 (MAIN-PAGE BINDING PACK) → v2.48.43 (HOVER +
+ * PATIENCE PACK): BINDING PLAN.
+ * ZEROCLICK9 ka rukawat bandhan tha; .42 ka khidki-
+ * taqseem (window partition) ZEROCLICK10 me nakam raha:
+ * download renderon ke saath uljhe hue the, preview
+ * streams render ke 10–45s baad aate hain, aur ek poori
+ * stream baad-render wali dusri task ki khidki me gir
+ * kar pehli task ke liye zaya ho gayi. Ab asal qaaida
+ * TARTEEB (ORDER) hai:
+ *   - ummeedwaar streams ki kataar pehli-nazar ki
+ *     tarteeb se (firstSeenAt; barabar pal par capture
+ *     ka seq — pakadne ki asal tarteeb — faisla karta
+ *     hai);
+ *   - baqi (pending) downloads ki kataar un ke
+ *     render-complete ki tarteeb se;
+ *   - MERI jodi kataar me MERI jagah wala ummeedwaar
+ *     hai (pehla baqi download ↔ pehla ummeedwaar,
+ *     dusra ↔ dusra, …) — koshish hamesha tartib wale
+ *     sab se pehle baqi download ki hoti hai (1 worker
+ *     par attempts tartib se hi chalte hain), is liye
+ *     mera ummeedwaar wahi hai jo is tartib me mera
+ *     hissa hai.
+ *   - EXCLUSION (purana fallback barkarar): meri jodi
+ *     na bane lekin kitab me bilkul ek ummeedwaar ho
+ *     aur koi aur baqi download na ho — wo mera.
+ *   - AMBIGUOUS sirf ASAL bandh-ganth (genuine tie)
+ *     par: MERI jodi wala ummeedwaar aur us ke baad
+ *     wala ek hi pal pehli baar dikhe hon aur capture
+ *     tartib (seq) bhi unhe alag na kar sake — tab koi
+ *     nahi uthega (ghalat video miss se bura hai —
+ *     ZEROCLICK2 sabak; aakhri hifazat saveGuard ke
+ *     hash/duplicate darwaze aur sequence check hain:
+ *     ek hi bytes do naamon par = ERROR, khamosh jeet
+ *     kabhi nahi).
  * input = {
- *   candidates: [{ url, firstSeenAt }],   // unclaimed,
- *     // teacher se alag, mazboot-bandhe hue bahar
- *   windows: [{ key, start }],            // saari
- *     // darj khidkiyan (meri samet), tartib jo bhi ho
- *   ownKey,                               // meri khidki
- *   windowStart,                          // meri khidki
- *     // ka aaghaz (windows me meri entry na mile to)
- *   pendingOthers                         // aur kitni
- *     // khidkiyan abhi unbound + na-mukammal hain
+ *   candidates: [{ url, firstSeenAt, seq }],  // unclaimed,
+ *     // teacher se alag, mazboot-bandhe hue bahar,
+ *     // ummeedwaar-darwaza pass kiye hue
+ *   ownKey,                               // meri task
+ *   ownStart,                             // mera
+ *     // render-complete (pendingOrder me meri entry
+ *     // na mile to meri jagah is se tay hogi)
+ *   pendingOrder: [{ key, start }],       // baqi
+ *     // downloads, render-complete ki tartib me
+ *     // (jo bhi tartib di jaye, andar sort hota hai)
+ *   pendingOthers                         // aur kitne
+ *     // baqi unbound downloads (exclusion shart)
  * }
  * natija = { bind, reason, url, count }:
- *   reason 'first-appearance' | 'exclusion' |
- *     'ambiguous' | 'none'; bind sirf pehli do par.
+ *   reason 'order' | 'exclusion' | 'ambiguous' |
+ *     'none'; bind sirf pehli do par. count =
+ *     ummeedwaaron ki kul tadaad.
  */
 function mainpageBindingPlan(input) {
   const o = input && typeof input === 'object' ? input : {};
+  const seqOf = (c) => (Number.isFinite(c.seq) ? c.seq : null);
   const candidates = (Array.isArray(o.candidates) ? o.candidates : [])
-    .filter(c => c && typeof c.url === 'string' && c.url && Number.isFinite(c.firstSeenAt));
-  const windows = (Array.isArray(o.windows) ? o.windows : [])
-    .filter(w => w && Number.isFinite(w.start))
+    .filter(c => c && typeof c.url === 'string' && c.url && Number.isFinite(c.firstSeenAt))
+    .slice()
+    .sort((a, b) => {
+      if (a.firstSeenAt !== b.firstSeenAt) return a.firstSeenAt - b.firstSeenAt;
+      const sa = seqOf(a); const sb = seqOf(b);
+      if (sa !== null && sb !== null) return sa - sb;
+      return 0;
+    });
+  const pendingOthers = Number.isFinite(o.pendingOthers) ? Math.max(0, Math.floor(o.pendingOthers)) : 0;
+  const order = (Array.isArray(o.pendingOrder) ? o.pendingOrder : [])
+    .filter(w => w && w.key != null && Number.isFinite(w.start))
     .slice()
     .sort((a, b) => a.start - b.start);
-  // Meri khidki: darj entry, warna diya gaya aaghaz.
-  let ownStart = Number.isFinite(o.windowStart) ? o.windowStart : null;
-  const ownEntry = o.ownKey != null ? windows.find(w => w.key === o.ownKey) : null;
-  if (ownEntry) ownStart = ownEntry.start;
-  const pendingOthers = Number.isFinite(o.pendingOthers) ? Math.max(0, Math.floor(o.pendingOthers)) : 0;
-
-  // Khidki ki malkiyat: t us khidki ka hai jis ka start
-  // sab se bada ho lekin t se chhota ya barabar — agli
-  // khidki ka start mere hisse ki hadd hai. Pehli
-  // khidki se pehle dikha stream kisi ka nahi (null).
-  const ownerOf = (t) => {
-    let owner = null;
-    for (const w of windows) {
-      if (w.start <= t) owner = w;
-      else break;
-    }
-    return owner;
+  // Meri jagah: darj kataar me mera number; entry na
+  // mile to mera render-complete jin se pehle hai, main
+  // un se pehle — wahi meri jagah.
+  let myIdx = o.ownKey != null ? order.findIndex(w => String(w.key) === String(o.ownKey)) : -1;
+  if (myIdx < 0) {
+    const ownStart = Number.isFinite(o.ownStart) ? o.ownStart : Number.POSITIVE_INFINITY;
+    myIdx = order.filter(w => w.start <= ownStart).length;
+  }
+  const count = candidates.length;
+  if (count === 0) return { bind: false, reason: 'none', url: null, count: 0 };
+  // Do ummeedwaar asal me be-tarteeb (tie) kab hain:
+  // ek hi pal pehli nazar AUR capture tartib bhi
+  // alag na kar sake (seq dono ka na ho ya barabar).
+  const tied = (a, b) => {
+    if (!a || !b || a.firstSeenAt !== b.firstSeenAt) return false;
+    const sa = seqOf(a); const sb = seqOf(b);
+    return !(sa !== null && sb !== null && sa !== sb);
   };
-  const isOwnWindow = (w) => !!w && (ownEntry ? w === ownEntry
-    : (ownStart != null && w.start === ownStart));
-
-  const mine = candidates.filter(c => isOwnWindow(ownerOf(c.firstSeenAt)));
-  if (mine.length === 1) {
-    return { bind: true, reason: 'first-appearance', url: mine[0].url, count: mine.length };
-  }
-  if (mine.length > 1) {
-    return { bind: false, reason: 'ambiguous', url: null, count: mine.length };
-  }
-  // Exclusion: akela bacha hua stream, akela baqi
-  // download — basharte ke wo kisi aur ki khidki me
-  // pehli baar na dikha ho (aur ki file meri nahi ho
-  // sakti, chahe wo task mukammal ho chuka ho).
-  if (candidates.length === 1 && pendingOthers === 0) {
-    const only = candidates[0];
-    const owner = ownerOf(only.firstSeenAt);
-    if (!owner || isOwnWindow(owner)) {
-      return { bind: true, reason: 'exclusion', url: only.url, count: 1 };
+  if (myIdx < count) {
+    const mine = candidates[myIdx];
+    const next = candidates[myIdx + 1] || null;
+    if (next && tied(mine, next)) {
+      return { bind: false, reason: 'ambiguous', url: null, count };
     }
+    return { bind: true, reason: 'order', url: mine.url, count };
   }
-  return { bind: false, reason: 'none', url: null, count: mine.length };
+  // Exclusion fallback: tartib me meri jodi nahi,
+  // lekin kitab me akela ummeedwaar aur koi aur baqi
+  // download nahi — wo akela mera.
+  if (count === 1 && pendingOthers === 0) {
+    return { bind: true, reason: 'exclusion', url: candidates[0].url, count };
+  }
+  return { bind: false, reason: 'none', url: null, count };
 }
 
 /**
@@ -625,4 +683,4 @@ function cascadeVerdict(input) {
   return { firstSeen, preEditorUrl: beforeEditor ? 'yes' : 'no' };
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, MAINPAGE_MIN_CANDIDATE_BYTES, mainpageCandidateGate, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };

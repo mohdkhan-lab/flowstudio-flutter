@@ -1,7 +1,8 @@
 'use strict';
 
-// v2.48.36 (ROOT PACK): jad par hamla — paanchon feature ke
-// khalis faisle aur capture wiring:
+// v2.48.36 (ROOT PACK) + v2.48.41 (MAIN-PAGE HARVEST
+// PACK): jad par hamla — featureon ke khalis faisle aur
+// capture wiring:
 //   A. stageLock — download-stage ka promise-mutex:
 //      kataar tartib se khulti hai, throw par bhi agla
 //      nahi rukta, waitedMs kataar ka waqt deta hai, aur
@@ -32,14 +33,17 @@ const {
   templateStateOf,
   contentHash,
   isPartialHarvestResponse,
-  editorHarvestVerdict,
-  promotedEditorHarvestPick,
+  mainpageHarvestVerdict,
+  mainpageEntryPick,
+  fullFetchUrlCandidates,
+  mainpageAuditOf,
+  formatMainpageAudit,
   harvestAuditOf,
   formatHarvestAudit,
   cascadeVerdict
 } = require('../engine/saveGuard');
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
-const { NetworkCapture } = require('../engine/networkCapture');
+const { NetworkCapture, isGooglevideoPlaybackUrl } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
 const { FlowAutomationEngine } = require('../engine/flowAutomation');
 
@@ -408,253 +412,25 @@ async function main() {
   }
 
   // ---------------------------------------------------------------------------
-  // I. v2.48.38 — EDITOR-HARVEST PACK:
-  //   (a) tartib: editor-harvest replay-context ke baad
-  //       aur direct-viewer se pehle hai;
-  //   (b) teacher-identical bytes (hash barabar / duplicate
-  //       nishaan / teacher URL) hamesha reject;
-  //   (c) nisbat sanrachna se: jawab SIRF is task ke apne
-  //       editor ke khule hone ki khidki ke andar ka ho —
-  //       khidki se pehle/baad ka ya doosre task ki khidki
-  //       ka jawab kabhi candidate nahi;
-  //   (d) adhoora jawab (206 / Content-Range / declared se
-  //       chhota / floor se neeche) inkaar nahi — usi URL
-  //       ka page-context poora fetch (action 'fetch-full');
-  //   (e) harvest-audit ka hisaab: bytes/body/hash-8/
-  //       vsTeacher/decision/reason.
+  // I. v2.48.41 — MAIN-PAGE HARVEST PACK (owner order
+  // 2026-11-04, ZEROCLICK8 eye-verdict ke baad):
+  //   (a) tartib: video ke sirf do raaste — mainpage-
+  //       harvest pehle, grid-replay dusra; editor/
+  //       menu/viewer/backend sab gayab;
+  //   (b) mainpageHarvestVerdict: unbound = inkaar,
+  //       teacher (url/hash) = inkaar, duplicate =
+  //       inkaar, theek bandha jawab = save;
+  //   (c) capture ki mainpage kitab: main page ke
+  //       flow-content + googlevideo jawab darj hote
+  //       hain (asal CDP wiring se bhi), teacher kabhi
+  //       nahi, audit har jawab par (khidki ke andar);
+  //   (d) adhoora jawab (206 / Content-Range / floor
+  //       se neeche) inkaar nahi — 'fetch-full';
+  //   (e) mainpage-audit ka hisaab + poora-fetch URL
+  //       ummeedwaar (range hisse saaf) + purani
+  //       harvest-audit barkarar.
   // ---------------------------------------------------------------------------
-  {
-    // (a) tartib
-    eq('EH-ORDER replay-context is third', DOWNLOAD_ROUTE_ORDER[2], 'replay-context');
-    eq('EH-ORDER editor-harvest is fourth', DOWNLOAD_ROUTE_ORDER[3], 'editor-harvest');
-    eq('EH-ORDER direct-viewer is fifth', DOWNLOAD_ROUTE_ORDER[4], 'direct-viewer');
-    ok('EH-ORDER editor-harvest sits between replay-context and direct-viewer',
-      DOWNLOAD_ROUTE_ORDER.indexOf('editor-harvest') === DOWNLOAD_ROUTE_ORDER.indexOf('replay-context') + 1
-      && DOWNLOAD_ROUTE_ORDER.indexOf('direct-viewer') === DOWNLOAD_ROUTE_ORDER.indexOf('editor-harvest') + 1);
-  }
-  {
-    // (b) teacher-identical bytes / teacher URL / duplicate
-    const teacherBuf = mp4Buffer(600000);
-    const freshBuf = mp4Buffer(600000);
-    freshBuf[100] = 0xAB; // bytes alag — hash alag
-    const tHash = contentHash(teacherBuf);
-    const fHash = contentHash(freshBuf);
-    const dup = editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true, hash: tHash, teacherHash: tHash });
-    eq('EH teacher-identical bytes rejected', dup.accept, false);
-    eq('EH teacher-identical reason is duplicate-content', dup.reason, 'duplicate-content');
-    eq('EH duplicate flag rejected as duplicate-content', editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true, duplicate: true }).reason, 'duplicate-content');
-    eq('EH teacher url rejected', editorHarvestVerdict({ inWindow: true, url: FC_TEACHER, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true }).reason, 'teacher-url');
-    const good = editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true, hash: fHash, teacherHash: tHash });
-    eq('EH fresh complete bytes accepted', good.accept, true);
-    eq('EH fresh complete action is save', good.action, 'save');
-    // Capture ki kitab me bhi teacher ka address kabhi darj nahi hota.
-    const nc = new NetworkCapture({});
-    nc.mintTeacherUrl = FC_TEACHER;
-    nc.beginEditorWindow('task-eh');
-    eq('EH-NC teacher url never recorded in the window', nc._recordEditorHarvest(FC_TEACHER, mp4Buffer(600000), { status: 200 }, Date.now()), false);
-    eq('EH-NC teacher url leaves no candidate', nc.editorHarvestEntriesForKey('task-eh').length, 0);
-    nc.endEditorWindow('task-eh');
-  }
-  {
-    // (c) sanrachna wali nisbat — khidki ke bahar kabhi nahi
-    eq('EH outside-window verdict rejected', editorHarvestVerdict({ inWindow: false, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true }).reason, 'outside-window');
-    const nc = new NetworkCapture({});
-    // Koi khidki hi nahi — darj nahi hota.
-    eq('EH-NC no window — not recorded', nc._recordEditorHarvest(FC_FRESH, mp4Buffer(600000), { status: 200 }, Date.now()), false);
-    eq('EH-NC no window — no entries', nc.editorHarvestEntriesForKey('task-eh').length, 0);
-    // Apni khidki ke andar — darj hota hai, apne hi naam par milta hai.
-    nc.beginEditorWindow('task-eh');
-    eq('EH-NC inside own window — recorded', nc._recordEditorHarvest(FC_FRESH, mp4Buffer(600000), { status: 200 }, Date.now()), true);
-    eq('EH-NC own entries visible', nc.editorHarvestEntriesForKey('task-eh').length, 1);
-    eq('EH-NC other task sees nothing', nc.editorHarvestEntriesForKey('task-other').length, 0);
-    // Khidki band — us ke baad ka jawab darj nahi hota.
-    nc.endEditorWindow('task-eh');
-    eq('EH-NC after window closed — not recorded', nc._recordEditorHarvest(FC_FRESH2, mp4Buffer(600000), { status: 200 }, Date.now()), false);
-    eq('EH-NC closed window keeps only the in-window entry', nc.editorHarvestEntriesForKey('task-eh').length, 1);
-    // Khidki band hone ke baad NAYI khidki purane jawab
-    // saaf karti hai (wo is khidki ke andar ke nahi the).
-    nc.beginEditorWindow('task-eh');
-    eq('EH-NC a fresh window after close starts empty', nc.editorHarvestEntriesForKey('task-eh').length, 0);
-    // Lekin khuli khidki ko 'dobara kholna' (route C →
-    // editor-harvest ka mushtarak editor reuse) darj
-    // jawab barkarar rakhta hai.
-    eq('EH-NC fresh window records again', nc._recordEditorHarvest(FC_FRESH, mp4Buffer(600000), { status: 200 }, Date.now()), true);
-    nc.beginEditorWindow('task-eh');
-    eq('EH-NC re-beginning the same open window keeps its entries', nc.editorHarvestEntriesForKey('task-eh').length, 1);
-    nc.endEditorWindow('task-eh');
-  }
-  {
-    // (d) adhoora jawab — poora fetch ka hukm, inkaar nahi
-    eq('EH-PARTIAL 206 is partial', isPartialHarvestResponse({ status: 206, byteLength: 600000 }), true);
-    eq('EH-PARTIAL content-range is partial', isPartialHarvestResponse({ status: 200, contentRange: 'bytes 0-99/600000', byteLength: 100 }), true);
-    eq('EH-PARTIAL declared se chhota is partial', isPartialHarvestResponse({ status: 200, byteLength: 300000, declaredLength: 600000 }), true);
-    eq('EH-PARTIAL floor se neeche is partial', isPartialHarvestResponse({ status: 200, byteLength: 100000, floorBytes: 200 * 1024 }), true);
-    eq('EH-PARTIAL mukammal jawab partial nahi', isPartialHarvestResponse({ status: 200, byteLength: 600000, declaredLength: 600000, floorBytes: 200 * 1024 }), false);
-    const v206 = editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 300000, floorBytes: 200 * 1024, headerOk: true, status: 206 });
-    eq('EH-PARTIAL 206 verdict action is fetch-full', v206.action, 'fetch-full');
-    eq('EH-PARTIAL 206 verdict is not an accept', v206.accept, false);
-    eq('EH-PARTIAL content-range verdict action is fetch-full', editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 100, floorBytes: 200 * 1024, headerOk: true, contentRange: 'bytes 0-99/600000' }).action, 'fetch-full');
-    eq('EH-PARTIAL below-floor verdict action is fetch-full', editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 100000, floorBytes: 200 * 1024, headerOk: true, status: 200 }).action, 'fetch-full');
-    // Capture adhoore jawab ko partial nishaan ke saath
-    // darj karta hai, taaki engine usi URL ka poora fetch
-    // kar sake.
-    const nc = new NetworkCapture({});
-    nc.beginEditorWindow('task-p');
-    eq('EH-NC partial response recorded', nc._recordEditorHarvest(FC_FRESH, mp4Buffer(100000), { status: 206, contentRange: 'bytes 0-99999/600000', declared: 600000 }, Date.now()), true);
-    const entries = nc.editorHarvestEntriesForKey('task-p');
-    eq('EH-NC partial entry carries the partial mark', entries.length === 1 && entries[0].partial, true);
-    eq('EH-NC partial entry keeps its url for the full fetch', entries.length === 1 && entries[0].url, FC_FRESH);
-    nc.endEditorWindow('task-p');
-    // Baaki darwaze: header kharab / khaali / url hi nahi.
-    eq('EH bad-header verdict is body reject', editorHarvestVerdict({ inWindow: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: false, status: 200 }).reason, 'bad-header');
-    eq('EH missing url verdict', editorHarvestVerdict({ inWindow: true, url: null, teacherUrl: FC_TEACHER, byteLength: 600000, headerOk: true }).reason, 'no-url');
-  }
-  {
-    // (e) harvest-audit ka hisaab
-    const buf = mp4Buffer(600000);
-    const other = mp4Buffer(600000);
-    other[100] = 0xAB;
-    const h = contentHash(buf);
-    const aSame = harvestAuditOf({ byteLength: buf.length, bodyOk: true, hash: h, teacherHash: h, promoted: true, reason: 'ok' });
-    eq('EH-AUDIT same-hash vsTeacher is same', aSame.vsTeacher, 'same');
-    eq('EH-AUDIT promoted decision', aSame.decision, 'promoted');
-    eq('EH-AUDIT hash is first 8 only', aSame.hash, h.slice(0, 8));
-    eq('EH-AUDIT different-hash vsTeacher is different', harvestAuditOf({ byteLength: buf.length, bodyOk: true, hash: contentHash(other), teacherHash: h, promoted: false, reason: 'unbound' }).vsTeacher, 'different');
-    eq('EH-AUDIT url se muqabla — same', harvestAuditOf({ byteLength: 10, bodyOk: true, url: FC_TEACHER, teacherUrl: FC_TEACHER, promoted: false, reason: 'teacher-url' }).vsTeacher, 'same');
-    const aFail = harvestAuditOf({ byteLength: 0, bodyOk: false, promoted: false, reason: 'body-fail' });
-    eq('EH-AUDIT body-fail body field', aFail.body, 'fail');
-    eq('EH-AUDIT body-fail hash is n/a', aFail.hash, 'n/a');
-    eq('EH-AUDIT no teacher info — vsTeacher n/a', harvestAuditOf({ byteLength: 10, bodyOk: true, promoted: true }).vsTeacher, 'n/a');
-    const line = formatHarvestAudit(aSame);
-    ok('EH-AUDIT line carries every field', line.includes(`bytes=${buf.length}`) && line.includes('body=ok') && line.includes(`hash=${h.slice(0, 8)}`) && line.includes('vsTeacher=same') && line.includes('decision=promoted') && line.includes('reason=ok'));
-    ok('EH-AUDIT line never carries the full hash', !line.includes(h));
-    // Capture audit sirf khidki (attempt/editor) me bolta
-    // hai — bahar khamosh.
-    const nc = new NetworkCapture({});
-    let heard = 0;
-    nc.onHarvestAudit = () => { heard++; };
-    nc._emitHarvestAudit({ url: FC_FRESH }, buf, true);
-    eq('EH-AUDIT silent outside any window', heard, 0);
-    nc.setDownloadAttempt('task-a');
-    nc._emitHarvestAudit({ url: FC_FRESH }, buf, true);
-    eq('EH-AUDIT speaks during a download attempt', heard, 1);
-    nc.clearDownloadAttempt('task-a');
-    nc._emitHarvestAudit({ url: FC_FRESH }, buf, true);
-    eq('EH-AUDIT silent after the attempt ends', heard, 1);
-    nc.beginEditorWindow('task-a');
-    nc._emitHarvestAudit({ url: FC_FRESH }, null, false);
-    eq('EH-AUDIT speaks while an editor is open (body-fail included)', heard, 2);
-    nc.endEditorWindow('task-a');
-  }
-
-  // ---------------------------------------------------------------------------
-  // J. v2.48.39 — HARVEST-FIRST SPEED FIX ka faisla
-  // (saveGuard.promotedEditorHarvestPick — khalis):
-  // replay-context ka address FAST-DL fetch par bhejne
-  // se PEHLE, is task ki editor-khidki me PROMOTED
-  // mukammal body maujood ho to fetch skip hota hai aur
-  // wohi body save hoti hai.
-  //   (a) promoted mukammal body → skip, wohi ummeedwaar;
-  //   (b) sirf adhoora jawab → skip NAHI (wo editor-
-  //       harvest ke apne fetch-full raste ka hai);
-  //   (c) teacher-identical / duplicate → skip NAHI;
-  //   (d) kitab khaali → skip NAHI.
-  // ---------------------------------------------------------------------------
-  {
-    const floor = 200 * 1024;
-    const teacherBuf = mp4Buffer(600000);
-    const freshBuf = mp4Buffer(600000);
-    freshBuf[100] = 0xAB;
-    const tHash = contentHash(teacherBuf);
-    const fHash = contentHash(freshBuf);
-    const completeEntry = { url: FC_FRESH, byteLength: 600000, floorBytes: floor, headerOk: true, partial: false, status: 200, hash: fHash, teacherHash: tHash };
-
-    // (a) promoted mukammal body — skip, aur chuna gaya
-    // ummeedwaar wohi hai (usi ka URL/index engine save
-    // karega).
-    const pickA = promotedEditorHarvestPick({ entries: [completeEntry], teacherUrl: FC_TEACHER, floorBytes: floor });
-    eq('HF (a) promoted complete body — skip', pickA.skip, true);
-    eq('HF (a) picked entry is the harvest body (url)', pickA.url, FC_FRESH);
-    eq('HF (a) picked entry index', pickA.index, 0);
-    eq('HF (a) picked verdict action is save', pickA.verdict && pickA.verdict.action, 'save');
-    // Kitab (NetworkCapture) se asal raasta: khidki me
-    // darj mukammal jawab ko engine-wali annotation ke
-    // baad bhi wahi ummeedwaar chuna jata hai.
-    const nc = new NetworkCapture({});
-    nc.beginEditorWindow('task-hf');
-    eq('HF (a) NC window records the playback body', nc._recordEditorHarvest(FC_FRESH, freshBuf, { status: 200 }, Date.now()), true);
-    const book = nc.editorHarvestEntriesForKey('task-hf');
-    const annotated = book.map(e => ({
-      url: e.url, byteLength: e.buffer.length, headerOk: true,
-      partial: !!e.partial, status: e.status, contentRange: e.contentRange,
-      duplicate: false, hash: contentHash(e.buffer), teacherHash: tHash
-    }));
-    const pickBook = promotedEditorHarvestPick({ entries: annotated, teacherUrl: FC_TEACHER, floorBytes: floor });
-    eq('HF (a) NC book entry — skip', pickBook.skip, true);
-    eq('HF (a) NC book picked body is the recorded one', book[pickBook.index] && book[pickBook.index].buffer === freshBuf, true);
-    nc.endEditorWindow('task-hf');
-    // Tarjeeh: sab se taza mukammal jeet-ta hai; adhoora
-    // sab se taza ho tab bhi purana mukammal hi chuna
-    // jata hai (adhoora is skip ka ummeedwaar hi nahi).
-    const older = { url: FC_FRESH, byteLength: 600000, headerOk: true, partial: false, status: 200, hash: fHash, teacherHash: tHash };
-    const newerPartial = { url: FC_FRESH2, byteLength: 100000, headerOk: true, partial: true, status: 206, contentRange: 'bytes 0-99999/600000' };
-    const pickPref = promotedEditorHarvestPick({ entries: [older, newerPartial], teacherUrl: FC_TEACHER, floorBytes: floor });
-    eq('HF (a) newest partial does not shadow an older complete body', pickPref.skip && pickPref.url, FC_FRESH);
-
-    // (b) sirf adhoora jawab — skip NAHI. Nishaan chahe
-    // partial jhande se aaye ya 206/Content-Range se
-    // (faisla fetch-full banta hai, save nahi).
-    eq('HF (b) partial-flagged entry — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 100000, headerOk: true, partial: true, status: 206, contentRange: 'bytes 0-99999/600000' }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
-    eq('HF (b) 206 without the flag — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 600000, headerOk: true, status: 206 }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
-    eq('HF (b) below-floor entry — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 100000, headerOk: true, partial: false, status: 200 }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
-    // Kitab me darj asal adhoora jawab bhi skip nahi deta.
-    const ncP = new NetworkCapture({});
-    ncP.beginEditorWindow('task-hfp');
-    ncP._recordEditorHarvest(FC_FRESH, mp4Buffer(100000), { status: 206, contentRange: 'bytes 0-99999/600000', declared: 600000 }, Date.now());
-    const bookP = ncP.editorHarvestEntriesForKey('task-hfp');
-    const annotatedP = bookP.map(e => ({ url: e.url, byteLength: e.buffer.length, headerOk: true, partial: !!e.partial, status: e.status, contentRange: e.contentRange, duplicate: false }));
-    eq('HF (b) NC partial-only book — no skip', promotedEditorHarvestPick({ entries: annotatedP, teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
-    ncP.endEditorWindow('task-hfp');
-
-    // (c) teacher-identical — skip NAHI (hash barabar,
-    // duplicate nishaan, ya teacher ka apna URL).
-    eq('HF (c) teacher-identical bytes — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 600000, headerOk: true, partial: false, status: 200, hash: tHash, teacherHash: tHash }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
-    eq('HF (c) duplicate-flagged entry — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 600000, headerOk: true, partial: false, status: 200, duplicate: true }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
-    eq('HF (c) teacher url entry — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_TEACHER, byteLength: 600000, headerOk: true, partial: false, status: 200 }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
-    // Teacher-identical sab se taza ho aur purana saaf
-    // mukammal bhi ho — saaf wala hi chuna jata hai,
-    // ganda kabhi nahi.
-    const pickC = promotedEditorHarvestPick({ entries: [completeEntry, { url: FC_FRESH2, byteLength: 600000, headerOk: true, partial: false, status: 200, hash: tHash, teacherHash: tHash }], teacherUrl: FC_TEACHER, floorBytes: floor });
-    eq('HF (c) clean older body still picked over a dirty newer one', pickC.skip && pickC.url, FC_FRESH);
-
-    // (d) kitab khaali / kharab input — skip NAHI.
-    eq('HF (d) no entries — no skip', promotedEditorHarvestPick({ entries: [], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
-    eq('HF (d) garbage input — no skip', promotedEditorHarvestPick(null).skip, false);
-    eq('HF (d) missing entries field — no skip', promotedEditorHarvestPick({ teacherUrl: FC_TEACHER }).skip, false);
-    eq('HF (d) header-broken entry — no skip', promotedEditorHarvestPick({ entries: [{ url: FC_FRESH, byteLength: 600000, headerOk: false, partial: false, status: 200 }], teacherUrl: FC_TEACHER, floorBytes: floor }).skip, false);
-  }
-
-  // ---------------------------------------------------------------------------
-  // K. v2.48.40 — INVISIBLE HARVEST PACK:
-  //   (a) editor-harvest ka editor BACKGROUND page par
-  //       mangta hai — asal page kabhi navigate nahi
-  //       hota aur front par hi rehta hai (CDP
-  //       background target; warna context.newPage +
-  //       asal page foran wapas front par);
-  //   (b) background page nakam ho to
-  //       '[ROOT] editor-harvest bg-failed <reason>' ke
-  //       saath purana dikha-hua editor fallback —
-  //       download kabhi peeche nahi jata;
-  //   (c) background page har koshish ke baad band
-  //       hota hai — kamyaabi par bhi, haar par bhi —
-  //       aur us ka CDP session bhi detach hota hai;
-  //   (d) cascade ka hisaab (saveGuard.cascadeVerdict +
-  //       capture ki kitab): editor khulne se pehle
-  //       kisi jawab me aaya address → preEditorUrl=yes
-  //       aur sahi firstSeen; stream pehli dafa editor
-  //       ke andar dikhe to firstSeen=editor-open.
-  // ---------------------------------------------------------------------------
-  // --- K ke jaali karagar: CDP client + Puppeteer page ---
+  // --- I/J/K ke jaali karagar: CDP client + Puppeteer page ---
   function fakeCdpClient(getBody) {
     const client = {
       handlers: {},
@@ -696,215 +472,347 @@ async function main() {
     };
     return page;
   }
+  const GV_URL = 'https://rr2---sn-abc123.googlevideo.com/videoplayback?expire=999&id=xyz&itag=18&source=youtube';
+  const FC_FRESH3 = 'https://flow-content.google/video/fresh-media-3?Expires=999&KeyName=k&Signature=s';
   {
-    // (a1) CDP background target — tab bandle hi nahi
-    // hota: asal page na navigate, na re-front.
-    const eng = new FlowAutomationEngine({ onLog: () => {} });
-    const pages = [];
-    const bgPage = fakePage('bg-a1');
-    const ctx = {
-      pages: async () => pages.slice(),
-      newPage: async () => { throw new Error('newPage must not be used when the CDP background target works'); }
-    };
-    const mainPage = fakePage('main-a1', { context: ctx });
-    pages.push(mainPage);
-    bgPage._ctx = ctx;
-    const browserSession = {
-      sent: [],
-      async send(method, params) {
-        browserSession.sent.push({ method, params });
-        if (method === 'Target.createTarget') pages.push(bgPage);
-        return {};
-      },
-      async detach() {}
-    };
-    const fakeBrowser = { target: () => ({ createCDPSession: async () => browserSession }) };
-    mainPage._browser = fakeBrowser;
-    eng.page = mainPage;
-    eng.browser = fakeBrowser;
-    const created = await eng._createBackgroundPage();
-    eq('IH (a) CDP background target returns the new page', created, bgPage);
-    const ct = browserSession.sent.find(s => s.method === 'Target.createTarget');
-    ok('IH (a) createTarget was asked for a BACKGROUND target', !!ct && !!ct.params && ct.params.background === true);
-    eq('IH (a) the main page was never navigated', mainPage.gotoCalls.length, 0);
-    eq('IH (a) the main page url is untouched', mainPage.url(), 'https://flow.google.com/project/test-project');
-    eq('IH (a) the main page never had to be brought back to front', mainPage.bringToFrontCalls, 0);
-  }
-  {
-    // (a2) CDP rasta na ho to context.newPage — aur
-    // asal page FORAN wapas front par (wohi rehta hai
-    // jo owner dekhta hai); navigate kabhi nahi hota.
-    const eng = new FlowAutomationEngine({ onLog: () => {} });
-    const bgPage = fakePage('bg-a2');
-    let newPageCalls = 0;
-    const ctx = {
-      pages: async () => [],
-      newPage: async () => { newPageCalls++; return bgPage; }
-    };
-    const mainPage = fakePage('main-a2', { context: ctx });
-    eng.page = mainPage;
-    eng.browser = {};
-    const created = await eng._createBackgroundPage();
-    eq('IH (a) fallback creates the page in the same context', created, bgPage);
-    eq('IH (a) fallback newPage called once', newPageCalls, 1);
-    eq('IH (a) fallback restores the main page to front at once', mainPage.bringToFrontCalls, 1);
-    eq('IH (a) fallback never navigates the main page', mainPage.gotoCalls.length, 0);
-  }
-  {
-    // (a3) poora harvest-editor rasta: capture bg page
-    // par lagta hai, viewer bg page par khulta hai,
-    // asal page bilkul waisa hi rehta hai.
-    const eng = new FlowAutomationEngine({ onLog: () => {} });
-    const mainPage = fakePage('main-a3');
-    const bgPage = fakePage('bg-a3');
-    eng.page = mainPage;
-    eng._createBackgroundPage = async () => bgPage;
-    let attachedPage = null;
-    eng.netCapture.attachBackgroundPage = async (p) => { attachedPage = p; return true; };
-    eng.netCapture.detachBackgroundPage = async () => {};
-    let viewerPage = 'unset';
-    eng._openTileViewer = async (task, hint, tag, pageOverride) => {
-      viewerPage = pageOverride;
-      return { opened: true, alreadyOpen: false, tileMissing: false, anchor: Date.now() };
-    };
-    const res = await eng._openHarvestEditor({ promptIndex: 0, captureKey: 'k-ih-a' }, 0, 'k-ih-a');
-    eq('IH (a) the harvest editor opens', res.editorOpen, true);
-    eq('IH (a) the harvest editor is the background one', res.bg, true);
-    eq('IH (a) capture attached to the background page', attachedPage, bgPage);
-    eq('IH (a) the tile viewer opened on the background page', viewerPage, bgPage);
-    eq('IH (a) the background page navigated to the project', bgPage.gotoCalls.length, 1);
-    eq('IH (a) the main page stayed on the grid, never navigated', mainPage.gotoCalls.length, 0);
-    ok('IH (a) the background session is live for the task', eng._bgHarvestActiveFor('k-ih-a'));
-    await eng._closeBgEditorSession();
-    // Page-parameter wale helpers asal me diye gaye
-    // page ko hi padhte hain (asal page ko nahi).
-    const engP = new FlowAutomationEngine({ onLog: () => {} });
-    engP.page = fakePage('main-a4', { evaluateResult: { found: false } });
-    const bgEditor = fakePage('bg-a4', { url: 'https://flow.google.com/project/test-project/edit/xyz', evaluateResult: { found: false } });
-    eq('IH (a) inEditorView reads the GIVEN page (editor url)', await engP._inEditorView(bgEditor), true);
-    eq('IH (a) inEditorView on the main page stays on the grid', await engP._inEditorView(), false);
-  }
-  {
-    // (b1) background page hi na bane → bg-failed line
-    // + purana (asal page wala) editor fallback.
-    const logs = [];
-    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
-    eng.page = fakePage('main-b1');
-    eng._createBackgroundPage = async () => { throw new Error('boom'); };
-    let fallbackPageArg = 'unset';
-    eng._openTileViewer = async (task, hint, tag, pageOverride) => {
-      fallbackPageArg = pageOverride;
-      return { opened: true, alreadyOpen: false, tileMissing: false, anchor: Date.now() };
-    };
-    const res = await eng._openHarvestEditor({ promptIndex: 0, captureKey: 'k-ih-b' }, 0, 'k-ih-b');
-    eq('IH (b) the fallback still opens an editor', res.editorOpen, true);
-    eq('IH (b) the fallback editor is not the background one', res.bg, false);
-    eq('IH (b) the fallback opens the viewer on the main page (no override)', fallbackPageArg, undefined);
-    ok('IH (b) the bg-failed line was logged with its reason', logs.some(m => m.includes('[ROOT] editor-harvest bg-failed page-create-failed')));
-  }
-  {
-    // (b2) capture attach nakam → nakam background
-    // page band hota hai, session nahi rehta, aur
-    // bg-failed ke saath purana rasta chalta hai.
-    const logs = [];
-    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
-    eng.page = fakePage('main-b2');
-    const bgPage = fakePage('bg-b2');
-    eng._createBackgroundPage = async () => bgPage;
-    eng.netCapture.attachBackgroundPage = async () => false;
-    eng.netCapture.detachBackgroundPage = async () => {};
-    eng._openTileViewer = async () => ({ opened: true, alreadyOpen: false, tileMissing: false, anchor: Date.now() });
-    const res = await eng._openHarvestEditor({ promptIndex: 0, captureKey: 'k-ih-b2' }, 0, 'k-ih-b2');
-    eq('IH (b) attach failure still opens the fallback editor', res.editorOpen, true);
-    eq('IH (b) attach failure is not the background route', res.bg, false);
-    ok('IH (b) attach failure logged bg-failed capture-attach-failed', logs.some(m => m.includes('[ROOT] editor-harvest bg-failed capture-attach-failed')));
-    eq('IH (b) the failed background page was closed, not left open', bgPage.closeCalls, 1);
-    eq('IH (b) no background session is left behind', eng._bgEditorSession, null);
-  }
-  {
-    // (c1) harvest wrapper: background page kamyaabi
-    // par bhi band, haar par bhi band — aur capture
-    // session bhi detach hota hai.
-    for (const innerResult of [{ done: true, editorOpen: true }, { done: false, editorOpen: true }]) {
-      const eng = new FlowAutomationEngine({ onLog: () => {} });
-      eng.page = fakePage('main-c1');
-      const bgPage = fakePage('bg-c1');
-      let detachCalls = 0;
-      eng.netCapture.detachBackgroundPage = async () => { detachCalls++; };
-      eng._bgEditorSession = { page: bgPage, key: 'k-ih-c', at: Date.now() };
-      eng._tryEditorHarvestInner = async () => innerResult;
-      const out = await eng._tryEditorHarvest({ promptIndex: 0 }, '/tmp', {}, [], 'k-ih-c', 0, {});
-      eq(`IH (c) the harvest result passes through (done=${innerResult.done})`, out.done, innerResult.done);
-      eq(`IH (c) the background page is closed after the attempt (done=${innerResult.done})`, bgPage.closeCalls, 1);
-      eq(`IH (c) the background capture is detached after the attempt (done=${innerResult.done})`, detachCalls, 1);
-      eq(`IH (c) no background session remains (done=${innerResult.done})`, eng._bgEditorSession, null);
+    // (a) tartib — sirf do raaste, baaki sab gayab
+    eq('MP-ORDER order is exactly mainpage-harvest then grid-replay', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['mainpage-harvest', 'grid-replay']));
+    for (const banned of ['editor-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'tile-src', 'quick-check']) {
+      ok(`MP-ORDER ${banned} is absent from the order`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
     }
-    const engIdle = new FlowAutomationEngine({ onLog: () => {} });
-    await engIdle._closeBgEditorSession();
-    eq('IH (c) closing with no session is a no-op', engIdle._bgEditorSession, null);
+    // googlevideo pehchan
+    ok('MP googlevideo matcher accepts a real playback url', isGooglevideoPlaybackUrl(GV_URL));
+    eq('MP googlevideo matcher rejects the flow-content host', isGooglevideoPlaybackUrl(FC_FRESH), false);
+    eq('MP googlevideo matcher rejects a look-alike host', isGooglevideoPlaybackUrl('https://googlevideo.com.evil.com/videoplayback?x=1'), false);
+    eq('MP googlevideo matcher rejects a non-playback path', isGooglevideoPlaybackUrl('https://rr1.googlevideo.com/other?x=1'), false);
   }
   {
-    // (c2) capture ki asal wiring: background page ki
-    // stream wohi editor-khidki kitab me jati hai, aur
-    // detach par session band hota hai.
-    const nc = new NetworkCapture({});
-    const body = mp4Buffer(600000);
-    const client = fakeCdpClient(() => ({ body: body.toString('base64'), base64Encoded: true }));
-    const bgPage = fakePage('bg-c2', { cdpClient: client });
-    eq('IH (c) NC background attach succeeds', await nc.attachBackgroundPage(bgPage), true);
-    ok('IH (c) NC background session enabled Network', client.sent.some(s => s.method === 'Network.enable'));
-    nc.beginEditorWindow('k-ih-c2');
-    client.handlers['Network.responseReceived']({
-      requestId: 'bg-1',
-      response: { url: FC_FRESH, status: 200, headers: { 'content-type': 'video/mp4', 'content-length': String(body.length) } }
+    // (b) bandish + teacher + duplicate darwaze
+    const teacherBuf = mp4Buffer(600000);
+    const freshBuf = mp4Buffer(600000);
+    freshBuf[100] = 0xAB; // bytes alag — hash alag
+    const tHash = contentHash(teacherBuf);
+    const fHash = contentHash(freshBuf);
+    eq('MP unbound verdict rejected', mainpageHarvestVerdict({ bound: false, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true }).reason, 'unbound');
+    const dup = mainpageHarvestVerdict({ bound: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true, hash: tHash, teacherHash: tHash });
+    eq('MP teacher-identical bytes rejected', dup.accept, false);
+    eq('MP teacher-identical reason is duplicate-content', dup.reason, 'duplicate-content');
+    eq('MP duplicate flag rejected as duplicate-content', mainpageHarvestVerdict({ bound: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true, duplicate: true }).reason, 'duplicate-content');
+    eq('MP teacher url rejected', mainpageHarvestVerdict({ bound: true, url: FC_TEACHER, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true }).reason, 'teacher-url');
+    const good = mainpageHarvestVerdict({ bound: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: true, hash: fHash, teacherHash: tHash });
+    eq('MP fresh complete bound bytes accepted', good.accept, true);
+    eq('MP fresh complete action is save', good.action, 'save');
+    eq('MP bad-header verdict is body reject', mainpageHarvestVerdict({ bound: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 600000, floorBytes: 200 * 1024, headerOk: false, status: 200 }).reason, 'bad-header');
+    eq('MP missing url verdict', mainpageHarvestVerdict({ bound: true, url: null, teacherUrl: FC_TEACHER, byteLength: 600000, headerOk: true }).reason, 'no-url');
+  }
+  {
+    // (c) mainpage kitab — seedha darj (khidki, teacher,
+    // googlevideo tukda, claim, body-fail)
+    const audits = [];
+    const nc = new NetworkCapture({ onMainpageAudit: (a) => audits.push(a) });
+    const buf = mp4Buffer(600000);
+    // Khidki band (na armed, na attempt) — kuch darj nahi.
+    nc._recordMainpageSighting({ url: FC_FRESH, src: 'flow-content', declared: 600000, status: 200, contentRange: '' }, buf, 600000, Date.now());
+    eq('MP-NC outside any window — nothing recorded', nc.mainpageEntries().length, 0);
+    eq('MP-NC outside any window — no audit', audits.length, 0);
+    nc.arm();
+    nc._recordMainpageSighting({ url: FC_FRESH, src: 'flow-content', declared: 600000, status: 200, contentRange: '' }, buf, 600000, Date.now());
+    eq('MP-NC flow-content sighting recorded', nc.mainpageEntries().length, 1);
+    const e1 = nc.mainpageEntries()[0];
+    eq('MP-NC entry src is flow-content', e1.src, 'flow-content');
+    eq('MP-NC entry host is flow-content.google', e1.host, 'flow-content.google');
+    eq('MP-NC entry bytes', e1.bytes, 600000);
+    eq('MP-NC complete entry is not partial', e1.partial, false);
+    eq('MP-NC entry timing is render-watch', e1.timing, 'render-watch');
+    eq('MP-NC audit captured/ok', audits.length === 1 && audits[0].decision, 'captured');
+    eq('MP-NC audit reason ok', audits[0].reason, 'ok');
+    // Attempt ki khidki — timing bucket badal jata hai.
+    nc.setDownloadAttempt('task-mp');
+    nc._recordMainpageSighting({ url: FC_FRESH2, src: 'flow-content', declared: 600000, status: 200, contentRange: '' }, buf, 600000, Date.now());
+    eq('MP-NC attempt-window timing is download-attempt', nc.mainpageEntries()[1].timing, 'download-attempt');
+    nc.clearDownloadAttempt('task-mp');
+    // Teacher ka address kitab me KABHI nahi jata.
+    const auditsT = [];
+    const ncT = new NetworkCapture({ onMainpageAudit: (a) => auditsT.push(a) });
+    ncT.arm();
+    ncT.mintTeacherUrl = FC_TEACHER;
+    ncT._recordMainpageSighting({ url: FC_TEACHER, src: 'flow-content', declared: 600000, status: 200, contentRange: '' }, buf, 600000, Date.now());
+    eq('MP-NC teacher url never recorded', ncT.mainpageEntries().length, 0);
+    eq('MP-NC teacher audit is ignored/teacher-url', auditsT.length === 1 && auditsT[0].decision === 'ignored' && auditsT[0].reason === 'teacher-url', true);
+    // googlevideo adhoora jawab — tukda kitab me, kul
+    // size content-range se, audit partial-stream.
+    const chunk = mp4Buffer(224692);
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, chunk, 224692, Date.now());
+    const gv = nc.mainpageEntries().find(e => e.src === 'googlevideo');
+    ok('MP-NC googlevideo sighting recorded', !!gv);
+    eq('MP-NC googlevideo entry is partial', gv && gv.partial, true);
+    eq('MP-NC googlevideo entry bytes come from the content-range total', gv && gv.bytes, 1250000);
+    const gvAudit = audits[audits.length - 1];
+    eq('MP-NC googlevideo audit is captured/partial-stream', gvAudit.decision === 'captured' && gvAudit.reason === 'partial-stream', true);
+    const heldChunk = nc.mainpageBodyForUrl(GV_URL);
+    eq('MP-NC googlevideo chunk is retained for the route', heldChunk && heldChunk.buffer.length, 224692);
+    // Claim ke baad wahi address dobara — audit
+    // already-claimed, aur isMainpageClaimed sach.
+    nc.claimMainpageVideo(GV_URL);
+    eq('MP-NC claimed url reports claimed', nc.isMainpageClaimed(GV_URL), true);
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, chunk, 224692, Date.now());
+    eq('MP-NC re-sighting of a claimed url audits already-claimed', audits[audits.length - 1].reason, 'already-claimed');
+    // Body hi na mile — entry phir bhi (engine page-
+    // context fetch aazmayega), audit body-fail.
+    const before = nc.mainpageEntries().length;
+    nc._recordMainpageSighting({ url: FC_FRESH3, src: 'flow-content', declared: 600000, status: 200, contentRange: '' }, null, 0, Date.now());
+    eq('MP-NC body-fail sighting still leaves an entry', nc.mainpageEntries().length, before + 1);
+    eq('MP-NC body-fail audit is ignored/body-fail', audits[audits.length - 1].decision === 'ignored' && audits[audits.length - 1].reason === 'body-fail', true);
+  }
+  {
+    // (c2) asal CDP wiring: MAIN page ke jawab khud
+    // kitab + audit tak pahunchte hain.
+    const audits = [];
+    const nc = new NetworkCapture({ onMainpageAudit: (a) => audits.push(a) });
+    const fcBody = mp4Buffer(600000);
+    const gvChunk = mp4Buffer(224692);
+    const client = fakeCdpClient((params) => {
+      if (params && params.requestId === 'fc-1') return { body: fcBody.toString('base64'), base64Encoded: true };
+      if (params && params.requestId === 'gv-1') return { body: gvChunk.toString('base64'), base64Encoded: true };
+      return { body: '', base64Encoded: false };
     });
-    await client.handlers['Network.loadingFinished']({ requestId: 'bg-1', encodedDataLength: body.length });
-    const entries = nc.editorHarvestEntriesForKey('k-ih-c2');
-    eq('IH (c) NC background stream lands in the task editor book', entries.length, 1);
-    eq('IH (c) NC background entry keeps the exact bytes', entries.length === 1 ? entries[0].buffer.length : 0, body.length);
-    // Wahi stream cascade me 'editor-open' hai (editor
-    // khulne ke BAAD pehli dafa dikhi).
-    const casc = nc.cascadeForKey('k-ih-c2', FC_FRESH);
-    eq('IH (d) NC stream first seen inside the editor window is editor-open', casc.firstSeen, 'editor-open');
-    eq('IH (d) NC stream inside the editor is not pre-editor', casc.preEditorUrl, 'no');
-    nc.endEditorWindow('k-ih-c2');
-    await nc.detachBackgroundPage();
-    eq('IH (c) NC background session detached', client.detached, true);
-    const ncBad = new NetworkCapture({});
-    const badPage = { target: () => { throw new Error('no target'); } };
-    eq('IH (c) NC background attach failure is false, not a throw', await ncBad.attachBackgroundPage(badPage), false);
+    const page = fakePage('main-cdp', { cdpClient: client });
+    nc.attach(page);
+    await new Promise((r) => setTimeout(r, 25));
+    nc.arm();
+    client.handlers['Network.responseReceived']({
+      requestId: 'fc-1',
+      response: { url: FC_FRESH, status: 200, headers: { 'content-type': 'video/mp4', 'content-length': String(fcBody.length) } }
+    });
+    await client.handlers['Network.loadingFinished']({ requestId: 'fc-1', encodedDataLength: fcBody.length });
+    eq('MP-CDP flow-content response lands in the mainpage book', nc.mainpageEntries().length, 1);
+    eq('MP-CDP flow-content entry src', nc.mainpageEntries()[0].src, 'flow-content');
+    ok('MP-CDP flow-content audit captured', audits.some(a => a.src === 'flow-content' && a.decision === 'captured'));
+    client.handlers['Network.responseReceived']({
+      requestId: 'gv-1',
+      response: { url: GV_URL, status: 206, headers: { 'content-type': 'video/mp4', 'content-length': '224692', 'content-range': 'bytes 0-224691/1250000' } }
+    });
+    await client.handlers['Network.loadingFinished']({ requestId: 'gv-1', encodedDataLength: 224692 });
+    eq('MP-CDP googlevideo response lands in the mainpage book', nc.mainpageEntries().length, 2);
+    const gv = nc.mainpageEntries().find(e => e.src === 'googlevideo');
+    eq('MP-CDP googlevideo entry is partial with the range total', gv && gv.partial === true && gv.bytes === 1250000, true);
+    ok('MP-CDP googlevideo audit captured/partial-stream', audits.some(a => a.src === 'googlevideo' && a.decision === 'captured' && a.reason === 'partial-stream'));
+    nc.detach();
   }
   {
-    // (d) cascade ka khalis hisaab — har qisam, dono
-    // jawaab.
-    eq('IH (d) project-data before the editor — firstSeen', cascadeVerdict({ observation: { at: 1000, kind: 'project-data' }, editorOpenedAt: 2000 }).firstSeen, 'project-data');
-    eq('IH (d) project-data before the editor — preEditorUrl', cascadeVerdict({ observation: { at: 1000, kind: 'project-data' }, editorOpenedAt: 2000 }).preEditorUrl, 'yes');
-    eq('IH (d) mint-response before the editor — firstSeen', cascadeVerdict({ observation: { at: 1000, kind: 'mint-response' }, editorOpenedAt: 2000 }).firstSeen, 'mint-response');
-    eq('IH (d) mint-response before the editor — preEditorUrl', cascadeVerdict({ observation: { at: 1000, kind: 'mint-response' }, editorOpenedAt: 2000 }).preEditorUrl, 'yes');
-    eq('IH (d) stream before the editor stays stream-get', cascadeVerdict({ observation: { at: 1000, kind: 'stream-get' }, editorOpenedAt: 2000 }).firstSeen, 'stream-get');
-    eq('IH (d) stream before the editor — preEditorUrl', cascadeVerdict({ observation: { at: 1000, kind: 'stream-get' }, editorOpenedAt: 2000 }).preEditorUrl, 'yes');
-    eq('IH (d) stream first seen inside the editor is editor-open', cascadeVerdict({ observation: { at: 3000, kind: 'stream-get' }, editorOpenedAt: 2000 }).firstSeen, 'editor-open');
-    eq('IH (d) stream inside the editor — preEditorUrl no', cascadeVerdict({ observation: { at: 3000, kind: 'stream-get' }, editorOpenedAt: 2000 }).preEditorUrl, 'no');
-    eq('IH (d) mint-response after the editor keeps its label', cascadeVerdict({ observation: { at: 3000, kind: 'mint-response' }, editorOpenedAt: 2000 }).firstSeen, 'mint-response');
-    eq('IH (d) mint-response after the editor — preEditorUrl no', cascadeVerdict({ observation: { at: 3000, kind: 'mint-response' }, editorOpenedAt: 2000 }).preEditorUrl, 'no');
-    eq('IH (d) project-data after the editor — preEditorUrl no', cascadeVerdict({ observation: { at: 3000, kind: 'project-data' }, editorOpenedAt: 2000 }).preEditorUrl, 'no');
-    eq('IH (d) nothing seen — firstSeen none', cascadeVerdict({ observation: null, editorOpenedAt: 2000 }).firstSeen, 'none');
-    eq('IH (d) nothing seen — preEditorUrl no', cascadeVerdict({ observation: null, editorOpenedAt: 2000 }).preEditorUrl, 'no');
-    eq('IH (d) no editor ever opened — preEditorUrl yes', cascadeVerdict({ observation: { at: 1000, kind: 'project-data' }, editorOpenedAt: null }).preEditorUrl, 'yes');
-    eq('IH (d) garbage input — none/no', JSON.stringify(cascadeVerdict(null)), JSON.stringify({ firstSeen: 'none', preEditorUrl: 'no' }));
-    // Capture kitab: sirf PEHLI nazar rehti hai, aur
-    // naya attempt editor-ghadi taaza karta hai.
+    // (d) adhoora jawab — poora fetch ka hukm, inkaar nahi
+    eq('MP-PARTIAL 206 is partial', isPartialHarvestResponse({ status: 206, byteLength: 600000 }), true);
+    eq('MP-PARTIAL content-range is partial', isPartialHarvestResponse({ status: 200, contentRange: 'bytes 0-99/600000', byteLength: 100 }), true);
+    eq('MP-PARTIAL declared se chhota is partial', isPartialHarvestResponse({ status: 200, byteLength: 300000, declaredLength: 600000 }), true);
+    eq('MP-PARTIAL floor se neeche is partial', isPartialHarvestResponse({ status: 200, byteLength: 100000, floorBytes: 200 * 1024 }), true);
+    eq('MP-PARTIAL mukammal jawab partial nahi', isPartialHarvestResponse({ status: 200, byteLength: 600000, declaredLength: 600000, floorBytes: 200 * 1024 }), false);
+    const v206 = mainpageHarvestVerdict({ bound: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 300000, floorBytes: 200 * 1024, headerOk: true, status: 206 });
+    eq('MP-PARTIAL 206 verdict action is fetch-full', v206.action, 'fetch-full');
+    eq('MP-PARTIAL 206 verdict is not an accept', v206.accept, false);
+    eq('MP-PARTIAL content-range verdict action is fetch-full', mainpageHarvestVerdict({ bound: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 100, floorBytes: 200 * 1024, headerOk: true, contentRange: 'bytes 0-99/600000' }).action, 'fetch-full');
+    eq('MP-PARTIAL below-floor verdict action is fetch-full', mainpageHarvestVerdict({ bound: true, url: FC_FRESH, teacherUrl: FC_TEACHER, byteLength: 100000, floorBytes: 200 * 1024, headerOk: true, status: 200 }).action, 'fetch-full');
+  }
+  {
+    // (e) mainpage-audit hisaab + poora-fetch URL
+    // ummeedwaar + purani harvest-audit barkarar
+    const a = mainpageAuditOf({ host: 'rr2---sn-abc123.googlevideo.com', bytes: 224692, src: 'googlevideo', decision: 'captured', reason: 'partial-stream' });
+    eq('MP-AUDIT host passes through', a.host, 'rr2---sn-abc123.googlevideo.com');
+    eq('MP-AUDIT bytes pass through', a.bytes, 224692);
+    const line = formatMainpageAudit(a);
+    ok('MP-AUDIT line carries every field', line.includes('host=rr2---sn-abc123.googlevideo.com') && line.includes('bytes=224692') && line.includes('src=googlevideo') && line.includes('decision=captured') && line.includes('reason=partial-stream'));
+    eq('MP-AUDIT bad src normalizes to none', mainpageAuditOf({ src: 'weird' }).src, 'none');
+    eq('MP-AUDIT bad decision normalizes to ignored', mainpageAuditOf({ decision: 'won' }).decision, 'ignored');
+    eq('MP-AUDIT no host normalizes to none', mainpageAuditOf({}).host, 'none');
+    eq('MP-FETCHURL no range params — single candidate', JSON.stringify(fullFetchUrlCandidates('https://h/videoplayback?a=1&b=2')), JSON.stringify(['https://h/videoplayback?a=1&b=2']));
+    const cands = fullFetchUrlCandidates('https://h/videoplayback?range=0-99&itag=18&sig=zzz');
+    eq('MP-FETCHURL range param yields a cleaned second candidate', cands.length, 2);
+    ok('MP-FETCHURL cleaned candidate drops range, keeps itag and sig', cands[1].includes('itag=18') && cands[1].includes('sig=zzz') && !cands[1].includes('range='));
+    eq('MP-FETCHURL empty input — no candidates', JSON.stringify(fullFetchUrlCandidates(null)), JSON.stringify([]));
+    // Purani harvest-audit (page-fetch wali) barkarar:
+    const buf = mp4Buffer(600000);
+    const other = mp4Buffer(600000);
+    other[100] = 0xAB;
+    const h = contentHash(buf);
+    const aSame = harvestAuditOf({ byteLength: buf.length, bodyOk: true, hash: h, teacherHash: h, promoted: true, reason: 'ok' });
+    eq('HA-AUDIT same-hash vsTeacher is same', aSame.vsTeacher, 'same');
+    eq('HA-AUDIT promoted decision', aSame.decision, 'promoted');
+    eq('HA-AUDIT hash is first 8 only', aSame.hash, h.slice(0, 8));
+    eq('HA-AUDIT different-hash vsTeacher is different', harvestAuditOf({ byteLength: buf.length, bodyOk: true, hash: contentHash(other), teacherHash: h, promoted: false, reason: 'unbound' }).vsTeacher, 'different');
+    const aFail = harvestAuditOf({ byteLength: 0, bodyOk: false, promoted: false, reason: 'body-fail' });
+    eq('HA-AUDIT body-fail body field', aFail.body, 'fail');
+    eq('HA-AUDIT body-fail hash is n/a', aFail.hash, 'n/a');
+    const hline = formatHarvestAudit(aSame);
+    ok('HA-AUDIT line carries every field', hline.includes(`bytes=${buf.length}`) && hline.includes('body=ok') && hline.includes(`hash=${h.slice(0, 8)}`) && hline.includes('vsTeacher=same') && hline.includes('decision=promoted') && hline.includes('reason=ok'));
+    ok('HA-AUDIT line never carries the full hash', !hline.includes(h));
+    // Capture ki harvest-audit sirf attempt khidki me
+    // bolti hai — bahar khamosh (editor-khidki gayi).
+    const nc = new NetworkCapture({});
+    let heard = 0;
+    nc.onHarvestAudit = () => { heard++; };
+    nc._emitHarvestAudit({ url: FC_FRESH }, buf, true);
+    eq('HA-AUDIT silent outside a download attempt', heard, 0);
+    nc.setDownloadAttempt('task-a');
+    nc._emitHarvestAudit({ url: FC_FRESH }, buf, true);
+    eq('HA-AUDIT speaks during a download attempt', heard, 1);
+    nc.clearDownloadAttempt('task-a');
+    nc._emitHarvestAudit({ url: FC_FRESH }, buf, true);
+    eq('HA-AUDIT silent after the attempt ends', heard, 1);
+  }
+
+  // ---------------------------------------------------------------------------
+  // J. v2.48.41 — mainpageEntryPick (saveGuard, khalis):
+  // mainpage kitab se sab se pakka ummeedwaar:
+  //   bandha+mukammal > koi mukammal > bandha+adhoora
+  //   > koi adhoora; teacher/duplicate/kharab-header
+  //   kabhi nahi; har darje me sab se taza pehle.
+  // ---------------------------------------------------------------------------
+  {
+    const floor = 200 * 1024;
+    const teacherBuf = mp4Buffer(600000);
+    const freshBuf = mp4Buffer(600000);
+    freshBuf[100] = 0xAB;
+    const tHash = contentHash(teacherBuf);
+    const fHash = contentHash(freshBuf);
+    const completeBound = { url: FC_FRESH, bound: true, byteLength: 600000, headerOk: true, partial: false, status: 200, hash: fHash, teacherHash: tHash };
+    const completeFree = { url: FC_FRESH, bound: false, byteLength: 600000, headerOk: true, partial: false, status: 200, hash: fHash, teacherHash: tHash };
+    const partialBound = { url: FC_FRESH2, bound: true, byteLength: 100000, headerOk: true, partial: true, status: 206, contentRange: 'bytes 0-99999/600000' };
+    const partialFree = { url: FC_FRESH2, bound: false, byteLength: 100000, headerOk: true, partial: true, status: 206, contentRange: 'bytes 0-99999/600000' };
+
+    const pickA = mainpageEntryPick({ entries: [completeBound], teacherUrl: FC_TEACHER, floorBytes: floor });
+    eq('PICK bound complete — picked', pickA.pick, true);
+    eq('PICK bound complete — url', pickA.url, FC_FRESH);
+    eq('PICK bound complete — verdict save', pickA.verdict && pickA.verdict.action, 'save');
+    eq('PICK unbound complete alone — picked (save)', mainpageEntryPick({ entries: [completeFree], teacherUrl: FC_TEACHER, floorBytes: floor }).verdict.action, 'save');
+    eq('PICK bound partial alone — picked (fetch-full)', mainpageEntryPick({ entries: [partialBound], teacherUrl: FC_TEACHER, floorBytes: floor }).verdict.action, 'fetch-full');
+    eq('PICK unbound partial alone — picked (fetch-full)', mainpageEntryPick({ entries: [partialFree], teacherUrl: FC_TEACHER, floorBytes: floor }).verdict.action, 'fetch-full');
+    // Darja: mukammal (chahe unbound) adhoore bandhe
+    // se upar hai — save fetch-full se pehle.
+    const pickPref = mainpageEntryPick({ entries: [partialBound, completeFree], teacherUrl: FC_TEACHER, floorBytes: floor });
+    eq('PICK a complete body beats a bound partial', pickPref.url, FC_FRESH);
+    // Do mukammal — sab se taza jeet-ta hai.
+    const newer = { url: FC_FRESH2, bound: true, byteLength: 600000, headerOk: true, partial: false, status: 200, hash: fHash, teacherHash: tHash };
+    eq('PICK newest complete wins', mainpageEntryPick({ entries: [completeBound, newer], teacherUrl: FC_TEACHER, floorBytes: floor }).url, FC_FRESH2);
+    // Gande ummeedwaar kabhi nahi.
+    eq('PICK teacher url — no pick', mainpageEntryPick({ entries: [{ url: FC_TEACHER, bound: true, byteLength: 600000, headerOk: true, partial: false, status: 200 }], teacherUrl: FC_TEACHER, floorBytes: floor }).pick, false);
+    eq('PICK teacher-identical bytes — no pick', mainpageEntryPick({ entries: [{ url: FC_FRESH, bound: true, byteLength: 600000, headerOk: true, partial: false, status: 200, hash: tHash, teacherHash: tHash }], teacherUrl: FC_TEACHER, floorBytes: floor }).pick, false);
+    eq('PICK duplicate-flagged — no pick', mainpageEntryPick({ entries: [{ url: FC_FRESH, bound: true, byteLength: 600000, headerOk: true, partial: false, status: 200, duplicate: true }], teacherUrl: FC_TEACHER, floorBytes: floor }).pick, false);
+    eq('PICK header-broken — no pick', mainpageEntryPick({ entries: [{ url: FC_FRESH, bound: true, byteLength: 600000, headerOk: false, partial: false, status: 200 }], teacherUrl: FC_TEACHER, floorBytes: floor }).pick, false);
+    eq('PICK empty book — no pick', mainpageEntryPick({ entries: [], teacherUrl: FC_TEACHER, floorBytes: floor }).pick, false);
+    eq('PICK garbage input — no pick', mainpageEntryPick(null).pick, false);
+  }
+
+  // ---------------------------------------------------------------------------
+  // K. v2.48.41 — ENGINE ki satah + asal raaste:
+  //   (a) editor/bg/viewer/menu route functions engine
+  //       aur capture dono se GAYAB hain — koi rasta
+  //       kabhi fire hi nahi ho sakta;
+  //   (b) main page par koi stream na ho to attempt
+  //       EMAANDARI se FAIL (koi fallback nahi khulta);
+  //   (c) bandhi hui mukammal body mainpage-harvest se
+  //       save hoti hai — via=mainpage-harvest line ke
+  //       saath, bg flag ke baghair;
+  //   (d) googlevideo adhoora jawab usi MAIN page ke
+  //       andar poora fetch ho kar save hota hai.
+  // ---------------------------------------------------------------------------
+  {
+    // (a) satah — gayab functions
+    const eng = new FlowAutomationEngine({ onLog: () => {} });
+    eq('MP-ENG mainpage route exists', typeof eng._tryMainpageHarvest, 'function');
+    eq('MP-ENG mainpage full-fetch helper exists', typeof eng._fetchMainpageFullInPage, 'function');
+    eq('MP-ENG grid-replay is kept', typeof eng._tryGridReplay, 'function');
+    for (const gone of ['_tryEditorHarvest', '_tryEditorHarvestInner', '_tryEditorContextReplay', '_openHarvestEditor', '_createBackgroundPage', '_closeBgEditorSession', '_bgHarvestActiveFor', '_tryDirectViewerDownload', '_openTileViewer', '_tryMenuFirstDownload', '_opportunisticServerCheck', '_tryBlobHarvestDownload', '_fetchEditorHarvestFullInPage', '_savePromotedHarvestInstead']) {
+      eq(`MP-ENG ${gone} is gone`, typeof eng[gone], 'undefined');
+    }
+    eq('MP-ENG no background session state remains', eng._bgEditorSession, undefined);
+    eq('MP-ENG capture has no background attach', typeof eng.netCapture.attachBackgroundPage, 'undefined');
+    eq('MP-ENG capture has no editor window book', typeof eng.netCapture.beginEditorWindow, 'undefined');
+    eq('MP-ENG capture has no editor harvest book', typeof eng.netCapture.editorHarvestEntriesForKey, 'undefined');
+    eq('MP-ENG capture has the mainpage book', typeof eng.netCapture.mainpageEntries, 'function');
+  }
+  {
+    // (b) EMAANDAR FAIL — main page par kuch nahi mila
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+    eng.page = fakePage('main-mp-fail');
+    eng._readTileMediaState = async () => null;
+    const task = { promptIndex: 0, captureKey: 'k-mp-fail', videoId: 'k-mp-fail', startTime: Date.now(), renderCompletedAt: Date.now() };
+    const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
+    eq('MP-FAIL inner returns not-ok', res.ok, false);
+    eq('MP-FAIL the task route order is the two-step order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['mainpage-harvest', 'grid-replay']));
+    ok('MP-FAIL attempts carry mainpage-harvest', res.attempts.some(a => a.strategy === 'mainpage-harvest'));
+    ok('MP-FAIL attempts carry no banned strategy', !res.attempts.some(a => ['editor-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-src', 'tile-src-fast', 'quick-check'].includes(a.strategy)));
+    ok('MP-FAIL the honest-fail line was logged', logs.some(m => m.includes('Download failed honestly')));
+    ok('MP-FAIL the tile audit line logged src=none', logs.some(m => m.includes('[ROOT] mainpage-audit') && m.includes('src=none')));
+    ok('MP-FAIL no bg flag anywhere in the log', !logs.some(m => m.includes('bg=')));
+  }
+  {
+    // (c) bandhi hui mukammal body — seedha save
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+    eng.page = fakePage('main-mp-win');
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.harvestBodies.set('k-mp-win', { url: FC_FRESH, buffer: mp4Buffer(600000), at: Date.now() });
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-mp-win', videoId: 'k-mp-win', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+    const attempts = [];
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-mp-win', 0);
+    eq('MP-WIN the retained main-page body saves', okSave, true);
+    ok('MP-WIN the win line is via=mainpage-harvest', logs.some(m => m.includes('[ROOT] via=mainpage-harvest gap=')));
+    ok('MP-WIN the promoted audit line was logged', logs.some(m => m.includes('[ROOT] mainpage-audit') && m.includes('decision=promoted')));
+    ok('MP-WIN the attempt strategy is mainpage-harvest', attempts.some(a => a.strategy === 'mainpage-harvest' && a.ok));
+    ok('MP-WIN no bg flag in the win lines', !logs.some(m => m.includes('bg=')));
+  }
+  {
+    // (d) googlevideo adhoora jawab — MAIN page ke
+    // andar poora fetch, phir save
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+    const full = mp4Buffer(1250000);
+    eng.page = fakePage('main-mp-gv', { evaluateResult: { status: 200, b64: full.toString('base64') } });
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000' }, mp4Buffer(224692), 224692, Date.now());
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-mp-gv', videoId: 'k-mp-gv', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+    const attempts = [];
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-mp-gv', 0);
+    eq('MP-GV the completed googlevideo stream saves', okSave, true);
+    ok('MP-GV the capture audit saw the partial stream first', logs.some(m => m.includes('[ROOT] mainpage-audit') && m.includes('src=googlevideo') && m.includes('reason=partial-stream')));
+    ok('MP-GV the win line is via=mainpage-harvest', logs.some(m => m.includes('[ROOT] via=mainpage-harvest gap=')));
+    ok('MP-GV the promoted audit names googlevideo', logs.some(m => m.includes('[ROOT] mainpage-audit') && m.includes('decision=promoted') && m.includes('src=googlevideo')));
+    ok('MP-GV the attempt strategy is mainpage-harvest', attempts.some(a => a.strategy === 'mainpage-harvest' && a.ok));
+  }
+
+  // ---------------------------------------------------------------------------
+  // L. CASCADE (v2.48.40 se, v2.48.41 me barkarar):
+  // khalis hisaab waisa hi hai; capture ki kitab me
+  // editor ab kabhi khulta hi nahi, is liye asal
+  // chalne me firstSeen kabhi 'editor-open' nahi
+  // banta aur address dikhne par preEditorUrl=yes
+  // rehta hai.
+  // ---------------------------------------------------------------------------
+  {
+    eq('CS project-data before any editor — firstSeen', cascadeVerdict({ observation: { at: 1000, kind: 'project-data' }, editorOpenedAt: 2000 }).firstSeen, 'project-data');
+    eq('CS stream first seen inside an editor would be editor-open (pure math)', cascadeVerdict({ observation: { at: 3000, kind: 'stream-get' }, editorOpenedAt: 2000 }).firstSeen, 'editor-open');
+    eq('CS no editor ever opened — preEditorUrl yes', cascadeVerdict({ observation: { at: 1000, kind: 'project-data' }, editorOpenedAt: null }).preEditorUrl, 'yes');
+    eq('CS nothing seen — firstSeen none', cascadeVerdict({ observation: null, editorOpenedAt: null }).firstSeen, 'none');
+    eq('CS garbage input — none/no', JSON.stringify(cascadeVerdict(null)), JSON.stringify({ firstSeen: 'none', preEditorUrl: 'no' }));
+    // Capture kitab: sirf PEHLI nazar rehti hai; editor
+    // na hone se stream-get apna naam barkarar rakhta hai.
     const nc = new NetworkCapture({});
     nc._noteUrlFirstSeen(FC_FRESH, 'project-data', 1000);
     nc._noteUrlFirstSeen(FC_FRESH, 'stream-get', 500);
-    eq('IH (d) NC the first sighting wins over later ones', nc._urlFirstSeen.get(FC_FRESH).kind, 'project-data');
-    nc._editorOpenedAtByKey.set('k-ih-d', 2000);
-    const c1 = nc.cascadeForKey('k-ih-d', FC_FRESH);
-    eq('IH (d) NC pre-editor project-data — firstSeen', c1.firstSeen, 'project-data');
-    eq('IH (d) NC pre-editor project-data — preEditorUrl', c1.preEditorUrl, 'yes');
-    eq('IH (d) NC unseen url — firstSeen none', nc.cascadeForKey('k-ih-d', FC_FRESH2).firstSeen, 'none');
-    nc.setDownloadAttempt('k-ih-d');
-    eq('IH (d) NC a fresh attempt clears the editor clock', nc._editorOpenedAtByKey.has('k-ih-d'), false);
+    eq('CS NC the first sighting wins over later ones', nc._urlFirstSeen.get(FC_FRESH).kind, 'project-data');
+    const c1 = nc.cascadeForKey('k-cs', FC_FRESH);
+    eq('CS NC project-data — firstSeen', c1.firstSeen, 'project-data');
+    eq('CS NC project-data — preEditorUrl yes (no editor exists)', c1.preEditorUrl, 'yes');
+    nc._noteUrlFirstSeen(FC_FRESH2, 'stream-get', 1500);
+    const c2 = nc.cascadeForKey('k-cs', FC_FRESH2);
+    eq('CS NC main-page stream stays stream-get', c2.firstSeen, 'stream-get');
+    eq('CS NC main-page stream — preEditorUrl yes', c2.preEditorUrl, 'yes');
+    eq('CS NC unseen url — firstSeen none', nc.cascadeForKey('k-cs', FC_FRESH3).firstSeen, 'none');
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

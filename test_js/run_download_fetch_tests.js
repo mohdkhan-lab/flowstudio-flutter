@@ -328,64 +328,40 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   ok('FAST-DL hook wraps createObjectURL', HOOK_SOURCE.includes('createObjectURL'));
 }
 
-// --- v2.48.30 (QUICK-CHECK HEAD): download route order ---
+// --- v2.48.30 (QUICK-CHECK HEAD) → v2.48.41 (MAIN-PAGE
+// HARVEST PACK): download route order ---
 {
   const routeOrder = require('../engine/downloadRouteOrder');
   const { DOWNLOAD_ROUTE_ORDER, fallbackRouteOrder, firstRoute } = routeOrder;
 
-  // v2.48.30: the attempt's first step is the NO-WAIT
-  // quick-check (the .29 opportunistic read) — the .28
-  // server-first head (prime + ~12s passive watch) is GONE:
-  // no 12s dead window anywhere in the attempt. The menu
-  // route is second (and carries the post-click race inside).
-  eq('QUICK-CHECK first route is quick-check', firstRoute(), 'quick-check');
-  eq('QUICK-CHECK order starts with quick-check', DOWNLOAD_ROUTE_ORDER[0], 'quick-check');
-  // v2.48.31: the DIRECT-PROBE (tile viewer, no menu) became
-  // the second step; the menu route moved to third.
-  // v2.48.32 (SWITCH): same order — direct-viewer is now the
-  // PRIMARY route and the menu is fallback #2.
-  // v2.48.33 (ZEROCLICK probe): the learned-mint-call replay
-  // is the new second step; direct-viewer moves to third and
-  // the menu to fourth (their aapas-tartib barkarar hai).
-  // v2.48.36 (ROOT PACK): the substitution 'zero-click' step
-  // is GONE (the mint call carries no id to substitute —
-  // ZEROCLICK2). In its place two verbatim replays:
-  // grid-replay (tile selected on the grid, no editor) is
-  // second, replay-context (inside the open editor, no
-  // Download click) is third; direct-viewer moves to fourth
-  // and the menu to fifth. Page-harvest lives INSIDE
-  // quick-check (and inside replay-context), so it is not
-  // its own table entry.
-  eq('ROOT grid-replay route is second', DOWNLOAD_ROUTE_ORDER[1], 'grid-replay');
-  eq('ROOT replay-context route is third', DOWNLOAD_ROUTE_ORDER[2], 'replay-context');
-  // v2.48.38 (EDITOR-HARVEST PACK): editor-harvest chautha
-  // hai — replay-context ke baad, direct-viewer se pehle;
-  // viewer/menu ek-ek qadam peeche hate.
-  eq('EDITOR-HARVEST route is fourth', DOWNLOAD_ROUTE_ORDER[3], 'editor-harvest');
-  eq('SWITCH viewer route is fifth', DOWNLOAD_ROUTE_ORDER[4], 'direct-viewer');
-  eq('QUICK-CHECK menu route is sixth', DOWNLOAD_ROUTE_ORDER[5], 'native-menu');
-  eq('QUICK-CHECK order ends with native-editor', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'native-editor');
-  eq('QUICK-CHECK route count', DOWNLOAD_ROUTE_ORDER.length, 14);
-  ok('QUICK-CHECK order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
-  ok('QUICK-CHECK order has no server-first watch', !DOWNLOAD_ROUTE_ORDER.includes('server-first'));
-  ok('ROOT order has no substitution zero-click step', !DOWNLOAD_ROUTE_ORDER.includes('zero-click'));
-
-  // Fallbacks keep their previous relative order.
-  const fb = fallbackRouteOrder();
-  eq('QUICK-CHECK fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
-  ok('QUICK-CHECK fallback has no quick-check', !fb.includes('quick-check'));
-  ok('QUICK-CHECK fallback has no server-first', !fb.includes('server-first'));
-  ok('ROOT fallback starts with grid-replay', fb[0] === 'grid-replay');
-  const prev = ['native-menu', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'backend-fetch-retry', 'tile-src-fast', 'tile-src', 'native-editor'];
-  let idx = -1;
-  let inOrder = true;
-  for (const name of prev) {
-    const at = fb.indexOf(name);
-    if (at <= idx) { inOrder = false; break; }
-    idx = at;
+  // Tareekh (mukhtasar): .30 quick-check head → .36 verbatim
+  // replays → .38 editor-harvest → .40 invisible (bg) harvest.
+  // v2.48.41 (owner order 2026-11-04, ZEROCLICK8 eye-verdict):
+  // editor kahin bhi nahi khulega — na main tab, na dusra
+  // tab, na background page. Video ki tartib ab SIRF do
+  // raaste hain, dono main project page par: pehle
+  // mainpage-harvest (main page ki apni stream kitab +
+  // usi page ke andar se poora fetch), phir grid-replay
+  // (teacher-guarded verbatim mint replay). Is ke baad
+  // kuch nahi — attempt emaandari se FAIL hota hai.
+  eq('MAINPAGE first route is mainpage-harvest', firstRoute(), 'mainpage-harvest');
+  eq('MAINPAGE order starts with mainpage-harvest', DOWNLOAD_ROUTE_ORDER[0], 'mainpage-harvest');
+  eq('MAINPAGE grid-replay route is second', DOWNLOAD_ROUTE_ORDER[1], 'grid-replay');
+  eq('MAINPAGE order ends with grid-replay', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'grid-replay');
+  eq('MAINPAGE route count', DOWNLOAD_ROUTE_ORDER.length, 2);
+  ok('MAINPAGE order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
+  // Banned raaste — editor/menu/viewer/backend — tartib
+  // me kahin nahi:
+  for (const banned of ['editor-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'backend-fetch-retry', 'tile-readiness', 'tile-src-fast', 'tile-src', 'quick-check', 'server-first', 'zero-click']) {
+    ok(`MAINPAGE order has no ${banned}`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
   }
-  ok('QUICK-CHECK fallbacks retain previous relative order', inOrder);
-  eq('QUICK-CHECK fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
+
+  // Fallback = tartib ka pehla rasta chhor kar baaki.
+  const fb = fallbackRouteOrder();
+  eq('MAINPAGE fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
+  ok('MAINPAGE fallback has no mainpage-harvest', !fb.includes('mainpage-harvest'));
+  ok('MAINPAGE fallback starts with grid-replay', fb[0] === 'grid-replay');
+  eq('MAINPAGE fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
 }
 
 // --- v2.48.28 (SERVER-FIRST): flow-content URL matcher ---

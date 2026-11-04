@@ -214,6 +214,15 @@ function templateStateOf(input) {
 // ---------------------------------------------------------------------------
 // v2.48.38 (EDITOR-HARVEST PACK): editor ke playback fetch
 // par faisle + harvest-audit ka hisaab — sab khalis.
+// v2.48.41 (MAIN-PAGE HARVEST PACK): wahi faisle ab MAIN
+// PAGE ke jawabon par laagu hain — owner order (2026-11-04,
+// ZEROCLICK8 eye-verdict): editor kahin bhi nahi khulega
+// (na main tab, na dusra tab, na background tab); download
+// usi project/grid page se pakda jayega jis par video
+// banti hai. Is liye 'editor-harvest' verdict/pick ka
+// naam aur bandish badal kar 'mainpage-harvest' kar di
+// gayi hai — bandish ab editor-khidki nahi, task se
+// bandha hua main-page jawab hai (bound).
 //
 // SABOOT (ZEROCLICK5, v2.48.37, owner ke PC par engine log,
 // 2026-11-03): dono verbatim replay raaste teacher URL par
@@ -224,9 +233,16 @@ function templateStateOf(input) {
 // ek aur darwaza dikha: Prompt #2 ke editor-open khidki
 // me, Download button dabne se PEHLE, ek flow-content GET
 // 1,231,422 bytes ka hua (≈ usi task ki file size) —
-// editor apni playback ke liye file KHUD mangta hai. Un
-// bytes ko usi khidki me pakadna hi bacha hua zero-click
-// rasta hai ('editor-harvest').
+// editor apni playback ke liye file KHUD mangta hai.
+// v2.48.40 me ye bytes background page se pakde gaye,
+// lekin owner ne editor ko dusre tab me chalte DEKHA aur
+// radd kar diya — ab yehi sawaal main page par hai:
+// ZEROCLICK8 ke log me download attempt #1 ke dauraan,
+// kisi editor ke khulne se PEHLE, main page par ek
+// googlevideo videoplayback jawab 224,692 bytes ka aaya
+// tha — main page shayad tile ki stream khud mangti hai.
+// 'mainpage-audit' lineain isi sawal ka saboot jama
+// karti hain; dawa koi nahi, jo dikhega wahi log hoga.
 // ---------------------------------------------------------------------------
 
 /**
@@ -250,27 +266,29 @@ function isPartialHarvestResponse(input) {
 }
 
 /**
- * EDITOR-HARVEST ke ek ummeedwaar ka faisla. Nisbat
- * SANRACHNA (structural) par hai: jawab SIRF tab qabil hai
- * jab wo IS task ke editor ke khule hone ki khidki ke
- * ANDAR dekha gaya ho (inWindow) — khidki ke bahar ka
- * jawab kabhi nahi, chahe baaki sab theek ho. Teacher ka
- * address (url barabar) ya teacher ke bytes (hash barabar
- * / duplicate nishaan) hamesha inkaar hain. Adhoora jawab
- * inkaar nahi — usi URL ka poora fetch page ke andar se
- * hota hai (action 'fetch-full').
- * input = { inWindow, url, teacherUrl, byteLength,
+ * MAINPAGE-HARVEST ke ek ummeedwaar ka faisla (v2.48.41).
+ * Nisbat SANRACHNA (structural) par hai: jawab SIRF tab
+ * qabil hai jab wo MAIN project page par is task se
+ * BANDHA hua dekha gaya ho (bound — fingerprint/timing
+ * bandish capture ki kitab se, ya tile ke apne <video>
+ * src se) — unbound jawab kabhi nahi, chahe baaki sab
+ * theek ho. Teacher ka address (url barabar) ya teacher
+ * ke bytes (hash barabar / duplicate nishaan) hamesha
+ * inkaar hain. Adhoora jawab inkaar nahi — usi URL ka
+ * poora fetch MAIN page ke andar se hota hai (action
+ * 'fetch-full').
+ * input = { bound, url, teacherUrl, byteLength,
  *   floorBytes, headerOk, status, contentRange,
  *   declaredLength, partial, duplicate, hash, teacherHash }
  * natija = { accept, action, reason } — action:
  *   'save' | 'fetch-full' | 'reject'; reason 'ok' ho ya
- *   haar ki qisam: 'outside-window' | 'no-url' |
+ *   haar ki qisam: 'unbound' | 'no-url' |
  *   'teacher-url' | 'duplicate-content' | 'partial' |
  *   'empty' | 'too-big' | 'bad-header' | 'below-floor'.
  */
-function editorHarvestVerdict(input) {
+function mainpageHarvestVerdict(input) {
   const o = input && typeof input === 'object' ? input : {};
-  if (!o.inWindow) return { accept: false, action: 'reject', reason: 'outside-window' };
+  if (!o.bound) return { accept: false, action: 'reject', reason: 'unbound' };
   const url = typeof o.url === 'string' && o.url ? o.url : null;
   if (!url) return { accept: false, action: 'reject', reason: 'no-url' };
   if (typeof o.teacherUrl === 'string' && o.teacherUrl && url === o.teacherUrl) {
@@ -288,66 +306,136 @@ function editorHarvestVerdict(input) {
 }
 
 /**
- * v2.48.39 (HARVEST-FIRST SPEED FIX): replay-context ke
- * address ko FAST-DL fetch par bhejne se PEHLE ka faisla —
- * is task ki editor-khidki ki kitab me koi aisa jawab
- * pehle se PROMOTED hai kya jo seedha save ke qabil ho
- * (mukammal, guard-pass)? Ho to replay fetch BILKUL nahi
- * chalega — wahi body editor-harvest ke raste save hogi.
- *
- * SABOOT (ZEROCLICK6, v2.48.38, owner ke PC par engine
- * log, 2026-11-03): Prompt #2 par harvest-audit ne jawab
- * ko promoted darj kar diya tha (22:57:00.9), phir bhi
- * replay-context ka address FAST-DL fetch par gaya aur
- * ~8.7s zaya hue (node-fetch 403 ×3, page-fetch fail) —
- * editor-harvest ne aakhir wahi promoted body save ki
- * (22:57:11.8). Ye faisla wahi zaya waqt kaat-ta hai.
- *
- * Usool sakht:
- *   - sirf woh jawab jo editorHarvestVerdict par action
- *     'save' de (mukammal + teacher nahi + duplicate
- *     nahi + darwaze pass);
- *   - ADHOORA jawab (action 'fetch-full') is skip ke
- *     liye KABHI qabil nahi — wo editor-harvest route ke
- *     apne fetch-full raste se hi jayega (yahan skip
- *     karne se wo rasta bhi ruk jata aur replay fetch
- *     bhi — ulta nuqsan);
- *   - tarjeeh editor-harvest route wali hi: sab se taza
- *     mukammal jawab pehle.
+ * v2.48.41 (MAIN-PAGE HARVEST PACK): MAIN page ki kitab
+ * (capture.mainpageEntries) se is task ke liye sab se
+ * pakka ummeedwaar chunna. Tarjeeh ka tartib:
+ *   1. bandha hua (bound) + mukammal jawab (action
+ *      'save' — body pehle se kitab me hai);
+ *   2. koi bhi mukammal jawab (bound naheen to bhi
+ *      timing bandish render-complete ke baad wali hai —
+ *      engine use sirf tab chunega jab kitab use is
+ *      task se jodti ho; yahan faisla sirf darwazon ka
+ *      hai);
+ *   3. bandha hua adhoora jawab (action 'fetch-full' —
+ *      poora fetch main page ke andar se hoga);
+ *   4. koi bhi adhoora jawab.
+ * Har darje ke andar sab se TAZA jawab pehle. Teacher
+ * (url ya hash barabar), duplicate aur darwaza-fail
+ * jawab har darje se bahar hain.
  * input = { entries, teacherUrl, floorBytes } — entries
- *   editorHarvestVerdict ke hisaab wale hisse hain:
- *   { url, byteLength, headerOk, partial, status,
+ *   mainpageHarvestVerdict ke hisaab wale hisse hain:
+ *   { url, src, byteLength, headerOk, partial, status,
  *     contentRange, declaredLength, duplicate, hash,
- *     teacherHash } (kitab ki asal entry se engine banata
- *     hai; inWindow hamesha sach — kitab me khidki ke
- *     bahar ka jawab hota hi nahi).
- * natija = { skip, index, url, verdict } — skip sach ho
- *   to index entries me us jawab ki jagah hai.
+ *     teacherHash, bound } (kitab ki asal entry se
+ *   engine banata hai).
+ * natija = { pick, index, url, verdict } — pick sach ho
+ *   to index entries me us jawab ki jagah hai aur
+ *   verdict usi par mainpageHarvestVerdict ka natija
+ *   hai (action 'save' ya 'fetch-full').
  */
-function promotedEditorHarvestPick(input) {
+function mainpageEntryPick(input) {
   const o = input && typeof input === 'object' ? input : {};
   const entries = Array.isArray(o.entries) ? o.entries : [];
-  for (let i = entries.length - 1; i >= 0; i--) {
-    const e = entries[i] && typeof entries[i] === 'object' ? entries[i] : {};
-    if (e.partial) continue;
-    const v = editorHarvestVerdict({
-      inWindow: true,
-      url: e.url,
-      teacherUrl: o.teacherUrl,
-      byteLength: e.byteLength,
-      floorBytes: o.floorBytes,
-      headerOk: e.headerOk,
-      partial: typeof e.partial === 'boolean' ? e.partial : undefined,
-      status: e.status,
-      contentRange: e.contentRange,
-      declaredLength: e.declaredLength,
-      duplicate: !!e.duplicate,
-      hash: e.hash,
-      teacherHash: e.teacherHash
-    });
-    if (v.action === 'save') return { skip: true, index: i, url: e.url || null, verdict: v };
+  const tiers = [
+    (e, v) => e.bound && v.action === 'save',
+    (e, v) => v.action === 'save',
+    (e, v) => e.bound && v.action === 'fetch-full',
+    (e, v) => v.action === 'fetch-full'
+  ];
+  for (const inTier of tiers) {
+    for (let i = entries.length - 1; i >= 0; i--) {
+      const e = entries[i] && typeof entries[i] === 'object' ? entries[i] : {};
+      // Faisla yahan bound:true rakh kar hota hai —
+      // bandish ka darja (bound banam timing) is pick
+      // ki apni tarjeeh hai (tiers); verdict sirf
+      // andarooni darwaze (teacher/duplicate/partial/
+      // size/header) gin-ta hai. Asal save se pehle
+      // engine apni bandish (fingerprint/timing) phir
+      // laagu karta hai.
+      const v = mainpageHarvestVerdict({
+        bound: true,
+        url: e.url,
+        teacherUrl: o.teacherUrl,
+        byteLength: e.byteLength,
+        floorBytes: o.floorBytes,
+        headerOk: e.headerOk,
+        partial: typeof e.partial === 'boolean' ? e.partial : undefined,
+        status: e.status,
+        contentRange: e.contentRange,
+        declaredLength: e.declaredLength,
+        duplicate: !!e.duplicate,
+        hash: e.hash,
+        teacherHash: e.teacherHash
+      });
+      if ((v.action === 'save' || v.action === 'fetch-full') && inTier(e, v)) {
+        return { pick: true, index: i, url: e.url || null, verdict: v };
+      }
+    }
   }
-  return { skip: false, index: -1, url: null, verdict: null };
+  return { pick: false, index: -1, url: null, verdict: null };
+}
+
+/**
+ * v2.48.41 (MAIN-PAGE HARVEST PACK): ADHOORE jawab ke URL
+ * se POORA fetch karne ke ummeedwaar URLs — pehle asal
+ * URL, phir (agar URL me range-wale hisse hon to) un ke
+ * baghair wala saaf URL. googlevideo videoplayback URLs
+ * kabhi kabhi 'range' jese hisse le kar aate hain jo
+ * jawab ko tukde tak mehdood kar dete hain; saaf URL
+ * aksar poori file deta hai. Sirf range-ish hisse
+ * (range, rstart, rend) hat te hain — dastakhat (sig)
+ * aur baaki hisse kabhi nahi chhute, warna URL mar
+ * jayega. Natija hamesha kam az kam [asalUrl] hai.
+ */
+function fullFetchUrlCandidates(url) {
+  const raw = typeof url === 'string' && url ? url : null;
+  if (!raw) return [];
+  const out = [raw];
+  try {
+    const u = new URL(raw);
+    let changed = false;
+    for (const p of ['range', 'rstart', 'rend']) {
+      if (u.searchParams.has(p)) { u.searchParams.delete(p); changed = true; }
+    }
+    if (changed) {
+      const cleaned = u.toString();
+      if (cleaned && cleaned !== raw) out.push(cleaned);
+    }
+  } catch (e) {}
+  return out;
+}
+
+/**
+ * v2.48.41 (MAIN-PAGE HARVEST PACK): MAINPAGE-AUDIT ka
+ * hisaab — main project page par dekhe gaye har
+ * video-jese jawab ki ek line: kis host se, kitne
+ * bytes, alamat kis qisam ki (src: flow-content |
+ * googlevideo | none), faisla (promoted — is task ki
+ * file ban kar save hua | captured — kitab me pakda
+ * gaya | ignored — hisaab se bahar raha) aur wajah.
+ * Timing bucket (render-watch | download-attempt)
+ * engine alag se jodta hai. Asal URL yahan kabhi nahi
+ * aata — shape-only discipline barkarar.
+ * input = { host, bytes, src, decision, reason }
+ * natija = { host, bytes, src, decision, reason } —
+ *   host 'none' jab koi URL hi na ho (masalan tile par
+ *   <video> hi nahi mila).
+ */
+function mainpageAuditOf(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const host = typeof o.host === 'string' && o.host ? o.host : 'none';
+  const bytes = Number.isFinite(o.bytes) ? Math.max(0, Math.floor(o.bytes)) : 0;
+  const src = o.src === 'flow-content' || o.src === 'googlevideo' ? o.src : 'none';
+  const decision = o.decision === 'promoted' || o.decision === 'captured' || o.decision === 'ignored'
+    ? o.decision : 'ignored';
+  const reason = typeof o.reason === 'string' && o.reason ? o.reason : 'unknown';
+  return { host, bytes, src, decision, reason };
+}
+
+/** Mainpage-audit natije ki ek-line shakal (bina '[ROOT] mainpage-audit' prefix ke). */
+function formatMainpageAudit(audit) {
+  const a = audit && typeof audit === 'object' ? audit : {};
+  return `host=${a.host || 'none'} bytes=${Number.isFinite(a.bytes) ? a.bytes : 0} src=${a.src || 'none'} decision=${a.decision || 'ignored'} reason=${a.reason || 'unknown'}`;
 }
 
 /**
@@ -400,6 +488,11 @@ function formatHarvestAudit(audit) {
 // chuka tha? Agar haan, to aane wala koi rasta editor
 // khole baghair bhi chal sakta hai — ye line usi sawal
 // ka saboot jama karti hai.
+// v2.48.41: editor ab kabhi khulta hi nahi, is liye
+// asal chalne me editorOpenedAt hamesha null rehta hai
+// aur firstSeen kabhi 'editor-open' nahi banta —
+// hisaab waisa hi rakha hai taaki purane logon se
+// muqabla ho sake.
 //   input = { observation, editorOpenedAt }
 //     observation    — capture ki pehli-nazar kitab se:
 //                      { at, kind } | null; kind =
@@ -437,4 +530,4 @@ function cascadeVerdict(input) {
   return { firstSeen, preEditorUrl: beforeEditor ? 'yes' : 'no' };
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, editorHarvestVerdict, promotedEditorHarvestPick, harvestAuditOf, formatHarvestAudit, cascadeVerdict };
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };

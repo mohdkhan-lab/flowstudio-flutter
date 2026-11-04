@@ -169,6 +169,19 @@ class FlowAutomationEngine {
         try {
           this.log(`[ROOT] harvest-audit ${saveGuard.formatHarvestAudit(audit)}`, 'info');
         } catch (e) {}
+      },
+      // v2.48.41 (MAIN-PAGE HARVEST PACK): MAINPAGE-AUDIT —
+      // render watch / download attempt ke dauraan MAIN
+      // page par aane wale har video-jese jawab ki ek
+      // line: host, bytes, alamat ki qisam (flow-content
+      // | googlevideo), faisla (captured/ignored +
+      // wajah) aur timing bucket. Owner ke sawal ka
+      // saboot: kya main page khud tile ki stream mangti
+      // hai — dawa koi nahi, jo dikhega wahi log hoga.
+      onMainpageAudit: (audit) => {
+        try {
+          this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${audit.timing || 'render-watch'}`, 'info');
+        } catch (e) {}
       }
     });
     // v2.48.36 (ROOT PACK — A): download-stage ka tala —
@@ -183,15 +196,6 @@ class FlowAutomationEngine {
     // bindings that landed before the task object was registered.
     this._captureTasks = new Map();
     this._earlyBackend = new Map();
-    // v2.48.40 (INVISIBLE HARVEST PACK): background-page
-    // editor session — editor-harvest (aur us ki seedhi
-    // replay-context) ka editor ab isi worker ke ek
-    // BACKGROUND page par khulta hai (wahi browser
-    // context/session, kabhi front par nahi), taaki
-    // download screen par kahin dikhe hi nahi. Session:
-    // { page, key, at } | null — stage-lock ki wajah se
-    // ek pal me ek hi hota hai.
-    this._bgEditorSession = null;
     // v2.48.13: direct-API pollers (videoId -> poll state). Har
     // submit ke baad ek poller us task ke workflow ki haal-jaanch
     // wali asal API request ko page ke andar se replay karke
@@ -526,11 +530,10 @@ class FlowAutomationEngine {
       // v2.48.26 (FAST-DL): in-page video-blob registry — the hook
       // is installed before any Flow script runs and only OBSERVES:
       // video blobs the page creates or fetches are recorded in
-      // window.__mkBlobRegistry, so the moment a render completes
-      // the harvest (see _tryBlobHarvestDownload) can take the
-      // bytes straight out of the page — no menu, no wait. Fully
-      // defensive: if the hook cannot install or the registry
-      // stays empty, every existing download route runs unchanged.
+      // window.__mkBlobRegistry. (v2.48.41: the blob-harvest
+      // download route is gone from the attempt path — the hook
+      // stays as passive observation only; the video download
+      // itself now comes from the main-page stream harvest.)
       try { await this.page.evaluateOnNewDocument(blobHarvest.HOOK_SOURCE); } catch (e) {}
 
       try {
@@ -2492,8 +2495,9 @@ class FlowAutomationEngine {
    * do not. Returns -1 when the tile is not in the grid right now.
    */
   async _resolveTileIndexByFingerprint(fingerprint, page) {
-    // v2.48.40: page diya jaye to wahi (background-page
-    // editor ke liye), warna worker ka apna page.
+    // v2.48.40: page diya jaye to wahi, warna worker ka
+    // apna page. (v2.48.41: background page khatam hai —
+    // asal istemal hamesha worker ka apna page hai.)
     const pg = page || this.page;
     if (!fingerprint || !pg || pg.isClosed()) return -1;
     try {
@@ -2525,7 +2529,8 @@ class FlowAutomationEngine {
    * ASSIGNMENT was fixed in v1.5.0.
    */
   async _resolveTileIndexForTask(task, fallbackIdx, page) {
-    // v2.48.40: page diya jaye to wahi, warna apna page.
+    // v2.48.40: page diya jaye to wahi, warna apna page
+    // (v2.48.41: background page khatam — hamesha apna page).
     const pg = page || this.page;
     if (!pg || pg.isClosed()) return -1;
     const fp = task ? (task.lockedTileFingerprint || null) : null;
@@ -4181,7 +4186,8 @@ class FlowAutomationEngine {
    * nahi ginne jate — wo menu wale roop ki jagah hai.
    */
   async _findEditorDownloadControl(page) {
-    // v2.48.40: page diya jaye to wahi, warna apna page.
+    // v2.48.40: page diya jaye to wahi, warna apna page
+    // (v2.48.41: background page khatam — hamesha apna page).
     const pg = page || this.page;
     try {
       return await pg.evaluate(() => {
@@ -4206,7 +4212,8 @@ class FlowAutomationEngine {
 
   /** Tile ke center ke coordinates (hover/click ke liye). */
   async _tileCenterCoords(tileIndex, page) {
-    // v2.48.40: page diya jaye to wahi, warna apna page.
+    // v2.48.40: page diya jaye to wahi, warna apna page
+    // (v2.48.41: background page khatam — hamesha apna page).
     const pg = page || this.page;
     try {
       return await pg.evaluate(({ idx }) => {
@@ -4238,7 +4245,8 @@ class FlowAutomationEngine {
    * (owner ke v2.8.0 PC run me native-editor theek yahin mara).
    */
   async _inEditorView(page) {
-    // v2.48.40: page diya jaye to wahi, warna apna page.
+    // v2.48.40: page diya jaye to wahi, warna apna page
+    // (v2.48.41: background page khatam — hamesha apna page).
     const pg = page || this.page;
     try {
       const u = pg.url() || '';
@@ -4582,25 +4590,6 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.27 (MENU-FIRST): sirf ⋮ menu wala roop — bilkul wahi
-   * implementation jo pehle Native UI ke andar DER se chalti thi,
-   * ab _downloadTaskMediaInner ke SAB SE PEHLE qadam ke roop me.
-   * FASTTEST1 (v2.48.26 ke live test) ne sabit kiya: file sirf
-   * isi raste se aati hai, is liye intezaar-me-haraane wale saare
-   * qadam is ke baad fallback me gaye. Haar maane to false —
-   * bachi hui poori tartib peeche chalti hai.
-   */
-  async _tryMenuFirstDownload(task, downloadFolder, settings, tileIndexHint, attempts) {
-    try {
-      const prep = await this._nativePrepareWatch(downloadFolder);
-      return await this._nativeMenuForm(task, prep, downloadFolder, settings, tileIndexHint, attempts);
-    } catch (e) {
-      attempts.push({ strategy: 'native-menu', ok: false, note: 'the menu-first route hit a problem — the remaining routes will be tried' });
-      return false;
-    }
-  }
-
-  /**
    * Native UI ke DO roop ek ke baad ek — pehla safal roop jeet
    * (inspection hissa 2, VERIFIED): pehle tile ke ⋮ menu ka exact
    * "Download" (grid se bahar jana hi nahi padta), phir editor ki
@@ -4626,19 +4615,6 @@ class FlowAutomationEngine {
       if (ok) return true;
     }
     return false;
-  }
-
-  /**
-   * Download path B (purana naam, ab andar se kai-roop wala):
-   * reconcile jaise purane callers ke liye barkarar. Sirf is task ki
-   * apni claimed tile par chalta hai; tile na mile to false — koi
-   * newest-tile fallback NAHI hai (audit fix #6).
-   */
-  async downloadViaFlowNativeMenu(task, downloadFolder, settings, tileIndex) {
-    const attempts = [];
-    const ok = await this._downloadViaNativeUi(task, downloadFolder, settings, tileIndex, attempts);
-    task.downloadAttempts = (task.downloadAttempts || []).concat(attempts);
-    return ok;
   }
 
   /**
@@ -5099,23 +5075,17 @@ class FlowAutomationEngine {
       try {
         if (this.netCapture) this.netCapture.evictHarvest(task.captureKey || task.videoId || null);
       } catch (e) {}
-      // v2.48.38 (EDITOR-HARVEST PACK): audit + editor
-      // khidkiyan bhi band — is round ke baad ke jawab is
-      // task ke kabhi nahi ginne jayenge.
+      // v2.48.38 (EDITOR-HARVEST PACK): audit khidki bhi
+      // band — is round ke baad ke jawab is task ke kabhi
+      // nahi ginne jayenge. (v2.48.41: editor-khidki aur
+      // background page dono khatam — editor ab kabhi
+      // khulta hi nahi, is liye saaf karne ko kuch nahi.)
       try {
         if (this.netCapture) {
           const roundKey = task.captureKey || task.videoId || null;
           if (typeof this.netCapture.clearDownloadAttempt === 'function') this.netCapture.clearDownloadAttempt(roundKey);
-          if (typeof this.netCapture.endEditorWindow === 'function') this.netCapture.endEditorWindow(roundKey);
-          if (typeof this.netCapture.evictEditorHarvest === 'function') this.netCapture.evictEditorHarvest(roundKey);
         }
       } catch (e) {}
-      // v2.48.40 (INVISIBLE HARVEST PACK): background
-      // editor page ka aakhri bachav — koi bhi rasta
-      // (timeout sameet) use khula chhod kar na jaye.
-      // Aam haal me harvest wrapper use pehle hi band
-      // kar chuka hota hai; ye sirf hifazat hai.
-      try { await this._closeBgEditorSession(); } catch (e) {}
       if (stageHandle) { try { stageHandle.release(); } catch (e) {} }
     }
     // v2.48.40 (CASCADE DIAGNOSTIC — observe-only): is
@@ -5125,6 +5095,10 @@ class FlowAutomationEngine {
     // tha. Koi faisla is par nahi chalta; ye sirf agli
     // tehqeeq ka saboot hai (preEditorUrl=yes bane to
     // editor khole baghair wala rasta mumkin hai).
+    // v2.48.41: editor ab kabhi khulta hi nahi — is liye
+    // preEditorUrl address dikhne par hamesha 'yes'
+    // rahega aur firstSeen kabhi 'editor-open' nahi
+    // banega; line muqable ke liye barkarar hai.
     try {
       if (!(settings && settings.type === 'Image')
         && this.netCapture && typeof this.netCapture.cascadeForKey === 'function') {
@@ -5293,147 +5267,6 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.28: task ki APNI tile ki halki priming — view me lao,
-   * player ko muted play karo. _tryBlobHarvestDownload se nikala
-   * mushtarika roop; quick-check bhi yahi istemal karta hai.
-   * Lautta hai: tile ka index (ya -1). Kabhi throw nahi karta.
-   */
-  async _primeTaskTile(task, tileIndexHint) {
-    try {
-      if (!this.page || this.page.isClosed()) return -1;
-      const idx = (typeof tileIndexHint === 'number' && tileIndexHint >= 0)
-        ? tileIndexHint
-        : await this._resolveTileIndexForTask(task, tileIndexHint);
-      if (idx >= 0) {
-        await this.page.evaluate((tileIdx) => {
-          const containers = document.querySelectorAll('flow-grid-tile-container');
-          const target = containers[tileIdx] || null;
-          if (!target) return;
-          try { target.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
-          const vid = target.querySelector('video');
-          if (vid) {
-            try { vid.muted = true; } catch (e) {}
-            try { const p = vid.play(); if (p && p.catch) p.catch(() => {}); } catch (e) {}
-          }
-        }, idx);
-      }
-      return idx;
-    } catch (e) {
-      return -1;
-    }
-  }
-
-  /** v2.48.28: page ki blob registry ka sirf metadata (bytes nahi). */
-  async _readBlobRegistryMeta() {
-    try {
-      if (!this.page || this.page.isClosed()) return null;
-      return await this.page.evaluate(() => {
-        const reg = window.__mkBlobRegistry || [];
-        return reg.map(e => ({ url: e.url || '', type: e.type || '', size: e.size || 0, ts: e.ts || 0, via: e.via || '' }));
-      });
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /**
-   * v2.48.28: ek registry candidate ke bytes page se bahar padho
-   * (512KB tukde), content gate lagao, aur _saveBufferForTask se
-   * save karo — _tryBlobHarvestDownload ka asal kaam, ab
-   * quick-check ke saath mushtarika. Natija:
-   *   { ok:true, extractMs } |
-   *   { ok:false, stage:'read'|'incomplete'|'gate'|'save', ... }
-   * Log/notes bulane wale ki zimmedari hai (har ranneeti apni
-   * zubaan bolti hai); kamyaabi par candidate consumed bhi yahin
-   * mark hota hai, aur agar asal URL flow-content wala tha to
-   * capture me bhi claim ho jata hai — doosra task wahi bytes /
-   * wahi link dobara nahi lega.
-   */
-  async _extractAndSaveBlobCandidate(task, downloadFolder, settings, candidate) {
-    if (!this._fastDlConsumedBlobs) this._fastDlConsumedBlobs = new Set();
-    // v2.48.35 (CLAIM GATE — registry wala rasta bhi wohi
-    // pehchan-discipline jo _pickServerFetchUrl ki hai):
-    // candidate ki asal URL flow-content wali ho to wohi
-    // darwaze — capture me kisi AUR task ke naam bandhi ho,
-    // ya is task ki apni hi na ho (purani / istemal-shuda),
-    // to bytes nikale hi nahi jate. ZEROCLICK2 (v2.48.34)
-    // me yahi rukawat ghayab thi: page ke registry me
-    // Prompt #1 ke address se aaye bytes Prompt #2 ke
-    // attempt me "taaza candidate" ban kar save ho gaye.
-    // (blob: URL wale candidate par ye gate nahi lagta —
-    // un ke bytes ki hifazat _saveBufferForTask ke
-    // content-hash guard ke paas hai.)
-    if (candidate && candidate.url && flowContent.isFlowContentVideoUrl(candidate.url)) {
-      const capKey = task.captureKey || task.videoId || null;
-      if (this._urlClaimedByOtherTask(candidate.url, capKey) || !this._isTaskOwnUrl(task, candidate.url)) {
-        return { ok: false, stage: 'claimed' };
-      }
-    }
-    const extractStart = Date.now();
-    const chunks = blobHarvest.planChunks(candidate.size, blobHarvest.CHUNK_BYTES);
-    const parts = [];
-    let extractOk = chunks.length > 0;
-    for (const ch of chunks) {
-      if (!extractOk) break;
-      let dataUrl = null;
-      try {
-        dataUrl = await downloadGuard.withTimeout(this.page.evaluate(async ({ url, size, ts, start, end }) => {
-          const reg = window.__mkBlobRegistry || [];
-          const entry = reg.find(x => (x.url || '') === url && (x.size || 0) === size && (x.ts || 0) === ts);
-          if (!entry || !entry.blob) return null;
-          const slice = entry.blob.slice(start, end);
-          return await new Promise((resolve) => {
-            try {
-              const fr = new FileReader();
-              fr.onloadend = () => resolve(fr.result);
-              fr.onerror = () => resolve(null);
-              fr.readAsDataURL(slice);
-            } catch (e) { resolve(null); }
-          });
-        }, { url: candidate.url, size: candidate.size, ts: candidate.ts, start: ch.start, end: ch.end }), 30000, 'in-page video bytes read');
-      } catch (e) { dataUrl = null; }
-      if (!dataUrl || typeof dataUrl !== 'string' || !dataUrl.includes('base64,')) { extractOk = false; break; }
-      parts.push(Buffer.from(dataUrl.split('base64,')[1], 'base64'));
-    }
-    const extractMs = Date.now() - extractStart;
-    if (!extractOk) return { ok: false, stage: 'read' };
-    const buffer = Buffer.concat(parts);
-    if (buffer.length !== candidate.size) {
-      return { ok: false, stage: 'incomplete', got: buffer.length, want: candidate.size };
-    }
-    // Content gate — wahi jo downloadFromCapturedStream ka hai:
-    // video header na ho to bytes save hi nahi hote.
-    if (buffer.length <= 10000 || !downloadFetch.looksLikeVideoBuffer(buffer)) {
-      return { ok: false, stage: 'gate', format: downloadFetch.classifyBufferMagic(buffer) };
-    }
-    // Save + ffprobe verify + kitab-bandhi: wahi _saveBufferForTask
-    // jo stream/backend raaston ki hai. Asal URL kitab-bandhi ke
-    // liye tabhi diya jata hai jab wo pehchan ke qabil ho: blob:
-    // (is task ki apni tile ka) ya flow-content wala asal server
-    // pata (taaki consumed-set doosre tasks ko roke).
-    let srcUrl = '';
-    if (candidate.url && candidate.url.startsWith('blob:')) srcUrl = candidate.url;
-    else if (candidate.url && flowContent.isFlowContentVideoUrl(candidate.url)) srcUrl = candidate.url;
-    const savedOk = await this._saveBufferForTask(task, downloadFolder, settings, buffer, srcUrl);
-    if (!savedOk) {
-      // v2.48.29: quality gate wali rukawat apni alag stage ke
-      // saath wapas jati hai — bulane wala use ffprobe-nakami se
-      // alag naam de sakta hai.
-      if (task._saveRejectedReason === 'quality-gate') return { ok: false, stage: 'quality' };
-      // v2.48.35: content-hash guard ki rukawat bhi apni
-      // stage ke saath (asal [GUARD] line _saveBufferForTask
-      // ne pehle hi log kar di hai).
-      if (task._saveRejectedReason === 'duplicate-content') return { ok: false, stage: 'duplicate' };
-      return { ok: false, stage: 'save' };
-    }
-    this._fastDlConsumedBlobs.add(blobHarvest.candidateKey(candidate));
-    if (srcUrl && flowContent.isFlowContentVideoUrl(srcUrl)) {
-      try { if (this.netCapture) this.netCapture.claimFlowContentVideo(srcUrl); } catch (e) {}
-    }
-    return { ok: true, extractMs };
-  }
-
-  /**
    * v2.48.35 (CLAIM DISCIPLINE EVERYWHERE): capture ke
    * bandhan (keyByUrl) me ye URL kisi AUR task ke naam hai
    * kya? Faisla saveGuard ke khalis usool se hota hai; ye
@@ -5523,32 +5356,13 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.29 (ALWAYS-ON QUICK-CHECK): server-first ki SAFAL
-   * wali tarkeeb ka NO-WAIT roop — na prime, na poll; sirf
-   * "is pal kuch pakda hua pehle se maujood hai kya?" Ek
-   * registry read + ek capture fehrist, bas. FASTTEST2 ki
-   * seekh: flow-content wala fetch aksar KISI AUR stage (menu
-   * ghumao) ke dauraan aata hai — server-first ki apni 12s
-   * khidki use dekh hi nahi pati. Is liye ye jaanch
-   * _downloadTaskMediaInner me har bare fallback stage se
-   * PEHLE chalti hai (backend se pehle, tile-src se pehle):
-   * kuch milte hi save aur attempt wahi khatam.
-   * v2.48.30: yahi check ab attempt ka SAB SE PEHLA qadam
-   * bhi hai ('attempt-start') — .28 wala server-first head
-   * (prime + 12s watch) khatam ho gaya hai, is liye alag
-   * 'before-menu' check bhi nahi raha (attempt-start wala
-   * usi pal ka hai). Pehchan ke darwaze bilkul pehle wale
-   * hain (_pickServerFetchUrl + _extractAndSaveBlobCandidate
-   * ke andar ke gate) — is pal ki taaza entry na ho to foran
-   * null-wapas, koi der nahi.
-   * Lautta hai: true (save ho gaya) | false.
-   */
-  /**
-   * v2.48.36 (ROOT PACK — D): page ne khud server se jo
-   * bytes khinche the (editor preview/playback fetch),
-   * capture ne unhe is task ke naam kitab me rakha hai to
-   * wohi EXACT file yahin save karo — koi download click
-   * nahi, koi menu nahi, koi dobara fetch nahi. Save wahi
+   * v2.48.36 (ROOT PACK — D) → v2.48.41 (MAIN-PAGE HARVEST
+   * PACK): MAIN page ne khud server se jo mukammal bytes
+   * khinche the, capture ne unhe is task ke naam kitab me
+   * rakha hai to wohi EXACT file yahin save karo — koi
+   * download click nahi, koi menu nahi, koi editor nahi,
+   * koi dobara fetch nahi. Ye mainpage-harvest raaste ka
+   * pehla (sab se tez) qadam hai. Save wahi
    * _saveBufferForTask se hota hai, is liye quality gate
    * + content-hash guard + ffprobe sab laagu rehte hain.
    * Bytes ek hi dafa istemal hote hain (koshish ke baad
@@ -5568,17 +5382,23 @@ class FlowAutomationEngine {
       try { cap.evictHarvest(captureKey); } catch (e) {}
       // Ye address ab is task ke naam claim bhi kar do —
       // koi aur task use is run me dobara na le.
-      try { cap.claimFlowContentVideo(entry.url); } catch (e) {}
+      try {
+        if (typeof cap.claimMainpageVideo === 'function') cap.claimMainpageVideo(entry.url);
+        else cap.claimFlowContentVideo(entry.url);
+      } catch (e) {}
       task.completedVideoUrl = entry.url;
       const ok = await this._saveBufferForTask(task, downloadFolder, settings, entry.buffer, entry.url);
       if (ok || task.mediaSaved) {
         const gapSec = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
-        this.log(`[ROOT] via=page-harvest gap=${gapSec}s`, 'success');
-        attempts.push({ strategy: 'page-harvest', ok: true, note: `the exact file was saved from the bytes the page itself had already fetched from Flow's server — no download click, no menu, no second fetch; render→save gap ${gapSec}s` });
+        this.log(`[ROOT] via=mainpage-harvest gap=${gapSec}s`, 'success');
+        try {
+          this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(saveGuard.mainpageAuditOf({ host: networkCapture.hostOf(entry.url), bytes: entry.buffer.length, src: 'flow-content', decision: 'promoted', reason: 'ok' }))} timing=${cap && typeof cap._mainpageTimingBucket === 'function' ? cap._mainpageTimingBucket() : 'download-attempt'}`, 'info');
+        } catch (e) {}
+        attempts.push({ strategy: 'mainpage-harvest', ok: true, note: `the exact file was saved from the complete body the main project page itself had already fetched from Flow's server — no editor, no download click, no menu, no second fetch; render→save gap ${gapSec}s` });
         return true;
       }
-      attempts.push({ strategy: 'page-harvest', ok: false, note: `the bytes the page had fetched did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the remaining routes ran` });
-      this.log(`[ROOT] [Prompt #${n}] page-harvest bytes did not pass the save checks — the remaining routes will run`, 'warn');
+      attempts.push({ strategy: 'mainpage-harvest', ok: false, note: `the bytes the main page had fetched did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'})` });
+      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest bytes did not pass the save checks`, 'warn');
       return false;
     } catch (e) {
       return false;
@@ -5587,9 +5407,9 @@ class FlowAutomationEngine {
 
   /**
    * v2.48.36 (ROOT PACK — D): hadd bandhe waqt tak harvest
-   * ka intezaar — editor khulne ke baad preview fetch ke
-   * bytes chand second me aa sakte hain (route C yahi
-   * bulata hai).
+   * ka intezaar — render-complete ke aas-paas main page ki
+   * stream chand second me aa sakti hai (mainpage-harvest
+   * yahi bulata hai).
    */
   async _pollHarvestSave(task, downloadFolder, settings, attempts, waitMs) {
     const deadline = Date.now() + Math.max(0, Number(waitMs) || 0);
@@ -5601,176 +5421,285 @@ class FlowAutomationEngine {
     }
   }
 
-  async _opportunisticServerCheck(task, downloadFolder, settings, attempts, whereLabel) {
-    const n = task.promptIndex + 1;
+  /**
+   * v2.48.41 (MAIN-PAGE HARVEST PACK): ek mainpage address
+   * ka POORA fetch MAIN page ke apne JS context se
+   * (page.evaluate fetch, credentials sameet) — koi naya
+   * page/tab nahi khulta, kuch click nahi hota. Adhoore
+   * (googlevideo range) jawab ke liye tareeqe is kram me:
+   *   1. asal URL ka seedha GET;
+   *   2. wahi GET Range: bytes=0- ke saath;
+   *   3. URL ke range-wale hisse hata kar (saveGuard.
+   *      fullFetchUrlCandidates) seedha GET, phir
+   *      Range: bytes=0- ke saath.
+   * Pehla 200 + video-header wala jawab foran wapas;
+   * warna sab se bada mila buf apne status ke saath
+   * (faisla — partial hai ya nahi — bulane wale ka
+   * verdict karega). Kuch na mile to null.
+   * Natija: { buf, status } | null.
+   */
+  async _fetchMainpageFullInPage(url) {
     try {
-      if (!this.page || this.page.isClosed() || task.mediaSaved) return false;
-      // v2.48.36 (ROOT PACK — D): sab se pehle page-harvest
-      // — page ke khinche hue bytes kitab me hon to wohi
-      // exact file hai; registry/server nazar is ke baad.
-      try {
-        const okHarvest = await this._tryHarvestSave(task, downloadFolder, settings, attempts);
-        if (okHarvest || task.mediaSaved) return true;
-      } catch (e) {}
-      if (!this._fastDlConsumedBlobs) this._fastDlConsumedBlobs = new Set();
-      if (!this._fastDlFailedBlobs) this._fastDlFailedBlobs = new Set();
-      const captureKey = task.captureKey || task.videoId || null;
-      const renderCompleteTs = task.renderCompletedAt || null;
-      const gapSec = () => Math.max(0, (Date.now() - (renderCompleteTs || task.startTime || Date.now())) / 1000).toFixed(1);
-
-      // (a) Registry — bytes page me pehle se aa chuke hon to.
-      const meta = await this._readBlobRegistryMeta();
-      if (Array.isArray(meta) && meta.length > 0) {
-        const consumed = new Set([...this._fastDlConsumedBlobs, ...this._fastDlFailedBlobs]);
-        const candidate = blobHarvest.selectCandidate(meta, {
-          renderStartTs: task.startTime || 0,
-          renderCompleteTs,
-          consumedKeys: consumed,
-          nowTs: Date.now(),
-          expectedSize: null
-        });
-        if (candidate) {
-          const res = await this._extractAndSaveBlobCandidate(task, downloadFolder, settings, candidate);
-          if (res.ok || task.mediaSaved) {
-            this.log(`[FAST-DL] [Prompt #${n}] opportunistic save via=registry gap=${gapSec()}s`, 'success');
-            attempts.push({ strategy: 'quick-check', ok: true, note: `the file was saved by the always-on quick check (${whereLabel}) from the bytes the page had already fetched (extraction ${res.extractMs}ms); render→save gap ${gapSec()}s` });
-            return true;
-          }
-          this._fastDlFailedBlobs.add(blobHarvest.candidateKey(candidate));
+      if (!this.page || this.page.isClosed() || !url) return null;
+      const candidates = saveGuard.fullFetchUrlCandidates(url);
+      let best = null;
+      for (const u of candidates) {
+        for (const useRange of [false, true]) {
+          try {
+            const res = await downloadGuard.withTimeout(
+              this.page.evaluate(async (uu, withRange) => {
+                const headers = {};
+                if (withRange) headers['Range'] = 'bytes=0-';
+                const r = await fetch(uu, { method: 'GET', headers, credentials: 'include' });
+                const ab = await r.arrayBuffer();
+                const u8 = new Uint8Array(ab);
+                let out = '';
+                for (let i = 0; i < u8.length; i += 8192) {
+                  out += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+                }
+                return { status: r.status, b64: btoa(out) };
+              }, u, useRange),
+              25000, 'mainpage full fetch');
+            if (!res || !res.b64) continue;
+            const buf = Buffer.from(res.b64, 'base64');
+            if (!buf || buf.length === 0 || buf.length > 16 * 1024 * 1024) continue;
+            if (res.status !== 206 && downloadFetch.looksLikeVideoBuffer(buf)) {
+              return { buf, status: res.status };
+            }
+            if (!best || buf.length > best.buf.length) best = { buf, status: res.status };
+          } catch (e) {}
         }
       }
-
-      // (b) Server channel — is task ke render ke baad dikha
-      // koi flow-content video jawab capture me ho to, unhi
-      // pehchan-darwazon se guzaar kar seedha server fetch.
-      let fcEntries = [];
-      try {
-        if (this.netCapture && typeof this.netCapture.recentFlowContentVideos === 'function') {
-          fcEntries = this.netCapture.recentFlowContentVideos(renderCompleteTs || task.startTime || 0);
-        }
-      } catch (e) { fcEntries = []; }
-      if (fcEntries.length > 0) {
-        const pick = this._pickServerFetchUrl(task, captureKey, fcEntries, '');
-        if (pick && pick.url) {
-          const okFetch = await this._serverFetchSave(task, downloadFolder, settings, pick);
-          if (okFetch || task.mediaSaved) {
-            this.log(`[FAST-DL] [Prompt #${n}] opportunistic save via=server-fetch gap=${gapSec()}s`, 'success');
-            attempts.push({ strategy: 'quick-check', ok: true, note: `the file was fetched straight from Flow's server (flow-content.google, ${pick.via}) by the always-on quick check (${whereLabel}); render→save gap ${gapSec()}s` });
-            return true;
-          }
-        }
-      }
-      return false;
+      return best;
     } catch (e) {
-      return false;
+      return null;
     }
   }
 
   /**
-   * v2.48.26 (FAST-DL — "turant download"): in-page blob harvest.
-   * (Ab ye FALLBACK hai — v2.48.30 se quick-check sab se pehle
-   * chalta hai aur menu dusra; harvest wahi kaam apni purani
-   * jagah par bhi karta hai, kyunki FASTTEST2 me asal save isi
-   * registry raaste se hua tha jab menu haar gaya tha.)
-   * E1 (owner ke PC par sabit, 2026-11-02): asal download ek blob:
-   * URL hai — video ke bytes Download click se PEHLE hi page ki
-   * memory me hote hain; Chrome ka download manager unhe sirf disk
-   * par likhta hai. Blob URL Node se fetch ho hi nahi sakta, is
-   * liye "backend se turant" ka ek hi asal roop hai: bytes page ke
-   * andar se hi nikaal lo. Isi liye har Flow page par launch ke pal
-   * se ek hook (blobHarvest.HOOK_SOURCE) page ke banaye/fetch kiye
-   * video blobs ko window.__mkBlobRegistry me rakhta hai.
+   * v2.48.41 (MAIN-PAGE HARVEST PACK — OWNER ORDER
+   * 2026-11-04): VIDEO download ka PEHLA aur asal rasta.
+   * Download SIRF usi project/grid page se hota hai jis
+   * par video bani hai — editor kahin bhi nahi khulta
+   * (na main tab, na dusra tab, na background page), koi
+   * button/menu click nahi hota.
    *
-   * Ye ranneeti render-complete ke pal chalti hai: registry me is
-   * task ka taza video blob dhoondho (pehchan: freshness +
-   * render-complete se qurbat + consumed-set — audit fix #6 wala
-   * usool, kisi aur task ka video KABHI nahi), use 512KB tukdon me
-   * page se bahar padho, phir WAHI content gate
-   * (downloadFetch.looksLikeVideoBuffer) aur WAHI save+ffprobe
-   * verify (_saveBufferForTask) jo baaki raaston ki hai. Kuch bhi
-   * na mile / verify fail ho to ye ranneeti chup-chaap haar maan
-   * leti hai aur neeche ki poori purani tartib bilkul pehle ki
-   * tarah chalti hai. Prompt yahan KABHI dobara submit nahi hota —
-   * ye sirf download hai.
+   * Qadam:
+   *   (a) kitab me is task ke naam pehle se MUKAMMAL
+   *       body ho to wohi save (_tryHarvestSave);
+   *   (b) tile ki apni <video> alamat ki audit — grid par
+   *       is task ki tile me <video> hai kya, us ka src
+   *       kis host ka hai ('[ROOT] mainpage-audit …
+   *       reason=tile-video-src'); src flow-content /
+   *       googlevideo ka ho to wo is task ka sab se
+   *       mazboot ummeedwaar hai (tile khud is task ki
+   *       hai — fingerprint bandish);
+   *   (c) mainpage kitab (capture.mainpageEntries) ke
+   *       ummeedwaar — bandhe hue (urlByKey) pehle, phir
+   *       tile-src wala, phir timing wale (render ke
+   *       dauraan dikhe, unclaimed, kisi aur task ke
+   *       naam nahi). Faisla saveGuard.mainpageEntryPick
+   *       + mainpageHarvestVerdict (teacher-url / hash /
+   *       duplicate darwaze barkarar). Kai unbound
+   *       timing ummeedwaar hon aur koi cross-match na
+   *       ho to DOUBT me fetch nahi hota (ghalat video
+   *       lene se behtar hai haar);
+   *   (d) ummeedwaar ki body kitab me mukammal ho to
+   *       wohi; warna usi URL ka POORA fetch MAIN page
+   *       ke andar se (_fetchMainpageFullInPage) —
+   *       adhoora mile to bhi verdict hi faisla karega;
+   *   (e) stream render-complete ke chand second baad
+   *       bhi aa sakti hai — is liye poora qadam ~6s ki
+   *       hadd bandhi poll me dobara hota hai.
+   * Jeet par: '[ROOT] via=mainpage-harvest gap=<X>s' +
+   * mainpage-audit 'promoted' wali line. Kuch na mile
+   * to false — attempt EMAANDARI se aage badhta hai
+   * (grid-replay), aur wahan bhi na bane to FAIL.
+   * Prompt yahan KABHI dobara submit nahi hota.
    */
-  async _tryBlobHarvestDownload(task, downloadFolder, settings, attempts, tileIndexHint) {
+  async _tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint) {
     const n = task.promptIndex + 1;
-    if (!this.page || this.page.isClosed()) return false;
-    if (!this._fastDlConsumedBlobs) this._fastDlConsumedBlobs = new Set();
-    const harvestStart = Date.now();
-    const POLL_MS = 5000;
-    const renderStartTs = task.startTime || 0;
-    const renderCompleteTs = task.renderCompletedAt || null;
-
-    // Halki priming: task ki APNI tile ko view me lao aur uske
-    // player ko muted play karo — tile apni video load kare to
-    // uske bytes registry me aate hain (media-readiness wala hi
-    // usool; koi menu nahi khulta, koi button nahi dabta).
-    await this._primeTaskTile(task, tileIndexHint);
-
-    let candidate = null;
-    let seenEntries = 0;
-    while (Date.now() - harvestStart < POLL_MS && !this.isStopping) {
-      const meta = await this._readBlobRegistryMeta();
-      if (Array.isArray(meta)) {
-        seenEntries = meta.length;
-        candidate = blobHarvest.selectCandidate(meta, {
-          renderStartTs,
-          renderCompleteTs,
-          consumedKeys: this._fastDlConsumedBlobs,
-          nowTs: Date.now(),
-          expectedSize: null
+    const cap = this.netCapture;
+    if (!cap || !task || task.mediaSaved) return false;
+    if (typeof cap.mainpageEntries !== 'function') return false;
+    const floorBytes = cap.harvestFloorBytes || downloadFetch.minBytesForDuration(settings && settings.duration);
+    const gapSec = () => Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+    const timingBucket = () => (typeof cap._mainpageTimingBucket === 'function' ? cap._mainpageTimingBucket() : 'download-attempt');
+    let teacherUrl = null;
+    try { teacherUrl = cap.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
+    let teacherHash = null;
+    // (b) tile alamat ki audit — sirf ek dafa.
+    let tileSrcUrl = null;
+    let tileSrcKind = null;
+    try {
+      const st = await this._readTileMediaState(task, tileIndexHint);
+      const raw = st && st.url ? st.url : null;
+      if (raw && flowContent.isFlowContentVideoUrl(raw)) { tileSrcKind = 'flow-content'; tileSrcUrl = raw; }
+      else if (raw && networkCapture.isGooglevideoPlaybackUrl(raw)) { tileSrcKind = 'googlevideo'; tileSrcUrl = raw; }
+      const audit = tileSrcUrl
+        ? saveGuard.mainpageAuditOf({ host: networkCapture.hostOf(tileSrcUrl), bytes: 0, src: tileSrcKind, decision: 'captured', reason: 'tile-video-src' })
+        : saveGuard.mainpageAuditOf({ host: 'none', bytes: 0, src: 'none', decision: 'ignored', reason: raw ? 'tile-src-not-video-stream' : 'no-tile-video' });
+      this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${timingBucket()}`, 'info');
+    } catch (e) {}
+    const triedUrls = new Set();
+    const deadline = Date.now() + 6000;
+    let ambiguousNoted = false;
+    for (;;) {
+      if (task.mediaSaved) return true;
+      if (this.isStopping) return false;
+      // (a) mukammal bandhi hui body — sab se tez jeet.
+      try {
+        const okBody = await this._tryHarvestSave(task, downloadFolder, settings, attempts);
+        if (okBody || task.mediaSaved) return true;
+      } catch (e) {}
+      // (c) ummeedwaar ikatthe karo.
+      let boundUrl = null;
+      try {
+        const b = cap.urlForKey(captureKey);
+        if (b && b.url) boundUrl = b.url;
+      } catch (e) {}
+      const annotated = [];
+      const seenUrls = new Set();
+      const pushEntry = (e, bound) => {
+        if (!e || !e.url || seenUrls.has(e.url) || triedUrls.has(e.url)) return;
+        seenUrls.add(e.url);
+        annotated.push({
+          url: e.url,
+          src: e.src || 'flow-content',
+          byteLength: Math.max(e.bytes || 0, e.bodyBytes || 0),
+          headerOk: true,
+          partial: e.partial !== false && e.src === 'googlevideo' ? true : !!e.partial,
+          status: e.status || 0,
+          contentRange: e.contentRange || '',
+          declaredLength: e.declared || 0,
+          duplicate: false,
+          hash: null,
+          teacherHash,
+          bound: !!bound,
+          bodyBytes: e.bodyBytes || 0,
+          at: e.at || 0
         });
+      };
+      for (const e of cap.mainpageEntries()) {
+        if (!e || !e.url) continue;
+        if (teacherUrl && e.url === teacherUrl) continue;
+        let claimed = false;
+        try { claimed = cap.isMainpageClaimed(e.url); } catch (err) { claimed = false; }
+        if (claimed) continue;
+        if (this._urlClaimedByOtherTask(e.url, captureKey)) continue;
+        const isBound = !!boundUrl && e.url === boundUrl;
+        const isTile = !!tileSrcUrl && e.url === tileSrcUrl;
+        if (!isBound && !isTile) {
+          // timing bandish: render shuru se pehle ka jawab
+          // is task ka nahi ho sakta.
+          if ((task.startTime || 0) > 0 && e.at < task.startTime) continue;
+        }
+        pushEntry(e, isBound || isTile);
       }
-      if (candidate) break;
+      if (tileSrcUrl && !seenUrls.has(tileSrcUrl) && !triedUrls.has(tileSrcUrl)
+        && !(teacherUrl && tileSrcUrl === teacherUrl)) {
+        // tile ke src ki kitab me entry na ho to bhi wo
+        // ummeedwaar hai — bandish tile khud hai.
+        pushEntry({
+          url: tileSrcUrl, src: tileSrcKind, bytes: 0, bodyBytes: 0,
+          status: 0, contentRange: '', declared: 0, partial: true, at: Date.now()
+        }, true);
+      }
+      const unboundCount = annotated.filter(a => !a.bound).length;
+      const anyBound = annotated.some(a => a.bound);
+      let pickRes = { pick: false, index: -1, url: null, verdict: null };
+      if (annotated.length > 0 && (anyBound || unboundCount <= 1)) {
+        pickRes = saveGuard.mainpageEntryPick({ entries: annotated, teacherUrl, floorBytes });
+      } else if (annotated.length > 0 && !ambiguousNoted) {
+        ambiguousNoted = true;
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: ${unboundCount} unbound streams seen on the main page and none is bound to this video — not fetching any of them (a wrong video is worse than a miss)`, 'warn');
+      }
+      if (pickRes.pick && pickRes.url) {
+        const entry = annotated[pickRes.index];
+        triedUrls.add(entry.url);
+        let buf = null;
+        let haveBody = false;
+        // kitab me pehle se pakdi hui body (mukammal ho to).
+        try {
+          const held = typeof cap.mainpageBodyForUrl === 'function' ? cap.mainpageBodyForUrl(entry.url) : null;
+          if (held && held.buffer && held.buffer.length > 0) { buf = held.buffer; haveBody = true; }
+        } catch (e) {}
+        if (haveBody && entry.partial && entry.src === 'googlevideo') {
+          // googlevideo tukda mukammal nahi — poora fetch
+          // hi asal rasta hai.
+          buf = null; haveBody = false;
+        }
+        if (!haveBody) {
+          const fetched = await this._fetchMainpageFullInPage(entry.url);
+          if (fetched && fetched.buf) {
+            buf = fetched.buf;
+            haveBody = true;
+            entry.status = fetched.status || entry.status;
+            if (fetched.status === 206) entry.partial = true;
+          }
+        }
+        if (haveBody && buf) {
+          const verdictFor = (b, statusOverride) => {
+            const hash = saveGuard.contentHash(b);
+            let dup = false;
+            try { dup = !!saveGuard.checkDuplicate(b, captureKey || null).dup; } catch (e) { dup = false; }
+            return saveGuard.mainpageHarvestVerdict({
+              bound: true,
+              url: entry.url,
+              teacherUrl,
+              byteLength: b.length,
+              floorBytes,
+              headerOk: downloadFetch.looksLikeVideoBuffer(b),
+              partial: (statusOverride || entry.status) === 206 ? true : false,
+              status: statusOverride || entry.status,
+              contentRange: entry.contentRange,
+              declaredLength: entry.declaredLength,
+              duplicate: dup,
+              hash,
+              teacherHash
+            });
+          };
+          let verdict = verdictFor(buf);
+          if (verdict.action === 'fetch-full') {
+            // kitab wali body adhoori nikli — usi URL ka
+            // poora fetch MAIN page ke andar se, phir
+            // faisla dobara.
+            const fetched = await this._fetchMainpageFullInPage(entry.url);
+            if (fetched && fetched.buf && fetched.buf.length > 0) {
+              buf = fetched.buf;
+              verdict = verdictFor(buf, fetched.status);
+            }
+          }
+          if (verdict.action === 'save') {
+            try { cap.claimMainpageVideo(entry.url); } catch (e) {}
+            task.completedVideoUrl = entry.url;
+            const ok = await this._saveBufferForTask(task, downloadFolder, settings, buf, entry.url);
+            if (ok || task.mediaSaved) {
+              const g = gapSec();
+              this.log(`[ROOT] via=mainpage-harvest gap=${g}s`, 'success');
+              try {
+                const audit = saveGuard.mainpageAuditOf({
+                  host: networkCapture.hostOf(entry.url), bytes: buf.length,
+                  src: entry.src === 'googlevideo' ? 'googlevideo' : 'flow-content',
+                  decision: 'promoted', reason: 'ok'
+                });
+                this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${timingBucket()}`, 'info');
+              } catch (e) {}
+              attempts.push({ strategy: 'mainpage-harvest', ok: true, note: `the file was captured from the main project page's own stream (${entry.src}) and completed with a full fetch inside that same page — no editor opened anywhere, no click, no menu; render→save gap ${g}s` });
+              return true;
+            }
+            attempts.push({ strategy: 'mainpage-harvest', ok: false, note: `the main-page stream for this video did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'})` });
+          } else {
+            this.log(`[ROOT] [Prompt #${n}] mainpage-harvest candidate rejected (${verdict.reason}) — trying the remaining main-page candidates`, 'warn');
+          }
+        }
+      }
+      if (Date.now() >= deadline) break;
       await sleep(250);
     }
-
-    if (!candidate) {
-      this.log(`[FAST-DL] [Prompt #${n}] No usable in-page video bytes yet (registry entries seen: ${seenEntries}) — the existing download routes will run.`, 'info');
-      attempts.push({ strategy: 'blob-harvest', ok: false, note: 'no usable video bytes were found inside the page yet — the existing routes ran as fallback' });
-      return false;
-    }
-
-    const ageSec = Math.max(0, Math.round((Date.now() - candidate.ts) / 1000));
-    this.log(`[FAST-DL] [Prompt #${n}] In-page video bytes found (type=${candidate.type || 'unknown'}, size=${candidate.size} bytes, age=${ageSec}s, via=${candidate.via || 'page'}) — taking them straight out of the page, no menu, no wait…`, 'info');
-
-    // Bytes nikaalna + content gate + save: mushtarika helper
-    // (_extractAndSaveBlobCandidate) — nakami ki har wajah alag
-    // stage ke saath wapas aati hai, taaki yahan ki log/notes
-    // pehle ki tarah har wajah ko naam de saken.
-    const res = await this._extractAndSaveBlobCandidate(task, downloadFolder, settings, candidate);
-    if (!res.ok) {
-      if (res.stage === 'read') {
-        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes could not be read out of the page — the existing download routes will run.`, 'warn');
-        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'video bytes were seen inside the page but could not be read out — the existing routes ran as fallback' });
-      } else if (res.stage === 'incomplete') {
-        this.log(`[FAST-DL] [Prompt #${n}] The extracted bytes are incomplete (${res.got} of ${res.want} bytes) — discarded; the existing download routes will run.`, 'warn');
-        attempts.push({ strategy: 'blob-harvest', ok: false, note: `the in-page bytes came out incomplete (${res.got} of ${res.want} bytes) — discarded, the existing routes ran as fallback` });
-      } else if (res.stage === 'gate') {
-        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes are NOT a video file (no video header — format: ${res.format}) — discarded; the existing download routes will run.`, 'warn');
-        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were not a video file (no video header) — discarded, the existing routes ran as fallback' });
-      } else if (res.stage === 'quality') {
-        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes were a preview-quality copy (below the size floor for the duration) — not saved as the final file; the existing download routes will run.`, 'warn');
-        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were preview quality (below the size floor) — not saved as final, the existing routes ran as fallback' });
-      } else if (res.stage === 'claimed') {
-        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes belong to a server address claimed by another task in this run — NOT extracted; the existing download routes will run.`, 'warn');
-        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were bound to another task\'s server address (claim discipline) — not extracted, the existing routes ran as fallback' });
-      } else if (res.stage === 'duplicate') {
-        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes were identical to another task\'s already-saved file in this run (content guard) — not saved, the existing routes ran as fallback' });
-      } else {
-        this.log(`[FAST-DL] [Prompt #${n}] The in-page bytes failed the video check on save — the existing download routes will run.`, 'warn');
-        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page bytes failed the video check (ffprobe) on save — the existing routes ran as fallback' });
-      }
-      return false;
-    }
-    // Owner ka standing rule: har video ka render→save gap ALAG
-    // gin kar batao — kul waqt ya gol 'PASS' kabhi nahi.
-    const gapBase = renderCompleteTs || harvestStart;
-    const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
-    this.log(`[FAST-DL] [Prompt #${n}] Saved from the page's own bytes — extraction took ${res.extractMs}ms; render→save gap for this video: ${gapSec}s.`, 'success');
-    attempts.push({ strategy: 'blob-harvest', ok: true, note: `the file was saved the moment the render finished, from the video bytes already inside the page (no menu, no wait) — render→save gap ${gapSec}s` });
-    return true;
+    attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'no usable stream for this video was seen on the main project page (see the mainpage-audit lines) — grid replay ran next; nothing was opened or clicked' });
+    this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: no usable stream for this video on the main project page — grid replay will run`, 'warn');
+    return false;
   }
 
   /**
@@ -5840,190 +5769,6 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.31 (DIRECT-PROBE): viewer khulne (ya viewer ke
-   * button) ke baad taaza flow-content URL ka intezaar —
-   * pehchan ke darwaze bilkul post-click race wale hain
-   * (flowContent.pickRaceFlowContentUrl: anchor se pehle ka =
-   * stale, claimed = inkaar, kai usable = ambiguous inkaar).
-   * Sirf googlevideo preview wala URL is fehrist me aata hi
-   * nahi (capture sirf flow-content jawab darj karta hai) —
-   * preview-only ka saboot _viewerSawPreviewStream deta hai.
-   *
-   * v2.48.32 (SWITCH): opts.pollMs se poll ka waqfa badla ja
-   * sakta hai (button ke baad wala intezaar ~150–200ms par
-   * rakha gaya hai), aur opts.overlayDetourAtMs diya jaye to
-   * intezaar ke beech us pal par EK dafa resolution-overlay
-   * wali belt-and-braces harkat bhi hoti hai (neeche
-   * _clickViewerOriginalOverlayEntry dekho — wo rasta
-   * ABHI TAK LIVE PROVEN NAHI hai).
-   */
-  async _pollViewerFlowContent(task, anchorMs, waitMs, opts) {
-    const o = opts || {};
-    // v2.48.35: bulane wala ikhtiyari diag object de sakta
-    // hai — poll ke dauraan koi bhi flow-content entry dikhi
-    // thi kya (sawEntries), taaki haar par wajah alag batayi
-    // ja sake: khidki me kuch aaya hi nahi बनाम aaya lekin
-    // picker ne pehchan-darwazon par rok diya.
-    if (o.diag && typeof o.diag === 'object') o.diag.sawEntries = false;
-    const pollMs = Math.max(50, Number(o.pollMs) || 200);
-    const detourAtMs = Number.isFinite(o.overlayDetourAtMs) ? o.overlayDetourAtMs : -1;
-    const startedAt = Date.now();
-    const deadline = startedAt + Math.max(500, Number(waitMs) || 3500);
-    let detourDone = false;
-    while (Date.now() < deadline) {
-      if (this.isStopping || task.mediaSaved) return null;
-      let entries = [];
-      try {
-        entries = (this.netCapture && typeof this.netCapture.recentFlowContentVideos === 'function')
-          ? this.netCapture.recentFlowContentVideos(anchorMs)
-          : [];
-      } catch (e) { entries = []; }
-      if (entries && entries.length > 0) {
-        if (o.diag) o.diag.sawEntries = true;
-        const pick = flowContent.pickRaceFlowContentUrl(entries, {
-          sinceMs: anchorMs,
-          isClaimed: (u) => {
-            // v2.48.35: claimed-set ke saath capture ke
-            // bandhan (kisi AUR task ke naam) wali rukawat
-            // bhi — _pickServerFetchUrl wali hi discipline.
-            try { return !!((this.netCapture && this.netCapture.isFlowContentClaimed(u)) || this._urlClaimedByOtherTask(u, task.captureKey || task.videoId || null)); } catch (e) { return false; }
-          },
-          isOwnUrl: (u) => this._isTaskOwnUrl(task, u)
-        });
-        if (pick) return pick;
-      }
-      // Belt-and-braces detour: button click ke ~2.5s baad
-      // tak address na aaya ho aur screen par resolution
-      // overlay khula ho to us ka Original entry ek dafa
-      // click karo, phir baaki intezaar jaari rakho.
-      if (!detourDone && detourAtMs >= 0 && (Date.now() - startedAt) >= detourAtMs) {
-        detourDone = true;
-        try { await this._clickViewerOriginalOverlayEntry(task); } catch (e) {}
-        continue;
-      }
-      await sleep(pollMs);
-    }
-    return null;
-  }
-
-  /**
-   * v2.48.32 (SWITCH — ⚠️ UNPROVEN PATH): viewer ke Download
-   * button ke click ke baad agar Flow resolution overlay/list
-   * khol de aur file ka address khud na aaye, to overlay ke
-   * "Original size" entry ko click karna. DIRECTTEST1
-   * (v2.48.31) me ye haalat aayi hi NAHI — button click ke
-   * ~1.4s baad address khud aa gaya tha, koi overlay
-   * interaction nahi hua. Is liye ye code sirf ek
-   * belt-and-braces bachav hai: overlay maujood hi na ho
-   * (proven raaste par yahi hoga) to ye kuch karta hi nahi,
-   * aur is ka live saboot DIRECTTEST2+ ke live runs se hi
-   * milega. Sirf overlay containeron ke ANDAR ki entries
-   * dekhi jati hain aur /original/ wala label hi chuna jata
-   * hai — editor ke aam controls ko ye kabhi nahi chhuta.
-   */
-  async _clickViewerOriginalOverlayEntry(task) {
-    const n = task.promptIndex + 1;
-    let hit = null;
-    try {
-      hit = await this.page.evaluate(() => {
-        const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-        const norm = (s) => String(s || '').toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
-        const panes = Array.from(document.querySelectorAll('.cdk-overlay-pane, [role="menu"], [role="listbox"], .mat-mdc-menu-panel'));
-        for (const pane of panes) {
-          if (!visible(pane)) continue;
-          const items = Array.from(pane.querySelectorAll('button, [role="menuitem"], [role="option"], li'));
-          for (const it of items) {
-            if (!visible(it)) continue;
-            const label = norm(it.getAttribute('aria-label')) || norm(it.innerText || it.textContent || '');
-            if (label && /original/.test(label)) {
-              const r = it.getBoundingClientRect();
-              return { found: true, x: r.x + r.width / 2, y: r.y + r.height / 2, label: label.substring(0, 40) };
-            }
-          }
-        }
-        return { found: false };
-      });
-    } catch (e) { hit = null; }
-    if (hit && hit.found) {
-      this.log(`[DIRECT] [Prompt #${n}] viewer overlay resolution clicked (detour) — "${hit.label}"`, 'info');
-      try { await this.page.mouse.click(hit.x, hit.y); } catch (e) {}
-      return true;
-    }
-    return false;
-  }
-
-  /**
-   * v2.48.31 (DIRECT-PROBE): viewer ke andar woh button jo
-   * ⋮ menu ke andar NAHI hai aur jiska label /download/i se
-   * milta hai (asal ummeedwaar: editor ki top bar wala
-   * "Download media" — _findEditorDownloadControl wahi dhoondta
-   * hai; yahan matcher jaan-boojh kar aam rakha hai taaki jo
-   * bhi seedha button ho, usi ka naam saboot me aaye).
-   */
-  async _findViewerDownloadButton() {
-    try {
-      return await this.page.evaluate(() => {
-        const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-        const inMenu = (el) => !!(el.closest && (el.closest('.cdk-overlay-pane') || el.closest('.mat-mdc-menu-panel') || el.closest('[role="menu"]')));
-        const norm = (s) => String(s || '').toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
-        const els = Array.from(document.querySelectorAll('button, [role="button"]'));
-        for (const b of els) {
-          if (!visible(b) || inMenu(b)) continue;
-          const label = norm(b.getAttribute('aria-label')) || norm(b.innerText || b.textContent || '');
-          if (label && /download/.test(label)) {
-            const r = b.getBoundingClientRect();
-            return { found: true, x: r.x + r.width / 2, y: r.y + r.height / 2, label: label.substring(0, 40) };
-          }
-        }
-        return { found: false };
-      });
-    } catch (e) {
-      return { found: false };
-    }
-  }
-
-  /**
-   * v2.48.31 (DIRECT-PROBE): is khidki me page ne googlevideo
-   * ka preview stream khincha kya? (netBigWindow: har mukammal
-   * jawab ka host+size darj hota hai.) Viewer sirf preview hi
-   * chalata hai to yahi us ka saboot hai — preview asal file
-   * NAHI hai (quality gate use rokta bhi hai).
-   */
-  _viewerSawPreviewStream(sinceMs) {
-    try {
-      const win = (this.netCapture && Array.isArray(this.netCapture.netBigWindow)) ? this.netCapture.netBigWindow : [];
-      return win.some(e => e && Number.isFinite(e.at) && e.at >= sinceMs
-        && typeof e.host === 'string'
-        && (e.host === 'googlevideo.com' || e.host.endsWith('.googlevideo.com')));
-    } catch (e) { return false; }
-  }
-
-  /**
-   * v2.48.35 (VERBATIM PROBE — OBSERVE-ONLY, kabhi save
-   * NAHI): ZEROCLICK2 (v2.48.34, live) ne sabit kar diya ke
-   * seekhi hui mint call teacher ki id NA body me rakhti
-   * hai NA URL me (idsInBody=0, idsInUrl=0) — tabdeeli
-   * (substitution) wala replay mumkin hi nahi. Bachi hui
-   * ek theory: call CONTEXT-bound ho — jawab usi media ka
-   * address laata ho jo us pal session ke liye current
-   * hai. Us ka imtihaan: kisi GHER-teacher task ke
-   * download attempt par, quick-check se bhi PEHLE, wahi
-   * call HU-BAHU (koi tabdeeli nahi) page ke andar se ek
-   * dafa bhej kar sirf ye dekho ke jawab kya kehta hai.
-   *
-   * Usool sakht hain:
-   *   - session (capture) me HAD EK dafa — nishaan pehle
-   *     lagta hai, nakami par bhi dobara nahi;
-   *   - jawab se kuch SAVE nahi hota, capture me ingest
-   *     bhi nahi hota, koi claim nahi banta — sirf ek log
-   *     line: status / address aaya ya nahi / aaya to
-   *     teacher ke address jaisa (same) ya alag
-   *     (different) — asal URL/id/body kabhi log nahi;
-   *   - har nakami/timeout (hadd ~8s) chup-chaap guzar
-   *     jati hai — download ki tartib bilkul nahi rukti.
-   * Faisla mintReplay.classifyVerbatimProbe (khalis) se.
-   */
-  /**
    * v2.48.36 (ROOT PACK — B/C ki buniyad): seekhi hui mint
    * call ko HU-BAHU (verbatim — koi tabdeeli nahi; badalne
    * ko id hai hi nahi, ZEROCLICK2 sabit) page ke andar se
@@ -6034,8 +5779,9 @@ class FlowAutomationEngine {
    */
   async _fireMintReplay(tpl, pageOverride) {
     // v2.48.40: pageOverride diya jaye to replay usi
-    // page ke andar se (background editor wali surat
-    // me wahi asal editor context hai), warna asal page.
+    // page ke andar se, warna asal page. (v2.48.41:
+    // background page khatam — replay hamesha asal
+    // main page se hota hai.)
     const pg = pageOverride || this.page;
     try {
       if (!tpl || !tpl.url || !tpl.body || !pg || pg.isClosed()) {
@@ -6122,26 +5868,11 @@ class FlowAutomationEngine {
     if (verdict.action !== 'save') {
       return { outcome: verdict.action === 'teacher' ? 'teacher' : verdict.action };
     }
-    // v2.48.39 (HARVEST-FIRST SPEED FIX): replay-context
-    // ka address FAST-DL fetch par bhejne se PEHLE — is
-    // task ki editor-khidki me pehle se PROMOTED mukammal
-    // body (guard-pass) maujood ho to wohi editor-harvest
-    // ke raste save karo aur replay address ka fetch
-    // BILKUL mat chalao. ZEROCLICK6 (v2.48.38) me Prompt
-    // #2 par yahi fetch 403 par ~8.7s zaya karke haara
-    // tha, halanke promoted body pehle se kitab me thi
-    // aur aakhir wohi save hui. Promoted body na ho (ya
-    // us ki save hi nakam ho) to vyavhaar bilkul pehle
-    // jaisa — replay fetch aage chalega.
-    if (via === 'replay-context') {
-      try {
-        const hs = await this._savePromotedHarvestInstead(task, downloadFolder, settings, captureKey);
-        if (hs && hs.saved) {
-          this.log(`[ROOT] replay-fetch skipped — editor-harvest body already promoted`, 'info');
-          return { outcome: 'saved', gapSec: hs.gapSec, savedVia: 'editor-harvest' };
-        }
-      } catch (e) {}
-    }
+    // v2.48.41: v2.48.39 wala 'replay-fetch skipped' wala
+    // shortcut gaya — wo editor-harvest ki promoted body
+    // par tha, aur editor-harvest ab hai hi nahi. Grid
+    // replay ka address ab hamesha apni verified
+    // server-fetch se save hota hai.
     let okFetch = false;
     try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: verdict.url, via }); } catch (e) { okFetch = false; }
     if (okFetch || task.mediaSaved) {
@@ -6539,783 +6270,6 @@ class FlowAutomationEngine {
     return { done: false, editorOpen: false };
   }
 
-  /**
-   * v2.48.36 (ROOT PACK — C: EDITOR-CONTEXT REPLAY):
-   * is task ka viewer/editor kholo — lekin Download
-   * button NAHI dabana. Editor ka context hi (theory ke
-   * mutabiq) session ka "current" media hota hai; ~600ms
-   * settle ke baad seekhi hui mint call hu-bahu chalao:
-   *   - jawab is task ka naya address le aaye → claim +
-   *     verified server-fetch → [ROOT] via=replay-context
-   *   - jawab TEACHER ka address le aaye →
-   *     [ROOT] replay-context returned teacher url
-   *   - jawab me address hi na aaye →
-   *     [ROOT] replay-context no url
-   *   Dono haar par editor KHULA rehta hai aur
-   *   direct-viewer route usi khule editor se aage
-   *   badhta hai (uska apna button click wahan jaiz hai —
-   *   wo maujood proven rasta hai).
-   * Editor khulne ke baad page-harvest bhi dobara
-   * dekha jata hai (preview fetch ke bytes is beech aa
-   * sakte hain, ~3s tak poll) — wo exact file hai:
-   * [ROOT] via=page-harvest.
-   * Template na ho / teacher khud ho to khamosh skip.
-   * Natija: { done, editorOpen }.
-   */
-  async _tryEditorContextReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, opts) {
-    const o = opts || {};
-    if (task._replayContextTried) return { done: false, editorOpen: !!o.editorOpen };
-    task._replayContextTried = true;
-    const cap = this.netCapture;
-    // v2.48.37: candidate template bhi chalega (learned pehle).
-    const tpl = (cap && typeof cap.replayTemplate === 'function')
-      ? cap.replayTemplate().template
-      : (cap && cap.mintTemplate ? cap.mintTemplate : null);
-    if (!tpl || !tpl.body || !tpl.url) return { done: false, editorOpen: !!o.editorOpen }; // pehla task — khamosh skip
-    if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return { done: false, editorOpen: !!o.editorOpen }; // teacher khud
-    if (!this.page || this.page.isClosed() || this.isStopping || task.mediaSaved) return { done: false, editorOpen: !!o.editorOpen };
-
-    let editorOpen = !!o.editorOpen;
-    if (editorOpen) {
-      // v2.48.38: editor grid-selection se khula tha —
-      // _openTileViewer nahi chala, is liye editor-khidki
-      // yahan darj karo (warna playback jawab ginne hi
-      // nahi jayenge).
-      try {
-        if (cap && typeof cap.beginEditorWindow === 'function') cap.beginEditorWindow(captureKey);
-      } catch (e) {}
-    }
-    if (!editorOpen) {
-      // v2.48.40 (INVISIBLE HARVEST PACK): editor ab
-      // pehle BACKGROUND page par khulta hai (screen
-      // par kuch show nahi hota); background na bane
-      // to _openHarvestEditor khud bg-failed line ke
-      // saath purane dikhe-hue raste par girta hai.
-      const openedHarvest = await this._openHarvestEditor(task, tileIndexHint, captureKey);
-      editorOpen = !!openedHarvest.editorOpen;
-      if (!editorOpen) {
-        attempts.push({ strategy: 'replay-context', ok: false, note: 'the tile viewer did not open — the editor-context replay was skipped and the viewer route will try opening it itself' });
-        return { done: false, editorOpen: false };
-      }
-    }
-    task._viewerOpenedByRoot = true;
-    // Editor ki haalat ko saans lene do (~600ms) — context
-    // wahi pal pakka hota hai.
-    await sleep(600);
-    // (D-ii) preview fetch ke bytes is beech kitab me aa
-    // gaye hon to wohi exact file hai — replay se pehle.
-    try {
-      const okHarvest = await this._pollHarvestSave(task, downloadFolder, settings, attempts, 3000);
-      if (okHarvest || task.mediaSaved) {
-        // v2.48.40: save ho gaya — background page ka
-        // kaam khatam, use yahin band karo.
-        await this._closeBgEditorSession();
-        return { done: true, editorOpen: true };
-      }
-    } catch (e) {}
-    if (this.isStopping || task.mediaSaved) return { done: !!task.mediaSaved, editorOpen: true };
-
-    // v2.48.40: replay usi page ke andar se jis par
-    // editor khula hai — background session chalu ho
-    // to background page, warna asal page.
-    const replayPage = this._bgHarvestActiveFor(captureKey) ? this._bgEditorSession.page : this.page;
-    const { status, buf } = await this._fireMintReplay(tpl, replayPage);
-    if (status === 'error' || (typeof status === 'number' && status >= 400)) {
-      attempts.push({ strategy: 'replay-context', ok: false, note: `the editor-context replay was not answered (${status === 'error' ? 'no response' : `http-${status}`}) — the viewer route continues from the open editor` });
-      return { done: false, editorOpen: true };
-    }
-    const urls = this._replayResponseUrls(buf);
-    if (!(buf.length > 0 && mintWindow.responseCarriesFileUrl({ bodyText: buf })) || urls.length === 0) {
-      this.log(`[ROOT] replay-context no url`, 'info');
-      attempts.push({ strategy: 'replay-context', ok: false, note: 'the editor-context replay was answered but carried no file address — the viewer route continues from the open editor' });
-      return { done: false, editorOpen: true };
-    }
-    const res = await this._saveFromReplayUrls(task, downloadFolder, settings, urls, 'replay-context', buf, tpl.url);
-    if (res.outcome === 'teacher') {
-      this.log(`[ROOT] replay-context returned teacher url`, 'warn');
-      attempts.push({ strategy: 'replay-context', ok: false, note: 'the editor-context replay returned the previous task\'s file address — it was NOT fetched; the viewer route continues from the open editor' });
-      return { done: false, editorOpen: true };
-    }
-    if (res.outcome === 'saved') {
-      // v2.48.40: save ho gaya — background page band.
-      await this._closeBgEditorSession();
-      // v2.48.39 (HARVEST-FIRST): save asal me editor-
-      // harvest ki promoted body se hui hai (replay
-      // address fetch hua hi nahi) — kamyaabi usi route
-      // ke naam; via=replay-context wali line yahan
-      // NAHI banti (wo jhooti nisbat hoti).
-      if (res.savedVia === 'editor-harvest') {
-        attempts.push({ strategy: 'editor-harvest', ok: true, note: `a complete playback body for this video had already been captured and promoted while its editor was open, so the replay address was NOT fetched — that promoted body was saved instead, straight from Flow's server, with no Download-button click and no menu; render→save gap ${res.gapSec}s` });
-        return { done: true, editorOpen: true };
-      }
-      this.log(`[ROOT] via=replay-context gap=${res.gapSec}s`, 'success');
-      attempts.push({ strategy: 'replay-context', ok: true, note: `the file was fetched straight from Flow's server by replaying the learned mint call inside this video's open editor — the Download button was NOT clicked and no menu was used; render→save gap ${res.gapSec}s` });
-      return { done: true, editorOpen: true };
-    }
-    attempts.push({ strategy: 'replay-context', ok: false, note: `the editor-context replay produced an address that could not be saved (${res.outcome}) — the viewer route continues from the open editor` });
-    return { done: false, editorOpen: true };
-  }
-
-  /**
-   * v2.48.38 (EDITOR-HARVEST PACK): adhoore jawab ke URL
-   * ka POORA fetch page ke apne andar se (page.evaluate
-   * fetch, credentials 'include' — session page ka apna
-   * hai, app cookies kabhi nahi chhuta). _fireMintReplay
-   * wali hi base64 wapsi ki tarz, lekin GET. Hadd ~20s.
-   * Kabhi throw nahi karta: nakami par null.
-   */
-  async _fetchEditorHarvestFullInPage(url) {
-    try {
-      // v2.48.40: poora fetch usi page ke andar se jis
-      // par editor khula hai — background session chalu
-      // ho to background page (wahi session/cookies
-      // wahan bhi hain, lekin stream wahi ki hai).
-      const pg = (this._bgEditorSession && this._bgEditorSession.page && !this._bgEditorSession.page.isClosed())
-        ? this._bgEditorSession.page : this.page;
-      if (!url || !pg || pg.isClosed()) return null;
-      const res = await downloadGuard.withTimeout(
-        pg.evaluate(async (u) => {
-          const r = await fetch(u, { method: 'GET', credentials: 'include' });
-          if (!r.ok) return { status: r.status, b64: '' };
-          const rbuf = await r.arrayBuffer();
-          const u8 = new Uint8Array(rbuf);
-          let s = '';
-          for (let i = 0; i < u8.length; i += 8192) {
-            s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
-          }
-          return { status: r.status, b64: btoa(s) };
-        }, url),
-        20000, 'editor-harvest full fetch');
-      if (!res || !res.b64) return null;
-      try { return Buffer.from(res.b64, 'base64'); } catch (e) { return null; }
-    } catch (e) {
-      return null;
-    }
-  }
-
-  /**
-   * v2.48.39 (HARVEST-FIRST SPEED FIX): is task ki
-   * editor-khidki ki kitab me pehle se PROMOTED koi
-   * mukammal, guard-pass body hai to use editor-harvest
-   * ke raste save karo (claim + _saveBufferForTask —
-   * content gate + hash guard + ffprobe wahan andar
-   * hain) aur [ROOT] via=editor-harvest wali line likho.
-   * Faisla saveGuard.promotedEditorHarvestPick (khalis)
-   * se hai: sirf action 'save' wala jawab — adhoora
-   * jawab yahan NAHI uth-ta (wo editor-harvest route ke
-   * apne fetch-full raste ka hai), teacher-identical /
-   * duplicate bhi nahi (is run ki saved-hash kitab se
-   * muqabla yahin annotation me hota hai).
-   * Natija: kamyaabi par { saved:true, gapSec }, warna
-   * null — bulane wala apna aam rasta (replay fetch)
-   * bilkul pehle ki tarah chalata hai.
-   */
-  async _savePromotedHarvestInstead(task, downloadFolder, settings, captureKey) {
-    const cap = this.netCapture;
-    if (!cap || typeof cap.editorHarvestEntriesForKey !== 'function') return null;
-    let entries = [];
-    try { entries = cap.editorHarvestEntriesForKey(captureKey); } catch (e) { entries = []; }
-    if (!entries || entries.length === 0) return null;
-    const floorBytes = downloadFetch.minBytesForDuration(settings && settings.duration);
-    let teacherUrl = null;
-    try { teacherUrl = typeof cap.teacherMintUrlForTemplate === 'function' ? cap.teacherMintUrlForTemplate(null) : null; } catch (e) { teacherUrl = null; }
-    const annotated = entries.map((e) => {
-      const buffer = e && Buffer.isBuffer(e.buffer) ? e.buffer : null;
-      const hash = buffer ? saveGuard.contentHash(buffer) : null;
-      let duplicate = false;
-      if (hash) {
-        try { duplicate = saveGuard.checkDuplicate(this._runSavedContentHashes, this._taskKey(task), hash).duplicate; } catch (err) { duplicate = false; }
-      }
-      return {
-        url: e ? e.url : null,
-        byteLength: buffer ? buffer.length : 0,
-        headerOk: buffer ? downloadFetch.looksLikeVideoBuffer(buffer) : false,
-        partial: !!(e && e.partial),
-        status: e ? e.status : 0,
-        contentRange: e ? e.contentRange : '',
-        duplicate
-      };
-    });
-    const pick = saveGuard.promotedEditorHarvestPick({ entries: annotated, teacherUrl, floorBytes });
-    if (!pick || !pick.skip) return null;
-    const candidate = entries[pick.index];
-    if (!candidate || !candidate.buffer) return null;
-    const buffer = candidate.buffer;
-    const url = candidate.url;
-    try { cap.claimFlowContentVideo(url); } catch (e) {}
-    task.completedVideoUrl = url;
-    let ok = false;
-    try { ok = await this._saveBufferForTask(task, downloadFolder, settings, buffer, url); } catch (e) { ok = false; }
-    if (ok || task.mediaSaved) {
-      const gapSec = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
-      // v2.48.40: background page istemal hua ho to
-      // jeet ki line par bg=yes — live log khud saboot
-      // hai ke download screen par dikha hi nahi.
-      const bgMark = this._bgHarvestActiveFor(captureKey) ? ' bg=yes' : '';
-      this.log(`[ROOT] via=editor-harvest gap=${gapSec}s${bgMark}`, 'success');
-      return { saved: true, gapSec };
-    }
-    return null;
-  }
-
-  /**
-   * v2.48.40 (INVISIBLE HARVEST PACK): is worker ke
-   * browser context me ek BACKGROUND page banao — wahi
-   * session/cookies, lekin page kabhi front par NAHI
-   * aata: pehle CDP Target.createTarget apne
-   * background jhande ke saath (tab bandle hi nahi
-   * hota — asal page bandle baghair waisa hi rehta
-   * hai); wo rasta na bane to context.newPage() aur
-   * asal page ko FORAN bringToFront se wapas front par
-   * (naya tab ek pal ke liye active ho bhi jaye to
-   * nazar asal page par hi lot aati hai, aur asal page
-   * kabhi navigate NAHI hota). Kabhi safal na ho to
-   * throw — bulane wala purane raste par girta hai.
-   */
-  async _createBackgroundPage() {
-    const ctx = (this.page && typeof this.page.browserContext === 'function')
-      ? this.page.browserContext() : null;
-    // (1) CDP background target — tab bandle hi nahi hota.
-    try {
-      const browser = (this.page && typeof this.page.browser === 'function')
-        ? this.page.browser() : this.browser;
-      const bt = browser && typeof browser.target === 'function' ? browser.target() : null;
-      if (bt && typeof bt.createCDPSession === 'function' && ctx && typeof ctx.pages === 'function') {
-        const session = await bt.createCDPSession();
-        try {
-          const before = await ctx.pages();
-          await session.send('Target.createTarget', { url: 'about:blank', background: true });
-          const deadline = Date.now() + 5000;
-          while (Date.now() < deadline) {
-            const nowPages = await ctx.pages();
-            const fresh = nowPages.find(p => before.indexOf(p) === -1);
-            if (fresh) return fresh;
-            await sleep(100);
-          }
-        } finally {
-          try { await session.detach(); } catch (e) {}
-        }
-      }
-    } catch (e) { /* (2) wala rasta neeche hai */ }
-    // (2) context.newPage() + asal page foran wapas front par.
-    if (ctx && typeof ctx.newPage === 'function') {
-      const p = await ctx.newPage();
-      try { await this.page.bringToFront(); } catch (e) {}
-      return p;
-    }
-    if (this.browser && typeof this.browser.newPage === 'function') {
-      const p = await this.browser.newPage();
-      try { if (this.page) await this.page.bringToFront(); } catch (e) {}
-      return p;
-    }
-    throw new Error('no background page factory available');
-  }
-
-  /** v2.48.40: is pal is task ke liye background editor session chalu hai kya. */
-  _bgHarvestActiveFor(captureKey) {
-    try {
-      const s = this._bgEditorSession;
-      if (!s || !s.page || s.page.isClosed()) return false;
-      if (captureKey && s.key && s.key !== captureKey) return false;
-      return true;
-    } catch (e) { return false; }
-  }
-
-  /**
-   * v2.48.40 (INVISIBLE HARVEST PACK): background
-   * editor session band karo — capture ka CDP pehle,
-   * phir page. Do dafa bulane par bhi mehfooz (session
-   * pehle hi saaf ho to khamosh wapsi). Ye har harvest
-   * koshish ke aakhir par chalta hai — kamyaabi ho ya
-   * haar — taaki background page kabhi khula na reh
-   * jaye.
-   */
-  async _closeBgEditorSession() {
-    const sess = this._bgEditorSession;
-    if (!sess) return;
-    this._bgEditorSession = null;
-    try {
-      if (this.netCapture && typeof this.netCapture.detachBackgroundPage === 'function') {
-        await this.netCapture.detachBackgroundPage();
-      }
-    } catch (e) {}
-    try { if (sess.page && !sess.page.isClosed()) await sess.page.close(); } catch (e) {}
-  }
-
-  /**
-   * v2.48.40 (INVISIBLE HARVEST PACK): is task ka
-   * editor ek BACKGROUND page par kholo — asal page
-   * grid par bilkul waisa hi rehta hai, kuch show nahi
-   * hota. Tasalsul: background page banao → us par
-   * capture ka CDP lagao → wahi project kholo → grid
-   * tayyar hone ka intezaar → _openTileViewer usi page
-   * par (editor-khidki capture me waisi hi darj hoti
-   * hai — nisbat task-key se hai, page se nahi).
-   * Kisi bhi mor par nakami = session saaf karke
-   * { ok:false, reason } — bulane wala
-   * '[ROOT] editor-harvest bg-failed <reason>' likh
-   * kar purane (dikhe hue editor) raste par girta hai;
-   * download kabhi peeche nahi jata.
-   * reason sirf: no-main-page | no-project-url |
-   *   page-create-failed | capture-attach-failed |
-   *   nav-failed | grid-not-ready | tile-missing |
-   *   editor-not-open | error
-   */
-  async _tryOpenEditorOnBackgroundPage(task, tileIndexHint, captureKey) {
-    const cap = this.netCapture;
-    if (!this.page || this.page.isClosed()) return { ok: false, reason: 'no-main-page' };
-    let mainUrl = '';
-    try { mainUrl = this.page.url() || ''; } catch (e) { mainUrl = ''; }
-    if (!/^https:\/\/flow\.google\.com\//.test(mainUrl)) return { ok: false, reason: 'no-project-url' };
-    let bgPage = null;
-    try { bgPage = await this._createBackgroundPage(); } catch (e) { bgPage = null; }
-    if (!bgPage) return { ok: false, reason: 'page-create-failed' };
-    this._bgEditorSession = { page: bgPage, key: captureKey || null, at: Date.now() };
-    try {
-      try { bgPage.on('dialog', async (d) => { try { await d.dismiss(); } catch (e) {} }); } catch (e) {}
-      if (cap && typeof cap.attachBackgroundPage === 'function') {
-        const attached = await cap.attachBackgroundPage(bgPage);
-        if (!attached) {
-          await this._closeBgEditorSession();
-          return { ok: false, reason: 'capture-attach-failed' };
-        }
-      }
-      // Asal page wali hi hifazatein (webdriver nishaan)
-      // aur focus emulation — background tab ko Flow
-      // sust na samjhe. Dono best-effort hain.
-      try {
-        await bgPage.evaluateOnNewDocument(() => {
-          try { delete Object.getPrototypeOf(navigator).webdriver; } catch (e) {}
-          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
-        });
-      } catch (e) {}
-      try {
-        const s = await bgPage.target().createCDPSession();
-        await s.send('Emulation.setFocusEmulationEnabled', { enabled: true });
-      } catch (e) {}
-      let navOk = true;
-      try { await bgPage.goto(mainUrl, { waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (e) { navOk = false; }
-      if (!navOk || bgPage.isClosed()) {
-        await this._closeBgEditorSession();
-        return { ok: false, reason: 'nav-failed' };
-      }
-      // Grid tayyar hone ka intezaar (tile containers).
-      let gridReady = false;
-      const gDeadline = Date.now() + 15000;
-      while (Date.now() < gDeadline) {
-        if (this.isStopping) break;
-        try {
-          const cnt = await bgPage.evaluate(() => document.querySelectorAll('flow-grid-tile-container').length);
-          if (cnt > 0) { gridReady = true; break; }
-        } catch (e) {}
-        await sleep(300);
-      }
-      if (!gridReady) {
-        await this._closeBgEditorSession();
-        return { ok: false, reason: 'grid-not-ready' };
-      }
-      const openedRes = await this._openTileViewer(task, tileIndexHint, 'ROOT', bgPage);
-      if (!openedRes.opened) {
-        const reason = openedRes.tileMissing ? 'tile-missing' : 'editor-not-open';
-        await this._closeBgEditorSession();
-        return { ok: false, reason };
-      }
-      task._viewerOpenedByRoot = true;
-      return { ok: true };
-    } catch (e) {
-      await this._closeBgEditorSession();
-      return { ok: false, reason: 'error' };
-    }
-  }
-
-  /**
-   * v2.48.40 (INVISIBLE HARVEST PACK): replay-context
-   * aur editor-harvest ke liye editor kholne ka
-   * mushtarak darwaza — PEHLE background page (kuch
-   * show nahi hota); na bane to
-   * '[ROOT] editor-harvest bg-failed <reason>' ke
-   * saath purana rasta (asal page par _openTileViewer,
-   * bilkul aaj jaisa). Natija: { editorOpen, bg }.
-   */
-  async _openHarvestEditor(task, tileIndexHint, captureKey) {
-    const bg = await this._tryOpenEditorOnBackgroundPage(task, tileIndexHint, captureKey);
-    if (bg.ok) return { editorOpen: true, bg: true };
-    this.log(`[ROOT] editor-harvest bg-failed ${bg.reason}`, 'warn');
-    const openedRes = await this._openTileViewer(task, tileIndexHint, 'ROOT');
-    return { editorOpen: !!openedRes.opened, bg: false };
-  }
-
-  /**
-   * v2.48.40 (INVISIBLE HARVEST PACK): editor-harvest
-   * ka wrapper — asal kaam _tryEditorHarvestInner ka
-   * hai; yahan sirf ek pakki zimmedari hai:
-   * BACKGROUND PAGE HAR HAAL ME BAND hoga (kamyaabi
-   * ho, haar ho, ya exception) — background session
-   * sirf replay-context/editor-harvest ke marhale tak
-   * ka hai; us ke baad ke raste (direct-viewer, menu)
-   * asal page par chalte hain aur khula background
-   * page peeche kabhi nahi rehna chahiye.
-   */
-  async _tryEditorHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, opts) {
-    try {
-      return await this._tryEditorHarvestInner(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, opts);
-    } finally {
-      await this._closeBgEditorSession();
-    }
-  }
-
-  /**
-   * v2.48.38 (EDITOR-HARVEST PACK — EDITOR-HARVEST ROUTE):
-   * ZEROCLICK5 (v2.48.37) ke baad bacha hua zero-click
-   * rasta. Replay routes falsify ho gaye — mint call
-   * session ke last-minted media ka hi address deti hai,
-   * tile/editor context use NAHI badalta. Lekin usi log
-   * me Prompt #2 ke editor-open khidki ke andar, Download
-   * button dabne se PEHLE, ≈file-size ka flow-content GET
-   * aaya tha: editor apni PLAYBACK ke liye file khud
-   * mangta hai. Ye rasta:
-   *   - route C (replay-context) ke khole hue editor ko
-   *     hi istemal karta hai (na ho to waisa hi kholta
-   *     hai) — Download button NAHI dabta, ⋮ menu NAHI
-   *     khulta;
-   *   - sirf woh jawab ginta hai jo IS task ke editor ke
-   *     khule hone ki khidki ke ANDAR capture me darj hue
-   *     hon aur teacher ke address ke NA hon (capture ki
-   *     editor-khidki kitab — sanrachna wali nisbat);
-   *   - mukammal body (duration floor + MP4 ftyp darwaze)
-   *     claim + _saveBufferForTask se save — content-hash
-   *     guard wahan bhi laagu hai, aur yahan pehle se bhi
-   *     ek jaanch hai (teacher-identical bytes = reject);
-   *   - adhoora jawab (206 / Content-Range / floor se
-   *     neeche) → usi URL ka poora fetch page ke andar
-   *     se, phir wohi saari jaanch.
-   * Jeet: [ROOT] via=editor-harvest gap=<s>s.
-   * Haar: [ROOT] editor-harvest <reason> — reason sirf:
-   *   no-url | body-fail | partial-fetch-fail |
-   *   duplicate-content | below-floor
-   * — aur editor KHULA rehta hai, direct-viewer usi se
-   * aage badhta hai. Prompt yahan KABHI dobara nahi
-   * bheja jata (sacred rule barkarar).
-   * Natija: { done, editorOpen }.
-   */
-  async _tryEditorHarvestInner(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, opts) {
-    const o = opts || {};
-    const n = task.promptIndex + 1;
-    if (task._editorHarvestTried) return { done: false, editorOpen: !!o.editorOpen };
-    task._editorHarvestTried = true;
-    const cap = this.netCapture;
-    if (!cap || typeof cap.editorHarvestEntriesForKey !== 'function') return { done: false, editorOpen: !!o.editorOpen };
-    if (!this.page || this.page.isClosed() || this.isStopping || task.mediaSaved) return { done: false, editorOpen: !!o.editorOpen };
-
-    let editorOpen = !!o.editorOpen;
-    if (editorOpen) {
-      try { if (typeof cap.beginEditorWindow === 'function') cap.beginEditorWindow(captureKey); } catch (e) {}
-    } else {
-      // v2.48.40 (INVISIBLE HARVEST PACK): editor yahan
-      // kholna pade to pehle BACKGROUND page par
-      // (screen par kuch show nahi hota); na bane to
-      // _openHarvestEditor bg-failed line ke saath
-      // purane dikhe-hue raste par girta hai.
-      const openedHarvest = await this._openHarvestEditor(task, tileIndexHint, captureKey);
-      editorOpen = !!openedHarvest.editorOpen;
-      if (!editorOpen) {
-        this.log(`[ROOT] editor-harvest no-url`, 'info');
-        attempts.push({ strategy: 'editor-harvest', ok: false, note: 'the tile viewer did not open, so no editor playback response could be observed — the viewer route will try opening it itself' });
-        return { done: false, editorOpen: false };
-      }
-    }
-    task._viewerOpenedByRoot = true;
-
-    const floorBytes = downloadFetch.minBytesForDuration(settings && settings.duration);
-    let teacherUrl = null;
-    try { teacherUrl = typeof cap.teacherMintUrlForTemplate === 'function' ? cap.teacherMintUrlForTemplate(null) : null; } catch (e) { teacherUrl = null; }
-
-    // Khidki ke jawabon ka intezaar — route C editor ko
-    // pehle hi kuch pal khula rakh chuka hota hai (playback
-    // GET aksar usi beech darj ho jata hai); yahan ~4s tak
-    // aur dekho, pehla qabil ummeedwaar milte hi ruk jao
-    // (mukammal ko adhoore par tarjeeh).
-    let candidate = null;
-    const deadline = Date.now() + 4000;
-    for (;;) {
-      let entries = [];
-      try { entries = cap.editorHarvestEntriesForKey(captureKey); } catch (e) { entries = []; }
-      if (entries.length > 0) {
-        candidate = entries.filter(e => !e.partial).pop() || entries[entries.length - 1];
-        if (candidate) break;
-      }
-      if (Date.now() >= deadline || this.isStopping || task.mediaSaved) break;
-      await sleep(250);
-    }
-    if (!candidate || !candidate.buffer) {
-      this.log(`[ROOT] editor-harvest no-url`, 'info');
-      attempts.push({ strategy: 'editor-harvest', ok: false, note: 'no flow-content playback response was observed while this video\'s editor was open — the viewer route continues from the open editor' });
-      return { done: false, editorOpen: true };
-    }
-
-    let buffer = candidate.buffer;
-    const url = candidate.url;
-    // Pehla faisla (khalis): khidki ke andar + teacher
-    // nahi + duplicate nahi; adhoora ho to poora fetch.
-    const verdict1 = saveGuard.editorHarvestVerdict({
-      inWindow: true,
-      url,
-      teacherUrl,
-      byteLength: buffer.length,
-      floorBytes,
-      headerOk: downloadFetch.looksLikeVideoBuffer(buffer),
-      partial: !!candidate.partial,
-      status: candidate.status,
-      contentRange: candidate.contentRange
-    });
-    if (verdict1.action === 'reject') {
-      const reason = verdict1.reason === 'duplicate-content' ? 'duplicate-content'
-        : verdict1.reason === 'below-floor' ? 'below-floor' : 'body-fail';
-      this.log(`[ROOT] editor-harvest ${reason}`, 'warn');
-      attempts.push({ strategy: 'editor-harvest', ok: false, note: `the editor playback response was rejected before saving (${verdict1.reason}) — the viewer route continues from the open editor` });
-      return { done: false, editorOpen: true };
-    }
-    if (verdict1.action === 'fetch-full') {
-      const full = await this._fetchEditorHarvestFullInPage(url);
-      if (!full || full.length === 0) {
-        this.log(`[ROOT] editor-harvest partial-fetch-fail`, 'warn');
-        attempts.push({ strategy: 'editor-harvest', ok: false, note: 'the editor playback response was partial and fetching the full file for its address from inside the page failed — the viewer route continues from the open editor' });
-        return { done: false, editorOpen: true };
-      }
-      buffer = full;
-    }
-
-    // Poori body par wohi darwaze dobara (fetch-full ke
-    // baad bhi): MP4 header, duration floor, aur is run
-    // me pehle save hue bytes se hash-muqabla (teacher
-    // ke bytes hu-bahu hon to wohi duplicate-content
-    // hai — _saveBufferForTask ka guard dusri hifazat
-    // bankar neeche bhi maujood hai).
-    if (!downloadFetch.looksLikeVideoBuffer(buffer)) {
-      this.log(`[ROOT] editor-harvest body-fail`, 'warn');
-      attempts.push({ strategy: 'editor-harvest', ok: false, note: 'the bytes obtained from the editor playback address were not a video file — the viewer route continues from the open editor' });
-      return { done: false, editorOpen: true };
-    }
-    if (buffer.length < floorBytes) {
-      this.log(`[ROOT] editor-harvest below-floor`, 'warn');
-      attempts.push({ strategy: 'editor-harvest', ok: false, note: 'the bytes obtained from the editor playback address were below the size floor for this duration (preview quality, not the original file) — the viewer route continues from the open editor' });
-      return { done: false, editorOpen: true };
-    }
-    const bufHash = saveGuard.contentHash(buffer);
-    if (bufHash) {
-      const dup = saveGuard.checkDuplicate(this._runSavedContentHashes, this._taskKey(task), bufHash);
-      if (dup.duplicate) {
-        this.log(`[ROOT] editor-harvest duplicate-content`, 'warn');
-        attempts.push({ strategy: 'editor-harvest', ok: false, note: 'the editor playback bytes were identical to a file already saved for another prompt in this run — they were NOT saved for this prompt; the viewer route continues from the open editor' });
-        return { done: false, editorOpen: true };
-      }
-    }
-
-    try { cap.claimFlowContentVideo(url); } catch (e) {}
-    task.completedVideoUrl = url;
-    let ok = false;
-    try { ok = await this._saveBufferForTask(task, downloadFolder, settings, buffer, url); } catch (e) { ok = false; }
-    if (ok || task.mediaSaved) {
-      const gapSec = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
-      // v2.48.40: background page istemal hua ho to
-      // jeet ki line par bg=yes — live log khud saboot
-      // hai ke editor screen par kabhi dikha hi nahi.
-      const bgMark = this._bgHarvestActiveFor(captureKey) ? ' bg=yes' : '';
-      this.log(`[ROOT] via=editor-harvest gap=${gapSec}s${bgMark}`, 'success');
-      attempts.push({ strategy: 'editor-harvest', ok: true, note: `the exact file was saved from the flow-content response the editor itself fetched for playback while this video's editor was open — the Download button was NOT clicked and no menu was used; render→save gap ${gapSec}s` });
-      return { done: true, editorOpen: true };
-    }
-    const rejected = task._saveRejectedReason || '';
-    const reason = rejected === 'duplicate-content' ? 'duplicate-content'
-      : rejected === 'quality-gate' ? 'below-floor' : 'body-fail';
-    this.log(`[ROOT] editor-harvest ${reason}`, 'warn');
-    attempts.push({ strategy: 'editor-harvest', ok: false, note: `the editor playback bytes did not pass the save checks (${rejected || 'the video verification failed'}) — the viewer route continues from the open editor` });
-    return { done: false, editorOpen: true };
-  }
-
-  /**
-   * v2.48.36 (ROOT PACK — C ki mushtarak seedhi): is task
-   * ke tile ka viewer/editor kholna — ya pehle se khula ho
-   * to wahi reuse. Koi button NAHI dabta, koi menu NAHI
-   * khulta. Route C (replay-context) aur direct-viewer
-   * dono yahi istemal karte hain, is liye C ke khole hue
-   * editor ko viewer route baghair dobara khole aage
-   * badha sakta hai (task._viewerOpenedByRoot nishaan).
-   * Natija: { opened, alreadyOpen, tileMissing, anchor } —
-   * anchor = khulne ki koshish ke aaghaz ka pal (mint
-   * khidki ka langar).
-   */
-  async _openTileViewer(task, tileIndexHint, logTag, pageOverride) {
-    const n = task.promptIndex + 1;
-    const tag = logTag || 'DIRECT';
-    // v2.48.40 (INVISIBLE HARVEST PACK): pageOverride
-    // diya jaye to viewer USI page par khulta hai
-    // (background page — worker ka asal page grid par
-    // hi rehta hai); warna hamesha ki tarah apna page.
-    const pg = pageOverride || this.page;
-    let viewerOpen = false;
-    try { viewerOpen = await this._inEditorView(pg); } catch (e) { viewerOpen = false; }
-    if (viewerOpen) {
-      // v2.48.38 (EDITOR-HARVEST PACK): editor khula hai —
-      // khidki capture me darj karo (pehle se darj ho to
-      // wahi barkarar; wahan darj playback jawab ginne
-      // chahiye). Is pal se aane wale flow-content jawab
-      // is task ki editor-khidki ke ginne jayenge.
-      try {
-        if (this.netCapture && typeof this.netCapture.beginEditorWindow === 'function') {
-          this.netCapture.beginEditorWindow(task.captureKey || task.videoId || null);
-        }
-      } catch (e) {}
-      if (task._viewerOpenedByRoot) {
-        this.log(`[${tag}] [Prompt #${n}] The big view is already open for this video (opened by the replay route) — reusing it, no second opening…`, 'info');
-      } else if (tag === 'DIRECT') {
-        this.log(`[DIRECT] [Prompt #${n}] The big view is already open — going straight to its Download button (no menu)…`, 'info');
-      } else {
-        this.log(`[${tag}] [Prompt #${n}] The big view is already open — reusing it (no menu)…`, 'info');
-      }
-      return { opened: true, alreadyOpen: true, tileMissing: false, anchor: Date.now() };
-    }
-    const idx = await this._resolveTileIndexForTask(task, tileIndexHint, pg);
-    const coords = idx >= 0 ? await this._tileCenterCoords(idx, pg) : { found: false };
-    if (!coords.found) return { opened: false, alreadyOpen: false, tileMissing: true, anchor: Date.now() };
-    if (tag === 'DIRECT') {
-      this.log(`[DIRECT] [Prompt #${n}] Opening this video's tile viewer (no menu) — the viewer's own Download button is the primary download route…`, 'info');
-    } else {
-      this.log(`[${tag}] [Prompt #${n}] Opening this video's tile viewer (no menu) — the Download button will NOT be clicked; the learned mint call is replayed from this editor context…`, 'info');
-    }
-    const anchor = Date.now();
-    await pg.mouse.click(coords.x, coords.y);
-    for (let r = 0; r < 10 && !viewerOpen; r++) {
-      await sleep(250);
-      try { viewerOpen = await this._inEditorView(pg); } catch (e) { viewerOpen = false; }
-    }
-    // v2.48.38 (EDITOR-HARVEST PACK): naya khula editor —
-    // khidki yahin se shuru (is se pehle ke jawab is task
-    // ke editor ke NAHI ginne jayenge).
-    if (viewerOpen) {
-      try {
-        if (this.netCapture && typeof this.netCapture.beginEditorWindow === 'function') {
-          this.netCapture.beginEditorWindow(task.captureKey || task.videoId || null);
-        }
-      } catch (e) {}
-    }
-    return { opened: viewerOpen, alreadyOpen: false, tileMissing: false, anchor };
-  }
-
-  async _tryDirectViewerDownload(task, downloadFolder, settings, tileIndexHint, attempts, attemptStartedAt) {
-    const n = task.promptIndex + 1;
-    if (!this.page || this.page.isClosed()) return false;
-    const gapBase = task.renderCompletedAt || task.startTime || Date.now();
-    // Sub-timings ka langar: download attempt ka aaghaz
-    // (_downloadTaskMediaInner se aata hai; wahan se yahan
-    // tak sirf no-wait quick-check hai).
-    const attemptStart = Number.isFinite(attemptStartedAt) ? attemptStartedAt : Date.now();
-    const atPlus = (t) => Math.max(0, ((Number.isFinite(t) ? t : Date.now()) - attemptStart) / 1000).toFixed(1);
-
-    // v2.48.36 (ROOT PACK — C): khulna ab mushtarak helper
-    // se hai — route C ka khola hua editor (usi task ka)
-    // yahan baghair dobara khole reuse hota hai.
-    const openedRes = await this._openTileViewer(task, tileIndexHint, 'DIRECT');
-    if (openedRes.tileMissing) {
-      attempts.push({ strategy: 'direct-viewer', ok: false, note: 'its tile was not found on the grid — the direct viewer route was skipped' });
-      return false;
-    }
-    const anchor = openedRes.anchor;
-    const viewerOpen = openedRes.opened;
-    if (!viewerOpen) {
-      this.log(`[DIRECT] [Prompt #${n}] The tile viewer did not open — falling back to the menu route.`, 'warn');
-      attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the tile viewer did not open' });
-      return false;
-    }
-    this.log(`[DIRECT] [Prompt #${n}] editor-open at +${atPlus(Date.now())}s`, 'info');
-
-    // Qadam 1 (.32 ki kaseli tartib): button PEHLE — har
-    // ~150ms par scan, kul ~2.5s tak; milte hi click.
-    // (.31 me pehle 3.5s ka passive poll chalta tha aur
-    // button ki talash ek-shot thi — DIRECTTEST1 ke gap ka
-    // ~4.2s wahi gaya tha.)
-    let btn = null;
-    const btnDeadline = Date.now() + 2500;
-    while (Date.now() < btnDeadline) {
-      if (this.isStopping || task.mediaSaved) break;
-      btn = await this._findViewerDownloadButton();
-      if (btn && btn.found) break;
-      btn = null;
-      await sleep(150);
-    }
-    this.log(`[DIRECT] [Prompt #${n}] viewer-download-button=${btn && btn.found ? `found ("${btn.label}")` : 'absent'}`, 'info');
-
-    let pick = null;
-    let via = 'viewer-open';
-    // v2.48.35: haar ki wajah ka hisaab — poll ne khidki me
-    // kuch dekha tha kya (diag), aur aakhir me ek hi line:
-    // viewer route failed at=<stage> reason=<category>.
-    const pollDiag = {};
-    let failStage = 'pick';
-    let failReason = 'no-url-in-window';
-    if (btn && btn.found) {
-      // Qadam 2: click ke baad ~6s tak address ka intezaar;
-      // ~2.5s par overlay detour (⚠️ UNPROVEN bachav —
-      // proven raste par overlay aata hi nahi aur detour
-      // kuch karta hi nahi).
-      await this.page.mouse.click(btn.x, btn.y);
-      this.log(`[DIRECT] [Prompt #${n}] button-clicked at +${atPlus(Date.now())}s`, 'info');
-      pick = await this._pollViewerFlowContent(task, anchor, 6000, { pollMs: 175, overlayDetourAtMs: 2500, diag: pollDiag });
-      via = 'viewer-button';
-    } else {
-      // Qadam 3: button hi nahi — sirf kholne se address
-      // aaya kya? (3.5s passive poll, .31 wala hi saboot.)
-      pick = await this._pollViewerFlowContent(task, anchor, 3500, { diag: pollDiag });
-      via = 'viewer-open';
-    }
-
-    if (pick && pick.url) {
-      this.log(`[DIRECT] [Prompt #${n}] url-seen at +${atPlus(pick.at)}s`, 'info');
-      let okFetch = false;
-      let fetchThrew = false;
-      try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: pick.url, via }); } catch (e) { okFetch = false; fetchThrew = true; }
-      if (okFetch || task.mediaSaved) {
-        const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
-        this.log(`[DIRECT] [Prompt #${n}] via=${via} gap=${gapSec}s`, 'success');
-        attempts.push({ strategy: 'direct-viewer', ok: true, note: `the file was fetched straight from Flow's server after ${via === 'viewer-open' ? 'opening the tile viewer' : "the viewer's own Download button"} — no ⋮ menu was used; render→save gap ${gapSec}s` });
-        return true;
-      }
-      // v2.48.34 (diagnostic only — rawayya bilkul waisa hi):
-      // fetch-save kyun haara, sirf us ki qisam. _serverFetchSave
-      // ek bare boolean lautata hai (andar ki haar wahan nigal
-      // li jati hai), is liye false = save verify nahi hua;
-      // exception aaye to us ki alag qisam.
-      this.log(`[DIRECT] [Prompt #${n}] fetch-save failed reason=${fetchThrew ? 'fetch-threw' : 'unverified-save'}`, 'warn');
-      // v2.48.35: route-haar wali aakhri line ke liye stage
-      // bhi yahi darj hota hai (neeche).
-      failStage = 'fetch';
-      failReason = fetchThrew ? 'fetch-threw' : 'unverified-save';
-      // Fetch haar gaya — viewer band karke menu fallback (neeche).
-    }
-    if (pick && pick.ambiguous) {
-      this.log(`[DIRECT] [Prompt #${n}] ${pick.count} fresh server addresses appeared in the viewer and none could be proven to be this task's own — the direct fetch was NOT used.`, 'warn');
-      failStage = 'pick';
-      failReason = 'ambiguous';
-    }
-    // v2.48.35: pick stage ki haar ki qisam — khidki me
-    // entries dikhi theen lekin picker ne sab rok diye
-    // (picker-rejected), ya viewer ne sirf preview stream
-    // khincha (preview-only), ya khidki me kuch aaya hi
-    // nahi (no-url-in-window). ZEROCLICK2 me yahi farq
-    // ghayab tha: route fail hua lekin wajah log me kahin
-    // thi hi nahi (fetch wali line bhi nahi aayi thi —
-    // haar pick stage par thi).
-    if (failStage === 'pick' && failReason === 'no-url-in-window') {
-      if (pollDiag.sawEntries) failReason = 'picker-rejected';
-      else if (this._viewerSawPreviewStream(anchor)) failReason = 'preview-only';
-    }
-    this.log(`[DIRECT] [Prompt #${n}] viewer route failed at=${failStage} reason=${failReason} — falling back to menu`, 'warn');
-    attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the direct viewer route produced no usable server address — the existing routes ran as fallback' });
-    try { await this.page.keyboard.press('Escape'); } catch (e) {}
-    try { await this._returnToProjectGrid(); } catch (e) {}
-    return false;
-  }
-
   async _downloadTaskMediaInner(task, downloadFolder, settings, tileIndexHint) {
     const attempts = [];
     task.downloadAttempts = attempts;
@@ -7369,46 +6323,43 @@ class FlowAutomationEngine {
       try { await this._verbatimReplayProbe(task, captureKey); } catch (e) {}
     }
 
-    // --- v2.48.30 (QUICK-CHECK HEAD): attempt ka SAB SE PEHLA
-    // qadam sirf ek NO-WAIT nazar hai ---
-    // v2.48.28 ka server-first head (tile prime + ~12s passive
-    // watch) KHATAM hai: prime-trigger hypothesis FASTTEST3
-    // aur FASTTEST4 dono me fail hui (12.1–12.2s ki watch
-    // khaali; asal flow-content fetch hamesha menu ke
-    // Download→resolution click ke BAAD aaya). Ab pehla qadam
-    // .29 wala _opportunisticServerCheck hi hai — ek registry
-    // read + ek capture fehrist, na prime, na intezaar. Kuch
-    // pehle se pakda hua ho to wahi save; warna seedha menu
-    // route, jiske ANDAR post-click race server channel ko
-    // click ke baad pakadti hai. (Isi wajah se alag
-    // 'before-menu' quick-check bhi gaya — attempt-start
-    // wala check usi pal ka hai.) Image tasks ki tartib
-    // bilkul purani hi hai (ye sirf video).
+    // --- v2.48.41 (MAIN-PAGE HARVEST PACK — OWNER ORDER
+    // 2026-11-04): VIDEO ki poori tartib ab bas do qadam
+    // hai, dono MAIN project page par, kuch khole ya
+    // click kiye baghair:
+    //   1. mainpage-harvest — main page ki apni stream
+    //      kitab se is task ki file: pehle se pakdi hui
+    //      mukammal body, warna usi page ke apne JS
+    //      context se poora fetch (range jawab ko bhi
+    //      wahi poora karta hai);
+    //   2. grid-replay — seekhi hui mint call ka hu-bahu
+    //      (verbatim) replay grid page se; teacher ka
+    //      address aaye to fetch kabhi nahi.
+    // Dono haar jayein to attempt EMAANDARI se FAIL hota
+    // hai — editor-harvest (visible + background),
+    // replay-context, direct-viewer, ⋮ menu, blob-
+    // harvest, backend-fetch aur tile-src sab video ke
+    // attempt path se HAMESHA ke liye bahar hain; koi
+    // fallback kuch nahi dikhata. Retry rounds phir yahi
+    // do raaste aazmate hain. Prompt dobara KABHI submit
+    // nahi hota (sacred rule barkarar).
+    // IMAGE tasks is hisse ko chhute hi nahi — un ki
+    // purani tartib (backend → kram-bandhan → readiness
+    // → tile-src → native UI) neeche bilkul waisi hi
+    // chalti hai. ---
     if (!isImage) {
       try {
-        const okQuick = await this._opportunisticServerCheck(task, downloadFolder, settings, attempts, 'attempt-start');
-        if (okQuick || task.mediaSaved) {
+        const okMp = await this._tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
+        if (okMp || task.mediaSaved) {
           try {
             this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
           } catch (e) {}
-          const wonQuick = attempts.filter(a => a.ok).pop();
-          return { ok: true, strategy: wonQuick ? wonQuick.strategy : 'quick-check', attempts };
+          const wonMp = attempts.filter(a => a.ok).pop();
+          return { ok: true, strategy: wonMp ? wonMp.strategy : 'mainpage-harvest', attempts };
         }
-      } catch (e) {}
-    }
-
-    // --- v2.48.36 (ROOT PACK — B: GRID-SELECTION REPLAY):
-    // quick-check ke baad, editor kholne se bhi PEHLE —
-    // tile ko grid par selected/focused karke seekhi hui
-    // mint call hu-bahu chalana. Jawab TEACHER ka address
-    // le aaye to fetch NAHI hota (wo is task ki file nahi);
-    // naya address aaye to claim + verified server-fetch.
-    // Template na ho (pehla task khud teacher hai) to ye
-    // qadam khamoshi se guzar jata hai. Selection ke bajae
-    // editor khul gaya ho to wo khabar route C ko jati
-    // hai (rootEditorOpen). ---
-    let rootEditorOpen = false;
-    if (!isImage) {
+      } catch (e) {
+        attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'the main-page harvest hit a problem — grid replay ran next' });
+      }
       try {
         const g = await this._tryGridReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
         if (g && g.done) {
@@ -7417,146 +6368,25 @@ class FlowAutomationEngine {
           } catch (e) {}
           return { ok: true, strategy: 'grid-replay', attempts };
         }
-        if (g && g.editorOpen) rootEditorOpen = true;
       } catch (e) {
-        attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid-selection replay hit a problem — the existing routes ran as fallback' });
+        attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid replay hit a problem' });
       }
-    }
-
-    // --- v2.48.36 (ROOT PACK — C: EDITOR-CONTEXT REPLAY):
-    // is task ka editor kholo, Download button NAHI
-    // dabao — editor ke context se wahi mint call hu-bahu.
-    // Naya address → server-fetch save; teacher ka
-    // address ya khaali jawab → editor KHULA rehta hai
-    // aur direct-viewer route usi se aage badhta hai.
-    // (v2.48.33/.34 wala substitution zero-click qadam
-    // gaya: ZEROCLICK2 ne sabit kar diya ke call me
-    // badalne ko koi id hai hi nahi — uski jagah ab ye
-    // do hu-bahu (verbatim) wale raaste hain.) ---
-    if (!isImage) {
+      // EMAANDAR FAIL: is ke baad koi rasta nahi bacha.
+      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: no usable stream for this video was seen on the main project page, and grid replay did not produce its file. Nothing was opened or clicked anywhere; the prompt was NOT resubmitted.`, 'warn');
       try {
-        const c = await this._tryEditorContextReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, { editorOpen: rootEditorOpen });
-        if (c && c.done) {
-          try {
-            this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
-          } catch (e) {}
-          const wonRoot = attempts.filter(a => a.ok).pop();
-          return { ok: true, strategy: wonRoot ? wonRoot.strategy : 'replay-context', attempts };
-        }
-        if (c && c.editorOpen) rootEditorOpen = true;
-      } catch (e) {
-        attempts.push({ strategy: 'replay-context', ok: false, note: 'the editor-context replay hit a problem — the existing routes ran as fallback' });
-        try { await this._returnToProjectGrid(); } catch (e2) {}
-      }
-    }
-
-    // --- v2.48.38 (EDITOR-HARVEST PACK): route C ke khule
-    // editor ke andar playback ke liye page ne khud jo
-    // flow-content jawab khincha tha, us ke bytes pakdo —
-    // Download button NAHI dabta, menu NAHI khulta.
-    // ZEROCLICK5 ne replay raaste falsify kar diye; ye
-    // bacha hua zero-click rasta hai. Haar par editor
-    // KHULA rehta hai aur direct-viewer usi se aage
-    // badhta hai. ---
-    if (!isImage) {
-      try {
-        const h = await this._tryEditorHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint, { editorOpen: rootEditorOpen });
-        if (h && h.done) {
-          try {
-            this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
-          } catch (e) {}
-          const wonHarvest = attempts.filter(a => a.ok).pop();
-          return { ok: true, strategy: wonHarvest ? wonHarvest.strategy : 'editor-harvest', attempts };
-        }
-        if (h && h.editorOpen) rootEditorOpen = true;
-      } catch (e) {
-        attempts.push({ strategy: 'editor-harvest', ok: false, note: 'the editor-harvest route hit a problem — the existing routes ran as fallback' });
-        try { await this._returnToProjectGrid(); } catch (e2) {}
-        rootEditorOpen = false;
-      }
-    }
-
-    // --- v2.48.32 (SWITCH): ⋮ menu se PEHLE tile ke viewer
-    // ka apna Download button — ab ye PRIMARY download rasta
-    // hai (DIRECTTEST1, v2.48.31 par LIVE PROVEN: menu kabhi
-    // khula hi nahi, file app ki server-fetch se save hui).
-    // Viewer khol → button foran click → mint hua address
-    // verified server-fetch se save. Na bane to viewer saaf
-    // band karke menu wala rasta (fallback #2) bilkul pehle
-    // ki tarah. (Image tasks par ye qadam nahi hai.) ---
-    if (!isImage) {
-      try {
-        const okDirect = await this._tryDirectViewerDownload(task, downloadFolder, settings, tileIndexHint, attempts, attemptStartedAt);
-        if (okDirect || task.mediaSaved) {
-          try {
-            this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
-          } catch (e) {}
-          const wonDirect = attempts.filter(a => a.ok).pop();
-          return { ok: true, strategy: wonDirect ? wonDirect.strategy : 'direct-viewer', attempts };
-        }
-      } catch (e) {
-        attempts.push({ strategy: 'direct-viewer', ok: false, note: 'the direct viewer route hit a problem — the existing routes ran as fallback' });
-        try { await this._returnToProjectGrid(); } catch (e2) {}
-      }
-    }
-
-    // --- v2.48.27 (MENU-FIRST): ⋮ menu ka Download — ab
-    // fallback wala qadam (tartib: quick-check sab se
-    // pehle, phir grid-replay, phir editor-context replay,
-    // phir editor-harvest — v2.48.38 — phir direct viewer
-    // route — v2.48.32 se primary — aur menu us ke baad) ---
-    // FASTTEST1 (2026-11-02, owner ke PC par sabit): render ke pal
-    // page me bytes hote hi NAHI; file sirf menu ke Download click
-    // ke baad aati hai. To jo rasta file LAATA hai, wahi pehle —
-    // 5s registry poll, backend check, 8s tile wait, sab is ke
-    // baad FALLBACK me hain (purani aapas-tartib me), sirf tab jab
-    // menu roop haar jaye. Image tasks ki tartib bilkul purani hi
-    // hai (menu-first sirf video ke liye hai).
-
-    let menuFirstTried = false;
-    if (!isImage) {
-      menuFirstTried = true;
-      const okMenuFirst = await this._tryMenuFirstDownload(task, downloadFolder, settings, tileIndexHint, attempts);
-      if (okMenuFirst || task.mediaSaved) {
-        try {
-          this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
-        } catch (e) {}
-        const wonFirst = attempts.filter(a => a.ok).pop();
-        return { ok: true, strategy: wonFirst ? wonFirst.strategy : 'native-menu', attempts };
-      }
-    }
-
-    // --- v2.48.26 (FAST-DL): in-page blob harvest (ab FALLBACK) ---
-    // Render hote hi page ke andar maujood bytes se seedha save —
-    // backend check, 8s tile wait, menu, filesystem poll, sab se
-    // pehle. Na bane to neeche ki poori tartib bilkul pehle ki
-    // tarah hai (fallback ki poori guarantee).
-    if (!isImage) {
-      try {
-        const okFastDl = await this._tryBlobHarvestDownload(task, downloadFolder, settings, attempts, tileIndexHint);
-        if (okFastDl || task.mediaSaved) return { ok: true, strategy: 'blob-harvest', attempts };
-      } catch (e) {
-        attempts.push({ strategy: 'blob-harvest', ok: false, note: 'the in-page fast download hit a problem — the existing routes ran as fallback' });
-      }
-    }
-
-    // --- v2.48.15: BACKEND PEHLE — Ranneeti 1 + kram-bandhan ---
-    // TEST492 ki seekh: pehle tartib me 25s ki tile-readiness
-    // sab se pehle jalti thi, halanke backend ka link aksar pehle
-    // se bandha hota hai (ya kram se bandh sakta hai) — aur tile
-    // ka apna link is project roop me aata hi nahi. Ab backend
-    // wale dono raaste SAB SE PEHLE chalte hain; tile wali
-    // readiness sirf tab, jab backend se kuch na bane.
-    // --- v2.48.29 (ALWAYS-ON QUICK-CHECK): backend se pehle ---
-    // Menu/harvest ke ghumao ke dauraan server wala jawab aaya
-    // ho to backend ke purane (aksar HTML wale) link par waqt
-    // zaaya karne se pehle wahi utha lo.
-    if (!isImage) {
-      try {
-        const okQuick = await this._opportunisticServerCheck(task, downloadFolder, settings, attempts, 'before-backend');
-        if (okQuick || task.mediaSaved) return { ok: true, strategy: 'quick-check', attempts };
+        this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
       } catch (e) {}
+      return { ok: false, attempts };
     }
+
+    // --- IMAGE tasks ki purani tartib (v2.48.41 me
+    // bilkul barkarar): backend pehle, phir kram-
+    // bandhan, readiness, tile-src, native UI. Video
+    // yahan kabhi nahi pahunchta (upar wapas ja chuka
+    // hota hai), is liye menuFirstTried hamesha false
+    // hai — image ka menu roop native UI ke andar apni
+    // purani jagah chalta hai. ---
+    let menuFirstTried = false;
 
     try {
       const okBackend = await this._tryBackendDownload(task, downloadFolder, settings, attempts);
@@ -7661,17 +6491,6 @@ class FlowAutomationEngine {
       }
     }
 
-    // --- v2.48.29 (ALWAYS-ON QUICK-CHECK): tile-src se pehle ---
-    // Tile ki preview encode (jo QUALITY GATE ab rokta hai)
-    // uthane se pehle aakhri NO-WAIT nazar — asal server file
-    // is beech aa gayi ho to wahi asal jeet hai.
-    if (!isImage) {
-      try {
-        const okQuick = await this._opportunisticServerCheck(task, downloadFolder, settings, attempts, 'before-tile-src');
-        if (okQuick || task.mediaSaved) return { ok: true, strategy: 'quick-check', attempts };
-      } catch (e) {}
-    }
-
     // --- Ranneeti 2: apni stream / tile ka src ---
     // (Ranneeti 1 — backend — v2.48.15 se is function ke AAGHAZ
     // me chalti hai, tile-readiness se bhi pehle.)
@@ -7751,7 +6570,18 @@ class FlowAutomationEngine {
     this.registerBackendTask(task, downloadFolder, settings);
     const backendAttempts = [];
     let backendOk = false;
-    try { backendOk = await this._tryBackendDownload(task, downloadFolder, settings, backendAttempts); } catch (e) { backendOk = false; }
+    // v2.48.41 (MAIN-PAGE HARVEST PACK): VIDEO ke liye
+    // backend-first qadam bhi gaya — bandha hua backend
+    // link (lh3 wala, hamesha HTML poision sabit hua)
+    // fetch karna video ke raaston me nahi raha; video
+    // ki retry sirf mainpage-harvest + grid-replay
+    // chalati hai (neeche downloadTaskMedia se). Register
+    // barkarar hai — bandhan ki kitab mainpage-harvest
+    // ke ummeedwaaron ko bandhti hai. IMAGE ke liye
+    // backend-first bilkul pehle jaisa hai.
+    if (isImage) {
+      try { backendOk = await this._tryBackendDownload(task, downloadFolder, settings, backendAttempts); } catch (e) { backendOk = false; }
+    }
     if (backendOk || task.mediaSaved) {
       task.downloadAttempts = (task.downloadAttempts || []).concat(backendAttempts);
       return { status: 'downloaded', attempts: task.downloadAttempts };

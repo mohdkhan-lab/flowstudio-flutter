@@ -113,8 +113,85 @@ function attemptSummaryLogLine(info) {
   const num = (v) => (Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0);
   const out = (v) => (['complete', 'ended', 'timeout', 'error'].includes(v) ? v : '-');
   const word = (v) => (v ? String(v) : '-');
+  // v2.48.52 (ROUTE 1A PACK): netload ka anjaam bhi
+  // isi line me — saved / error / rejected, warna '-'
+  // (1A is attempt me chala hi nahi).
+  const nl = (v) => (['saved', 'error', 'rejected'].includes(v) ? v : '-');
   const taskIdx = Number.isFinite(o.task) ? Math.floor(o.task) : 0;
-  return `[ROOT] attempt-summary task=${taskIdx} best=${num(o.best)} assembled=${num(o.assembled)} mediaTile=${out(o.mediaTile)} mediaHidden=${out(o.mediaHidden)} probe=${word(o.probe)} race=${word(o.race)} saved=${o.saved ? 'yes' : 'no'}`;
+  return `[ROOT] attempt-summary task=${taskIdx} best=${num(o.best)} assembled=${num(o.assembled)} mediaTile=${out(o.mediaTile)} mediaHidden=${out(o.mediaHidden)} probe=${word(o.probe)} race=${word(o.race)} netload=${nl(o.netload)} saved=${o.saved ? 'yes' : 'no'}`;
+}
+
+/**
+ * v2.48.52 (ROUTE 1A PACK): netload (CDP
+ * Network.loadNetworkResource) koshish ki [ROOT]
+ * line (khalis). Ek koshish = ek line: kaun sa host,
+ * kaun sa range param hata (range|rn|rbuf|none),
+ * HTTP status (na mile to '-'), kitne bytes aaye,
+ * aur anjaam — saved / rejected:<wajah-chhoti> /
+ * error:<wajah-chhoti>. Asal URL ya query kabhi
+ * line me nahi jata.
+ * input = { host, stripped, status, bytes, result }
+ * — result 'saved' | 'rejected:<wajah>' | 'error:<wajah>'.
+ */
+function netloadLogLine(info) {
+  const o = info && typeof info === 'object' ? info : {};
+  const host = typeof o.host === 'string' && o.host ? o.host.slice(0, 60) : '-';
+  const stripped = o.stripped === 'range' || o.stripped === 'rn' || o.stripped === 'rbuf' ? o.stripped : 'none';
+  const status = Number.isFinite(o.status) && o.status > 0 ? String(Math.floor(o.status)) : '-';
+  const bytes = Number.isFinite(o.bytes) && o.bytes > 0 ? String(Math.floor(o.bytes)) : '0';
+  let result = 'error';
+  if (o.result === 'saved') result = 'saved';
+  else if (typeof o.result === 'string' && o.result.startsWith('rejected')) result = 'rejected:' + (o.result.slice('rejected'.length).replace(/^:/, '').replace(/\s+/g, '-').slice(0, 24) || 'rejected');
+  else if (typeof o.result === 'string' && o.result.startsWith('error')) result = 'error:' + (o.result.slice('error'.length).replace(/^:/, '').replace(/\s+/g, '-').slice(0, 24) || 'error');
+  return `[ROOT] mainpage-netload host=${host} stripped=${stripped} status=${status} bytes=${bytes} result=${result}`;
+}
+
+/**
+ * v2.48.52 (ROUTE 1A PACK): netload ke PROTOCOL
+ * nakami ki [ROOT] line (khalis) — loadNetworkResource
+ * khud na chala / stream na mili / drain bigda.
+ * Ghalti ka paigham ek line me sameet kar
+ * (whitespace dabaa kar, zyada se zyada 120 harf)
+ * dikhaya jata hai; asal URL line me nahi jata.
+ * input = { host, err }
+ */
+function netloadFailedLogLine(info) {
+  const o = info && typeof info === 'object' ? info : {};
+  const host = typeof o.host === 'string' && o.host ? o.host.slice(0, 60) : '-';
+  const err = String(o.err || 'error').replace(/\s+/g, ' ').trim().slice(0, 120) || 'error';
+  return `[ROOT] mainpage-netload failed host=${host} err=${err}`;
+}
+
+/**
+ * v2.48.52 (ROUTE 1A PACK): CDP IO stream ko poora
+ * khaali karo (loadNetworkResource se mila handle) —
+ * IO.read baar baar, har tukde ka apna base64Encoded
+ * jhanda, EOF par ruk. Natija ek Buffer; stream ka
+ * hisaab bigde (data string na ho aur EOF bhi na
+ * ho, hadd se zyada tukde/bytes, ya read khud gire)
+ * to null — bulane wala use protocol-nakami samajh
+ * kar purani completion silsile par girta hai.
+ * send fn = (method, params) => Promise.
+ */
+async function drainNetloadStream(send, handle) {
+  if (typeof send !== 'function' || !handle) return null;
+  const parts = [];
+  let total = 0;
+  for (let i = 0; i < 1024; i++) {
+    let r;
+    try { r = await send('IO.read', { handle }); } catch (e) { return null; }
+    if (!r || typeof r !== 'object') return null;
+    const data = typeof r.data === 'string' ? r.data : '';
+    if (data) {
+      const chunk = r.base64Encoded ? Buffer.from(data, 'base64') : Buffer.from(data, 'utf8');
+      parts.push(chunk);
+      total += chunk.length;
+      if (total > 64 * 1024 * 1024) return null;
+    }
+    if (r.eof) return parts.length === 1 ? parts[0] : Buffer.concat(parts);
+    if (!data) return null;
+  }
+  return null;
 }
 
 /**
@@ -281,6 +358,16 @@ class FlowAutomationEngine {
       onSegmentNote: (info) => {
         try {
           this.log(`[ROOT] mainpage-segments urls=${info && Number.isFinite(info.urls) ? Math.floor(info.urls) : 0}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.52 (ROUTE 1B — FETCH-RANGE-REWRITE):
+      // rewrite apni pehli nakami par khud band ho
+      // gaya — sirf EK line; run is ke baghair
+      // bilkul waisa hi chalta hai.
+      onFetchRwDisabled: (info) => {
+        try {
+          const reason = String((info && info.reason) || 'error').replace(/\s+/g, ' ').trim().slice(0, 60) || 'error';
+          this.log(`[ROOT] mainpage-fetchrw disabled reason=${reason}`, 'warn');
         } catch (e) {}
       }
     });
@@ -6242,6 +6329,125 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.52 (ROUTE 1A PACK): ek task ke netload
+   * anjaam ki darj-shudaayi (attempt-summary ke
+   * liye). Tartib: saved > rejected > error — ek
+   * attempt me kai koshishein hon to sab se acha
+   * anjaam hi rehta hai.
+   */
+  _noteNetloadOutcome(task, kind) {
+    try {
+      const rank = { error: 1, rejected: 2, saved: 3 };
+      const cur = task._mpNetloadOutcome;
+      if (!cur || (rank[kind] || 0) > (rank[cur] || 0)) task._mpNetloadOutcome = kind;
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.52 (ROUTE 1A PACK): Route 1A completion —
+   * ummeedwaar URL ki POORI file MAIN page ke apne
+   * CDP session se Network.loadNetworkResource ke
+   * zariye uthao. Peeche ki soch: in-page fetch()
+   * googlevideo par CORS se mar jata hai ('Failed
+   * to fetch', koi HTTP jawab hi nahi — zc14..zc20
+   * ka saboot) aur tile ka media-load sirf chhota
+   * preview tukda kheenchta hai; lekin CDP ka ye
+   * hukm page-JS se NAHI, browser ke NETWORK hisse
+   * se chalta hai — wahi session, wahi cookies,
+   * koi naya browser nahi (captcha deewaar wahan
+   * khadi hi nahi hoti), koi click nahi, koi editor
+   * nahi. URL tayyari: 'range=' (aur 'rn=' / 'rbuf=')
+   * query hisse hatao — chhoti nazar aksar USI poori
+   * file ke pate par range mehdood karke aati hai;
+   * hissa hata kar maango to server poori file deta
+   * hai. Phir resource.stream ko IO.read se poora
+   * drain karke ek Buffer.
+   * Budget: ek download-attempt me ek task ke liye
+   * zyada se zyada 2 netload koshishein (task.
+   * _mpNetloadCount); protocol-nakami wala URL
+   * (task._mpNetloadProtoFailed) usi attempt me
+   * dobara NAHI aazmaya jata — fetch tried-list
+   * wali hi nazakat.
+   * WAPSI: kamyabi par { buf, status, host,
+   * stripped }; kisi bhi nakami par null (bulane
+   * wala purani completion silsile par girta hai).
+   * Protocol nakami par '[ROOT] mainpage-netload
+   * failed' line + summary-outcome 'error' yahin
+   * darj hota hai; resource.success === false par
+   * per-attempt wali line bhi yahin banti hai
+   * (result=error:<netErrorName>). Page hi na ho /
+   * band ho to khamosh null — wo koshish hi nahi.
+   * Ye function KABHI throw nahi karta.
+   */
+  async _netloadMainpageFull(task, url) {
+    try {
+      if (!task || typeof url !== 'string' || !url) return null;
+      if (task._mpNetloadProtoFailed && task._mpNetloadProtoFailed.has(url)) return null;
+      if (Number.isFinite(task._mpNetloadCount) && task._mpNetloadCount >= 2) return null;
+      const page = this.page;
+      if (!page || (typeof page.isClosed === 'function' && page.isClosed())) return null;
+      task._mpNetloadCount = (Number.isFinite(task._mpNetloadCount) ? task._mpNetloadCount : 0) + 1;
+      const host = networkCapture.hostOf(url) || '';
+      const prep = networkCapture.rangeStripOf(url);
+      const strippedLabel = prep.stripped.length ? prep.stripped[0] : 'none';
+      const protoFail = (errMsg, lineResult) => {
+        try { if (!task._mpNetloadProtoFailed) task._mpNetloadProtoFailed = new Set(); task._mpNetloadProtoFailed.add(url); } catch (e) {}
+        try { this.log(netloadFailedLogLine({ host, err: errMsg }), 'warn'); } catch (e) {}
+        if (lineResult) {
+          try { this.log(netloadLogLine({ host, stripped: strippedLabel, status: 0, bytes: 0, result: lineResult }), 'warn'); } catch (e) {}
+        }
+        this._noteNetloadOutcome(task, 'error');
+        return null;
+      };
+      let session = null;
+      try {
+        session = typeof page.createCDPSession === 'function'
+          ? await page.createCDPSession()
+          : await page.target().createCDPSession();
+      } catch (e) { session = null; }
+      if (!session || typeof session.send !== 'function') {
+        return protoFail('cdp session unavailable');
+      }
+      try {
+        try { await session.send('Network.enable'); } catch (e) {}
+        let frameId = null;
+        try {
+          const mf = typeof page.mainFrame === 'function' ? page.mainFrame() : null;
+          frameId = mf && mf._id ? mf._id : null;
+        } catch (e) { frameId = null; }
+        if (!frameId) return protoFail('main frame id unavailable');
+        let resp = null;
+        try {
+          resp = await session.send('Network.loadNetworkResource', {
+            frameId, url: prep.url,
+            options: { disableCache: true, includeCredentials: true }
+          });
+        } catch (e) {
+          return protoFail(e && e.message ? e.message : String(e));
+        }
+        const resource = resp && resp.resource && typeof resp.resource === 'object' ? resp.resource : null;
+        if (!resource || !resource.stream) {
+          return protoFail('loadNetworkResource returned no stream');
+        }
+        if (resource.success === false) {
+          const name = typeof resource.netErrorName === 'string' && resource.netErrorName ? resource.netErrorName : 'load-failed';
+          try { if (!task._mpNetloadProtoFailed) task._mpNetloadProtoFailed = new Set(); task._mpNetloadProtoFailed.add(url); } catch (e) {}
+          try { this.log(netloadLogLine({ host, stripped: strippedLabel, status: Number(resource.httpStatusCode) || 0, bytes: 0, result: 'error:' + name }), 'warn'); } catch (e) {}
+          this._noteNetloadOutcome(task, 'error');
+          return null;
+        }
+        const buf = await drainNetloadStream((m, p) => session.send(m, p), resource.stream);
+        if (!buf) return protoFail('stream drain failed');
+        return { buf, status: Number(resource.httpStatusCode) || 0, host, stripped: strippedLabel };
+      } finally {
+        try { if (session && typeof session.detach === 'function') await session.detach(); } catch (e) {}
+      }
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
    * v2.48.42: ek BANDHE hue mainpage ummeedwaar ko
    * mukammal karna — kitab me mukammal body ho to wohi,
    * warna usi URL ka POORA fetch MAIN page ke andar se
@@ -6269,15 +6475,60 @@ class FlowAutomationEngine {
     const teacherHash = ctx.teacherHash;
     let buf = null;
     let haveBody = false;
-    // kitab me pehle se pakdi hui body (mukammal ho to).
+    // v2.48.52 (ROUTE 1A PACK): netload se aayi body
+    // ka hisaab (host / stripped / status) — is ki
+    // [ROOT] line koshish ke aakhri faisle par EK
+    // dafa emitNetload se banti hai (protocol nakami
+    // ki line helper khud pehle hi chhod deta hai).
+    let netloadMeta = null;
+    const emitNetload = (result) => {
+      if (!netloadMeta) return;
+      try {
+        this.log(netloadLogLine({ host: netloadMeta.host, stripped: netloadMeta.stripped, status: netloadMeta.status, bytes: netloadMeta.buf.length, result }), 'info');
+      } catch (e) {}
+      this._noteNetloadOutcome(task, result === 'saved' ? 'saved' : 'rejected');
+    };
+    // v2.48.52 (ROUTE 1A PACK): bulane wale ne
+    // netload ki body pehle se haath me di ho
+    // (too-small wala rasta — wahan netload seedha
+    // bulaya jata hai taaki chhote pate par in-page
+    // fetch kabhi na chale) to wahi body aur wahi
+    // hisaab is completion ki body hai — kitab /
+    // media / fetch dobara nahi ghumte.
+    if (entry._netloadBody && entry._netloadBody.length > 0) {
+      buf = entry._netloadBody;
+      haveBody = true;
+      netloadMeta = entry._netloadMeta || null;
+      if (netloadMeta && netloadMeta.status) entry.status = netloadMeta.status;
+    }
+    // kitab me pehle se pakdi hui body (mukammal ho
+    // to) — netload wali body haath me ho to kitab
+    // use badal NAHI sakti (wahan is pate ki sirf
+    // chhoti nazar rakhi hoti hai).
     try {
       const held = typeof cap.mainpageBodyForUrl === 'function' ? cap.mainpageBodyForUrl(entry.url) : null;
-      if (held && held.buffer && held.buffer.length > 0) { buf = held.buffer; haveBody = true; }
+      if (!netloadMeta && held && held.buffer && held.buffer.length > 0) { buf = held.buffer; haveBody = true; }
     } catch (e) {}
-    if (haveBody && entry.partial && entry.src === 'googlevideo') {
+    // v2.48.52 (ROUTE 1A PACK — gate fix): is nazar
+    // ka MALOOM kul size. partial ka matlab ab
+    // 'rakhe bytes < kul size' hai — bytes kul ke
+    // barabar hon to body POORI hai, chahe us jawab
+    // ka status 206 hi kyon na raha ho; kul na
+    // maloom ho to purana rawaiya (status / partial
+    // jhanda) bilkul waisa hi.
+    const knownTotal = saveGuard.mainpageKnownTotalOf({
+      knownTotal: entry.knownTotal, contentRange: entry.contentRange,
+      declaredLength: entry.declaredLength, declared: entry.declared, status: entry.status
+    });
+    if (haveBody && !netloadMeta && entry.partial && entry.src === 'googlevideo') {
       // googlevideo tukda mukammal nahi — mukammal
       // karne ke raste neeche hain (media-load / fetch).
-      buf = null; haveBody = false;
+      // v2.48.52: rakhi body kul size tak pahunch
+      // gayi ho to wo tukda NAHI rahi — phainkna
+      // band, wahi body seedha faisle par jayegi.
+      // (netload se aayi body is phaink se bahar
+      // hai — wo capture ka tukda hai hi nahi.)
+      if (!(knownTotal !== null && buf.length >= knownTotal)) { buf = null; haveBody = false; }
     }
     if (!haveBody) {
       // v2.48.47 (MEDIA-LOAD COMPLETION — ZEROCLICK14):
@@ -6306,8 +6557,22 @@ class FlowAutomationEngine {
       // hint ke saath — pehle TILE ka apna element
       // drive hoga, hidden sirf chaara.
       const tryMedia = async () => { applyCompletion(await this._loadMainpageFullViaMedia(entry.url, { task, tileIndexHint: ctx.tileIndexHint })); };
+      // v2.48.52 (ROUTE 1A PACK): googlevideo par SAB
+      // se pehle NETLOAD — URL ka range param hata
+      // kar MAIN page ke apne CDP session se
+      // Network.loadNetworkResource; body browser ke
+      // network hisse se aati hai (na page-JS fetch
+      // ki CORS deewaar, na naya browser, na click,
+      // na editor). Nakam ho to purani tartib
+      // (media-load, phir fetch) bilkul waisi hi —
+      // .52, .51 ka strict superset hai.
+      const tryNetload = async () => {
+        const res = await this._netloadMainpageFull(task, entry.url);
+        if (res && res.buf) { netloadMeta = res; applyCompletion(res); }
+      };
       if (isGv) {
-        await tryMedia();
+        await tryNetload();
+        if (!haveBody) await tryMedia();
         if (!haveBody) await tryFetch();
       } else {
         await tryFetch();
@@ -6328,14 +6593,29 @@ class FlowAutomationEngine {
       const hash = saveGuard.contentHash(b);
       let dup = false;
       try { dup = !!saveGuard.checkDuplicate(b, captureKey || null).dup; } catch (e) { dup = false; }
+      const hdrOk = downloadFetch.looksLikeVideoBuffer(b);
       return saveGuard.mainpageHarvestVerdict({
         bound: true,
         url: entry.url,
         teacherUrl,
         byteLength: b.length,
         floorBytes,
-        headerOk: downloadFetch.looksLikeVideoBuffer(b),
-        partial: (statusOverride || entry.status) === 206 ? true : false,
+        headerOk: hdrOk,
+        // v2.48.52 (gate fix): kul size maloom ho to
+        // partial = rakhe bytes kul se kam — status
+        // 206 ke bawajood bytes kul ke barabar hon
+        // to body POORI ummeedwaar hai. Kul na
+        // maloom ho to purana usool (status 206 =
+        // partial) bilkul waisa hi. EK hifazat:
+        // partial sirf tab jab body asal video ki
+        // ho (header durust) — kachra body (HTML
+        // error page) 'adhoora video' NAHI hoti;
+        // faisle me partial header-darwaze se PEHLE
+        // aata hai, is liye kachra wahan fetch-full
+        // ki jagah header par hi rukna chahiye
+        // (warna har error page ek dobara-fetch
+        // mangta — .51 ka rawaiya bhi yahi tha).
+        partial: knownTotal !== null ? (hdrOk && b.length < knownTotal) : ((statusOverride || entry.status) === 206 ? true : false),
         status: statusOverride || entry.status,
         contentRange: entry.contentRange,
         declaredLength: entry.declaredLength,
@@ -6349,13 +6629,25 @@ class FlowAutomationEngine {
       // kitab wali body adhoori nikli — usi URL ka
       // poora fetch MAIN page ke andar se, phir
       // faisla dobara.
-      const fetched = await this._fetchMainpageFullInPage(entry.url);
-      if (fetched && fetched.buf && fetched.buf.length > 0) {
-        buf = fetched.buf;
-        verdict = verdictFor(buf, fetched.status);
+      // v2.48.52: agar ye body NETLOAD se aayi thi
+      // to us koshish ka anjaam yahin darj hai
+      // (rejected:partial) — purana fetch-full
+      // rasta neeche bilkul waisa hi chalta hai.
+      // EK pabandi: too-small wale raste ki entry
+      // (_noInPageFetch) par in-page fetch kabhi
+      // nahi — chhota pata sirf netload / media-load
+      // se parkha jata hai (.51 ki hifazat barkarar).
+      if (netloadMeta) emitNetload('rejected:partial');
+      if (!entry._noInPageFetch) {
+        const fetched = await this._fetchMainpageFullInPage(entry.url);
+        if (fetched && fetched.buf && fetched.buf.length > 0) {
+          buf = fetched.buf;
+          verdict = verdictFor(buf, fetched.status);
+        }
       }
     }
     if (verdict.action !== 'save') {
+      emitNetload('rejected:' + (verdict.reason || 'rejected'));
       this.log(`[ROOT] [Prompt #${n}] mainpage-harvest candidate rejected (${verdict.reason}) — trying the remaining main-page candidates`, 'warn');
       return 'rejected';
     }
@@ -6372,6 +6664,7 @@ class FlowAutomationEngine {
     // via=mainpage-harvest ki jhooti line banti.
     const raceLostMp = !!(task._raceActive && task._raceWonBy && task._raceWonBy !== 'mainpage-harvest');
     if ((ok || task.mediaSaved) && task._saveRejectedReason !== 'route-race' && !raceLostMp) {
+      emitNetload('saved');
       const g = ctx.gapSec();
       try { if (typeof cap.mainpageMarkWindowDone === 'function') cap.mainpageMarkWindowDone(captureKey); } catch (e) {}
       this.log(`[ROOT] via=mainpage-harvest gap=${g}s`, 'success');
@@ -6388,6 +6681,7 @@ class FlowAutomationEngine {
       return 'saved';
     }
     attempts.push({ strategy: 'mainpage-harvest', ok: false, note: `the main-page stream for this video did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'})` });
+    emitNetload('rejected:' + (task._saveRejectedReason || 'save-failed'));
     // v2.48.46: body mili, faisla save tha, lekin save
     // ki jaanch nakam — bulane wale ke liye ye bhi
     // 'rejected' hi hai (URL triedUrls me rehta hai;
@@ -7417,6 +7711,10 @@ class FlowAutomationEngine {
           status: e.status || 0,
           contentRange: e.contentRange || '',
           declaredLength: e.declared || 0,
+          // v2.48.52 (gate fix): capture ka maloom kul
+          // size bhi entry ke saath — completion ka
+          // partial faisla isi par hoga.
+          knownTotal: Number.isFinite(e.knownTotal) ? e.knownTotal : null,
           duplicate: false,
           hash: null,
           teacherHash,
@@ -7728,6 +8026,59 @@ class FlowAutomationEngine {
       });
       if (pick && pick.url && !this.isStopping && !task.mediaSaved) {
         try { if (typeof cap.mainpageMarkTooSmallConsumed === 'function') cap.mainpageMarkTooSmallConsumed(pick.url, captureKey || task.captureKey || task.videoId || null); } catch (e) {}
+        // v2.48.52 (ROUTE 1A PACK — too-small par 1A
+        // PEHLE): ye nazar ab is task ki pukhta
+        // nishani par uthi hai (.51 attribution) —
+        // media-load se pehle usi pate par NETLOAD
+        // seedha bulaya jata hai: range param hata
+        // kar poori file CDP se uthao. Body mil jaye
+        // to wo bandhi entry ki shakal me wahi
+        // completion leti hai (body haath me di
+        // jati hai — _netloadBody; andar kitab /
+        // media / fetch dobara nahi ghumte, aur
+        // _noInPageFetch is pate par in-page fetch
+        // hamesha ke liye rokta hai — .51 ki
+        // 'chhota pata kabhi fetch nahi' hifazat
+        // barkarar). Body darwaze par ruk jaye
+        // ('rejected') to neeche wala media-load
+        // mauqa usi file ko dobara nahi ghumayega;
+        // netload se body hi na mile to wo mauqa
+        // bilkul .51 jaisa chalta hai.
+        let nlBodyRejected = false;
+        if (!task.mediaSaved) {
+          const nlRes = await this._netloadMainpageFull(task, pick.url);
+          if (nlRes && nlRes.buf && !task.mediaSaved) {
+            const bookEntry0 = typeof cap.mainpageEntries === 'function'
+              ? cap.mainpageEntries().find(e => e && e.url === pick.url) : null;
+            const nlEntry = {
+              url: pick.url,
+              src: 'googlevideo',
+              byteLength: nlRes.buf.length,
+              headerOk: true,
+              partial: true,
+              status: nlRes.status || 0,
+              contentRange: bookEntry0 && bookEntry0.contentRange ? bookEntry0.contentRange : '',
+              declaredLength: bookEntry0 && Number.isFinite(bookEntry0.declared) ? bookEntry0.declared : 0,
+              knownTotal: bookEntry0 && Number.isFinite(bookEntry0.knownTotal) ? bookEntry0.knownTotal : null,
+              duplicate: false,
+              hash: null,
+              teacherHash,
+              bound: true,
+              bodyBytes: nlRes.buf.length,
+              at: bookEntry0 && Number.isFinite(bookEntry0.at) ? bookEntry0.at : Date.now(),
+              firstSeenAt: bookEntry0 && Number.isFinite(bookEntry0.firstSeenAt) ? bookEntry0.firstSeenAt : pick.firstSeenAt,
+              seq: bookEntry0 && Number.isFinite(bookEntry0.seq) ? bookEntry0.seq : null,
+              claimedBy: null,
+              _netloadBody: nlRes.buf,
+              _netloadMeta: nlRes,
+              _noInPageFetch: true
+            };
+            const nlOutcome = await completeTracked(nlEntry, 'too-small-netload');
+            if (nlOutcome === 'saved' || task.mediaSaved) return true;
+            if (nlOutcome === 'rejected') nlBodyRejected = true;
+          }
+        }
+        if (!nlBodyRejected) {
         // v2.48.50 (item 1): ye mauqa bhi usi shared
         // completion se — pehle TILE element, hidden
         // chaara; lekin hadd EK drive ki hi rehti hai
@@ -7768,6 +8119,7 @@ class FlowAutomationEngine {
           };
           const outcome = await completeTracked(entry, 'too-small-media-load');
           if (outcome === 'saved' || task.mediaSaved) return true;
+        }
         }
       }
     } catch (e) {}
@@ -8486,6 +8838,14 @@ class FlowAutomationEngine {
       task._raceActive = false;
       task._raceWonBy = null;
       task._raceSavedUrl = null;
+      // v2.48.52 (ROUTE 1A PACK): netload ka hisaab
+      // bhi har attempt me taaza — koshish-ginti
+      // (budget 2), protocol-nakam URLon ki fehrist
+      // (usi attempt me dobara nahi), aur summary ke
+      // liye darj anjaam.
+      task._mpNetloadCount = 0;
+      task._mpNetloadProtoFailed = new Set();
+      task._mpNetloadOutcome = null;
       // Items 16 + 4: attempt ka aakhri hisaab EK jagah
       // se — census line, cycles line (sirf jab cycles
       // chale hon), aur attempt-summary line. Har
@@ -8524,6 +8884,9 @@ class FlowAutomationEngine {
             mediaHidden: outcomes.hidden,
             probe: task._headlessProbeState,
             race: task._raceWonBy || null,
+            // v2.48.52 (ROUTE 1A PACK): is attempt ke
+            // netload anjaam ki ek-jhalak.
+            netload: task._mpNetloadOutcome || null,
             saved: !!task.mediaSaved
           }), 'info');
         } catch (e) {}
@@ -9869,4 +10232,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream };

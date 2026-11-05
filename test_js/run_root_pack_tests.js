@@ -38,6 +38,7 @@ const {
   mainpageBindingPlan,
   MAINPAGE_MIN_CANDIDATE_BYTES,
   mainpageCandidateGate,
+  mainpageKnownTotalOf,
   mainpageTooSmallMediaPick,
   fullFetchUrlCandidates,
   mainpageAuditOf,
@@ -47,9 +48,9 @@ const {
   cascadeVerdict
 } = require('../engine/saveGuard');
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
-const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf } = require('../engine/networkCapture');
+const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
-const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine } = require('../engine/flowAutomation');
+const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
 const cookiesDb = require('../engine/cookiesDb');
 
@@ -1161,9 +1162,15 @@ async function main() {
     eq('HOV-NC a re-sighting keeps its first seq', nc.mainpageEntries().find(e => e.url === GV_URL).seq, eBig.seq);
     const GV_UNK = 'https://rr4---sn-unk444.googlevideo.com/videoplayback?expire=999&id=unk&itag=18';
     nc._recordMainpageSighting({ url: GV_UNK, src: 'googlevideo', declared: 0, status: 206, contentRange: '', contentType: 'video/mp4' }, mp4Buffer(100000), 100000, Date.now());
-    const eUnk = nc.mainpageEntries().find(e => e.url === GV_UNK);
-    eq('HOV-NC unknown-total video stream is a candidate', eUnk.candidate, true);
-    eq('HOV-NC unknown-total stays unknown', eUnk.knownTotal, null);
+    // v2.48.52 (gate fix — PIN JAAN-BOOJH KAR BADLA):
+    // kul size na maloom + aaye bytes hadd se chhote
+    // (100,000 < 500,000) — .51 tak ye nazar kitab me
+    // ummeedwaar ENTRY banti thi; ab wo too-small
+    // yaad me jati hai (wahan se Route 1A use
+    // attribution ke saath parkhega), kitab me entry
+    // NAHI banti.
+    eq('HOV-NC unknown-total small-bytes stream stays out of the book (.52)', nc.mainpageEntries().some(e => e.url === GV_UNK), false);
+    ok('HOV-NC unknown-total small-bytes lands in too-small memory (.52)', nc.mainpageTooSmallSightings().some(s => s.url === GV_UNK && s.reason === 'stream-too-small'));
     const GV_HTML = 'https://rr6---sn-html66.googlevideo.com/videoplayback?expire=999&id=html&itag=18';
     nc._recordMainpageSighting({ url: GV_HTML, src: 'googlevideo', declared: 0, status: 206, contentRange: '', contentType: 'text/html' }, mp4Buffer(100000), 100000, Date.now());
     eq('HOV-NC unknown-total non-video is not a candidate', nc.mainpageEntries().find(e => e.url === GV_HTML).candidate, false);
@@ -3023,10 +3030,13 @@ async function main() {
   }
   {
     // (j) attempt-summary — khalis
+    // v2.48.52 (PIN BADLA, jaan-boojh kar): line me
+    // ab netload=<saved|error|rejected|-> bhi hai
+    // (Route 1A ka anjaam isi ek line me).
     eq('U-SUMMARY the line formats fully', attemptSummaryLogLine({ task: 2, best: 1197606, assembled: 214591, mediaTile: 'ended', mediaHidden: undefined, probe: 'logged-out', race: null, saved: false }),
-      '[ROOT] attempt-summary task=2 best=1197606 assembled=214591 mediaTile=ended mediaHidden=- probe=logged-out race=- saved=no');
+      '[ROOT] attempt-summary task=2 best=1197606 assembled=214591 mediaTile=ended mediaHidden=- probe=logged-out race=- netload=- saved=no');
     eq('U-SUMMARY garbage is safe', attemptSummaryLogLine(null),
-      '[ROOT] attempt-summary task=0 best=0 assembled=0 mediaTile=- mediaHidden=- probe=- race=- saved=no');
+      '[ROOT] attempt-summary task=0 best=0 assembled=0 mediaTile=- mediaHidden=- probe=- race=- netload=- saved=no');
   }
   {
     // (k) route-race save darwaza
@@ -3298,6 +3308,341 @@ async function main() {
     eq('V-ATTR a null-key sighting before the time window is not picked', nullOut, null);
     nc.mainpageMarkTooSmallConsumed(GV_A, 'key-a');
     eq('V-ATTR the consumed mark lands on the sighting', (nc.mainpageTooSmallSightings().find(m => m.url === GV_A) || {}).consumedBy, 'key-a');
+  }
+
+  // ---------------------------------------------------------------------------
+  // W. v2.48.52 — ROUTE 1A PACK (Gemini wala rasta):
+  //   (a) rangeStripOf — range/rn/rbuf saaf, tartib
+  //       barkarar, kharab URL mehfooz;
+  //   (b) drainNetloadStream — IO.read ka poora
+  //       drain (base64 + raw, EOF, kharab hisaab);
+  //   (c) mainpageKnownTotalOf — kul size ke usool
+  //       (CR jeet-ta hai, 206 par declared nazar-
+  //       andaaz);
+  //   (d) darwaza (gate) — bytes wala naya usool;
+  //   (e) netload [ROOT] lines + summary ka
+  //       netload= hissa — khalis;
+  //   (f) ENGINE: netload kamyab → save seedha usi
+  //       buffer par, media/fetch ZERO; protocol
+  //       nakami → purani silsila (media) chalti hai
+  //       aur wahi URL dobara netload NAHI hota;
+  //       budget 2 ke baad khamoshi; success=false
+  //       par per-attempt error line;
+  //   (g) faisla (verdict) partial ke teen roop —
+  //       206 + bytes==kul → POORA (bina fetch ke
+  //       save), 206 + bytes<kul → fetch-full wala
+  //       rawaiya, kul na maloom → .51 jaisa hi;
+  //   (h) ENGINE too-small rasta: netload pehle —
+  //       jeet to fetch/media ZERO ke saath save;
+  //   (i) ROUTE 1B (fetchRwRewrite + capture ka
+  //       Fetch-domain hisaab): rewrite durust,
+  //       continue EK dafa, nakami par khud-band
+  //       (self-disable) + ek khabar.
+  // ---------------------------------------------------------------------------
+  {
+    // (a) range saaf — khalis
+    const rs1 = rangeStripOf('https://rr1---sn-x.googlevideo.com/videoplayback?expire=999&id=a&range=0-100&itag=18');
+    eq('W-STRIP range param is removed', rs1.url.includes('range='), false);
+    ok('W-STRIP the other params keep their order', rs1.url.includes('expire=999&id=a&itag=18'));
+    eq('W-STRIP stripped names the param', JSON.stringify(rs1.stripped), JSON.stringify(['range']));
+    const rs2 = rangeStripOf('https://rr1---sn-x.googlevideo.com/videoplayback?id=a&rn=5&rbuf=9&itag=18');
+    eq('W-STRIP rn and rbuf are removed too', JSON.stringify(rs2.stripped), JSON.stringify(['rn', 'rbuf']));
+    eq('W-STRIP rn/rbuf leave no trace', rs2.url.includes('rn=') || rs2.url.includes('rbuf='), false);
+    const plain = 'https://rr1---sn-x.googlevideo.com/videoplayback?expire=999&id=a&itag=18';
+    const rs3 = rangeStripOf(plain);
+    eq('W-STRIP no range params means the url is untouched', rs3.url, plain);
+    eq('W-STRIP no range params means stripped is empty', rs3.stripped.length, 0);
+    eq('W-STRIP a garbage url is returned as-is', rangeStripOf('not a url').url, 'not a url');
+    eq('W-STRIP a null url is safe', rangeStripOf(null).url, null);
+  }
+  {
+    // (b) IO drain — khalis
+    const sendChunks = (reads) => {
+      let i = 0;
+      return async (method, params) => {
+        if (method !== 'IO.read') return {};
+        const r = reads[i++];
+        if (r instanceof Error) throw r;
+        return r;
+      };
+    };
+    const b64 = (s) => Buffer.from(s, 'utf8').toString('base64');
+    const d1 = await drainNetloadStream(sendChunks([
+      { data: b64('hello '), base64Encoded: true, eof: false },
+      { data: b64('world'), base64Encoded: true, eof: true }
+    ]), 'h1');
+    eq('W-DRAIN base64 chunks join in order', d1 && d1.toString('utf8'), 'hello world');
+    const d2 = await drainNetloadStream(sendChunks([
+      { data: 'ab', base64Encoded: false, eof: false },
+      { data: 'cd', eof: true }
+    ]), 'h1');
+    eq('W-DRAIN raw chunks join in order', d2 && d2.toString('utf8'), 'abcd');
+    const d3 = await drainNetloadStream(sendChunks([
+      { data: b64('one-shot'), base64Encoded: true, eof: true }
+    ]), 'h1');
+    eq('W-DRAIN data and eof in one read still count', d3 && d3.toString('utf8'), 'one-shot');
+    eq('W-DRAIN empty data without eof is a broken stream', await drainNetloadStream(sendChunks([{ data: '', base64Encoded: true, eof: false }]), 'h1'), null);
+    eq('W-DRAIN a throwing read is a broken stream', await drainNetloadStream(sendChunks([new Error('io gone')]), 'h1'), null);
+    eq('W-DRAIN a missing handle is a broken stream', await drainNetloadStream(sendChunks([]), null), null);
+  }
+  {
+    // (c) kul size ke usool — khalis
+    eq('W-TOTAL the recorded total wins', mainpageKnownTotalOf({ knownTotal: 1193958, contentRange: 'bytes 0-1/500', status: 206 }), 1193958);
+    eq('W-TOTAL content-range gives the total', mainpageKnownTotalOf({ contentRange: 'bytes 0-210942/1193958', status: 206 }), 1193958);
+    eq('W-TOTAL declared counts on a 200', mainpageKnownTotalOf({ declaredLength: 600000, status: 200 }), 600000);
+    eq('W-TOTAL declared is ignored on a 206 without a range total', mainpageKnownTotalOf({ declaredLength: 224692, status: 206, contentRange: '' }), null);
+    eq('W-TOTAL nothing known is null', mainpageKnownTotalOf({}), null);
+    eq('W-TOTAL garbage is null', mainpageKnownTotalOf(null), null);
+  }
+  {
+    // (d) darwaza — bytes wala usool
+    eq('W-GATE small bytes with a big known total still pass', mainpageCandidateGate({ knownTotal: 1193958, bytes: 210943, src: 'googlevideo', contentType: 'video/mp4' }).candidate, true);
+    const gSmall = mainpageCandidateGate({ knownTotal: null, bytes: 95816, src: 'googlevideo', contentType: 'video/mp4' });
+    eq('W-GATE unknown total with small bytes is refused (.52)', gSmall.candidate, false);
+    eq('W-GATE unknown total with small bytes says stream-too-small', gSmall.reason, 'stream-too-small');
+    eq('W-GATE the bytes rule does not touch flow-content', mainpageCandidateGate({ knownTotal: null, bytes: 95816, src: 'flow-content', contentType: 'video/mp4' }).candidate, true);
+    eq('W-GATE no bytes input keeps the legacy pass', mainpageCandidateGate({ knownTotal: null, src: 'googlevideo', contentType: 'video/mp4' }).candidate, true);
+    eq('W-GATE small bytes with a small total stays too-small', mainpageCandidateGate({ knownTotal: 87478, bytes: 87478, src: 'googlevideo', contentType: 'video/mp4' }).reason, 'stream-too-small');
+    eq('W-GATE a non-video type still says not-video-candidate', mainpageCandidateGate({ knownTotal: null, bytes: 95816, src: 'googlevideo', contentType: 'text/html' }).reason, 'not-video-candidate');
+  }
+  {
+    // (e) netload lines + summary hissa — khalis
+    eq('W-LINE the saved line formats fully', netloadLogLine({ host: 'rr5---sn-x.googlevideo.com', stripped: 'range', status: 200, bytes: 1193958, result: 'saved' }),
+      '[ROOT] mainpage-netload host=rr5---sn-x.googlevideo.com stripped=range status=200 bytes=1193958 result=saved');
+    eq('W-LINE a rejected line carries the short reason', netloadLogLine({ host: 'rr5---sn-x.googlevideo.com', stripped: 'none', status: 206, bytes: 500, result: 'rejected:partial' }),
+      '[ROOT] mainpage-netload host=rr5---sn-x.googlevideo.com stripped=none status=206 bytes=500 result=rejected:partial');
+    eq('W-LINE garbage is safe', netloadLogLine(null),
+      '[ROOT] mainpage-netload host=- stripped=none status=- bytes=0 result=error');
+    const failLine = netloadFailedLogLine({ host: 'rr5---sn-x.googlevideo.com', err: 'Protocol error\n(Network.loadNetworkResource):   ' + 'x'.repeat(300) });
+    ok('W-LINE the failed line collapses whitespace', !failLine.includes('\n') && failLine.startsWith('[ROOT] mainpage-netload failed host=rr5---sn-x.googlevideo.com err=Protocol error (Network.loadNetworkResource): '));
+    ok('W-LINE the failed line caps the message at 120 chars', failLine.split(' err=')[1].length <= 120);
+    ok('W-LINE the summary carries a saved netload', attemptSummaryLogLine({ task: 1, netload: 'saved', saved: true }).includes('netload=saved'));
+    ok('W-LINE the summary carries an error netload', attemptSummaryLogLine({ task: 1, netload: 'error', saved: false }).includes('netload=error'));
+    eq('W-LINE a bogus summary netload becomes a dash', attemptSummaryLogLine({ task: 1, netload: 'bogus', saved: false }).includes('netload=-'), true);
+  }
+  // (f)/(g)/(h) ke jaali karagar — netload wala CDP session
+  function fakeNetloadSession(opts = {}) {
+    const chunks = opts.chunks || [];
+    let readIdx = 0;
+    const client = {
+      handlers: {},
+      sent: [],
+      detached: false,
+      on(ev, fn) { client.handlers[ev] = fn; },
+      async send(method, params) {
+        client.sent.push({ method, params });
+        if (method === 'Network.loadNetworkResource') {
+          if (opts.loadError) throw new Error(opts.loadError);
+          if (opts.noResource) return {};
+          return { resource: { success: opts.success !== false, httpStatusCode: opts.status || 200, stream: 'stream-1', netErrorName: opts.netErrorName } };
+        }
+        if (method === 'IO.read') {
+          const c = chunks[readIdx++];
+          if (!c) return { data: '', base64Encoded: true, eof: true };
+          return { data: c.toString('base64'), base64Encoded: true, eof: readIdx >= chunks.length };
+        }
+        return {};
+      },
+      async detach() { client.detached = true; }
+    };
+    return client;
+  }
+  const mkCtxW = () => ({ captureKey: 'k-w', bindReason: 'bound', floorBytes: 200 * 1024, teacherUrl: null, teacherHash: null, timingBucket: () => 'download-attempt', gapSec: () => '0.5' });
+  {
+    // (f1) netload kamyab → save usi buffer par
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+    const fullBuf = mp4Buffer(1193958); fullBuf[300] = 0x51;
+    const third = Math.floor(fullBuf.length / 3);
+    const session = fakeNetloadSession({ chunks: [fullBuf.subarray(0, third), fullBuf.subarray(third, third * 2), fullBuf.subarray(third * 2)], status: 200 });
+    const page = fakePage('main-w-netload', { cdpClient: session });
+    page.mainFrame = () => ({ _id: 'frame-1' });
+    eng.page = page;
+    let mediaCalls = 0;
+    let fetchCalls = 0;
+    let savedBuf = null;
+    eng._loadMainpageFullViaMedia = async () => { mediaCalls++; return null; };
+    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return null; };
+    eng._saveBufferForTask = async (t, folder, settings, buf) => { savedBuf = buf; t.mediaSaved = true; return true; };
+    const W_URL = 'https://rr2---sn-abc123.googlevideo.com/videoplayback?expire=999&id=xyz&itag=18&range=0-210942';
+    const task = { promptIndex: 0, _mpNetloadCount: 0, _mpNetloadProtoFailed: new Set(), _mpNetloadOutcome: null };
+    const entry = { url: W_URL, src: 'googlevideo', partial: true, status: 206, contentRange: 'bytes 0-210942/1193958', declaredLength: 210943, knownTotal: 1193958 };
+    const kind = await eng._mainpageCompleteCandidate(task, '/tmp', { duration: '10s' }, [], entry, mkCtxW());
+    eq('W-NET a netload completion saves', kind, 'saved');
+    ok('W-NET the saved buffer is the exact drained stream', !!savedBuf && savedBuf.equals(fullBuf));
+    eq('W-NET media-load never ran', mediaCalls, 0);
+    eq('W-NET in-page fetch never ran', fetchCalls, 0);
+    ok('W-NET the netload line reports the save', logs.some(m => m === '[ROOT] mainpage-netload host=rr2---sn-abc123.googlevideo.com stripped=range status=200 bytes=1193958 result=saved'));
+    const loadCall = session.sent.find(s => s.method === 'Network.loadNetworkResource');
+    ok('W-NET the loaded url had its range stripped', !!loadCall && !loadCall.params.url.includes('range=') && loadCall.params.url.includes('id=xyz'));
+    ok('W-NET the load asked for credentials on the main frame', !!loadCall && loadCall.params.frameId === 'frame-1' && loadCall.params.options.includeCredentials === true && loadCall.params.options.disableCache === true);
+    eq('W-NET the task outcome is saved for the summary', task._mpNetloadOutcome, 'saved');
+  }
+  {
+    // (f2) protocol nakami → purani silsila + dobara nahi
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+    const session = fakeNetloadSession({ loadError: 'Protocol error (Network.loadNetworkResource): Not supported' });
+    const page = fakePage('main-w-netfail', { cdpClient: session });
+    page.mainFrame = () => ({ _id: 'frame-1' });
+    eng.page = page;
+    const fullBuf = mp4Buffer(600000); fullBuf[300] = 0x52;
+    let mediaCalls = 0;
+    eng._loadMainpageFullViaMedia = async () => { mediaCalls++; return { buf: fullBuf, status: 200 }; };
+    eng._fetchMainpageFullInPage = async () => null;
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, _mpNetloadCount: 0, _mpNetloadProtoFailed: new Set(), _mpNetloadOutcome: null };
+    const mkE = () => ({ url: GV_URL, src: 'googlevideo', partial: true, status: 206, contentRange: '', declaredLength: 0 });
+    const kind1 = await eng._mainpageCompleteCandidate(task, '/tmp', { duration: '10s' }, [], mkE(), mkCtxW());
+    eq('W-FALL a protocol failure still saves via the legacy chain', kind1, 'saved');
+    eq('W-FALL media-load ran as the fallback', mediaCalls, 1);
+    ok('W-FALL the failed line names the protocol error', logs.some(m => m.includes('[ROOT] mainpage-netload failed host=rr2---sn-abc123.googlevideo.com err=Protocol error (Network.loadNetworkResource): Not supported')));
+    // summary ka netload= hissa SIRF 1A ka anjaam
+    // hai — purani silsile ki jeet use 'saved' nahi
+    // banati (jeet saved=yes + via line se dikhti
+    // hai); 1A ka sach yahan 'error' hi hai.
+    eq('W-FALL the task outcome keeps the netload error (the save was the legacy chain)', task._mpNetloadOutcome, 'error');
+    const kind2 = await eng._mainpageCompleteCandidate(task, '/tmp', { duration: '10s' }, [], mkE(), mkCtxW());
+    eq('W-FALL the retry still completes via media', kind2, 'saved');
+    eq('W-FALL the protocol-failed url is never netloaded twice in one attempt', session.sent.filter(s => s.method === 'Network.loadNetworkResource').length, 1);
+  }
+  {
+    // (f3) budget + success=false
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+    const session = fakeNetloadSession({ success: false, status: 0, netErrorName: 'net::ERR_FAILED' });
+    const page = fakePage('main-w-budget', { cdpClient: session });
+    page.mainFrame = () => ({ _id: 'frame-1' });
+    eng.page = page;
+    const taskFull = { promptIndex: 0, _mpNetloadCount: 2, _mpNetloadProtoFailed: new Set(), _mpNetloadOutcome: null };
+    eq('W-BUDGET a spent budget loads nothing', await eng._netloadMainpageFull(taskFull, GV_URL), null);
+    eq('W-BUDGET a spent budget sends nothing', session.sent.filter(s => s.method === 'Network.loadNetworkResource').length, 0);
+    const task = { promptIndex: 0, _mpNetloadCount: 0, _mpNetloadProtoFailed: new Set(), _mpNetloadOutcome: null };
+    eq('W-BUDGET a refused load returns null', await eng._netloadMainpageFull(task, GV_URL), null);
+    ok('W-BUDGET a refused load logs the per-attempt error line', logs.some(m => m.includes('[ROOT] mainpage-netload host=rr2---sn-abc123.googlevideo.com') && m.includes('result=error:net::ERR_FAILED')));
+    ok('W-BUDGET a refused url joins the protocol-failed set', task._mpNetloadProtoFailed.has(GV_URL));
+    eq('W-BUDGET the outcome is error', task._mpNetloadOutcome, 'error');
+  }
+  {
+    // (g1) 206 + rakhe bytes kul ke barabar → POORA, bina kisi fetch ke
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+    const nc = eng.netCapture;
+    nc.arm();
+    const U206 = 'https://rr7---sn-full206.googlevideo.com/videoplayback?expire=999&id=f206&itag=18';
+    const body206 = mp4Buffer(600000); body206[300] = 0x53;
+    nc._recordMainpageSighting({ url: U206, src: 'googlevideo', declared: 600000, status: 206, contentRange: 'bytes 0-599999/600000', contentType: 'video/mp4' }, body206, 600000, Date.now());
+    let mediaCalls = 0;
+    let fetchCalls = 0;
+    eng._loadMainpageFullViaMedia = async () => { mediaCalls++; return null; };
+    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return null; };
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const entry = { url: U206, src: 'googlevideo', partial: true, status: 206, contentRange: 'bytes 0-599999/600000', declaredLength: 600000, knownTotal: 600000 };
+    const kind = await eng._mainpageCompleteCandidate({ promptIndex: 0 }, '/tmp', { duration: '10s' }, [], entry, mkCtxW());
+    eq('W-VERDICT a 206 body at the full total saves as complete (.52)', kind, 'saved');
+    eq('W-VERDICT no completion mechanism ran for it', mediaCalls + fetchCalls, 0);
+  }
+  {
+    // (g2) 206 + bytes kul se kam → fetch-full wala rawaiya barkarar
+    const eng = new FlowAutomationEngine({ onLog: () => {} }, {});
+    let fetchCalls = 0;
+    eng._loadMainpageFullViaMedia = async () => null;
+    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return { buf: mp4Buffer(224692), status: 206 }; };
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const entry = { url: GV_URL, src: 'googlevideo', partial: true, status: 206, contentRange: 'bytes 0-224691/1250000', declaredLength: 224692, knownTotal: 1250000 };
+    const kind = await eng._mainpageCompleteCandidate({ promptIndex: 0 }, '/tmp', { duration: '10s' }, [], entry, mkCtxW());
+    eq('W-VERDICT a genuinely partial body is rejected after the full-fetch remedy', kind, 'rejected');
+    eq('W-VERDICT the remedy fetched (completion + one remedy fetch)', fetchCalls, 2);
+  }
+  {
+    // (g3) kul na maloom → .51 wala rawaiya (206 = partial = fetch-full)
+    const eng = new FlowAutomationEngine({ onLog: () => {} }, {});
+    let fetchCalls = 0;
+    eng._loadMainpageFullViaMedia = async () => null;
+    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return { buf: mp4Buffer(600000), status: 206 }; };
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const entry = { url: GV_URL, src: 'googlevideo', partial: true, status: 206, contentRange: '', declaredLength: 0 };
+    const kind = await eng._mainpageCompleteCandidate({ promptIndex: 0 }, '/tmp', { duration: '10s' }, [], entry, mkCtxW());
+    eq('W-VERDICT unknown total keeps the legacy 206-is-partial rejection', kind, 'rejected');
+    eq('W-VERDICT unknown total fetched like .51 (completion + remedy)', fetchCalls, 2);
+  }
+  {
+    // (h) too-small rasta — netload pehle, fetch/media ZERO
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 700, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
+    const fullBuf = mp4Buffer(1250000); fullBuf[300] = 0x54;
+    const session = fakeNetloadSession({ chunks: [fullBuf], status: 200 });
+    const page = fakePage('main-w-ts', { cdpClient: session });
+    page.mainFrame = () => ({ _id: 'frame-1' });
+    eng.page = page;
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    const GV_TS2 = 'https://rr5---sn-tsnet.googlevideo.com/videoplayback?expire=999&id=tsn&itag=18';
+    nc._recordMainpageSighting({ url: GV_TS2, src: 'googlevideo', declared: 85725, status: 206, contentRange: 'bytes 0-85724/85725', contentType: 'video/mp4' }, mp4Buffer(85725), 85725, Date.now());
+    let mediaCalls = 0;
+    let fetchCalls = 0;
+    let savedBuf = null;
+    eng._loadMainpageFullViaMedia = async () => { mediaCalls++; return null; };
+    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return null; };
+    eng._saveBufferForTask = async (t, folder, settings, buf) => { savedBuf = buf; t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-w-ts', videoId: 'k-w-ts', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-w-ts', 0);
+    eq('W-TS the too-small url saves via netload', okSave, true);
+    eq('W-TS the saved file is the too-small url itself', task.completedVideoUrl, GV_TS2);
+    ok('W-TS the saved buffer is the netload buffer', !!savedBuf && savedBuf.equals(fullBuf));
+    eq('W-TS media-load never ran for it', mediaCalls, 0);
+    eq('W-TS in-page fetch never ran for it', fetchCalls, 0);
+    ok('W-TS the netload line reports the save', logs.some(m => m.includes('[ROOT] mainpage-netload') && m.includes('result=saved')));
+  }
+  {
+    // (i) ROUTE 1B — rewrite khalis + capture hisaab
+    const rw1 = fetchRwRewrite('https://rr1---sn-x.googlevideo.com/videoplayback?expire=999&id=a&range=0-50&itag=18', { 'User-Agent': 'UA', Range: 'bytes=0-50' });
+    ok('W-RW a paused playback request is rewritten', !!rw1 && !rw1.url.includes('range=') && rw1.url.includes('id=a'));
+    eq('W-RW the rewrite sets one full-range header', JSON.stringify(rw1.headers.filter(h => h.name.toLowerCase() === 'range')), JSON.stringify([{ name: 'Range', value: 'bytes=0-' }]));
+    ok('W-RW the other headers survive', rw1.headers.some(h => h.name === 'User-Agent' && h.value === 'UA'));
+    eq('W-RW a request already asking for everything is left alone', fetchRwRewrite('https://rr1---sn-x.googlevideo.com/videoplayback?id=a&itag=18', { range: 'bytes=0-' }), null);
+    eq('W-RW a non-playback url is never rewritten', fetchRwRewrite('https://flow-content.google/video/abc?x=1', {}), null);
+    const flush = () => new Promise(r => setTimeout(r, 15));
+    const mkRwClient = (failOn) => {
+      const client = { handlers: {}, sent: [], on(ev, fn) { client.handlers[ev] = fn; },
+        async send(method, params) { client.sent.push({ method, params }); if (failOn && failOn(method)) throw new Error('boom ' + method); return {}; },
+        async detach() {} };
+      return client;
+    };
+    const disabledNotes = [];
+    const capW = new NetworkCapture({ onFetchRwDisabled: (info) => disabledNotes.push(info) });
+    const clientW = mkRwClient(null);
+    await capW._armFetchRw(clientW);
+    const enableCall = clientW.sent.find(s => s.method === 'Fetch.enable');
+    ok('W-RW interception is scoped to googlevideo playback at request stage', !!enableCall && enableCall.params.patterns[0].urlPattern === '*googlevideo.com/videoplayback*' && enableCall.params.patterns[0].requestStage === 'Request');
+    clientW.handlers['Fetch.requestPaused']({ requestId: 'r1', request: { url: 'https://rr1---sn-x.googlevideo.com/videoplayback?expire=999&id=a&range=0-50&itag=18', headers: { 'User-Agent': 'UA', Range: 'bytes=0-50' } } });
+    await flush();
+    const conts1 = clientW.sent.filter(s => s.method === 'Fetch.continueRequest' && s.params.requestId === 'r1');
+    eq('W-RW the paused request is continued exactly once', conts1.length, 1);
+    ok('W-RW the continue carries the rewritten url and range', !!conts1[0] && !conts1[0].params.url.includes('range=') && conts1[0].params.headers.some(h => h.name === 'Range' && h.value === 'bytes=0-'));
+    clientW.handlers['Fetch.requestPaused']({ requestId: 'r2', request: { url: 'https://flow.google.com/project/x', headers: {} } });
+    await flush();
+    const conts2 = clientW.sent.filter(s => s.method === 'Fetch.continueRequest' && s.params.requestId === 'r2');
+    eq('W-RW an unrelated paused request is continued exactly once, unmodified', conts2.length === 1 && conts2[0].params.url === undefined ? 1 : 0, 1);
+    eq('W-RW nothing disabled on the happy path', disabledNotes.length, 0);
+    // nakami: continue bigde to khud-band + EK khabar
+    const disabledNotes2 = [];
+    const capW2 = new NetworkCapture({ onFetchRwDisabled: (info) => disabledNotes2.push(info) });
+    const clientW2 = mkRwClient((m) => m === 'Fetch.continueRequest');
+    await capW2._armFetchRw(clientW2);
+    clientW2.handlers['Fetch.requestPaused']({ requestId: 'r9', request: { url: 'https://rr1---sn-x.googlevideo.com/videoplayback?id=a&range=0-50', headers: {} } });
+    await flush();
+    eq('W-RW a failing continue disables interception with one note', disabledNotes2.length, 1);
+    eq('W-RW the disable reason names the continue failure', disabledNotes2[0] && disabledNotes2[0].reason, 'continue-failed');
+    ok('W-RW Fetch.disable was sent on disable', clientW2.sent.some(s => s.method === 'Fetch.disable'));
+    // enable hi bigde to bhi wahi ek khabar
+    const disabledNotes3 = [];
+    const capW3 = new NetworkCapture({ onFetchRwDisabled: (info) => disabledNotes3.push(info) });
+    const clientW3 = mkRwClient((m) => m === 'Fetch.enable');
+    await capW3._armFetchRw(clientW3);
+    eq('W-RW a failing enable disables with one note', disabledNotes3.length, 1);
+    eq('W-RW the enable failure reason is named', disabledNotes3[0] && disabledNotes3[0].reason, 'enable-failed');
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

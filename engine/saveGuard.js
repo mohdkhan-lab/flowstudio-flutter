@@ -475,7 +475,11 @@ function formatMainpageAudit(audit) {
  *     type video/* ho (content-type hi na diya gaya
  *     ho to host hi kafi hai — asal CDP raaste par
  *     type hamesha aata hai).
- * input = { knownTotal, src, contentType }
+ *   - v2.48.52: kul na maloom ho aur aaye bytes
+ *     (input.bytes) bhi hadd se chhote hon to
+ *     googlevideo nazar phir bhi 'stream-too-small'
+ *     hai (neeche function me tafseel).
+ * input = { knownTotal, src, contentType, bytes }
  * natija = { candidate, reason } — reason 'ok' |
  *   'stream-too-small' | 'not-video-candidate'.
  */
@@ -490,9 +494,63 @@ function mainpageCandidateGate(input) {
   const videoHost = o.src === 'googlevideo' || o.src === 'flow-content';
   const type = typeof o.contentType === 'string' ? o.contentType.toLowerCase() : null;
   const typeOk = type === null || type.startsWith('video/');
-  return videoHost && typeOk
-    ? { candidate: true, reason: 'ok' }
-    : { candidate: false, reason: 'not-video-candidate' };
+  if (!(videoHost && typeOk)) {
+    return { candidate: false, reason: 'not-video-candidate' };
+  }
+  // v2.48.52 (ROUTE 1A PACK — gate fix): host/type
+  // darwaza paar karne ke BAAD — kul size na maloom
+  // ho aur ab tak asal me aaye bytes (transferred)
+  // bhi hadd se chhote hon to googlevideo nazar
+  // ummeedwaar NAHI banti — wo too-small yaad ke
+  // liye hai, jahan engine use Route 1A (netload)
+  // se parkhta hai. 'stream-too-small' inkaar ab
+  // sirf tab: kul size hadd se chhota ho (upar), YA
+  // kul na maloom ho aur aaye bytes hadd se chhote
+  // hon (ye wala). bytes input hi na diya gaya ho
+  // to purana host/type faisla bilkul waisa hi
+  // (purane bulane wale/tests barkarar);
+  // flow-content par ye usool laagu nahi (body-fail
+  // wali entry wahan jaan-boojh kar rehti hai taaki
+  // engine page-context fetch aazma sake).
+  if (o.src === 'googlevideo' && Number.isFinite(o.bytes) && o.bytes < MAINPAGE_MIN_CANDIDATE_BYTES) {
+    return { candidate: false, reason: 'stream-too-small' };
+  }
+  return { candidate: true, reason: 'ok' };
+}
+
+/**
+ * v2.48.52 (ROUTE 1A PACK — gate fix): ek mainpage
+ * nazar/entry ka MALOOM kul size (known total), ya
+ * null jab koi bharose-mand kul size hai hi nahi.
+ * Bharose ki tartib:
+ *   1. capture ka apna knownTotal (wahan hisaab pehle
+ *      se durust bandha hai);
+ *   2. Content-Range ke aakhir wala kul ('bytes
+ *      0-210942/1193958' -> 1193958);
+ *   3. declaredLength / declared — LEKIN sirf jab
+ *      status 206 na ho: 206 jawab ki Content-Length
+ *      usi TUKE ki size hoti hai, kul ki nahi (wahi
+ *      purani ghalti jis se adhoora jawab 'poora'
+ *      samjha jata tha). 206 par CR ke baghair kul
+ *      maloom hi nahi — null.
+ * input = { knownTotal, contentRange, declaredLength,
+ *   declared, status }.
+ */
+function mainpageKnownTotalOf(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  if (Number.isFinite(o.knownTotal) && o.knownTotal > 0) return Math.floor(o.knownTotal);
+  const cr = typeof o.contentRange === 'string' ? o.contentRange : '';
+  const m = cr.match(/\/(\d+)\s*$/);
+  if (m) {
+    const t = parseInt(m[1], 10);
+    if (Number.isFinite(t) && t > 0) return t;
+  }
+  if (Number(o.status) !== 206) {
+    for (const v of [o.declaredLength, o.declared]) {
+      if (Number.isFinite(v) && v > 0) return Math.floor(v);
+    }
+  }
+  return null;
 }
 
 /**
@@ -780,4 +838,4 @@ function cascadeVerdict(input) {
   return { firstSeen, preEditorUrl: beforeEditor ? 'yes' : 'no' };
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, MAINPAGE_MIN_CANDIDATE_BYTES, mainpageCandidateGate, mainpageTooSmallMediaPick, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, MAINPAGE_MIN_CANDIDATE_BYTES, mainpageCandidateGate, mainpageKnownTotalOf, mainpageTooSmallMediaPick, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };

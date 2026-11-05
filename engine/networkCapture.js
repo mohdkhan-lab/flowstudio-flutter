@@ -560,6 +560,69 @@ function segmentKeyOf(url) {
   } catch (e) { return null; }
 }
 
+/**
+ * v2.48.52 (ROUTE 1A PACK): googlevideo URL se range
+ * mehdood karne wale query hisse (range / rn / rbuf)
+ * hatao (khalis). Google ke media player aksar HTTP
+ * Range header ki jagah URL me '&range=0-105369'
+ * bhejte hain — server use dekh kar SIRF wahi tukda
+ * (200 + chhoti Content-Length) deta hai, poori file
+ * nahi. Hissa hata kar maango to wahi pata poori file
+ * ka banta hai. Baaki saare params (dastakhat sameet)
+ * aur un ki tartib bilkul waisi hi rehti hai; URL
+ * parkhi na ja sake to asal hi wapas (stripped khaali).
+ * Natija: { url, stripped: [naam...] } — stripped me
+ * hataye gaye params ke naam (range, rn, rbuf ki
+ * tartib me).
+ */
+const RANGE_STRIP_PARAMS = ['range', 'rn', 'rbuf'];
+function rangeStripOf(url) {
+  const raw = typeof url === 'string' && url ? url : null;
+  if (!raw) return { url: raw, stripped: [] };
+  try {
+    const u = new URL(raw);
+    const stripped = [];
+    for (const p of RANGE_STRIP_PARAMS) {
+      if (u.searchParams.has(p)) { u.searchParams.delete(p); stripped.push(p); }
+    }
+    if (!stripped.length) return { url: raw, stripped };
+    return { url: u.toString(), stripped };
+  } catch (e) { return { url: raw, stripped: [] }; }
+}
+
+/**
+ * v2.48.52 (ROUTE 1B — FETCH-RANGE-REWRITE): ek ruki
+ * hui (paused) googlevideo videoplayback darkhwast ka
+ * naya roop (khalis) — URL se range param hatao aur
+ * 'Range: bytes=0-' header lagao, taaki server ek hi
+ * jawab me POORI file bheje aur wo jawab aam capture
+ * pipeline (store + assembly) se guzre. Darkhwast
+ * googlevideo playback na ho, ya koi badlaav hi darkaar
+ * na ho (range param bhi nahi, Range pehle se
+ * 'bytes=0-'), to null — bulane wala darkhwast ko
+ * bilkul waisi hi continue karega.
+ * headers input CDP ki shakal (object map) me aata
+ * hai; natija Fetch.continueRequest ki shakal
+ * ([{ name, value }]) me hai. Asal Range header
+ * (kisi bhi case me) hat-ta hai — do Range kabhi nahi.
+ */
+function fetchRwRewrite(url, headers) {
+  try {
+    if (!isGooglevideoPlaybackUrl(url)) return null;
+    const prep = rangeStripOf(url);
+    const src = headers && typeof headers === 'object' ? headers : {};
+    const out = [];
+    let oldRange = null;
+    for (const name of Object.keys(src)) {
+      if (String(name).toLowerCase() === 'range') { oldRange = String(src[name]); continue; }
+      out.push({ name: String(name), value: String(src[name]) });
+    }
+    if (!prep.stripped.length && oldRange === 'bytes=0-') return null;
+    out.push({ name: 'Range', value: 'bytes=0-' });
+    return { url: prep.url, headers: out };
+  } catch (e) { return null; }
+}
+
 class NetworkCapture {
   constructor(opts = {}) {
     this.patterns = opts.patterns || CAPTURE_PATTERNS;
@@ -594,6 +657,22 @@ class NetworkCapture {
     // engine use '[ROOT] mainpage-segments' line me
     // badalta hai. Callback na ho to khabar khamosh hai.
     this.onSegmentNote = typeof opts.onSegmentNote === 'function' ? opts.onSegmentNote : null;
+    // v2.48.52 (ROUTE 1B — FETCH-RANGE-REWRITE): roke
+    // jaane wala (Fetch-domain) range-rewrite apni
+    // pehli nakami par khud band ho jaye to khabar
+    // engine ko — engine use '[ROOT] mainpage-fetchrw
+    // disabled' line me badalta hai. Callback na ho to
+    // band hona khamosh hai (vyavhaar wahi rehta hai:
+    // darkhwastein bina badlaav continue hoti hain).
+    this.onFetchRwDisabled = typeof opts.onFetchRwDisabled === 'function' ? opts.onFetchRwDisabled : null;
+    // Rewrite ki haalat: _fetchRwDisabled ek dafa
+    // band to is capture (poore session) ke liye band
+    // — reset() use saaf NAHI karta (band hona run-
+    // bhar ka faisla hai); _fetchRwClient woh CDP
+    // client hai jis par rewrite is pal chalu hai.
+    this._fetchRwDisabled = false;
+    this._fetchRwClient = null;
+    this._fetchRwWatchdogMs = 2500;
     this._page = null;
     this._reqHandler = null;
     this._resHandler = null;
@@ -1344,7 +1423,109 @@ class NetworkCapture {
           }
         } catch (err) {}
       });
+      // v2.48.52 (ROUTE 1B — FETCH-RANGE-REWRITE):
+      // isi CDP client par Fetch-domain ka range-
+      // rewrite bhi lagao (best-effort: na lage to
+      // capture bilkul aaj ki tarah chalta hai aur
+      // disabled wali khabar engine tak jati hai).
+      try { await this._armFetchRw(client); } catch (err) {}
     } catch (err) {}
+  }
+
+  /**
+   * v2.48.52 (ROUTE 1B): Fetch-domain interception
+   * chalu karo — pattern SIRF googlevideo
+   * videoplayback darkhwaston par, Request stage
+   * par. Ruki darkhwast ka roop fetchRwRewrite
+   * (khalis) badalta hai (range param hatao + Range:
+   * bytes=0-), jawab phir aam Network pipeline se
+   * guzar kar capture store/assembly me jata hai.
+   * HIFAZAT (is pack ki shart):
+   *   - har ruki darkhwast EK hi dafa continue hoti
+   *     hai — settled nishan + finally wala continue
+   *     + watchdog (handler ka hisaab atak jaye to
+   *     bhi waqt par seedha continue); latki hui
+   *     darkhwast mumkin hi nahi;
+   *   - pehli hi nakami (enable / rewrite / continue)
+   *     par interception poore session ke liye band
+   *     (_disableFetchRw) aur EK khabar engine ko —
+   *     run is ke baghair bilkul waisa hi chalta hai.
+   */
+  async _armFetchRw(client) {
+    try {
+      if (!client || typeof client.send !== 'function' || typeof client.on !== 'function') return;
+      if (this._fetchRwDisabled) return;
+      if (this._fetchRwClient === client) return;
+      this._fetchRwClient = client;
+      client.on('Fetch.requestPaused', (ev) => { this._fetchRwOnPaused(client, ev); });
+      await client.send('Fetch.enable', {
+        patterns: [{ urlPattern: '*googlevideo.com/videoplayback*', requestStage: 'Request' }]
+      });
+    } catch (e) {
+      this._disableFetchRw('enable-failed');
+    }
+  }
+
+  /** v2.48.52 (ROUTE 1B): ek ruki darkhwast ka hisaab — hamesha EK continue. */
+  _fetchRwOnPaused(client, ev) {
+    const requestId = ev && ev.requestId;
+    if (!requestId) return;
+    let invoked = false;
+    let settled = false;
+    const cont = (params) => {
+      invoked = true;
+      if (settled) return Promise.resolve();
+      settled = true;
+      try { clearTimeout(wd); } catch (e) {}
+      return Promise.resolve()
+        .then(() => client.send('Fetch.continueRequest', params))
+        .catch(() => { this._disableFetchRw('continue-failed'); });
+    };
+    // Watchdog: rewrite ka hisaab kisi wajah se atak
+    // jaye to bhi darkhwast waqt par bina badlaav
+    // continue ho — latakna mumkin nahi.
+    const wd = setTimeout(() => { if (!invoked) cont({ requestId }); }, this._fetchRwWatchdogMs || 2500);
+    try { if (wd && typeof wd.unref === 'function') wd.unref(); } catch (e) {}
+    (async () => {
+      try {
+        if (this._fetchRwDisabled) { await cont({ requestId }); return; }
+        const req = (ev && ev.request) || {};
+        const rw = fetchRwRewrite(req.url, req.headers);
+        if (!rw) { await cont({ requestId }); return; }
+        await cont({ requestId, url: rw.url, headers: rw.headers });
+      } catch (e) {
+        // Rewrite ka hisaab bigda — darkhwast bina
+        // badlaav continue (finally wala usool yahi
+        // hai: continue har haal me), aur rewrite
+        // is session ke liye band.
+        try { await cont({ requestId }); } catch (e2) {}
+        this._disableFetchRw('rewrite-error');
+      }
+    })();
+  }
+
+  /**
+   * v2.48.52 (ROUTE 1B): interception band karo —
+   * EK dafa, is capture ki poori umar ke liye.
+   * Fetch.disable best-effort hai; khabar engine ko
+   * sirf pehli dafa jati hai.
+   */
+  _disableFetchRw(reason) {
+    if (this._fetchRwDisabled) return;
+    this._fetchRwDisabled = true;
+    const client = this._fetchRwClient;
+    this._fetchRwClient = null;
+    try {
+      if (client && typeof client.send === 'function') {
+        const p = client.send('Fetch.disable');
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      }
+    } catch (e) {}
+    try {
+      if (typeof this.onFetchRwDisabled === 'function') {
+        this.onFetchRwDisabled({ reason: String(reason || 'error').replace(/\s+/g, ' ').trim().slice(0, 60) || 'error' });
+      }
+    } catch (e) {}
   }
 
   /** Listeners saaf band karo — koi leak nahi (har session ke saath). */
@@ -1353,6 +1534,21 @@ class NetworkCapture {
       try { if (this._reqHandler) this._page.removeListener('request', this._reqHandler); } catch (e) {}
       try { if (this._resHandler) this._page.removeListener('response', this._resHandler); } catch (e) {}
     }
+    // v2.48.52 (ROUTE 1B): is page ke client par
+    // Fetch rewrite chalu ho to use bhi band karo
+    // (session khatam — koi ruki darkhwast peeche
+    // na rahe). Band hone ki khabar (disabled line)
+    // is se NAHI banti — ye aam band hai, nakami nahi.
+    try {
+      const rwClient = this._fetchRwClient;
+      if (rwClient && !this._fetchRwDisabled) {
+        this._fetchRwClient = null;
+        const p = rwClient.send('Fetch.disable');
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } else {
+        this._fetchRwClient = null;
+      }
+    } catch (e) {}
     this._page = null;
     this._reqHandler = null;
     this._resHandler = null;
@@ -1879,7 +2075,13 @@ class NetworkCapture {
       const gate = saveGuard.mainpageCandidateGate({
         knownTotal,
         src: pend.src === 'googlevideo' ? 'googlevideo' : 'flow-content',
-        contentType: typeof pend.contentType === 'string' && pend.contentType ? pend.contentType : null
+        contentType: typeof pend.contentType === 'string' && pend.contentType ? pend.contentType : null,
+        // v2.48.52 (gate fix): asal me aaye bytes bhi
+        // darwaze ko do — kul na maloom ho aur aaye
+        // bytes chhote hon to googlevideo nazar ab
+        // ummeedwaar nahi, too-small hai (1A wahan
+        // netload se parkhega).
+        bytes: bodyLen
       });
       if (!gate.candidate && gate.reason === 'stream-too-small') {
         // v2.48.49: nazar kitab me to nahi jati (entry
@@ -2930,4 +3132,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite };

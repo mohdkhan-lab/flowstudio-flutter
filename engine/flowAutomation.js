@@ -406,6 +406,13 @@ class FlowAutomationEngine {
     // ghata saken.
     this.mainpageMediaLoadMs = Number(options.mainpageMediaLoadMs) > 0 ? Number(options.mainpageMediaLoadMs) : 30000;
     this._headlessProbeCache = headlessHarvest.createProbeCache();
+    // v2.48.51 (item 2 — combo yaad): jin accounts ke
+    // liye probe2 (clone+inject) is RUN me 'logged-in'
+    // de chuka hai, un ke account ids — baad ke
+    // attempts seedha combo session banate hain, bare
+    // transfer probe nahi. Per-run: browser launch par
+    // probe cache ke saath saaf.
+    this._headlessComboAccounts = new Set();
     this.nativeDownloadStallMs = Number(options.nativeDownloadStallMs) > 0 ? Number(options.nativeDownloadStallMs) : 45000;
     this.watcherSweepDelayMs = Number(options.watcherSweepDelayMs) > 0 ? Number(options.watcherSweepDelayMs) : 300000;
     this._watcherSweepTimer = null;
@@ -536,6 +543,9 @@ class FlowAutomationEngine {
     // probe ka per-run cache yahin saaf (ek run me ek
     // account ka probe sirf ek dafa hota hai).
     try { if (this._headlessProbeCache) this._headlessProbeCache.clear(); } catch (e) {}
+    // v2.48.51 (item 2): combo yaad bhi per-run hai —
+    // probe cache ke saath hi saaf.
+    try { if (this._headlessComboAccounts) this._headlessComboAccounts.clear(); } catch (e) {}
 
     const chromePath = getChromeExecutablePath();
     const profilePath = getAccountProfilePath(account.id);
@@ -6961,18 +6971,27 @@ class FlowAutomationEngine {
     }
     // Item 11: synthetic Cookies DB clone ke andar —
     // parkhi hui (read-back validated) file hi likhi
-    // jati hai; na bane to line naam se kehti hai aur
-    // combo aage badhta hai (setCookies upar se lagta
-    // hi hai).
+    // jati hai.
+    // v2.48.51 (item 2): DB na bane to combo YAHIN
+    // rukta hai — bulane wala '[ROOT] headless-combo
+    // skipped reason=cookiesdb-failed' likhta hai aur
+    // strategy aaj ki tarah khatam hoti hai.
+    // (ZEROCLICK18: DB line aayi hi nahi aur pata hi
+    // nahi chala combo chala ya nahi — ab combo chale
+    // to 'headless-cookiesdb built' line LAZMI hai.)
+    let dbBuilt = false;
     try {
       const dbRes = await cookiesDb.buildCookiesDbFile(cookies, clone, comboDir);
       if (dbRes && dbRes.built) {
+        dbBuilt = true;
         this.log(`[ROOT] headless-cookiesdb built cookies=${dbRes.count}`);
-      } else {
-        this.log(`[ROOT] headless-cookiesdb skipped reason=${dbRes && dbRes.reason ? dbRes.reason : 'unbuilt'}`, 'warn');
       }
     } catch (e) {
-      this.log('[ROOT] headless-cookiesdb skipped reason=error', 'warn');
+      dbBuilt = false;
+    }
+    if (!dbBuilt) {
+      await headlessHarvest.removeHeadlessClone(comboDir);
+      return { reason: 'cookiesdb-failed' };
     }
     let session2 = null;
     try { session2 = await this._headlessLaunchTransferred(cookies, comboDir); } catch (e) { session2 = null; }
@@ -6991,6 +7010,10 @@ class FlowAutomationEngine {
    *   0. per-run probe cache me is account ka reject
    *      pehle se ho to launch/probe dobara NAHI —
    *      wahi thahra hua strategy note, foran aage;
+   *      v2.48.51 (item 2): probe2 ne is run me is
+   *      account ko clone+inject se 'logged-in' diya
+   *      ho to combo-yaad seedha combo session banati
+   *      hai (bare transfer probe skip);
    *   1. profile ki copy par bina-window Chrome +
    *      PROBE (ek run me ek account ka ek hi probe):
    *      '[ROOT] headless-probe state=<...> account=<...>';
@@ -7024,14 +7047,53 @@ class FlowAutomationEngine {
       return fail(headlessHarvest.PROBE_REJECT_NOTE);
     }
     let session = null;
-    try {
-      session = await this._headlessLaunch(account);
-    } catch (e) {
-      // v2.48.45: asal wajah (exception message + code)
-      // log AUR strategy note dono me — ZEROCLICK12 me
-      // launch fail ki wajah kahin record nahi hoti thi.
-      this.log(`[ROOT] [Prompt #${n}] headless-harvest: launch failed (${headlessHarvest.launchFailureReason(e)}) — the main-page routes will run`, 'warn');
-      return fail(headlessHarvest.launchFailNote(e));
+    // v2.48.51 (item 2 — combo yaad ka rasta): is
+    // account ke liye probe2 is RUN me pehle hi
+    // 'logged-in' de chuka hai to bare transfer probe
+    // dobara NAHI — seedha combo session banao (live
+    // cookies uthao, clone+inject, probe2). Probe2 is
+    // dafa reject kare to yaad mita do aur rejection
+    // probe cache me darj — baad ke attempts cached
+    // rejection se hi rukte hain, combo dobara nahi
+    // banta. Combo build hi na bane to skipped line +
+    // wahi thahri hui haar.
+    let presetVerdict = null;
+    if (this._headlessComboAccounts && this._headlessComboAccounts.has(account.id)) {
+      let liveCookies = null;
+      try { liveCookies = await this._headlessReadLiveCookies(); } catch (e) { liveCookies = null; }
+      const combo = await this._headlessComboSession(account, { liveCookies: liveCookies || [] }).catch(() => null);
+      if (combo && combo.session) {
+        session = combo.session;
+        presetVerdict = combo.verdict;
+        try { task._headlessProbeState = presetVerdict; } catch (e) {}
+        const snapM = this._lastHeadlessProbeSnap;
+        const blockReasonM = headlessHarvest.probeBlockReason(snapM);
+        this.log(headlessHarvest.probe2LogLine({
+          state: presetVerdict,
+          hasCaptcha: blockReasonM.captcha,
+          marker: blockReasonM.marker
+        }), presetVerdict === 'logged-in' ? 'success' : 'warn');
+        try { if (this._headlessProbeCache) this._headlessProbeCache.set(account.id, presetVerdict); } catch (e) {}
+        if (presetVerdict !== 'logged-in') {
+          try { this._headlessComboAccounts.delete(account.id); } catch (e) {}
+          await this._headlessCloseSession(session);
+          return fail(headlessHarvest.PROBE_REJECT_NOTE);
+        }
+      } else {
+        this.log(`[ROOT] headless-combo skipped reason=${combo && combo.reason ? combo.reason : 'combo-failed'}`, 'warn');
+        return fail(headlessHarvest.PROBE_REJECT_NOTE);
+      }
+    }
+    if (!session) {
+      try {
+        session = await this._headlessLaunch(account);
+      } catch (e) {
+        // v2.48.45: asal wajah (exception message + code)
+        // log AUR strategy note dono me — ZEROCLICK12 me
+        // launch fail ki wajah kahin record nahi hoti thi.
+        this.log(`[ROOT] [Prompt #${n}] headless-harvest: launch failed (${headlessHarvest.launchFailureReason(e)}) — the main-page routes will run`, 'warn');
+        return fail(headlessHarvest.launchFailNote(e));
+      }
     }
     try {
       let hcap = session.capture;
@@ -7041,20 +7103,30 @@ class FlowAutomationEngine {
         try { if (hcap) hcap.beginSubmission(captureKey, Date.now()); } catch (e) {}
       };
       setupCapture();
-      let verdict = cached;
+      // v2.48.51 (item 2): combo-yaad wale raste par
+      // faisla pehle se tay hai (presetVerdict) — probe
+      // dobara nahi, cache me wahi combo faisla darj
+      // (upar prelude me set ho chuka hai).
+      let verdict = presetVerdict || cached;
       if (!verdict) {
         verdict = await this._headlessProbeOnce(account, hpage);
         try { task._headlessProbeState = verdict; } catch (e) {}
         // v2.48.50 (Part B): probe line ab url + nishan
         // ke saath (probeLogLine — snapshot ke wahi
         // fields jo classifier khata hai).
+        // v2.48.51 (item 2): captcha + marker ki
+        // tafseel bhi (probeBlockReason — classifier
+        // ke faisle se alag, sirf log ke liye).
         const snap = this._lastHeadlessProbeSnap;
+        const blockReason = headlessHarvest.probeBlockReason(snap);
         this.log(headlessHarvest.probeLogLine({
           state: verdict, account: label,
           url: snap && snap.url,
           hasSignIn: !!(snap && snap.hasSignIn),
           hasAvatar: !!(snap && snap.hasAvatar),
-          hasPromptBox: !!(snap && snap.hasPromptBox)
+          hasPromptBox: !!(snap && snap.hasPromptBox),
+          hasCaptcha: blockReason.captcha,
+          marker: blockReason.marker
         }), verdict === 'logged-in' ? 'success' : 'warn');
         // v2.48.50 (Part B — CLONE+INJECT COMBO, DBSC
         // discriminator): transfer session 'logged-out'
@@ -7066,6 +7138,12 @@ class FlowAutomationEngine {
         // 'headless-combo skipped' line + aaj wali haar.
         // Probe cache ka set is ke BAAD hai — cache me
         // hamesha aakhri faisla jata hai.
+        // v2.48.51 (item 2): trigger ab blocked par bhi
+        // (headlessComboApplies), probe2 line me
+        // captcha/marker tafseel, aur probe2 'logged-in'
+        // de to is RUN ke liye account ki combo-yaad
+        // set — baad ke attempts seedha combo banate
+        // hain (neeche wala memory rasta).
         if (headlessHarvest.headlessComboApplies({ via: session && session.via, verdict, tried: false })) {
           const combo = await this._headlessComboSession(account, session).catch(() => null);
           if (combo && combo.session) {
@@ -7076,7 +7154,17 @@ class FlowAutomationEngine {
             setupCapture();
             verdict = combo.verdict;
             try { task._headlessProbeState = verdict; } catch (e) {}
-            this.log(`[ROOT] headless-probe2 state=${verdict} via=clone-inject`, verdict === 'logged-in' ? 'success' : 'warn');
+            const snap2 = this._lastHeadlessProbeSnap;
+            const blockReason2 = headlessHarvest.probeBlockReason(snap2);
+            this.log(headlessHarvest.probe2LogLine({
+              state: verdict,
+              hasCaptcha: blockReason2.captcha,
+              marker: blockReason2.marker
+            }), verdict === 'logged-in' ? 'success' : 'warn');
+            if (verdict === 'logged-in' && this._headlessComboAccounts && !this._headlessComboAccounts.has(account.id)) {
+              this._headlessComboAccounts.add(account.id);
+              this.log(`[ROOT] headless-mode account=${label} mode=clone-inject (probe2)`);
+            }
           } else {
             this.log(`[ROOT] headless-combo skipped reason=${combo && combo.reason ? combo.reason : 'combo-failed'}`, 'warn');
           }
@@ -7624,13 +7712,22 @@ class FlowAutomationEngine {
     try {
       const sightings = typeof cap.mainpageTooSmallSightings === 'function'
         ? cap.mainpageTooSmallSightings() : [];
+      // v2.48.51 (item 3): pick ab task ki nishani
+      // (captureKey + render waqt + attempt ki hadd)
+      // ke saath — dusri task ki nazar nahi uthti
+      // (ZEROCLICK18 ki rr5 galti); jo nazar uthi wo
+      // is task ke naam consumed darj hoti hai.
       const pick = saveGuard.mainpageTooSmallMediaPick({
         sightings,
         taskStart: task.startTime || 0,
         teacherUrl,
-        triedUrls
+        triedUrls,
+        captureKey: captureKey || task.captureKey || task.videoId || null,
+        renderDoneAt: Number.isFinite(task.renderCompletedAt) ? task.renderCompletedAt : null,
+        attemptDeadline: watchDeadline
       });
       if (pick && pick.url && !this.isStopping && !task.mediaSaved) {
+        try { if (typeof cap.mainpageMarkTooSmallConsumed === 'function') cap.mainpageMarkTooSmallConsumed(pick.url, captureKey || task.captureKey || task.videoId || null); } catch (e) {}
         // v2.48.50 (item 1): ye mauqa bhi usi shared
         // completion se — pehle TILE element, hidden
         // chaara; lekin hadd EK drive ki hi rehti hai

@@ -2877,10 +2877,12 @@ async function main() {
   }
   {
     // (d) probe line + transfer names — khalis
+    // v2.48.51 (item 2): line ke aakhir me captcha +
+    // marker tafseel (bina marker = 'marker=-').
     eq('U-PROBE the line formats with url and markers', headlessHarvest.probeLogLine({ state: 'logged-out', account: 'acc', url: 'https://flow.google.com/project/abc?x=1', hasSignIn: true, hasAvatar: false, hasPromptBox: false }),
-      '[ROOT] headless-probe state=logged-out account=acc url=flow.google.com/project/abc signIn=true avatar=false promptBox=false');
+      '[ROOT] headless-probe state=logged-out account=acc url=flow.google.com/project/abc signIn=true avatar=false promptBox=false captcha=false marker=-');
     eq('U-PROBE a missing url is none', headlessHarvest.probeLogLine({ state: 'blocked', account: 'a' }),
-      '[ROOT] headless-probe state=blocked account=a url=none signIn=false avatar=false promptBox=false');
+      '[ROOT] headless-probe state=blocked account=a url=none signIn=false avatar=false promptBox=false captcha=false marker=-');
     const longUrl = 'https://flow.google.com/' + 'p'.repeat(200);
     ok('U-PROBE the url is capped at 80 chars', headlessHarvest.probeLogLine({ state: 'logged-out', account: 'a', url: longUrl }).includes(`url=${('flow.google.com/' + 'p'.repeat(200)).slice(0, 80)} `));
     eq('U-NAMES names are deduped and sorted', headlessHarvest.cookieNamesForLog([{ name: 'B' }, { name: 'A' }, { name: 'B' }, { name: 'C' }]), 'A,B,C');
@@ -2925,7 +2927,9 @@ async function main() {
   {
     // (f) combo trigger — khalis
     eq('U-COMBO cdp + logged-out + untried fires', headlessHarvest.headlessComboApplies({ via: 'cdp', verdict: 'logged-out', tried: false }), true);
-    eq('U-COMBO blocked never fires', headlessHarvest.headlessComboApplies({ via: 'cdp', verdict: 'blocked', tried: false }), false);
+    // v2.48.51 (item 2): blocked bhi ab trigger hai
+    // (ZEROCLICK18 — .50 me 'never fires' pin tha).
+    eq('U-COMBO blocked now fires', headlessHarvest.headlessComboApplies({ via: 'cdp', verdict: 'blocked', tried: false }), true);
     eq('U-COMBO the clone path never fires', headlessHarvest.headlessComboApplies({ via: 'clone', verdict: 'logged-out', tried: false }), false);
     eq('U-COMBO an already-tried combo never refires', headlessHarvest.headlessComboApplies({ via: 'cdp', verdict: 'logged-out', tried: true }), false);
     eq('U-COMBO logged-in never fires', headlessHarvest.headlessComboApplies({ via: 'cdp', verdict: 'logged-in', tried: false }), false);
@@ -3036,6 +3040,264 @@ async function main() {
     eq('U-RACE a quality-rejected save still fails', rB, false);
     eq('U-RACE its reason is the quality gate, not the race', taskB._saveRejectedReason, 'quality-gate');
     eq('U-RACE a failed claim is released for the other route', taskB._raceWonBy, null);
+  }
+
+  // ---------------------------------------------------------------------------
+  // V. v2.48.51 — LAST PACK (owner decision 2026-11-05,
+  //    ZEROCLICK18 ke baad ke teen fix):
+  //   (a) sweep mode — parked row kabhi fail nahi:
+  //       not-found -> pending + needs_check barkarar,
+  //       failTask NAHI; restart mode bilkul waisa hi
+  //       (not-found -> fail) — dono pin; account
+  //       ghayab par bhi sweep park rakhta hai; sweep
+  //       line me kept= (source pin);
+  //   (b) probe tafseel — probeBlockReason (khalis):
+  //       captcha flag, pehla marker, kuch na ho to
+  //       null; classify ke purane faisle bilkul
+  //       waisa hi (fixtures); probe2 line format;
+  //   (c) combo engine — blocked par combo chalta
+  //       hai; probe2 logged-in -> headless-mode line
+  //       + combo yaad; dusra task seedha combo (bare
+  //       launch/probe NAHI); probe2 reject -> yaad
+  //       NAHI, cached rejection dobara combo NAHI
+  //       banata; cookiesdb na bane -> combo
+  //       'cookiesdb-failed' par rukta hai aur engine
+  //       skipped line wahi naam leti hai;
+  //   (d) too-small nishani — capture: khuli khidki
+  //       ka captureKey nazar par darj; pick: apni
+  //       khidki ki nazar uthti hai, dusri ki NAHI,
+  //       consumed dobara NAHI, null-key waqt-khidki
+  //       ke andar uthti hai bahar NAHI.
+  // ---------------------------------------------------------------------------
+  {
+    // (a) sweep mode — asal WorkerPool, jaali db +
+    // jaali engine (prototype par stub).
+    const { WorkerPool } = require('../engine/workerPool');
+    const { dbService } = require('../engine/db');
+    const savedDb = {
+      getAccount: dbService.getAccount,
+      failTask: dbService.failTask,
+      setTaskNeedsCheck: dbService.setTaskNeedsCheck,
+      getTask: dbService.getTask,
+      completeTask: dbService.completeTask
+    };
+    const savedEng = {
+      launch: FlowAutomationEngine.prototype.launchBrowserForAccount,
+      open: FlowAutomationEngine.prototype.openFlowStudio,
+      reconcile: FlowAutomationEngine.prototype.reconcileRecoveredTask,
+      close: FlowAutomationEngine.prototype.closeBrowser,
+      sweepFn: FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep
+    };
+    const dbState = new Map();
+    const failCalls = [];
+    const updates = [];
+    dbService.getAccount = (id) => (id === 'acc-v' ? { id: 'acc-v', name: 'V Acc', googleName: 'V Acc' } : null);
+    dbService.failTask = (id) => { failCalls.push(id); const r = dbState.get(id); if (r) r.status = 'failed'; };
+    dbService.setTaskNeedsCheck = (id, v) => { const r = dbState.get(id); if (r) r.needsCheck = v; };
+    dbService.getTask = (id) => dbState.get(id) || null;
+    dbService.completeTask = () => {};
+    let reconcileResult = { found: false };
+    FlowAutomationEngine.prototype.launchBrowserForAccount = async () => true;
+    FlowAutomationEngine.prototype.openFlowStudio = async () => 'READY';
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = async () => reconcileResult;
+    FlowAutomationEngine.prototype.closeBrowser = async () => {};
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = () => {};
+    const pool = new WorkerPool({ onLog: () => {}, onTaskUpdate: (u) => updates.push(u) });
+    const mkRow = (id, acc) => ({ id, assigned_account_id: acc, prompt_index: 0, prompt_text: 'v prompt', prompt_tag: '' });
+    // sweep + not-found -> parked
+    dbState.set('t-park-1', { status: 'pending', needsCheck: 1 });
+    await pool._reconcileNeedsCheck([mkRow('t-park-1', 'acc-v')], '/tmp', {}, { sweepMode: true });
+    eq('V-SWEEP a not-found parked row is never failed in sweep mode', failCalls.length, 0);
+    eq('V-SWEEP the row stays pending in sweep mode', dbState.get('t-park-1').status, 'pending');
+    eq('V-SWEEP needs_check is restored to parked (1)', dbState.get('t-park-1').needsCheck, 1);
+    ok('V-SWEEP the UI update says pending', updates.some(u => u.taskId === 't-park-1' && u.status === 'pending'));
+    // restart mode + not-found -> fail (purana bartav, pin)
+    dbState.set('t-park-2', { status: 'pending', needsCheck: 1 });
+    await pool._reconcileNeedsCheck([mkRow('t-park-2', 'acc-v')], '/tmp', {});
+    eq('V-SWEEP restart mode still fails a not-found row', JSON.stringify(failCalls), JSON.stringify(['t-park-2']));
+    eq('V-SWEEP restart mode clears needs_check on fail', dbState.get('t-park-2').needsCheck, 0);
+    // sweep + account ghayab -> parked, fail NAHI
+    failCalls.length = 0;
+    dbState.set('t-park-3', { status: 'pending', needsCheck: 1 });
+    await pool._reconcileNeedsCheck([mkRow('t-park-3', 'acc-gone')], '/tmp', {}, { sweepMode: true });
+    eq('V-SWEEP a missing account never fails the row in sweep mode', failCalls.length, 0);
+    eq('V-SWEEP the missing-account row keeps needs_check', dbState.get('t-park-3').needsCheck, 1);
+    // sweep + found lekin download nahi -> parked (pehle se tha, pin)
+    reconcileResult = { found: true, downloaded: false };
+    dbState.set('t-park-4', { status: 'pending', needsCheck: 1 });
+    await pool._reconcileNeedsCheck([mkRow('t-park-4', 'acc-v')], '/tmp', {}, { sweepMode: true });
+    eq('V-SWEEP found-but-not-downloaded still parks in sweep mode', dbState.get('t-park-4').needsCheck, 1);
+    eq('V-SWEEP found-but-not-downloaded is not failed either', failCalls.length, 0);
+    reconcileResult = { found: false };
+    // line format + bulane walon ki wiring (source pin)
+    const wpSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'workerPool.js'), 'utf8');
+    ok('V-SWEEP the sweep line carries kept=', wpSrc.includes('[ROOT] resume-sweep tasks=${parked.length} saved=${saved} kept=${kept}'));
+    ok('V-SWEEP the sweep caller passes sweepMode', wpSrc.includes('_reconcileNeedsCheck(parked, downloadFolder, settings, { sweepMode: true })'));
+    ok('V-SWEEP the restart caller stays 3-arg', wpSrc.includes('await this._reconcileNeedsCheck(checkRows, downloadFolder, settings);'));
+    // stubs wapas
+    dbService.getAccount = savedDb.getAccount;
+    dbService.failTask = savedDb.failTask;
+    dbService.setTaskNeedsCheck = savedDb.setTaskNeedsCheck;
+    dbService.getTask = savedDb.getTask;
+    dbService.completeTask = savedDb.completeTask;
+    FlowAutomationEngine.prototype.launchBrowserForAccount = savedEng.launch;
+    FlowAutomationEngine.prototype.openFlowStudio = savedEng.open;
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = savedEng.reconcile;
+    FlowAutomationEngine.prototype.closeBrowser = savedEng.close;
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = savedEng.sweepFn;
+  }
+  {
+    // (b) probe tafseel — khalis
+    eq('V-PROBE captcha is reported', JSON.stringify(headlessHarvest.probeBlockReason({ hasCaptcha: true })), JSON.stringify({ captcha: true, marker: null }));
+    eq('V-PROBE the first matched marker is reported', headlessHarvest.probeBlockReason({ text: 'Sorry, unusual traffic detected. Please verify your identity' }).marker, 'unusual traffic');
+    eq('V-PROBE no block sign means a null marker', headlessHarvest.probeBlockReason({ text: 'hello', hasPromptBox: true }).marker, null);
+    eq('V-PROBE garbage is safe', JSON.stringify(headlessHarvest.probeBlockReason(null)), JSON.stringify({ captcha: false, marker: null }));
+    eq('V-PROBE classify captcha stays blocked', headlessHarvest.classifyProbeSnapshot({ hasCaptcha: true }), 'blocked');
+    eq('V-PROBE classify marker text stays blocked', headlessHarvest.classifyProbeSnapshot({ text: 'Please verify your identity to continue' }), 'blocked');
+    eq('V-PROBE classify sign-in stays logged-out', headlessHarvest.classifyProbeSnapshot({ url: 'https://flow.google.com/', hasSignIn: true }), 'logged-out');
+    eq('V-PROBE classify prompt box stays logged-in', headlessHarvest.classifyProbeSnapshot({ url: 'https://flow.google.com/', hasPromptBox: true }), 'logged-in');
+    eq('V-PROBE classify google accounts url stays logged-out', headlessHarvest.classifyProbeSnapshot({ url: 'https://accounts.google.com/ServiceLogin' }), 'logged-out');
+    eq('V-PROBE classify empty stays logged-out', headlessHarvest.classifyProbeSnapshot({}), 'logged-out');
+    eq('V-PROBE the probe2 line formats with detail', headlessHarvest.probe2LogLine({ state: 'blocked', hasCaptcha: false, marker: 'unusual traffic' }), '[ROOT] headless-probe2 state=blocked via=clone-inject captcha=false marker=unusual traffic');
+    eq('V-PROBE the probe2 line uses - when there is no marker', headlessHarvest.probe2LogLine({ state: 'logged-in' }), '[ROOT] headless-probe2 state=logged-in via=clone-inject captcha=false marker=-');
+    eq('V-PROBE the probe line carries captcha and marker', headlessHarvest.probeLogLine({ state: 'blocked', account: 'a', url: 'https://flow.google.com/', hasSignIn: true, hasCaptcha: true, marker: 'unusual traffic' }), '[ROOT] headless-probe state=blocked account=a url=flow.google.com/ signIn=true avatar=false promptBox=false captcha=true marker=unusual traffic');
+  }
+  {
+    // (c1) blocked probe -> combo -> probe2
+    // logged-in: jeet + mode line + yaad set.
+    // (c2) dusra task seedha combo (bare launch /
+    // probe dobara NAHI).
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { headlessHarvestWaitMs: 2000 });
+    eng.currentAccount = { id: 'acc-v-combo', name: 'V Combo' };
+    eng.page = fakePage('main-v-combo');
+    const st = stubHeadlessSession(eng, {
+      snapshot: { url: 'https://flow.google.com/', text: 'We detected unusual traffic from your network', hasSignIn: true }
+    });
+    const rawLaunch = eng._headlessLaunch;
+    eng._headlessLaunch = async () => { const s = await rawLaunch(); s.via = 'cdp'; s.liveCookies = [{ name: 'SID', value: 'x', domain: '.google.com', path: '/' }]; return s; };
+    const comboCap = {
+      harvestFloorBytes: 0,
+      harvestForKey: () => ({ url: FC_FRESH, buffer: mp4Buffer(600000), at: Date.now() }),
+      urlForKey: () => null,
+      recentFlowContentVideos: () => [],
+      beginSubmission() {}, arm() {}, setDownloadAttempt() {}, clearDownloadAttempt() {},
+      evictHarvest() {}, claimFlowContentVideo() {}, detach() {}
+    };
+    let comboCalls = 0;
+    eng._headlessComboSession = async () => {
+      comboCalls++;
+      eng._lastHeadlessProbeSnap = { url: 'https://flow.google.com/', hasPromptBox: true };
+      return { session: { browser: { close: async () => {} }, page: fakePage('combo-v1'), capture: comboCap, cloneDir: null, via: 'cdp' }, verdict: 'logged-in' };
+    };
+    eng._headlessReadLiveCookies = async () => [{ name: 'SID', value: 'x', domain: '.google.com', path: '/' }];
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task1 = { promptIndex: 0, captureKey: 'k-v-combo-1', videoId: 'k-v-combo-1', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+    const r1 = await eng._tryHeadlessHarvest(task1, '/tmp', { duration: '10s' }, [], 'k-v-combo-1', 0);
+    eq('V-COMBO a blocked probe still reaches the combo and saves', r1, true);
+    eq('V-COMBO the combo ran exactly once', comboCalls, 1);
+    ok('V-COMBO the probe line says blocked with the marker', logs.some(m => m.includes('[ROOT] headless-probe state=blocked account=V Combo') && m.includes('marker=unusual traffic')));
+    ok('V-COMBO the probe2 line is logged with detail', logs.some(m => m.includes('[ROOT] headless-probe2 state=logged-in via=clone-inject captcha=false marker=-')));
+    ok('V-COMBO the headless-mode memory line is logged once', logs.filter(m => m.includes('[ROOT] headless-mode account=V Combo mode=clone-inject (probe2)')).length === 1);
+    eq('V-COMBO the combo memory holds the account', eng._headlessComboAccounts.has('acc-v-combo'), true);
+    const task2 = { promptIndex: 1, captureKey: 'k-v-combo-2', videoId: 'k-v-combo-2', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+    const r2 = await eng._tryHeadlessHarvest(task2, '/tmp', { duration: '10s' }, [], 'k-v-combo-2', 0);
+    eq('V-COMBO the second task saves through the remembered combo', r2, true);
+    eq('V-COMBO the bare launch never ran again', st.launchCount, 1);
+    eq('V-COMBO the bare probe never ran again', st.probeCount, 1);
+    eq('V-COMBO the combo rebuilt for the second task', comboCalls, 2);
+    eq('V-COMBO the memory line still appears only once', logs.filter(m => m.includes('[ROOT] headless-mode account=V Combo mode=clone-inject (probe2)')).length, 1);
+  }
+  {
+    // (c3) probe2 reject — yaad NAHI banti, cached
+    // rejection par dusra task combo NAHI banata.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { headlessHarvestWaitMs: 300 });
+    eng.currentAccount = { id: 'acc-v-rej', name: 'V Rej' };
+    eng.page = fakePage('main-v-rej');
+    const st = stubHeadlessSession(eng, { snapshot: { url: 'https://accounts.google.com/ServiceLogin', hasSignIn: true } });
+    const rawLaunch = eng._headlessLaunch;
+    eng._headlessLaunch = async () => { const s = await rawLaunch(); s.via = 'cdp'; s.liveCookies = [{ name: 'SID', value: 'x' }]; return s; };
+    let comboCalls = 0;
+    eng._headlessComboSession = async () => {
+      comboCalls++;
+      eng._lastHeadlessProbeSnap = { url: 'https://flow.google.com/', hasSignIn: true };
+      return { session: { browser: { close: async () => {} }, page: fakePage('combo-vrej'), capture: { harvestFloorBytes: 0, beginSubmission() {}, setDownloadAttempt() {}, clearDownloadAttempt() {}, evictHarvest() {}, claimFlowContentVideo() {}, detach() {} }, cloneDir: null, via: 'cdp' }, verdict: 'logged-out' };
+    };
+    const t1 = { promptIndex: 0, captureKey: 'k-v-rej-1', videoId: 'k-v-rej-1', startTime: Date.now(), renderCompletedAt: Date.now() };
+    const a1 = [];
+    const r1 = await eng._tryHeadlessHarvest(t1, '/tmp', { duration: '10s' }, a1, 'k-v-rej-1', 0);
+    eq('V-COMBO a rejected probe2 fails the route', r1, false);
+    eq('V-COMBO the note is the pinned reject text', a1.length === 1 && a1[0].note, headlessHarvest.PROBE_REJECT_NOTE);
+    eq('V-COMBO no memory is set on a probe2 rejection', eng._headlessComboAccounts.has('acc-v-rej'), false);
+    ok('V-COMBO no headless-mode line on rejection', !logs.some(m => m.includes('headless-mode account=')));
+    const t2 = { promptIndex: 1, captureKey: 'k-v-rej-2', videoId: 'k-v-rej-2', startTime: Date.now(), renderCompletedAt: Date.now() };
+    const a2 = [];
+    const r2 = await eng._tryHeadlessHarvest(t2, '/tmp', { duration: '10s' }, a2, 'k-v-rej-2', 0);
+    eq('V-COMBO the second task fails from the cached rejection', r2, false);
+    eq('V-COMBO the combo is not rebuilt after a rejection', comboCalls, 1);
+    eq('V-COMBO no second launch after a rejection', st.launchCount, 1);
+  }
+  {
+    // (c4) cookiesdb — asal _headlessComboSession:
+    // saari cookies bekaar (domain hi nahi) -> DB
+    // banti hi nahi -> combo 'cookiesdb-failed'.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+    const { getAccountProfilePath } = require('../engine/accountStore');
+    const profPath = getAccountProfilePath('acc_v_nodb');
+    const res = await eng._headlessComboSession({ id: 'acc_v_nodb', name: 'V NoDb' }, { liveCookies: [{ name: 'X', value: '1' }] });
+    eq('V-DB an unbuildable cookies DB fails the combo as cookiesdb-failed', res && res.reason, 'cookiesdb-failed');
+    ok('V-DB no cookiesdb built line appears', !logs.some(m => m.includes('headless-cookiesdb built')));
+    try { require('fs').rmSync(profPath, { recursive: true, force: true }); } catch (e) {}
+    // (c5) engine taraf skipped line wahi naam leti hai
+    const logs2 = [];
+    const eng2 = new FlowAutomationEngine({ onLog: (e) => logs2.push(e.message) }, { headlessHarvestWaitMs: 300 });
+    eng2.currentAccount = { id: 'acc-v-skip', name: 'V Skip' };
+    eng2.page = fakePage('main-v-skip');
+    stubHeadlessSession(eng2, { snapshot: { url: 'https://flow.google.com/', hasSignIn: true } });
+    const rawLaunch2 = eng2._headlessLaunch;
+    eng2._headlessLaunch = async () => { const s = await rawLaunch2(); s.via = 'cdp'; return s; };
+    eng2._headlessComboSession = async () => ({ reason: 'cookiesdb-failed' });
+    const t = { promptIndex: 0, captureKey: 'k-v-skip', videoId: 'k-v-skip', startTime: Date.now(), renderCompletedAt: Date.now() };
+    const at = [];
+    const r = await eng2._tryHeadlessHarvest(t, '/tmp', { duration: '10s' }, at, 'k-v-skip', 0);
+    eq('V-DB a cookiesdb-failed combo fails the route as rejected', r, false);
+    ok('V-DB the skipped line names cookiesdb-failed', logs2.some(m => m.includes('[ROOT] headless-combo skipped reason=cookiesdb-failed')));
+  }
+  {
+    // (d) too-small nishani — capture + pick
+    const nc = new NetworkCapture({});
+    nc.arm();
+    const T0 = 1800000000000;
+    nc.mainpageNoteWindow('key-a', T0);
+    const GV_A = 'https://rr5---sn-a.googlevideo.com/videoplayback?expire=999&id=att-a&itag=18';
+    nc._recordMainpageSighting({ url: GV_A, src: 'googlevideo', declared: 85725, status: 206, contentRange: 'bytes 0-85724/85725', contentType: 'video/mp4' }, mp4Buffer(85725), 85725, T0 + 1000);
+    let mem = nc.mainpageTooSmallSightings();
+    eq('V-ATTR a sighting inside an open window carries its captureKey', mem.length === 1 && mem[0].captureKey, 'key-a');
+    nc.mainpageNoteWindow('key-b', T0 + 10000);
+    const GV_B = 'https://rr5---sn-b.googlevideo.com/videoplayback?expire=999&id=att-b&itag=18';
+    nc._recordMainpageSighting({ url: GV_B, src: 'googlevideo', declared: 85725, status: 206, contentRange: 'bytes 0-85724/85725', contentType: 'video/mp4' }, mp4Buffer(85725), 85725, T0 + 11000);
+    mem = nc.mainpageTooSmallSightings();
+    eq('V-ATTR a later sighting belongs to the newest open window', (mem.find(m => m.url === GV_B) || {}).captureKey, 'key-b');
+    const nc2 = new NetworkCapture({});
+    nc2.arm();
+    const GV_N = 'https://rr5---sn-n.googlevideo.com/videoplayback?expire=999&id=att-n&itag=18';
+    nc2._recordMainpageSighting({ url: GV_N, src: 'googlevideo', declared: 85725, status: 206, contentRange: 'bytes 0-85724/85725', contentType: 'video/mp4' }, mp4Buffer(85725), 85725, T0);
+    eq('V-ATTR no open window means a null captureKey', nc2.mainpageTooSmallSightings()[0].captureKey, null);
+    const sight = (url, captureKey, firstSeenAt, consumedBy) => ({ url, src: 'googlevideo', reason: 'stream-too-small', firstSeenAt, captureKey: captureKey || null, consumedBy: consumedBy || null });
+    const own = mainpageTooSmallMediaPick({ sightings: [sight(GV_A, 'key-a', T0 + 1000)], taskStart: T0 - 5000, teacherUrl: null, triedUrls: new Set(), captureKey: 'key-a', renderDoneAt: T0, attemptDeadline: T0 + 60000 });
+    eq('V-ATTR the own-window sighting is picked', own && own.url, GV_A);
+    const other = mainpageTooSmallMediaPick({ sightings: [sight(GV_A, 'key-a', T0 + 1000)], taskStart: T0 - 5000, teacherUrl: null, triedUrls: new Set(), captureKey: 'key-b', renderDoneAt: T0 + 10000, attemptDeadline: T0 + 70000 });
+    eq('V-ATTR another task sighting is not picked', other, null);
+    const consumed = mainpageTooSmallMediaPick({ sightings: [sight(GV_A, 'key-a', T0 + 1000, 'key-a')], taskStart: T0 - 5000, teacherUrl: null, triedUrls: new Set(), captureKey: 'key-b', renderDoneAt: T0 + 10000, attemptDeadline: T0 + 70000 });
+    eq('V-ATTR a consumed sighting is not re-picked for another task', consumed, null);
+    const nullIn = mainpageTooSmallMediaPick({ sightings: [sight(GV_N, null, T0 + 2000)], taskStart: T0 - 5000, teacherUrl: null, triedUrls: new Set(), captureKey: 'key-b', renderDoneAt: T0, attemptDeadline: T0 + 60000 });
+    eq('V-ATTR a null-key sighting inside the time window is picked', nullIn && nullIn.url, GV_N);
+    const nullOut = mainpageTooSmallMediaPick({ sightings: [sight(GV_N, null, T0 - 20000)], taskStart: T0 - 60000, teacherUrl: null, triedUrls: new Set(), captureKey: 'key-b', renderDoneAt: T0, attemptDeadline: T0 + 60000 });
+    eq('V-ATTR a null-key sighting before the time window is not picked', nullOut, null);
+    nc.mainpageMarkTooSmallConsumed(GV_A, 'key-a');
+    eq('V-ATTR the consumed mark lands on the sighting', (nc.mainpageTooSmallSightings().find(m => m.url === GV_A) || {}).consumedBy, 'key-a');
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

@@ -2029,12 +2029,42 @@ class NetworkCapture {
   }
 
   /**
+   * v2.48.51 (item 3): waqt `t` par kis task ki
+   * render-khidki khuli thi — khuli khidkiyon (start
+   * <= t, done nahi) me sab se TAAZA shuru hui wali.
+   * Khidki khuli hi na ho to null. (ZEROCLICK18 ki
+   * seekh: dusri task ki khidki khulne ke baad purani
+   * nazar purani task ki nahi rehti — is liye sab se
+   * taaza khidki hi malik hai.)
+   */
+  _mainpageWindowKeyAt(t) {
+    try {
+      let bestKey = null;
+      let bestStart = -Infinity;
+      for (const [key, w] of this.mainpageWindows) {
+        if (!w || w.done) continue;
+        const st = Number.isFinite(w.start) ? w.start : 0;
+        if (st > 0 && st <= t && st >= bestStart) { bestStart = st; bestKey = key; }
+      }
+      return bestKey;
+    } catch (e) { return null; }
+  }
+
+  /**
    * v2.48.49: 'stream-too-small' par ruki ek nazar ko
    * halki yaad me darj karo. URL pehle se ho to sirf
    * `at` aur sab se bade `bytes` taaza hote hain —
    * firstSeenAt sab se pehli nazar ka hi rehta hai
    * (bandhan wali timing bandish isi par chalti hai).
    * Hadd 50 (sab se purani entry nikalti hai).
+   * v2.48.51 (item 3): nayi nazar par us pal khuli
+   * render-khidki ka captureKey bhi darj hota hai
+   * (task ki nishani — saveGuard ka pick isi se
+   * pehchanta hai ke nazar kis task ki hai); dobara
+   * nazar par pehli nishani hi rehti hai, bilkul
+   * firstSeenAt ki tarah. consumedBy = kis task ke
+   * pick ne ye nazar istemal kar li (null = abhi
+   * tak kisi ne nahi).
    */
   _noteMainpageTooSmall(pend, bytes, now) {
     if (!pend || !pend.url) return;
@@ -2048,7 +2078,9 @@ class NetworkCapture {
     this._mainpageTooSmall.push({
       url: pend.url, src, reason: 'stream-too-small',
       bytes: Number.isFinite(bytes) ? bytes : 0,
-      firstSeenAt: now, at: now
+      firstSeenAt: now, at: now,
+      captureKey: this._mainpageWindowKeyAt(now),
+      consumedBy: null
     });
     while (this._mainpageTooSmall.length > 50) this._mainpageTooSmall.shift();
   }
@@ -2058,6 +2090,20 @@ class NetworkCapture {
     try {
       return this._mainpageTooSmall.map(e => ({ ...e }));
     } catch (e) { return []; }
+  }
+
+  /**
+   * v2.48.51 (item 3): ek nazar ko kisi task ke pick
+   * ke naam darj karo — dusri task ka pick use dobara
+   * nahi utha sakta (ZEROCLICK18: #2 ke completion ne
+   * #1 ki rr5 nazar utha li thi).
+   */
+  mainpageMarkTooSmallConsumed(url, captureKey) {
+    try {
+      if (!url || !captureKey) return;
+      const e = this._mainpageTooSmall.find(x => x.url === url);
+      if (e) e.consumedBy = captureKey;
+    } catch (err) {}
   }
 
   /** v2.48.41: mainpage kitab ki nakal (purane se naye ki taraf; buffer kabhi andar nahi). */

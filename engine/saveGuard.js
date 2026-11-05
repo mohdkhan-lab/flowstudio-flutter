@@ -523,6 +523,24 @@ function mainpageCandidateGate(input) {
  *   triedUrls (Set ya array) }
  * natija = { url, firstSeenAt } (sab se pehli
  *   nazar wala) ya null.
+ * v2.48.51 (item 3 — task nishani): ZEROCLICK18 me
+ * #2 ke completion ne #1 ki rr5 nazar utha li —
+ * yaad me task ki nishani hi nahi thi. Ab pick SIRF
+ * wahi nazar deta hai jo MANGNE wali task ki ho:
+ *   - nazar par captureKey darj ho to wo task ke
+ *     captureKey ke BARABAR hona chahiye;
+ *   - captureKey null ho (koi khidki khuli nahi
+ *     thi) to waqt ki khidki: firstSeenAt task ke
+ *     renderDoneAt − 5s se pehle ka na ho aur
+ *     attempt ki aakhri hadd (attemptDeadline) ke
+ *     baad ka na ho — ye do haddain input me hon
+ *     tab hi laagu (purane bulane wale bina hadd ke
+ *     aaj wala bartao rakhte hain);
+ *   - jo nazar kisi AUR task ke pick ne consumed
+ *     kar li ho (consumedBy) wo dobara nahi uthti.
+ * Input me mazeed: captureKey, renderDoneAt,
+ * attemptDeadline. Natije me sighting ka captureKey
+ * bhi lautta hai.
  */
 function mainpageTooSmallMediaPick(input) {
   const o = input && typeof input === 'object' ? input : {};
@@ -532,6 +550,9 @@ function mainpageTooSmallMediaPick(input) {
   const tried = o.triedUrls instanceof Set
     ? o.triedUrls
     : new Set(Array.isArray(o.triedUrls) ? o.triedUrls : []);
+  const wantKey = typeof o.captureKey === 'string' && o.captureKey ? o.captureKey : null;
+  const renderDoneAt = Number.isFinite(o.renderDoneAt) ? o.renderDoneAt : null;
+  const deadline = Number.isFinite(o.attemptDeadline) ? o.attemptDeadline : null;
   let best = null;
   for (const s of list) {
     if (!s || typeof s.url !== 'string' || !s.url) continue;
@@ -542,7 +563,17 @@ function mainpageTooSmallMediaPick(input) {
     const seenAt = Number.isFinite(s.firstSeenAt) ? s.firstSeenAt
       : (Number.isFinite(s.at) ? s.at : 0);
     if (taskStart > 0 && seenAt > 0 && seenAt < taskStart) continue;
-    if (!best || seenAt < best.firstSeenAt) best = { url: s.url, firstSeenAt: seenAt };
+    // v2.48.51 (item 3): task ki nishani — dusri
+    // task ki nazar meri nahi.
+    if (s.consumedBy && s.consumedBy !== wantKey) continue;
+    const sKey = typeof s.captureKey === 'string' && s.captureKey ? s.captureKey : null;
+    if (sKey) {
+      if (!wantKey || sKey !== wantKey) continue;
+    } else {
+      if (renderDoneAt !== null && seenAt > 0 && seenAt < renderDoneAt - 5000) continue;
+      if (deadline !== null && seenAt > 0 && seenAt > deadline) continue;
+    }
+    if (!best || seenAt < best.firstSeenAt) best = { url: s.url, firstSeenAt: seenAt, captureKey: sKey };
   }
   return best;
 }

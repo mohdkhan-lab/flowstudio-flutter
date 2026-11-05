@@ -491,8 +491,23 @@ class WorkerPool {
    * stay pending + flagged for a later Resume.
    * Returns the set of task ids this run must NOT process normally
    * (resolved rows AND rows left for a later resume).
+   *
+   * v2.48.51 (item 1 — SWEEP MODE): opts.sweepMode
+   * SIRF run-end Resume-All sweep (v2.48.50 item 14)
+   * ke liye hai. Sweep mode me ek parked row KABHI
+   * fail nahi hoti: tile na mile ya account hi na
+   * mile to row pending + needs_check hi rehti hai
+   * (parked — owner ke discard tak). ZEROCLICK18 me
+   * sweep ne isi function ke restart-wale not-found
+   * fail se 20 me se 16 parked rows FAILED kar di
+   * thin — sweep asal me tasks ke ASAL projects ki
+   * jagah account ke LATEST project me dhoondti hai,
+   * is liye 'na mila' wahan 'nahi hai' ka saboot
+   * nahi hai. Restart-recovery wala bulawa (bina
+   * opts ke) bilkul aaj jaisa hi rehta hai.
    */
-  async _reconcileNeedsCheck(checkRows, downloadFolder, settings) {
+  async _reconcileNeedsCheck(checkRows, downloadFolder, settings, opts = {}) {
+    const sweepMode = !!(opts && opts.sweepMode);
     const handled = new Set();
     const byAccount = new Map();
     for (const row of checkRows) {
@@ -505,6 +520,13 @@ class WorkerPool {
       const account = accountId ? dbService.getAccount(accountId) : null;
       if (!account) {
         for (const row of group) {
+          // v2.48.51 (item 1): sweep mode me account
+          // ghayab hona bhi fail ki wajah NAHI — row
+          // parked hi rehti hai (kept).
+          if (sweepMode) {
+            handled.add(row.id);
+            continue;
+          }
           const reason = 'Recovered after restart, but the account it was running on no longer exists. It was NOT re-submitted.';
           try { dbService.failTask(row.id, reason); } catch (e) {}
           try { dbService.setTaskNeedsCheck(row.id, 0); } catch (e) {}
@@ -591,6 +613,21 @@ class WorkerPool {
             try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
             this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
             this.log(`Recovery: Prompt #${row.prompt_index + 1}'s tile was found in the project, but its download did not complete this time. Kept pending (check-only) for a download-only retry on the next Resume — NOT failed, NOT resubmitted.`, 'warn');
+          } else if (sweepMode) {
+            // v2.48.51 (item 1): sweep mode me tile
+            // NA milna fail NAHI hai — sweep account
+            // ke LATEST project me dekhti hai, parked
+            // task ka asal project koi aur ho sakta
+            // hai (ZEROCLICK18: 16 parked rows isi
+            // galti se FAILED ho gayi thin). Row
+            // pending + needs_check (parked) hi rehti
+            // hai — upar wala unconditional
+            // setTaskNeedsCheck(0) yahan wapas 1 kar
+            // diya jata hai. failTask KABHI nahi.
+            const reason = 'End-of-run sweep: no matching video was found in the account\'s latest Flow project (this task may belong to an older project), so it stays pending (check-only / parked) for a later Resume. It was NOT failed and NOT re-submitted.';
+            try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
+            this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
+            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in the latest project during the sweep. Kept parked (pending, check-only) — NOT failed, NOT resubmitted.`, 'warn');
           } else {
             const reason = 'Interrupted by an app close. No matching video was found in the account\'s latest Flow project, so it was NOT auto-resubmitted (that could double-charge credits). Use Retry to run it again.';
             try { dbService.failTask(row.id, reason); } catch (e) {}
@@ -2192,16 +2229,21 @@ class WorkerPool {
             .filter(r => r && r.id && !ownIds.has(r.id))
             .slice(0, 20);
           let saved = 0;
+          let kept = 0;
           if (parked.length > 0) {
-            await this._reconcileNeedsCheck(parked, downloadFolder, settings);
+            // v2.48.51 (item 1): sweep HAMESHA sweep
+            // mode me — parked row fail kabhi nahi
+            // hoti; jo save na ho wo kept (parked) hai.
+            await this._reconcileNeedsCheck(parked, downloadFolder, settings, { sweepMode: true });
             for (const r of parked) {
               try {
                 const row = dbService.getTask(r.id);
                 if (row && row.status === 'completed') saved++;
-              } catch (e) {}
+                else kept++;
+              } catch (e) { kept++; }
             }
           }
-          this.log(`[ROOT] resume-sweep tasks=${parked.length} saved=${saved}`, saved > 0 ? 'success' : 'info');
+          this.log(`[ROOT] resume-sweep tasks=${parked.length} saved=${saved} kept=${kept}`, saved > 0 ? 'success' : 'info');
         } catch (e) {}
       }
 

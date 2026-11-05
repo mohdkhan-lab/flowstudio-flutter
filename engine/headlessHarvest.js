@@ -344,14 +344,19 @@ function tolerantCloneDecision(input) {
 /**
  * v2.48.50: clone+inject COMBO ka trigger (khalis).
  * Combo SIRF tab: session CDP transfer se aaya ho
- * (via='cdp'), pehla probe bilkul 'logged-out' ho
- * ('blocked' ek dusri deewaar hai — wahan combo
- * bekaar hai), aur is attempt me combo pehle na
+ * (via='cdp'), aur is attempt me combo pehle na
  * aazmaya gaya ho.
+ * v2.48.51 (item 2): verdict ka darwaza chaura —
+ * pehle sirf 'logged-out' tha; ZEROCLICK18 me plain
+ * transfer par probe 'blocked' aaya aur combo kabhi
+ * chala hi nahi ('blocked' ko dusri deewaar samjha
+ * gaya tha, magar clone-inject session wahan bhi
+ * aazmaya ja sakta hai). Ab verdict logged-out YA
+ * blocked — captcha ho ya na ho, trigger wahi.
  */
 function headlessComboApplies(input) {
   const o = input && typeof input === 'object' ? input : {};
-  return o.via === 'cdp' && o.verdict === 'logged-out' && !o.tried;
+  return o.via === 'cdp' && (o.verdict === 'logged-out' || o.verdict === 'blocked') && !o.tried;
 }
 
 /**
@@ -362,6 +367,10 @@ function headlessComboApplies(input) {
  * Nishan snapshot ke wahi fields hain jo
  * classifyProbeSnapshot khata hai; url se query kabhi
  * nahi aati (host+path hi hai).
+ * v2.48.51 (item 2): line ke aakhir me tafseel —
+ * 'captcha=<bool> marker=<pehla mila blocked-text
+ * marker, ya "-">' (probeBlockReason se; faisla
+ * bilkul waisa ka waisa, sirf wajah ab line me hai).
  */
 function probeLogLine(info) {
   const o = info && typeof info === 'object' ? info : {};
@@ -375,7 +384,22 @@ function probeLogLine(info) {
     urlPart = String(o.url || '').replace(/^https?:\/\//, '').split('?')[0].slice(0, 80) || 'none';
   }
   const b = (v) => (v ? 'true' : 'false');
-  return `[ROOT] headless-probe state=${state} account=${account} url=${urlPart} signIn=${b(o.hasSignIn)} avatar=${b(o.hasAvatar)} promptBox=${b(o.hasPromptBox)}`;
+  const marker = typeof o.marker === 'string' && o.marker ? o.marker : '-';
+  return `[ROOT] headless-probe state=${state} account=${account} url=${urlPart} signIn=${b(o.hasSignIn)} avatar=${b(o.hasAvatar)} promptBox=${b(o.hasPromptBox)} captcha=${b(o.hasCaptcha)} marker=${marker}`;
+}
+
+/**
+ * v2.48.51 (item 2): probe2 (combo ke baad ki dusri
+ * nazar) ki line — probe line ki behan, wahi tafseel:
+ * '[ROOT] headless-probe2 state=<s> via=clone-inject
+ * captcha=<bool> marker=<marker ya "-">'.
+ */
+function probe2LogLine(info) {
+  const o = info && typeof info === 'object' ? info : {};
+  const state = o.state ? String(o.state) : 'logged-out';
+  const b = (v) => (v ? 'true' : 'false');
+  const marker = typeof o.marker === 'string' && o.marker ? o.marker : '-';
+  return `[ROOT] headless-probe2 state=${state} via=clone-inject captcha=${b(o.hasCaptcha)} marker=${marker}`;
 }
 
 /**
@@ -645,14 +669,29 @@ const BLOCKED_TEXT_MARKERS = Object.freeze([
   'check your browser'
 ]);
 
-function classifyProbeSnapshot(snapshot) {
+/**
+ * v2.48.51 (item 2 — probe tafseel): snapshot me rok
+ * ka sabab kya dikha — captcha tha ya pehla mila hua
+ * blocked-text marker. Ye sirf LOG ki tafseel hai;
+ * classifyProbeSnapshot ka OUTCOME is se bilkul nahi
+ * badalta (wo isi helper se guzarta hai taaki faisla
+ * aur tafseel kabhi alag na hon).
+ */
+function probeBlockReason(snapshot) {
   const s = snapshot || {};
   const text = String(s.text || '').toLowerCase();
-  const url = String(s.url || '').toLowerCase();
-  if (s.hasCaptcha) return 'blocked';
-  for (const marker of BLOCKED_TEXT_MARKERS) {
-    if (text.includes(marker)) return 'blocked';
+  let marker = null;
+  for (const m of BLOCKED_TEXT_MARKERS) {
+    if (text.includes(m)) { marker = m; break; }
   }
+  return { captcha: !!s.hasCaptcha, marker };
+}
+
+function classifyProbeSnapshot(snapshot) {
+  const s = snapshot || {};
+  const url = String(s.url || '').toLowerCase();
+  const blockReason = probeBlockReason(s);
+  if (blockReason.captcha || blockReason.marker) return 'blocked';
   if (url.includes('accounts.google.com') || url.includes('servicelogin')) return 'logged-out';
   if (s.hasSignIn) return 'logged-out';
   if (s.hasPromptBox || s.hasTiles || s.hasAvatar) return 'logged-in';
@@ -719,6 +758,8 @@ module.exports = {
   tolerantCloneDecision,
   headlessComboApplies,
   probeLogLine,
+  probe2LogLine,
+  probeBlockReason,
   cookieNamesForLog,
   classifyProbeSnapshot,
   createProbeCache,

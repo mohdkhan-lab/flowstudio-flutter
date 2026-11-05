@@ -6042,8 +6042,17 @@ class FlowAutomationEngine {
    *     ho, cookies 0 aayen, ya transfer nakam ho —
    *     teeno haal me clone hi chalta hai, aur us ki
    *     nakami ki wajeh / strategy note bilkul aaj
-   *     jaisi rehti hai (CDP ki nakami chup rehti
-   *     hai; sirf clone ka error bolta hai).
+   *     jaisi rehti hai.
+   * PARTNER TASK 1 (Issue #1, 2026-11-05): .47 tak
+   * CDP transfer ki nakami bilkul chup rehti thi —
+   * ZEROCLICK15 me saare attempts me sirf clone ka
+   * EBUSY bola aur transfer kabhi aazmaya bhi gaya
+   * tha ya nahi, ye log se nahi nikal saka. Ab
+   * dispatcher rasta chunne se pehle ek
+   * 'headless-session path=' line aur transfer nakam
+   * ho to us ki wajah ke saath ek 'headless-transfer
+   * failed' line deta hai; baaki sab (success line,
+   * probe, clone, strategy note) bilkul waisa hi.
    * Safal = { browser, page, capture, cloneDir }
    * (cloneDir dono raaston me wohi temp dir hai jo
    * _headlessCloseSession mitata hai); clone raste
@@ -6055,11 +6064,32 @@ class FlowAutomationEngine {
     if (liveHandle) {
       try { cookies = await this._headlessReadLiveCookies(); } catch (e) { cookies = null; }
     }
-    if (headlessHarvest.decideSessionPath({ liveHandle, cookieCount: Array.isArray(cookies) ? cookies.length : 0 }) === 'cdp') {
+    const cookieCount = Array.isArray(cookies) ? cookies.length : 0;
+    const sessionPath = headlessHarvest.decideSessionPath({ liveHandle, cookieCount });
+    // PARTNER TASK 1 (Issue #1, MK tasking + amendment,
+    // 2026-11-05): dispatcher khud EK dafa bolta hai —
+    // rasta chunne se PEHLE. Is ek line se ek hi live
+    // run me teenon haal alag ho jate hain: transfer
+    // kabhi aazmaya hi nahi (path=clone), live read ne
+    // 0 cookies diye (cookies=0), ya transfer aazmaya
+    // gaya aur nakam hua (neeche wali failed line us
+    // ki wajah naam se degi). ZEROCLICK15 me ye farq
+    // log se nikal hi nahi saka tha.
+    try { this.log(`[ROOT] headless-session path=${sessionPath} liveHandle=${liveHandle} cookies=${cookieCount}`); } catch (e) {}
+    if (sessionPath === 'cdp') {
       const session = await this._headlessLaunchTransferred(cookies);
       if (session) return session;
-      // Transfer nakam — khamoshi se clone chaare
-      // par (us ki apni lines / note bolengi).
+      // PARTNER TASK 1: transfer ki nakami ab chup
+      // nahi rehti — _headlessLaunchTransferred ne
+      // wajah this._lastTransferFailure me rakhi hai;
+      // clone par girne se pehle EK line me wahi wajah
+      // (whitespace dabaa kar, zyada se zyada 160
+      // harf). Safal transfer par ye line kabhi nahi
+      // banti; clone raste ki apni lines / strategy
+      // note bilkul waisi hi rehti hain.
+      const rawReason = this._lastTransferFailure ? String(this._lastTransferFailure) : 'unknown reason';
+      const reason = rawReason.replace(/\s+/g, ' ').trim().slice(0, 160) || 'unknown reason';
+      try { this.log(`[ROOT] headless-transfer failed (${reason}) — clone fallback will run`); } catch (e) {}
     }
     return this._headlessLaunchCloned(account);
   }
@@ -6107,17 +6137,33 @@ class FlowAutomationEngine {
    * CDP 'Network.setCookies' se navigation se pehle
    * bitha do. Launch ke usool clone raste wale hi:
    * wahi HEADLESS_MODE, wahi executable, wahi args,
-   * wahi windowless guard (guard nakam = yahan
-   * khamosh haar — clone rasta apni baari me wahi
-   * pinned HEADLESS_NOT_WINDOWLESS error phainkega,
-   * taaki note ki shakal na badle). Safal par
+   * wahi windowless guard (guard nakam = haar —
+   * clone rasta apni baari me wahi pinned
+   * HEADLESS_NOT_WINDOWLESS error phainkega, taaki
+   * note ki shakal na badle). Safal par
    * '[ROOT] headless-transfer cookies=<n> via=cdp'
    * line. Koi bhi nakami = browser band + temp dir
-   * mita + null (bulane wala clone par jata hai).
+   * mita + null (bulane wala clone par jata hai) —
+   * PARTNER TASK 1 ke baad nakami ki wajah
+   * this._lastTransferFailure me bhi rehti hai,
+   * jise dispatcher ek line me bolta hai.
    */
   async _headlessLaunchTransferred(cookies) {
+    // PARTNER TASK 1 (Issue #1, 2026-11-05): nakami
+    // ki wajah ab gum nahi hoti — har nakam wapsi
+    // this._lastTransferFailure me apni wajah rakhti
+    // hai (dispatcher use 'headless-transfer failed'
+    // line me bolta hai). Safal wapsi (session) ki
+    // shakal bilkul waisi hi hai.
+    this._lastTransferFailure = null;
+    const fail = (reason) => {
+      try { this._lastTransferFailure = reason; } catch (e) {}
+      return null;
+    };
     const mapped = headlessHarvest.mapCookiesForSetCookies(cookies);
-    if (!mapped.length) return null;
+    if (!mapped.length) {
+      return fail(`zero mapped cookies (live read returned ${Array.isArray(cookies) ? cookies.length : 0})`);
+    }
     let userDir = null;
     let browser = null;
     try {
@@ -6145,7 +6191,7 @@ class FlowAutomationEngine {
       };
       if (!headlessHarvest.launchIsWindowless(launchOpts)) {
         await headlessHarvest.removeHeadlessClone(userDir);
-        return null;
+        return fail('a windowless (headless) launch is not guaranteed on this platform');
       }
       browser = await puppeteer.launch(launchOpts);
       const pages = await browser.pages();
@@ -6175,7 +6221,11 @@ class FlowAutomationEngine {
     } catch (e) {
       try { if (browser) await browser.close(); } catch (ignored) {}
       try { if (userDir) await headlessHarvest.removeHeadlessClone(userDir); } catch (ignored) {}
-      return null;
+      // Launch ki nakami, CDP session ki ghair-
+      // maujoodgi, setCookies ka inkaar — teeno yahin
+      // aate hain; wajah launchFailureReason ki
+      // shakal me (message + code) darj hoti hai.
+      return fail(headlessHarvest.launchFailureReason(e));
     }
   }
 

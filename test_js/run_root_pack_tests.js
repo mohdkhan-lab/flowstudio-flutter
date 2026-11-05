@@ -48,7 +48,7 @@ const {
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
 const { NetworkCapture, isGooglevideoPlaybackUrl } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
-const { FlowAutomationEngine } = require('../engine/flowAutomation');
+const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
 
 let passed = 0;
@@ -1887,6 +1887,273 @@ async function main() {
     const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-tried-rejected', 0);
     eq('TRIED a rejected stream saves nothing', okSave, false);
     eq('TRIED a rejected stream is fetched exactly once', fetchCalls, 1);
+  }
+
+  // ---------------------------------------------------------------------------
+  // Q. v2.48.47 — CDP COOKIE TRANSFER + MEDIA-LOAD
+  // COMPLETION PACK (ZEROCLICK14):
+  //   (a) mapCookiesForSetCookies — getAllCookies ka
+  //       jawab setCookies ki shakal me: expires>0 hi
+  //       rehta hai, sameSite sirf Strict|Lax|None,
+  //       baaki saare fields girte hain;
+  //   (b) decideSessionPath — 'cdp' sirf live handle
+  //       + cookies>0 par, warna 'clone';
+  //   (c) _headlessReadLiveCookies (browser-level ->
+  //       page-level -> haar) aur _headlessLaunch ka
+  //       dispatch: transfer safal = clone kabhi
+  //       nahi, transfer nakam/cookies-khaali = clone;
+  //   (d) mediaBodyState / mediaLoadLogLine (khalis);
+  //   (e) completion ki TARTIB: googlevideo par
+  //       media-load pehle, flow-content par fetch
+  //       pehle (dusra sirf pehle ke nakam hone par);
+  //   (f) media-load ki asal wiring — jaali page jo
+  //       sentinel lautaye + capture kitab me
+  //       mukammal body = outcome=complete; 'ended'
+  //       par behtareen adhoori body; sentinel na
+  //       mile to saaf no-op (outcome=error).
+  // ---------------------------------------------------------------------------
+  {
+    // (a) cookie mapping
+    const full = headlessHarvest.mapCookiesForSetCookies([
+      { name: 'SID', value: 'abc', domain: '.google.com', path: '/', expires: 1893456000, httpOnly: true, secure: true, sameSite: 'Lax', size: 42, session: false, priority: 'Medium', sameParty: false, sourceScheme: 'Secure', sourcePort: 443 }
+    ]);
+    eq('Q-MAP one cookie maps', full.length, 1);
+    eq('Q-MAP only the setCookies fields survive', JSON.stringify(Object.keys(full[0]).sort()), JSON.stringify(['domain', 'expires', 'httpOnly', 'name', 'path', 'sameSite', 'secure', 'value']));
+    eq('Q-MAP name/value/domain kept', `${full[0].name}|${full[0].value}|${full[0].domain}`, 'SID|abc|.google.com');
+    eq('Q-MAP positive expires kept', full[0].expires, 1893456000);
+    eq('Q-MAP sameSite Lax kept', full[0].sameSite, 'Lax');
+    eq('Q-MAP httpOnly/secure kept', `${full[0].httpOnly}|${full[0].secure}`, 'true|true');
+    const sess = headlessHarvest.mapCookiesForSetCookies([
+      { name: 'A', value: '1', domain: 'x', path: '/', expires: -1, httpOnly: false, secure: false, sameSite: 'Strict' },
+      { name: 'B', value: '2', domain: 'x', path: '/', expires: 0, sameSite: 'None' },
+      { name: 'C', value: '', domain: 'x', sameSite: 'strict' },
+      { name: 'D', value: '4', domain: 'x', sameSite: 'unspecified' },
+      { value: 'no-name', domain: 'x' },
+      'garbage',
+      null
+    ]);
+    eq('Q-MAP nameless and garbage entries drop', sess.length, 4);
+    ok('Q-MAP session expires (-1) is dropped', !('expires' in sess[0]));
+    eq('Q-MAP sameSite Strict kept', sess[0].sameSite, 'Strict');
+    ok('Q-MAP zero expires is dropped', !('expires' in sess[1]));
+    eq('Q-MAP sameSite None kept', sess[1].sameSite, 'None');
+    eq('Q-MAP empty value is kept', sess[2].value, '');
+    ok('Q-MAP lowercase sameSite is dropped', !('sameSite' in sess[2]));
+    ok('Q-MAP unspecified sameSite is dropped', !('sameSite' in sess[3]));
+    eq('Q-MAP missing path becomes /', sess[2].path, '/');
+    eq('Q-MAP garbage input maps to empty', JSON.stringify(headlessHarvest.mapCookiesForSetCookies(null)), '[]');
+    eq('Q-MAP non-array input maps to empty', JSON.stringify(headlessHarvest.mapCookiesForSetCookies('cookies')), '[]');
+  }
+  {
+    // (b) rasta chunna
+    eq('Q-PATH live handle plus cookies is cdp', headlessHarvest.decideSessionPath({ liveHandle: true, cookieCount: 12 }), 'cdp');
+    eq('Q-PATH zero cookies falls back to clone', headlessHarvest.decideSessionPath({ liveHandle: true, cookieCount: 0 }), 'clone');
+    eq('Q-PATH no live handle is clone even with cookies', headlessHarvest.decideSessionPath({ liveHandle: false, cookieCount: 12 }), 'clone');
+    eq('Q-PATH empty input is clone', headlessHarvest.decideSessionPath({}), 'clone');
+    eq('Q-PATH garbage input is clone', headlessHarvest.decideSessionPath(null), 'clone');
+  }
+  {
+    // (c1) live cookies padhna — browser-level session
+    const eng = new FlowAutomationEngine({ onLog: () => {} });
+    const cdp = {
+      sent: [], detached: false,
+      async send(m) { this.sent.push(m); if (m === 'Network.getAllCookies') return { cookies: [{ name: 'A', value: '1' }, { name: 'B', value: '2' }] }; return {}; },
+      async detach() { this.detached = true; }
+    };
+    eng.browser = { target: () => ({ createCDPSession: async () => cdp }) };
+    eng.page = null;
+    const cookies = await eng._headlessReadLiveCookies();
+    eq('Q-CDP browser-level read returns the cookies', cookies.length, 2);
+    eq('Q-CDP getAllCookies was the call', cdp.sent[0], 'Network.getAllCookies');
+    eq('Q-CDP the read session is detached', cdp.detached, true);
+  }
+  {
+    // (c2) page-level chaara + nakami par null
+    const eng = new FlowAutomationEngine({ onLog: () => {} });
+    eng.browser = null;
+    const cdp = {
+      async send(m) { if (m === 'Network.getAllCookies') return { cookies: [{ name: 'P', value: '9' }] }; return {}; },
+      async detach() {}
+    };
+    eng.page = fakePage('q-cdp-page', { cdpClient: cdp });
+    const cookies = await eng._headlessReadLiveCookies();
+    eq('Q-CDP page-level read returns the cookies', cookies.length, 1);
+    const engBad = new FlowAutomationEngine({ onLog: () => {} });
+    engBad.browser = { target: () => ({ createCDPSession: async () => ({ async send() { throw new Error('no session'); }, async detach() {} }) }) };
+    engBad.page = null;
+    eq('Q-CDP a failing read returns null', await engBad._headlessReadLiveCookies(), null);
+    const engNone = new FlowAutomationEngine({ onLog: () => {} });
+    engNone.browser = null;
+    engNone.page = null;
+    eq('Q-CDP no handle at all returns null', await engNone._headlessReadLiveCookies(), null);
+  }
+  {
+    // (c3) dispatch — transfer pehle, clone chaara
+    const eng = new FlowAutomationEngine({ onLog: () => {} });
+    const cdp = {
+      async send(m) { if (m === 'Network.getAllCookies') return { cookies: [{ name: 'A', value: '1' }, { name: 'B', value: '2' }] }; return {}; },
+      async detach() {}
+    };
+    eng.browser = { target: () => ({ createCDPSession: async () => cdp }) };
+    eng.page = null;
+    let transferredWith = null;
+    let clonedCalls = 0;
+    eng._headlessLaunchTransferred = async (cookies) => { transferredWith = cookies; return { browser: {}, page: {}, capture: null, cloneDir: '/tmp/q' }; };
+    eng._headlessLaunchCloned = async () => { clonedCalls++; return null; };
+    const sess = await eng._headlessLaunch({ id: 'acct-q' });
+    ok('Q-DISPATCH cdp path wins when live cookies exist', !!sess && Array.isArray(transferredWith) && transferredWith.length === 2);
+    eq('Q-DISPATCH clone is not called on cdp success', clonedCalls, 0);
+    eng._headlessLaunchTransferred = async () => null;
+    await eng._headlessLaunch({ id: 'acct-q' });
+    eq('Q-DISPATCH a failed transfer falls back to clone', clonedCalls, 1);
+    const engEmpty = new FlowAutomationEngine({ onLog: () => {} });
+    engEmpty.browser = { target: () => ({ createCDPSession: async () => ({ async send() { return { cookies: [] }; }, async detach() {} }) }) };
+    engEmpty.page = null;
+    let emptyTransferred = 0;
+    let emptyCloned = 0;
+    engEmpty._headlessLaunchTransferred = async () => { emptyTransferred++; return { browser: {} }; };
+    engEmpty._headlessLaunchCloned = async () => { emptyCloned++; return null; };
+    await engEmpty._headlessLaunch({ id: 'acct-q' });
+    eq('Q-DISPATCH zero cookies never tries the transfer', emptyTransferred, 0);
+    eq('Q-DISPATCH zero cookies goes straight to clone', emptyCloned, 1);
+    const engCold = new FlowAutomationEngine({ onLog: () => {} });
+    engCold.browser = null;
+    engCold.page = null;
+    let coldCloned = 0;
+    engCold._headlessLaunchTransferred = async () => ({ browser: {} });
+    engCold._headlessLaunchCloned = async () => { coldCloned++; return null; };
+    await engCold._headlessLaunch({ id: 'acct-q' });
+    eq('Q-DISPATCH no live browser goes straight to clone', coldCloned, 1);
+  }
+  {
+    // (d) khalis media hisaab
+    eq('Q-STATE no body is none', mediaBodyState({ knownTotal: 100, partial: true, status: 206 }, null), 'none');
+    eq('Q-STATE an empty buffer is none', mediaBodyState({ knownTotal: 100, partial: true, status: 206 }, { buffer: Buffer.alloc(0) }), 'none');
+    eq('Q-STATE a body covering knownTotal is complete', mediaBodyState({ knownTotal: 1000, declared: 0, partial: true, status: 206 }, { buffer: Buffer.alloc(1000) }), 'complete');
+    eq('Q-STATE a body covering declared is complete', mediaBodyState({ knownTotal: 0, declared: 500, partial: true, status: 206 }, { buffer: Buffer.alloc(640) }), 'complete');
+    eq('Q-STATE a non-partial 200 is complete', mediaBodyState({ knownTotal: 0, declared: 0, partial: false, status: 200 }, { buffer: Buffer.alloc(10) }), 'complete');
+    eq('Q-STATE a short chunk is partial', mediaBodyState({ knownTotal: 1000, declared: 1000, partial: true, status: 206 }, { buffer: Buffer.alloc(300) }), 'partial');
+    eq('Q-STATE no entry is partial', mediaBodyState(null, { buffer: Buffer.alloc(10) }), 'partial');
+    eq('Q-LINE a complete line formats', mediaLoadLogLine({ host: 'rr4---sn-x.googlevideo.com', outcome: 'complete', bytes: 1201680 }), '[ROOT] mainpage-media-load host=rr4---sn-x.googlevideo.com outcome=complete bytes=1201680');
+    eq('Q-LINE an unknown outcome coerces to error', mediaLoadLogLine({ host: 'h', outcome: 'weird', bytes: -3 }), '[ROOT] mainpage-media-load host=h outcome=error bytes=0');
+    eq('Q-LINE garbage input is safe', mediaLoadLogLine(null), '[ROOT] mainpage-media-load host=none outcome=error bytes=0');
+  }
+  {
+    // (e) completion ki tartib
+    const mkCtx = (key) => ({ captureKey: key, bindReason: 'order', floorBytes: 500000, teacherUrl: null, teacherHash: null, timingBucket: () => 'download-attempt', gapSec: () => '0.5' });
+    const gvEntry = { url: GV_URL, src: 'googlevideo', status: 206, partial: true, contentRange: 'bytes 0-224691/1250000', declared: 1250000 };
+    const full = mp4Buffer(1250000);
+    {
+      // googlevideo: media pehle — fetch bilkul nahi
+      const eng = new FlowAutomationEngine({ onLog: () => {} });
+      let mediaCalls = 0;
+      let fetchCalls = 0;
+      eng._loadMainpageFullViaMedia = async () => { mediaCalls++; return { buf: full, status: 200 }; };
+      eng._fetchMainpageFullInPage = async () => { fetchCalls++; return null; };
+      eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+      const r = await eng._mainpageCompleteCandidate({ promptIndex: 0 }, '/tmp', { duration: '10s' }, [], gvEntry, mkCtx('k-q-gv-media'));
+      eq('Q-ORDER googlevideo saved via media first', r, 'saved');
+      eq('Q-ORDER googlevideo media called once', mediaCalls, 1);
+      eq('Q-ORDER googlevideo fetch never called', fetchCalls, 0);
+    }
+    {
+      // googlevideo: media nakam — fetch chaara
+      const eng = new FlowAutomationEngine({ onLog: () => {} });
+      let mediaCalls = 0;
+      let fetchCalls = 0;
+      eng._loadMainpageFullViaMedia = async () => { mediaCalls++; return null; };
+      eng._fetchMainpageFullInPage = async () => { fetchCalls++; return { buf: full, status: 200 }; };
+      eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+      const r = await eng._mainpageCompleteCandidate({ promptIndex: 0 }, '/tmp', { duration: '10s' }, [], gvEntry, mkCtx('k-q-gv-fetch'));
+      eq('Q-ORDER googlevideo falls back to fetch and saves', r, 'saved');
+      eq('Q-ORDER googlevideo media tried once before fetch', mediaCalls, 1);
+      eq('Q-ORDER googlevideo fetch tried once after media', fetchCalls, 1);
+    }
+    {
+      // flow-content: fetch pehle — media bilkul nahi
+      const eng = new FlowAutomationEngine({ onLog: () => {} });
+      let mediaCalls = 0;
+      let fetchCalls = 0;
+      eng._loadMainpageFullViaMedia = async () => { mediaCalls++; return { buf: full, status: 200 }; };
+      eng._fetchMainpageFullInPage = async () => { fetchCalls++; return { buf: full, status: 200 }; };
+      eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+      const fcEntry = { url: FC_FRESH, src: 'flow-content', status: 206, partial: true, contentRange: 'bytes 0-99/600000', declared: 600000 };
+      const r = await eng._mainpageCompleteCandidate({ promptIndex: 0 }, '/tmp', { duration: '10s' }, [], fcEntry, mkCtx('k-q-fc-fetch'));
+      eq('Q-ORDER flow-content saved via fetch first', r, 'saved');
+      eq('Q-ORDER flow-content fetch called once', fetchCalls, 1);
+      eq('Q-ORDER flow-content media never called', mediaCalls, 0);
+    }
+    {
+      // flow-content: fetch nakam — media dusra
+      const eng = new FlowAutomationEngine({ onLog: () => {} });
+      let mediaCalls = 0;
+      let fetchCalls = 0;
+      eng._loadMainpageFullViaMedia = async () => { mediaCalls++; return { buf: full, status: 200 }; };
+      eng._fetchMainpageFullInPage = async () => { fetchCalls++; return null; };
+      eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+      const fcEntry = { url: FC_FRESH, src: 'flow-content', status: 206, partial: true, contentRange: 'bytes 0-99/600000', declared: 600000 };
+      const r = await eng._mainpageCompleteCandidate({ promptIndex: 0 }, '/tmp', { duration: '10s' }, [], fcEntry, mkCtx('k-q-fc-media'));
+      eq('Q-ORDER flow-content falls back to media and saves', r, 'saved');
+      eq('Q-ORDER flow-content media tried once after fetch', mediaCalls, 1);
+    }
+  }
+  {
+    // (f) media-load ki asal wiring
+    const mediaPage = (ended) => ({
+      _closed: false,
+      isClosed() { return this._closed; },
+      async evaluate(fn) {
+        const src = String(fn);
+        if (src.includes('fs-media-load-started')) return 'fs-media-load-started';
+        if (src.includes('__fsMediaLoadEnded === true')) return ended;
+        return true;
+      }
+    });
+    {
+      // mukammal body capture me — outcome=complete
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageMediaLoadMs: 4000 });
+      eng.page = mediaPage(false);
+      const full = mp4Buffer(1250000);
+      const nc = eng.netCapture;
+      nc.arm();
+      nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 1250000, status: 200, contentType: 'video/mp4' }, full, 1250000, Date.now());
+      const res = await eng._loadMainpageFullViaMedia(GV_URL);
+      ok('Q-MEDIA a complete captured body returns', !!res && res.buf.length === 1250000);
+      eq('Q-MEDIA a complete body reports status 200', res && res.status, 200);
+      ok('Q-MEDIA exactly one line, outcome=complete', logs.filter(m => m.includes('mainpage-media-load')).length === 1 && logs.some(m => m.includes('outcome=complete') && m.includes('bytes=1250000')));
+    }
+    {
+      // element 'ended' — behtareen adhoori body
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageMediaLoadMs: 6000 });
+      eng.page = mediaPage(true);
+      const nc = eng.netCapture;
+      nc.arm();
+      nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000', contentType: 'video/mp4' }, mp4Buffer(224692), 224692, Date.now());
+      const res = await eng._loadMainpageFullViaMedia(GV_URL);
+      ok('Q-MEDIA ended returns the best partial body', !!res && res.buf.length === 224692);
+      eq('Q-MEDIA a partial body keeps status 206', res && res.status, 206);
+      ok('Q-MEDIA the line says outcome=ended', logs.some(m => m.includes('mainpage-media-load') && m.includes('outcome=ended') && m.includes('bytes=224692')));
+    }
+    {
+      // sentinel na mile — saaf no-op, ek line
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageMediaLoadMs: 1000 });
+      eng.page = fakePage('main-q-media-fake');
+      const res = await eng._loadMainpageFullViaMedia(GV_URL);
+      eq('Q-MEDIA a non-browser page is a clean no-op', res, null);
+      ok('Q-MEDIA the no-op logs exactly one outcome=error line', logs.filter(m => m.includes('mainpage-media-load')).length === 1 && logs.some(m => m.includes('outcome=error')));
+    }
+    {
+      // kuch capture hi na ho — timeout
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageMediaLoadMs: 1200 });
+      eng.page = mediaPage(false);
+      const res = await eng._loadMainpageFullViaMedia(GV_URL);
+      eq('Q-MEDIA nothing captured returns null', res, null);
+      ok('Q-MEDIA the line says outcome=timeout', logs.some(m => m.includes('mainpage-media-load') && m.includes('outcome=timeout')));
+    }
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

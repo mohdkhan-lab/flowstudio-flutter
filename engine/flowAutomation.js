@@ -36,6 +36,48 @@ function sleep(ms) {
 }
 
 /**
+ * v2.48.47 (MEDIA-LOAD COMPLETION): capture kitab ke
+ * hisaab se ek mainpage address ki pakdi hui body ki
+ * haalat (khalis). entry = capture ki mainpage entry
+ * (partial / status / knownTotal / declared), held =
+ * mainpageBodyForUrl ka jawab ({ buffer } | null).
+ *   'complete' — pakdi body ASAL file hai: ya to kul
+ *     (knownTotal/declared) us body se cover ho jata
+ *     hai, ya aakhri nazar ek mukammal 200 jawab thi
+ *     (partial nahi) aur yahi body us ki hai;
+ *   'partial'  — body hai lekin mukammal sabit nahi;
+ *   'none'     — koi body hi nahi.
+ * Aakhri faisla hamesha saveGuard ke darwaze karte
+ * hain — ye sirf poll rokne aur status chunne ke liye.
+ */
+function mediaBodyState(entry, held) {
+  const buf = held && held.buffer && held.buffer.length > 0 ? held.buffer : null;
+  if (!buf) return 'none';
+  if (!entry) return 'partial';
+  const total = Math.max(
+    Number.isFinite(entry.knownTotal) ? entry.knownTotal : 0,
+    Number.isFinite(entry.declared) ? entry.declared : 0
+  );
+  if (total > 0 && buf.length >= total) return 'complete';
+  if (entry.partial === false && Number(entry.status) === 200) return 'complete';
+  return 'partial';
+}
+
+/**
+ * v2.48.47: media-load ki EK log line (khalis) —
+ * '[ROOT] mainpage-media-load host=<h> outcome=<o>
+ * bytes=<n>'. outcome sirf complete | ended |
+ * timeout | error; ajnabi qeemat 'error' banti hai.
+ */
+function mediaLoadLogLine(info) {
+  const o = info && typeof info === 'object' ? info : {};
+  const host = o.host ? String(o.host) : 'none';
+  const outcome = ['complete', 'ended', 'timeout', 'error'].includes(o.outcome) ? o.outcome : 'error';
+  const bytes = Number.isFinite(o.bytes) ? Math.max(0, Math.floor(o.bytes)) : 0;
+  return `[ROOT] mainpage-media-load host=${host} outcome=${outcome} bytes=${bytes}`;
+}
+
+/**
  * FlowStudio Lite — Google Flow automation engine (adapted from the audited
  * V2 engine, keeping its proven Flow page knowledge).
  *
@@ -301,6 +343,12 @@ class FlowAutomationEngine {
     // saken.
     this.headlessHarvestWaitMs = Number(options.headlessHarvestWaitMs) > 0 ? Number(options.headlessHarvestWaitMs) : 30000;
     this.headlessNavTimeoutMs = Number(options.headlessNavTimeoutMs) > 0 ? Number(options.headlessNavTimeoutMs) : 45000;
+    // v2.48.47 (MEDIA-LOAD COMPLETION): bandhe hue
+    // mainpage address ko usi page ke ek adrishya
+    // <video> element se poora load karne ka intezaar
+    // (production 30s). Constructor option taaki test
+    // ghata saken.
+    this.mainpageMediaLoadMs = Number(options.mainpageMediaLoadMs) > 0 ? Number(options.mainpageMediaLoadMs) : 30000;
     this._headlessProbeCache = headlessHarvest.createProbeCache();
     this.nativeDownloadStallMs = Number(options.nativeDownloadStallMs) > 0 ? Number(options.nativeDownloadStallMs) : 45000;
     this.watcherSweepDelayMs = Number(options.watcherSweepDelayMs) > 0 ? Number(options.watcherSweepDelayMs) : 300000;
@@ -5566,6 +5614,166 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.47 (MEDIA-LOAD COMPLETION — ZEROCLICK14):
+   * bandha hua mainpage address usi PROJECT page ke ek
+   * ADHOC adrishya <video> element se poora load karo
+   * aur mukammal body CDP network capture se uthao.
+   * Wajah: flow.google.com ke page-JS ka fetch()
+   * googlevideo ki body nahi padh sakta ('Failed to
+   * fetch', CORS-class, koi HTTP jawab hi nahi — .46
+   * ki '[ROOT] mainpage-fetch failed' line saboot
+   * hai), lekin capture CDP satah ka hai aur us
+   * pabandi se bandha nahi — editor-harvest me editor
+   * ki playback body hamesha mukammal file thi.
+   * Element screen se BAHIR (left:-9999px), 8x8,
+   * opacity 0, muted (src se PEHLE — autoplay ki
+   * shart), playsInline; kabhi click nahi, kabhi
+   * navigation nahi; khatam ho ya haar jaye, element
+   * HAR haal me DOM se utarta hai. Poll har 500ms,
+   * hadd this.mainpageMediaLoadMs (30s): rukawat =
+   * capture me mukammal body (mediaBodyState
+   * 'complete') YA element ka 'ended' + 1.5s settle
+   * ke baad behtareen body YA waqt khatam. Har
+   * bulawa bilkul EK line deta hai:
+   * '[ROOT] mainpage-media-load host=<h>
+   * outcome=<complete|ended|timeout|error>
+   * bytes=<n>'. Wapsi fetch jaisi shakal
+   * ({buf,status}) ya null; faisla hamesha
+   * saveGuard ke darwaze karte hain.
+   */
+  async _loadMainpageFullViaMedia(url) {
+    const cap = this.netCapture;
+    let outcome = 'error';
+    let best = null;
+    const readBest = () => {
+      try {
+        const entry = cap && typeof cap.mainpageEntries === 'function'
+          ? cap.mainpageEntries().find(e => e && e.url === url) : null;
+        const held = cap && typeof cap.mainpageBodyForUrl === 'function'
+          ? cap.mainpageBodyForUrl(url) : null;
+        const state = mediaBodyState(entry, held);
+        const status = state === 'complete' ? 200
+          : (entry && Number.isFinite(entry.status) && entry.status > 0 ? entry.status : 206);
+        return { entry, held, state, candidate: held && held.buffer ? { buf: held.buffer, status } : null };
+      } catch (e) {
+        return { entry: null, held: null, state: 'none', candidate: null };
+      }
+    };
+    let pg = null;
+    let started = false;
+    try {
+      pg = this.page;
+      if (!pg || pg.isClosed() || !url || !cap) {
+        outcome = 'error';
+        return null;
+      }
+      const startedFlag = await pg.evaluate((u) => {
+        try {
+          const prev = window.__fsMediaLoadEl;
+          if (prev) {
+            try { prev.pause(); } catch (e) {}
+            try { prev.removeAttribute('src'); prev.load(); } catch (e) {}
+            try { if (prev.parentNode) prev.parentNode.removeChild(prev); } catch (e) {}
+          }
+          window.__fsMediaLoadEl = null;
+          const el = document.createElement('video');
+          el.muted = true;
+          try { el.setAttribute('muted', ''); } catch (e) {}
+          el.playsInline = true;
+          try { el.setAttribute('playsinline', ''); } catch (e) {}
+          el.preload = 'auto';
+          el.style.cssText = 'position:fixed;left:-9999px;top:0;width:8px;height:8px;opacity:0;pointer-events:none;';
+          window.__fsMediaLoadEnded = false;
+          el.addEventListener('ended', () => { window.__fsMediaLoadEnded = true; });
+          el.src = u;
+          (document.body || document.documentElement).appendChild(el);
+          window.__fsMediaLoadEl = el;
+          const p = el.play();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+          return 'fs-media-load-started';
+        } catch (e) {
+          return 'fs-media-load-failed';
+        }
+      }, url);
+      if (startedFlag !== 'fs-media-load-started') {
+        // Asal page me element kabhi bana hi nahi (ya
+        // bulane wala koi jhootha test page hai) —
+        // khamosh haar; fetch chaara neeche chalta hai.
+        outcome = 'error';
+        return null;
+      }
+      started = true;
+      const budgetMs = Math.max(500, this.mainpageMediaLoadMs || 30000);
+      const deadline = Date.now() + budgetMs;
+      let endedAt = 0;
+      outcome = 'timeout';
+      while (true) {
+        const probe = readBest();
+        // Capture kitab har URL ki SIRF aakhri body
+        // rakhti hai — is liye behtareen = sab se BADI
+        // body jo is dauraan dikhi (chhoti seek-chunk
+        // badi ko kabhi nahi dabati).
+        if (probe.candidate && (!best || probe.candidate.buf.length > best.buf.length)) best = probe.candidate;
+        if (probe.state === 'complete') { best = probe.candidate; outcome = 'complete'; break; }
+        // Pakdi hui SAB SE BADI body kul ko cover kar
+        // le to bhi mukammal hai (baad ki chhoti
+        // seek-chunk kitab me badi ki jagah le chuki
+        // ho tab bhi).
+        const seenTotal = probe.entry ? Math.max(
+          Number.isFinite(probe.entry.knownTotal) ? probe.entry.knownTotal : 0,
+          Number.isFinite(probe.entry.declared) ? probe.entry.declared : 0
+        ) : 0;
+        if (best && seenTotal > 0 && best.buf.length >= seenTotal) {
+          best = { buf: best.buf, status: 200 };
+          outcome = 'complete';
+          break;
+        }
+        let ended = false;
+        try { ended = await pg.evaluate(() => window.__fsMediaLoadEnded === true); } catch (e) { outcome = 'error'; break; }
+        if (ended) {
+          if (!endedAt) endedAt = Date.now();
+          if (Date.now() - endedAt >= 1500) {
+            const settle = readBest();
+            if (settle.candidate && (!best || settle.candidate.buf.length > best.buf.length)) best = settle.candidate;
+            outcome = settle.state === 'complete' ? 'complete' : 'ended';
+            if (outcome === 'complete') best = settle.candidate;
+            break;
+          }
+        }
+        if (Date.now() >= deadline || this.isStopping) { outcome = 'timeout'; break; }
+        await sleep(500);
+      }
+      return best;
+    } catch (e) {
+      if (outcome !== 'complete' && outcome !== 'ended') outcome = 'error';
+      return best;
+    } finally {
+      if (started && pg && !pg.isClosed()) {
+        try {
+          await pg.evaluate(() => {
+            try {
+              const el = window.__fsMediaLoadEl;
+              if (el) {
+                try { el.pause(); } catch (e) {}
+                try { el.removeAttribute('src'); el.load(); } catch (e) {}
+                try { if (el.parentNode) el.parentNode.removeChild(el); } catch (e) {}
+              }
+            } catch (e) {}
+            window.__fsMediaLoadEl = null;
+            window.__fsMediaLoadEnded = false;
+            return true;
+          });
+        } catch (e) {}
+      }
+      try {
+        let host = 'none';
+        try { host = networkCapture.hostOf(url || '') || 'none'; } catch (e) { host = 'none'; }
+        this.log(mediaLoadLogLine({ host, outcome, bytes: best ? best.buf.length : 0 }), outcome === 'error' ? 'warn' : 'info');
+      } catch (e) {}
+    }
+  }
+
+  /**
    * v2.48.42 (MAIN-PAGE BINDING PACK): VIEWPORT TRIGGER —
    * is task ki tile ko main project page par sirf
    * scrollIntoView se viewport me lao. Page grid par hi
@@ -5701,17 +5909,40 @@ class FlowAutomationEngine {
       if (held && held.buffer && held.buffer.length > 0) { buf = held.buffer; haveBody = true; }
     } catch (e) {}
     if (haveBody && entry.partial && entry.src === 'googlevideo') {
-      // googlevideo tukda mukammal nahi — poora fetch
-      // hi asal rasta hai.
+      // googlevideo tukda mukammal nahi — mukammal
+      // karne ke raste neeche hain (media-load / fetch).
       buf = null; haveBody = false;
     }
     if (!haveBody) {
-      const fetched = await this._fetchMainpageFullInPage(entry.url);
-      if (fetched && fetched.buf) {
-        buf = fetched.buf;
-        haveBody = true;
-        entry.status = fetched.status || entry.status;
-        if (fetched.status === 206) entry.partial = true;
+      // v2.48.47 (MEDIA-LOAD COMPLETION — ZEROCLICK14):
+      // in-page fetch() googlevideo ki body NAHI padh
+      // sakta ('Failed to fetch', koi HTTP jawab hi
+      // nahi — page-JS par CORS-class inkaar), lekin
+      // CDP capture us pabandi se bandha nahi hai
+      // (editor-harvest ki promoted body is ka saboot
+      // hai). Is liye googlevideo par pehle MEDIA-LOAD
+      // (usi page ka adrishya <video> element poori
+      // file khinchta hai, body capture se milti hai),
+      // fetch aakhri chaara. Baaki (flow-content)
+      // addresses par purani tartib: fetch pehle,
+      // nakam ho to media-load.
+      const isGv = entry.src === 'googlevideo' || networkCapture.isGooglevideoPlaybackUrl(entry.url);
+      const applyCompletion = (res) => {
+        if (res && res.buf) {
+          buf = res.buf;
+          haveBody = true;
+          entry.status = res.status || entry.status;
+          if (res.status === 206) entry.partial = true;
+        }
+      };
+      const tryFetch = async () => { applyCompletion(await this._fetchMainpageFullInPage(entry.url)); };
+      const tryMedia = async () => { applyCompletion(await this._loadMainpageFullViaMedia(entry.url)); };
+      if (isGv) {
+        await tryMedia();
+        if (!haveBody) await tryFetch();
+      } else {
+        await tryFetch();
+        if (!haveBody) await tryMedia();
       }
     }
     if (!haveBody || !buf) {
@@ -5789,6 +6020,166 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.47 (CDP COOKIE TRANSFER — ZEROCLICK14):
+   * headless session ka DARWAZA. Do raste, ek hi
+   * manzil — probe + editor harvest bulane wale
+   * (_tryHeadlessHarvest) ke paas rehte hain; ye
+   * function sirf LAUNCH deta hai:
+   *   ASAL rasta — CDP COOKIE TRANSFER
+   *     (_headlessLaunchTransferred): isi worker ke
+   *     LIVE browser se CDP 'Network.getAllCookies'
+   *     se cookies uthao, headless browser ko bilkul
+   *     TAAZI temp userDataDir par kholo aur
+   *     navigation se PEHLE 'Network.setCookies' se
+   *     cookies bitha do. Wajah: run ke dauraan asal
+   *     profile ki 'Default\Network\Cookies' file
+   *     generation Chrome ke lock me EBUSY rehti hai
+   *     (ZEROCLICK14 ki clone line saboot hai) —
+   *     file-copy us pal kabhi jeet hi nahi sakta;
+   *     CDP transfer par koi file lock hai hi nahi.
+   *   CHAARA — purana FILE-CLONE rasta bilkul waisa
+   *     hi (_headlessLaunchCloned): live handle na
+   *     ho, cookies 0 aayen, ya transfer nakam ho —
+   *     teeno haal me clone hi chalta hai, aur us ki
+   *     nakami ki wajeh / strategy note bilkul aaj
+   *     jaisi rehti hai (CDP ki nakami chup rehti
+   *     hai; sirf clone ka error bolta hai).
+   * Safal = { browser, page, capture, cloneDir }
+   * (cloneDir dono raaston me wohi temp dir hai jo
+   * _headlessCloseSession mitata hai); clone raste
+   * ki nakami = us ka throw.
+   */
+  async _headlessLaunch(account) {
+    let cookies = null;
+    const liveHandle = !!(this.browser || (this.page && !this.page.isClosed()));
+    if (liveHandle) {
+      try { cookies = await this._headlessReadLiveCookies(); } catch (e) { cookies = null; }
+    }
+    if (headlessHarvest.decideSessionPath({ liveHandle, cookieCount: Array.isArray(cookies) ? cookies.length : 0 }) === 'cdp') {
+      const session = await this._headlessLaunchTransferred(cookies);
+      if (session) return session;
+      // Transfer nakam — khamoshi se clone chaare
+      // par (us ki apni lines / note bolengi).
+    }
+    return this._headlessLaunchCloned(account);
+  }
+
+  /**
+   * v2.48.47: LIVE browser se is account ki cookies
+   * CDP par uthao. Pehle BROWSER-level session
+   * (this.browser.target().createCDPSession() — saare
+   * contexts ki cookies), warna is worker ke page ka
+   * session (createCDPSession ya page.target()).
+   * Wapsi: cookies array (khaali ho sakti hai) ya
+   * bilkul nakam par null. Session har haal me
+   * detach hota hai.
+   */
+  async _headlessReadLiveCookies() {
+    let session = null;
+    try {
+      if (this.browser && typeof this.browser.target === 'function') {
+        session = await this.browser.target().createCDPSession();
+      }
+    } catch (e) { session = null; }
+    if (!session) {
+      try {
+        const pg = this.page;
+        if (pg && !pg.isClosed()) {
+          if (typeof pg.createCDPSession === 'function') session = await pg.createCDPSession();
+          else if (pg.target && typeof pg.target === 'function') session = await pg.target().createCDPSession();
+        }
+      } catch (e) { session = null; }
+    }
+    if (!session) return null;
+    try {
+      const res = await session.send('Network.getAllCookies');
+      return res && Array.isArray(res.cookies) ? res.cookies : [];
+    } catch (e) {
+      return null;
+    } finally {
+      try { if (typeof session.detach === 'function') await session.detach(); } catch (e) {}
+    }
+  }
+
+  /**
+   * v2.48.47: headless browser TAAZI temp userDataDir
+   * par kholo (koi profile clone NAHI) aur cookies
+   * CDP 'Network.setCookies' se navigation se pehle
+   * bitha do. Launch ke usool clone raste wale hi:
+   * wahi HEADLESS_MODE, wahi executable, wahi args,
+   * wahi windowless guard (guard nakam = yahan
+   * khamosh haar — clone rasta apni baari me wahi
+   * pinned HEADLESS_NOT_WINDOWLESS error phainkega,
+   * taaki note ki shakal na badle). Safal par
+   * '[ROOT] headless-transfer cookies=<n> via=cdp'
+   * line. Koi bhi nakami = browser band + temp dir
+   * mita + null (bulane wala clone par jata hai).
+   */
+  async _headlessLaunchTransferred(cookies) {
+    const mapped = headlessHarvest.mapCookiesForSetCookies(cookies);
+    if (!mapped.length) return null;
+    let userDir = null;
+    let browser = null;
+    try {
+      userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-headless-'));
+      const launchOpts = {
+        executablePath: getChromeExecutablePath(),
+        headless: headlessHarvest.HEADLESS_MODE,
+        userDataDir: userDir,
+        defaultViewport: { width: 1366, height: 900 },
+        args: [
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--disable-session-crashed-bubble',
+          '--hide-crash-restore-bubble',
+          '--disable-dev-shm-usage',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-notifications',
+          '--deny-permission-prompts',
+          '--disable-popup-blocking',
+          '--disable-features=NotificationTriggers,PushMessaging',
+          '--mute-audio',
+          '--disk-cache-size=104857600'
+        ],
+        ignoreDefaultArgs: ['--enable-automation']
+      };
+      if (!headlessHarvest.launchIsWindowless(launchOpts)) {
+        await headlessHarvest.removeHeadlessClone(userDir);
+        return null;
+      }
+      browser = await puppeteer.launch(launchOpts);
+      const pages = await browser.pages();
+      const page = pages.length > 0 ? pages[0] : await browser.newPage();
+      // Taaki 'navigator.webdriver' na dikhe — clone
+      // raste wali hi safai.
+      try {
+        await page.evaluateOnNewDocument(() => {
+          try { delete Object.getPrototypeOf(navigator).webdriver; } catch (e) {}
+          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        });
+      } catch (e) {}
+      // Cookies navigation se PEHLE bithao.
+      let cdp = null;
+      try {
+        if (typeof page.createCDPSession === 'function') cdp = await page.createCDPSession();
+        else cdp = await page.target().createCDPSession();
+      } catch (e) { cdp = null; }
+      if (!cdp) throw new Error('no CDP session on the invisible browser page');
+      try { await cdp.send('Network.enable'); } catch (e) {}
+      await cdp.send('Network.setCookies', { cookies: mapped });
+      try { await cdp.detach(); } catch (e) {}
+      try { this.log(`[ROOT] headless-transfer cookies=${mapped.length} via=cdp`); } catch (e) {}
+      const capture = new networkCapture.NetworkCapture({});
+      try { capture.attach(page); } catch (e) {}
+      return { browser, page, capture, cloneDir: userDir };
+    } catch (e) {
+      try { if (browser) await browser.close(); } catch (ignored) {}
+      try { if (userDir) await headlessHarvest.removeHeadlessClone(userDir); } catch (ignored) {}
+      return null;
+    }
+  }
+
+  /**
    * v2.48.44 (HEADLESS HARVEST PACK — OPTION 2): profile
    * ki throwaway COPY par BILKUL BINA-WINDOW Chrome
    * chalao — clone sirf session ke buniyadi hisse leta
@@ -5798,8 +6189,12 @@ class FlowAutomationEngine {
    * fail ho to browser banta hi nahi — visible window
    * par girne ka khatra kabhi nahi liya jata.
    * Lautta hai: { browser, page, capture, cloneDir }.
+   * v2.48.47: ye ab CHAARA (fallback) hai —
+   * _headlessLaunch pehle CDP cookie transfer aazmata
+   * hai; ye rasta bilkul waisa hi chalta hai jab
+   * transfer mayassar na ho ya nakam ho jaye.
    */
-  async _headlessLaunch(account) {
+  async _headlessLaunchCloned(account) {
     const profileRoot = getAccountProfilePath(account.id);
     // v2.48.45: launch fail ho to EK dafa taza clone ke
     // saath dobara koshish (neeche loop) — aur har
@@ -8472,4 +8867,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine };

@@ -378,6 +378,59 @@ async function removeHeadlessClone(cloneDir) {
 }
 
 /**
+ * v2.48.47 (CDP COOKIE TRANSFER): live browser ke CDP
+ * 'Network.getAllCookies' jawab ko headless page ke
+ * 'Network.setCookies' ki shakal me badlo (khalis).
+ * Sirf setCookies wale fields rehte hain — name, value,
+ * domain, path; expires SIRF tab jab > 0 (session
+ * cookies par expires bhejna Chrome ko confuse karta
+ * hai); httpOnly / secure hamesha (boolean bana kar);
+ * sameSite SIRF tab jab wo bilkul 'Strict' | 'Lax' |
+ * 'None' ho. getAllCookies ke baaki fields (size,
+ * session, priority, sameParty, sourceScheme waghera)
+ * gir jate hain. Naam ke baghair wali entry bekaar hai
+ * — wo bhi gir jati hai (value khaali ho sakti hai,
+ * wo rehti hai). Garbage / na-array input = [].
+ */
+const SETCOOKIES_SAMESITE = Object.freeze(['Strict', 'Lax', 'None']);
+
+function mapCookiesForSetCookies(cookies) {
+  if (!Array.isArray(cookies)) return [];
+  const out = [];
+  for (const c of cookies) {
+    if (!c || typeof c !== 'object') continue;
+    if (typeof c.name !== 'string' || c.name === '') continue;
+    const mapped = {
+      name: c.name,
+      value: typeof c.value === 'string' ? c.value : String(c.value == null ? '' : c.value),
+      domain: typeof c.domain === 'string' ? c.domain : '',
+      path: typeof c.path === 'string' && c.path !== '' ? c.path : '/'
+    };
+    if (Number.isFinite(c.expires) && c.expires > 0) mapped.expires = c.expires;
+    mapped.httpOnly = !!c.httpOnly;
+    mapped.secure = !!c.secure;
+    if (SETCOOKIES_SAMESITE.includes(c.sameSite)) mapped.sameSite = c.sameSite;
+    out.push(mapped);
+  }
+  return out;
+}
+
+/**
+ * v2.48.47: headless session ka rasta chunno (khalis).
+ * 'cdp' SIRF tab jab live browser ka handle maujud ho
+ * AUR us se kam az kam ek cookie mili ho — warna
+ * 'clone' (purana file-copy rasta, jo apni jagah
+ * fallback hai). ZEROCLICK14: run ke dauraan Cookies
+ * file EBUSY-locked rehti hai, is liye transfer asal
+ * rasta hai aur clone sirf chaara.
+ */
+function decideSessionPath(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const count = Number.isFinite(o.cookieCount) ? Math.floor(o.cookieCount) : 0;
+  return o.liveHandle && count > 0 ? 'cdp' : 'clone';
+}
+
+/**
  * Probe ke snapshot ka faisla (khalis). Snapshot engine
  * headless page se ikattha karta hai:
  *   { url, hasPromptBox, hasTiles, hasAvatar, hasSignIn,
@@ -472,6 +525,8 @@ module.exports = {
   cloneFilePlan,
   buildHeadlessClone,
   removeHeadlessClone,
+  mapCookiesForSetCookies,
+  decideSessionPath,
   classifyProbeSnapshot,
   createProbeCache,
   launchIsWindowless

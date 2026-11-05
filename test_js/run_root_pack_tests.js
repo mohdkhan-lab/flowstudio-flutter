@@ -38,6 +38,7 @@ const {
   mainpageBindingPlan,
   MAINPAGE_MIN_CANDIDATE_BYTES,
   mainpageCandidateGate,
+  mainpageTooSmallMediaPick,
   fullFetchUrlCandidates,
   mainpageAuditOf,
   formatMainpageAudit,
@@ -1964,7 +1965,7 @@ async function main() {
     eng.page = null;
     const cookies = await eng._headlessReadLiveCookies();
     eq('Q-CDP browser-level read returns the cookies', cookies.length, 2);
-    eq('Q-CDP getAllCookies was the call', cdp.sent[0], 'Network.getAllCookies');
+    ok('Q-CDP getAllCookies was among the calls', cdp.sent.includes('Network.getAllCookies'));
     eq('Q-CDP the read session is detached', cdp.detached, true);
   }
   {
@@ -2470,6 +2471,309 @@ async function main() {
       eq('S-SEEK no duration still returns null', res, null);
       eq('S-SEEK no duration means no seek evaluates at all', page.srcs.filter(s => s.includes('el.currentTime')).length, 0);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // T. v2.48.49 — COOKIE-READ V2 + TOO-SMALL MEDIA-LOAD
+  //    MAUQA (ZEROCLICK16: har attempt 'headless-session
+  //    path=clone liveHandle=true cookies=0' — live
+  //    handle tha lekin akela Network.getAllCookies
+  //    read 0 deta tha (ya chup nakam — .48 null ko
+  //    bhi 0 hi chhaapti thi), CDP transfer kabhi
+  //    chuna hi nahi gaya; mainpage par full stream
+  //    aayi hi nahi, sirf too-small previews, is liye
+  //    completion kabhi engage nahi hua):
+  //   (a) aggregateCookieRead (khalis) — pehla >0
+  //       jeet-ta hai, ek ki nakami baaki nahi rokti,
+  //       saare nakam = null, saare khaali-chale =
+  //       [], gumshuda entry = err;
+  //   (b) cookieReadLogLine (khalis) — har tareeqa
+  //       count ya 'err', chosen, total;
+  //   (c) ENGINE read — browser Storage nakam par
+  //       Network phir bhi chalta hai; page-level
+  //       Storage jeet; pageApi aakhri chaara;
+  //       session detach;
+  //   (d) dispatcher — read null par 'cookies=null',
+  //       khaali read par 'cookies=0';
+  //   (e) mapCookiesForSetCookies — Puppeteer-shakal
+  //       (page.cookies) cookies ki bardasht;
+  //   (f) mainpageTooSmallMediaPick (khalis) —
+  //       too-small + URL = chunav; URL na ho / wajah
+  //       aur ho / flow-content / teacher / tried /
+  //       task se pehle ki nazar = koi chunav nahi;
+  //       sab se pehli nazar jeet-ti hai;
+  //   (g) capture — too-small nazar halki yaad me
+  //       darj, kitab (entries) me NAHI; dobara nazar
+  //       par firstSeenAt wahi;
+  //   (h) ENGINE mainpage — too-small URL par
+  //       media-load bilkul EK dafa; element poori
+  //       file kheench le to jodi body verdict se
+  //       save; kuch na aaye to attempt aaj jaisa
+  //       fail; koi too-small nazar hi na ho to
+  //       media-load kabhi nahi.
+  // ---------------------------------------------------------------------------
+  {
+    // (a) jod — khalis
+    const agg1 = headlessHarvest.aggregateCookieRead({
+      bStorage: { cookies: [] },
+      bNetwork: { cookies: [{ name: 'A' }, { name: 'B' }] },
+      pStorage: { cookies: [{ name: 'C' }, { name: 'D' }, { name: 'E' }] },
+      pNetwork: { error: 'boom' },
+      pageApi: { cookies: [] }
+    });
+    eq('T-AGG the first positive method wins', agg1.chosen, 'bNetwork');
+    eq('T-AGG total is the winning count', agg1.total, 2);
+    eq('T-AGG cookies are the winning array', agg1.cookies.length, 2);
+    eq('T-AGG a later error does not undo the win', agg1.perMethod.pNetwork.state, 'err');
+    const agg2 = headlessHarvest.aggregateCookieRead({
+      bStorage: { cookies: [{ name: 'A' }, { name: 'B' }, { name: 'C' }] },
+      bNetwork: { cookies: [{ name: 'D' }] }
+    });
+    eq('T-AGG storage wins when it is positive first', agg2.chosen, 'bStorage');
+    eq('T-AGG unattempted methods record as err', agg2.perMethod.pageApi.state, 'err');
+    const agg3 = headlessHarvest.aggregateCookieRead({
+      bStorage: { error: 'x' }, bNetwork: { error: 'y' }, pStorage: { error: 'z' },
+      pNetwork: { error: 'w' }, pageApi: { error: 'v' }
+    });
+    eq('T-AGG all-error returns null cookies', agg3.cookies, null);
+    eq('T-AGG all-error chooses none', agg3.chosen, 'none');
+    eq('T-AGG all-error total is zero', agg3.total, 0);
+    const agg4 = headlessHarvest.aggregateCookieRead({
+      bStorage: { cookies: [] }, bNetwork: { error: 'y' }, pStorage: { cookies: [] },
+      pNetwork: { cookies: [] }, pageApi: { cookies: [] }
+    });
+    ok('T-AGG all-empty-but-ran returns an empty array', Array.isArray(agg4.cookies) && agg4.cookies.length === 0);
+    eq('T-AGG all-empty chooses none', agg4.chosen, 'none');
+    const agg5 = headlessHarvest.aggregateCookieRead({
+      bStorage: { error: 'storage blew up' }, bNetwork: { error: 'network blew up' },
+      pStorage: { cookies: [{ name: 'P' }] }, pNetwork: { cookies: [] }, pageApi: { error: 'no api' }
+    });
+    eq('T-AGG an early error does not stop later methods', agg5.chosen, 'pStorage');
+    eq('T-AGG garbage input is all-error null', headlessHarvest.aggregateCookieRead(null).cookies, null);
+    eq('T-AGG long error text is capped at 60 chars', headlessHarvest.aggregateCookieRead({ bStorage: { error: 'e'.repeat(200) } }).perMethod.bStorage.error.length, 60);
+  }
+  {
+    // (b) line ki shakal — khalis
+    const agg = headlessHarvest.aggregateCookieRead({
+      bStorage: { error: 'x' },
+      bNetwork: { cookies: [{ name: 'A' }, { name: 'B' }] },
+      pStorage: { cookies: [] },
+      pNetwork: { error: 'y' },
+      pageApi: { error: 'z' }
+    });
+    eq('T-LINE the cookieread line formats exactly', headlessHarvest.cookieReadLogLine(agg), '[ROOT] headless-cookieread bStorage=err bNetwork=2 pStorage=0 pNetwork=err pageApi=err chosen=bNetwork total=2');
+    eq('T-LINE an all-error line formats exactly', headlessHarvest.cookieReadLogLine(headlessHarvest.aggregateCookieRead({})), '[ROOT] headless-cookieread bStorage=err bNetwork=err pStorage=err pNetwork=err pageApi=err chosen=none total=0');
+    eq('T-LINE garbage input is safe', headlessHarvest.cookieReadLogLine(null), '[ROOT] headless-cookieread bStorage=err bNetwork=err pStorage=err pNetwork=err pageApi=err chosen=none total=0');
+  }
+  {
+    // (c1) ENGINE — browser Storage nakam, Network
+    // phir bhi chalta hai; line darj; detach hota hai
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+    const sent = [];
+    let detached = false;
+    const cdp = {
+      async send(m) {
+        sent.push(m);
+        if (m === 'Storage.getCookies') throw new Error('storage denied');
+        if (m === 'Network.getAllCookies') return { cookies: [{ name: 'A', value: '1' }, { name: 'B', value: '2' }] };
+        return {};
+      },
+      async detach() { detached = true; }
+    };
+    eng.browser = { target: () => ({ createCDPSession: async () => cdp }) };
+    eng.page = null;
+    const cookies = await eng._headlessReadLiveCookies();
+    eq('T-READ network still runs after storage fails', cookies.length, 2);
+    ok('T-READ both browser methods were attempted in order', sent[0] === 'Storage.getCookies' && sent[1] === 'Network.getAllCookies');
+    eq('T-READ the browser session is detached', detached, true);
+    ok('T-READ the cookieread line names the outcome', logs.some(m => m === '[ROOT] headless-cookieread bStorage=err bNetwork=2 pStorage=err pNetwork=err pageApi=err chosen=bNetwork total=2'));
+  }
+  {
+    // (c2) ENGINE — page-level Storage jeet-ta hai
+    // (browser hi nahi); pageApi maujud nahi = err
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+    eng.browser = null;
+    const cdp = {
+      async send(m) {
+        if (m === 'Storage.getCookies') return { cookies: [{ name: 'P', value: '9' }] };
+        if (m === 'Network.getAllCookies') return { cookies: [{ name: 'P', value: '9' }, { name: 'Q', value: '8' }] };
+        return {};
+      },
+      async detach() {}
+    };
+    eng.page = fakePage('t-cdp-page', { cdpClient: cdp });
+    const cookies = await eng._headlessReadLiveCookies();
+    eq('T-READ page-level storage wins first', cookies.length, 1);
+    ok('T-READ the line shows the page-level win', logs.some(m => m.includes('pStorage=1') && m.includes('chosen=pStorage') && m.includes('pageApi=err')));
+  }
+  {
+    // (c3) ENGINE — CDP dono satahon par nakam,
+    // Puppeteer page.cookies() aakhri chaara jeet-ta
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+    eng.browser = { target: () => ({ createCDPSession: async () => { throw new Error('no browser session'); } }) };
+    const page = fakePage('t-api-page', {});
+    page.target = () => ({ createCDPSession: async () => { throw new Error('no page session'); } });
+    page.cookies = async () => ([
+      { name: 'A', value: '1', domain: '.google.com', path: '/', expires: -1, secure: true, httpOnly: true, sameSite: 'Lax' },
+      { name: 'B', value: '2', domain: '.google.com', path: '/', expires: 1893456000, secure: false, httpOnly: false },
+      { name: 'C', value: '3', domain: 'flow.google.com', path: '/' }
+    ]);
+    eng.page = page;
+    const cookies = await eng._headlessReadLiveCookies();
+    eq('T-READ the puppeteer api is the last resort', cookies.length, 3);
+    ok('T-READ the line shows the pageApi win', logs.some(m => m.includes('pageApi=3') && m.includes('chosen=pageApi') && m.includes('total=3')));
+  }
+  {
+    // (c4) ENGINE — paanchon nakam = null; paanchon
+    // chale lekin khaali = [] (null NAHI)
+    const engBad = new FlowAutomationEngine({ onLog: () => {} });
+    engBad.browser = { target: () => ({ createCDPSession: async () => ({ async send() { throw new Error('dead'); }, async detach() {} }) }) };
+    engBad.page = null;
+    eq('T-READ a totally failed read returns null', await engBad._headlessReadLiveCookies(), null);
+    const engEmpty = new FlowAutomationEngine({ onLog: () => {} });
+    engEmpty.browser = { target: () => ({ createCDPSession: async () => ({ async send() { return { cookies: [] }; }, async detach() {} }) }) };
+    engEmpty.page = null;
+    const empty = await engEmpty._headlessReadLiveCookies();
+    ok('T-READ an all-empty read returns an empty array, not null', Array.isArray(empty) && empty.length === 0);
+  }
+  {
+    // (d) dispatcher — null banaam 0 ki chhaap
+    const mkEng = (readResult) => {
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+      eng.browser = {};
+      eng.page = null;
+      eng._headlessReadLiveCookies = async () => readResult;
+      eng._headlessLaunchTransferred = async () => ({ browser: {} });
+      eng._headlessLaunchCloned = async () => null;
+      return { logs, eng };
+    };
+    {
+      const { logs, eng } = mkEng(null);
+      await eng._headlessLaunch({ id: 'acct-t' });
+      ok('T-DISP a null read prints cookies=null', logs.some(m => m === '[ROOT] headless-session path=clone liveHandle=true cookies=null'));
+      ok('T-DISP a null read still gets its cookieread-free clone path', !logs.some(m => m.includes('headless-transfer failed')));
+    }
+    {
+      const { logs, eng } = mkEng([]);
+      await eng._headlessLaunch({ id: 'acct-t' });
+      ok('T-DISP an empty read prints cookies=0', logs.some(m => m === '[ROOT] headless-session path=clone liveHandle=true cookies=0'));
+    }
+  }
+  {
+    // (e) mapper — Puppeteer-shakal ki bardasht
+    const mapped = headlessHarvest.mapCookiesForSetCookies([
+      { name: 'A', value: '1', domain: '.google.com', path: '/', expires: -1, secure: true, httpOnly: true, sameSite: 'Lax' },
+      { name: 'B', value: '2', domain: '.google.com', path: '/', expires: 1893456000.5, secure: false, httpOnly: false },
+      { name: 'C', value: '3', domain: 'flow.google.com', path: '/' }
+    ]);
+    eq('T-MAP puppeteer cookies all map', mapped.length, 3);
+    ok('T-MAP puppeteer session expires (-1) is dropped', !('expires' in mapped[0]));
+    eq('T-MAP puppeteer sameSite Lax is kept', mapped[0].sameSite, 'Lax');
+    eq('T-MAP puppeteer float expires is kept', mapped[1].expires, 1893456000.5);
+    ok('T-MAP a missing sameSite stays missing', !('sameSite' in mapped[2]));
+  }
+  {
+    // (f) trigger — khalis
+    const S1 = 'https://rr5---sn-ts1.googlevideo.com/videoplayback?expire=999&id=ts1&itag=18';
+    const S2 = 'https://rr4---sn-ts2.googlevideo.com/videoplayback?expire=999&id=ts2&itag=18';
+    const base = { taskStart: 1000, teacherUrl: null, triedUrls: new Set() };
+    const pick = mainpageTooSmallMediaPick({ ...base, sightings: [{ url: S1, src: 'googlevideo', reason: 'stream-too-small', firstSeenAt: 2000 }] });
+    ok('T-PICK a too-small googlevideo sighting is picked', !!pick && pick.url === S1);
+    eq('T-PICK a sighting without a URL is not picked', mainpageTooSmallMediaPick({ ...base, sightings: [{ src: 'googlevideo', reason: 'stream-too-small', firstSeenAt: 2000 }] }), null);
+    eq('T-PICK an empty URL is not picked', mainpageTooSmallMediaPick({ ...base, sightings: [{ url: '', src: 'googlevideo', reason: 'stream-too-small', firstSeenAt: 2000 }] }), null);
+    eq('T-PICK a different ignore reason is not picked', mainpageTooSmallMediaPick({ ...base, sightings: [{ url: S1, src: 'googlevideo', reason: 'not-video-candidate', firstSeenAt: 2000 }] }), null);
+    eq('T-PICK a flow-content sighting is not picked', mainpageTooSmallMediaPick({ ...base, sightings: [{ url: S1, src: 'flow-content', reason: 'stream-too-small', firstSeenAt: 2000 }] }), null);
+    eq('T-PICK the teacher URL is not picked', mainpageTooSmallMediaPick({ ...base, teacherUrl: S1, sightings: [{ url: S1, src: 'googlevideo', reason: 'stream-too-small', firstSeenAt: 2000 }] }), null);
+    eq('T-PICK an already-tried URL is not picked', mainpageTooSmallMediaPick({ ...base, triedUrls: new Set([S1]), sightings: [{ url: S1, src: 'googlevideo', reason: 'stream-too-small', firstSeenAt: 2000 }] }), null);
+    eq('T-PICK a sighting from before the task started is not picked', mainpageTooSmallMediaPick({ ...base, sightings: [{ url: S1, src: 'googlevideo', reason: 'stream-too-small', firstSeenAt: 500 }] }), null);
+    const pick2 = mainpageTooSmallMediaPick({ ...base, sightings: [
+      { url: S2, src: 'googlevideo', reason: 'stream-too-small', firstSeenAt: 3000 },
+      { url: S1, src: 'googlevideo', reason: 'stream-too-small', firstSeenAt: 2000 }
+    ] });
+    ok('T-PICK the earliest sighting wins', !!pick2 && pick2.url === S1);
+    eq('T-PICK garbage input picks nothing', mainpageTooSmallMediaPick(null), null);
+    eq('T-PICK no sightings picks nothing', mainpageTooSmallMediaPick({ ...base, sightings: [] }), null);
+  }
+  {
+    // (g) capture — yaad darj hoti hai, kitab nahi
+    const nc = new NetworkCapture({});
+    nc.arm();
+    const GV_TS = 'https://rr3---sn-tsmall.googlevideo.com/videoplayback?expire=999&id=tsm&itag=18';
+    const t0 = Date.now();
+    nc._recordMainpageSighting({ url: GV_TS, src: 'googlevideo', declared: 85725, status: 206, contentRange: 'bytes 0-85724/85725', contentType: 'video/mp4' }, mp4Buffer(85725), 85725, t0);
+    const mem = nc.mainpageTooSmallSightings();
+    eq('T-CAP the too-small sighting is remembered', mem.length, 1);
+    ok('T-CAP the memory carries url, reason and first seen', mem.length === 1 && mem[0].url === GV_TS && mem[0].reason === 'stream-too-small' && mem[0].firstSeenAt === t0);
+    eq('T-CAP the sighting still never enters the book', nc.mainpageEntries().some(e => e.url === GV_TS), false);
+    nc._recordMainpageSighting({ url: GV_TS, src: 'googlevideo', declared: 85725, status: 206, contentRange: 'bytes 0-85724/85725', contentType: 'video/mp4' }, mp4Buffer(85725), 85725, t0 + 5000);
+    const mem2 = nc.mainpageTooSmallSightings();
+    eq('T-CAP a re-sighting stays one memory entry', mem2.length, 1);
+    eq('T-CAP a re-sighting keeps the first firstSeenAt', mem2[0].firstSeenAt, t0);
+  }
+  {
+    // (h1) ENGINE — media-load EK dafa; element
+    // poori file kheench le to save verdict se hota
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 700, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
+    eng.page = fakePage('main-ts-save');
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    const GV_TS = 'https://rr5---sn-tssave.googlevideo.com/videoplayback?expire=999&id=tss&itag=18';
+    nc._recordMainpageSighting({ url: GV_TS, src: 'googlevideo', declared: 85725, status: 206, contentRange: 'bytes 0-85724/85725', contentType: 'video/mp4' }, mp4Buffer(85725), 85725, Date.now());
+    let mediaCalls = 0;
+    eng._loadMainpageFullViaMedia = async (url) => {
+      mediaCalls++;
+      // adrishya element ne poori file kheench li —
+      // asal zindagi me yahi nazar capture me aati hai
+      nc._recordMainpageSighting({ url, src: 'googlevideo', declared: 1250000, status: 200, contentRange: '', contentType: 'video/mp4' }, mp4Buffer(1250000), 1250000, Date.now());
+      return { buf: mp4Buffer(1250000), status: 200 };
+    };
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-ts-save', videoId: 'k-ts-save', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-ts-save', 0);
+    eq('T-ENG a completed too-small URL saves the task', okSave, true);
+    eq('T-ENG media-load ran exactly once for it', mediaCalls, 1);
+    eq('T-ENG the saved file is the too-small URL itself', task.completedVideoUrl, GV_TS);
+  }
+  {
+    // (h2) ENGINE — media-load chala, kuch na aaya:
+    // attempt bilkul aaj jaisa fail, media EK dafa
+    const eng = new FlowAutomationEngine({ onLog: () => {} }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 700, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
+    eng.page = fakePage('main-ts-fail');
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    const GV_TS = 'https://rr5---sn-tsfail.googlevideo.com/videoplayback?expire=999&id=tsf&itag=18';
+    nc._recordMainpageSighting({ url: GV_TS, src: 'googlevideo', declared: 110290, status: 206, contentRange: 'bytes 0-110289/110290', contentType: 'video/mp4' }, mp4Buffer(110290), 110290, Date.now());
+    let mediaCalls = 0;
+    eng._loadMainpageFullViaMedia = async () => { mediaCalls++; return null; };
+    const task = { promptIndex: 0, captureKey: 'k-ts-fail', videoId: 'k-ts-fail', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const okFail = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-ts-fail', 0);
+    eq('T-ENG an unproductive media-load still fails the attempt', okFail, false);
+    eq('T-ENG media-load still ran exactly once', mediaCalls, 1);
+  }
+  {
+    // (h3) ENGINE — too-small nazar hi nahi (sirf
+    // not-video-candidate entry): media-load kabhi
+    // nahi chalta
+    const eng = new FlowAutomationEngine({ onLog: () => {} }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 700, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
+    eng.page = fakePage('main-ts-none');
+    eng._readTileMediaState = async () => null;
+    const nc = eng.netCapture;
+    nc.arm();
+    const GV_HTML = 'https://rr6---sn-tshtml.googlevideo.com/videoplayback?expire=999&id=tsh&itag=18';
+    nc._recordMainpageSighting({ url: GV_HTML, src: 'googlevideo', declared: 0, status: 206, contentRange: '', contentType: 'text/html' }, mp4Buffer(100000), 100000, Date.now());
+    let mediaCalls = 0;
+    eng._loadMainpageFullViaMedia = async () => { mediaCalls++; return null; };
+    const task = { promptIndex: 0, captureKey: 'k-ts-none', videoId: 'k-ts-none', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const okNone = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-ts-none', 0);
+    eq('T-ENG no too-small sighting fails as before', okNone, false);
+    eq('T-ENG media-load never runs without the trigger', mediaCalls, 0);
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

@@ -761,6 +761,18 @@ class NetworkCapture {
     // rakhe hue kul (unique) bytes, cap wahi
     // HARVEST_MAX_BYTES fi-URL.
     this._mainpageBodies = new Map(); // url -> { chunks: [{ offset, buffer }], bytes, at }
+    // v2.48.49 (TOO-SMALL MEDIA-LOAD MAUQA): ummeedwaar
+    // darwaze par 'stream-too-small' se ruki nazaron ki
+    // halki yaad — { url, src, reason, bytes,
+    // firstSeenAt, at }, hadd 50, URL par ek hi entry
+    // (pehli nazar barkarar). Ye kitab mainpageVideos
+    // se ALAG hai: wahan entry/umeedwaar yahan bhi
+    // NAHI banta, bandhan/claim bilkul nahi badalta —
+    // sirf engine ko failOut se pehle us URL par
+    // media-load ka EK mauqa dene ka pata milta hai
+    // (ZEROCLICK16: sirf chhote previews aaye the aur
+    // completion kabhi engage hi nahi hua tha).
+    this._mainpageTooSmall = [];
     // Engine har download round me apni duration ka size
     // floor yahan rakh deta hai (downloadFetch wala hisaab);
     // 0 = floor nahi (aam darwaze hi laagu).
@@ -1805,7 +1817,18 @@ class NetworkCapture {
         src: pend.src === 'googlevideo' ? 'googlevideo' : 'flow-content',
         contentType: typeof pend.contentType === 'string' && pend.contentType ? pend.contentType : null
       });
-      if (!gate.candidate && gate.reason === 'stream-too-small') { emit('ignored', 'stream-too-small'); return; }
+      if (!gate.candidate && gate.reason === 'stream-too-small') {
+        // v2.48.49: nazar kitab me to nahi jati (entry
+        // bilkul nahi banti — bandhan/umeedwaar ka
+        // vyavhaar waisa hi), lekin us ka URL halki
+        // too-small yaad me darj hota hai taaki engine
+        // failOut se pehle us par media-load ko EK
+        // mauqa de sake (saveGuard.
+        // mainpageTooSmallMediaPick wahi yaad parhta
+        // hai).
+        try { this._noteMainpageTooSmall(pend, bytes, now); } catch (e) {}
+        emit('ignored', 'stream-too-small'); return;
+      }
       // v2.48.42: PEHLI nazar ka pal — dobara dikhne par
       // entry taaza hoti hai (at aage badhta hai) lekin
       // firstSeenAt sab se pehle wala hi rehta hai;
@@ -1910,6 +1933,38 @@ class NetworkCapture {
       if (bodyLen === 0) { emit('ignored', 'body-fail'); return; }
       emit('captured', partial ? 'partial-stream' : 'ok');
     } catch (e) {}
+  }
+
+  /**
+   * v2.48.49: 'stream-too-small' par ruki ek nazar ko
+   * halki yaad me darj karo. URL pehle se ho to sirf
+   * `at` aur sab se bade `bytes` taaza hote hain —
+   * firstSeenAt sab se pehli nazar ka hi rehta hai
+   * (bandhan wali timing bandish isi par chalti hai).
+   * Hadd 50 (sab se purani entry nikalti hai).
+   */
+  _noteMainpageTooSmall(pend, bytes, now) {
+    if (!pend || !pend.url) return;
+    const src = pend.src === 'googlevideo' ? 'googlevideo' : 'flow-content';
+    const prev = this._mainpageTooSmall.find(e => e.url === pend.url);
+    if (prev) {
+      prev.at = now;
+      if (Number.isFinite(bytes) && bytes > prev.bytes) prev.bytes = bytes;
+      return;
+    }
+    this._mainpageTooSmall.push({
+      url: pend.url, src, reason: 'stream-too-small',
+      bytes: Number.isFinite(bytes) ? bytes : 0,
+      firstSeenAt: now, at: now
+    });
+    while (this._mainpageTooSmall.length > 50) this._mainpageTooSmall.shift();
+  }
+
+  /** v2.48.49: too-small yaad ki nakal (engine ka media-load trigger isi par chalta hai). */
+  mainpageTooSmallSightings() {
+    try {
+      return this._mainpageTooSmall.map(e => ({ ...e }));
+    } catch (e) { return []; }
   }
 
   /** v2.48.41: mainpage kitab ki nakal (purane se naye ki taraf; buffer kabhi andar nahi). */

@@ -6153,7 +6153,13 @@ class FlowAutomationEngine {
     // gaya aur nakam hua (neeche wali failed line us
     // ki wajah naam se degi). ZEROCLICK15 me ye farq
     // log se nikal hi nahi saka tha.
-    try { this.log(`[ROOT] headless-session path=${sessionPath} liveHandle=${liveHandle} cookies=${cookieCount}`); } catch (e) {}
+    // v2.48.49: live handle hote hue read BILKUL nakam
+    // (null) ho to line 'cookies=null' bolti hai —
+    // khaali read ke 'cookies=0' se alag (ZEROCLICK16
+    // me dono haal ek ho jate the). Handle hi na ho
+    // to purani shakal (cookies=0) hi rehti hai.
+    const cookiesLabel = liveHandle && !Array.isArray(cookies) ? 'null' : String(cookieCount);
+    try { this.log(`[ROOT] headless-session path=${sessionPath} liveHandle=${liveHandle} cookies=${cookiesLabel}`); } catch (e) {}
     if (sessionPath === 'cdp') {
       const session = await this._headlessLaunchTransferred(cookies);
       if (session) return session;
@@ -6174,39 +6180,93 @@ class FlowAutomationEngine {
 
   /**
    * v2.48.47: LIVE browser se is account ki cookies
-   * CDP par uthao. Pehle BROWSER-level session
-   * (this.browser.target().createCDPSession() — saare
-   * contexts ki cookies), warna is worker ke page ka
-   * session (createCDPSession ya page.target()).
-   * Wapsi: cookies array (khaali ho sakti hai) ya
-   * bilkul nakam par null. Session har haal me
-   * detach hota hai.
+   * CDP par uthao. v2.48.49 (COOKIE-READ V2 —
+   * ZEROCLICK16): akela tareeqa ('Network.getAllCookies'
+   * browser-level par) live browser par 0 deta tha —
+   * ya chup-chaap nakam hota tha; .48 ki dispatcher
+   * line dono haal 'cookies=0' me mila deti thi aur
+   * CDP transfer kabhi chuna hi nahi gaya (zc16:
+   * 6/6 attempts 'path=clone liveHandle=true
+   * cookies=0'). Ab paanch tareeqe TARTIB se
+   * aazmaye jate hain (headlessHarvest.
+   * COOKIE_READ_METHODS): browser-level CDP
+   * 'Storage.getCookies', browser-level
+   * 'Network.getAllCookies', page-level CDP
+   * 'Storage.getCookies', page-level
+   * 'Network.getAllCookies', aakhir me Puppeteer ka
+   * page.cookies() API (teen Google/Flow pate).
+   * Pehla count>0 wala tareeqa jeet-ta hai; ek
+   * tareeqe ki nakami baaki ko nahi rokti; har
+   * session finally me detach hota hai. Har read ke
+   * baad EK '[ROOT] headless-cookieread …' line
+   * (har tareeqe ka count ya 'err', chosen, total).
+   * Wapsi: jeeta hua array; koi >0 nahi lekin kam az
+   * kam ek tareeqa chal gaya to [] (khaali read);
+   * paanchon nakam to null (asal nakami —
+   * dispatcher 'cookies=null' bolta hai).
    */
   async _headlessReadLiveCookies() {
-    let session = null;
+    const results = {};
+    const noteErr = (key, e) => {
+      const raw = e && e.message ? String(e.message) : String(e == null ? 'unknown error' : e);
+      results[key] = { error: raw.replace(/\s+/g, ' ').trim().slice(0, 60) || 'unknown error' };
+    };
+    const noteRes = (key, res) => {
+      results[key] = { cookies: res && Array.isArray(res.cookies) ? res.cookies : [] };
+    };
+    // (a)+(b) BROWSER-level CDP session ke dono
+    // tareeqe — session bane to dono usi par, har
+    // haal me detach.
+    let bSession = null;
+    let bErr = null;
     try {
       if (this.browser && typeof this.browser.target === 'function') {
-        session = await this.browser.target().createCDPSession();
+        bSession = await this.browser.target().createCDPSession();
       }
-    } catch (e) { session = null; }
-    if (!session) {
-      try {
-        const pg = this.page;
-        if (pg && !pg.isClosed()) {
-          if (typeof pg.createCDPSession === 'function') session = await pg.createCDPSession();
-          else if (pg.target && typeof pg.target === 'function') session = await pg.target().createCDPSession();
-        }
-      } catch (e) { session = null; }
+    } catch (e) { bErr = e; }
+    if (bSession) {
+      try { noteRes('bStorage', await bSession.send('Storage.getCookies')); } catch (e) { noteErr('bStorage', e); }
+      try { noteRes('bNetwork', await bSession.send('Network.getAllCookies')); } catch (e) { noteErr('bNetwork', e); }
+      try { if (typeof bSession.detach === 'function') await bSession.detach(); } catch (e) {}
+    } else {
+      noteErr('bStorage', bErr || new Error('no browser CDP session'));
+      noteErr('bNetwork', bErr || new Error('no browser CDP session'));
     }
-    if (!session) return null;
+    // (c)+(d) PAGE-level CDP session ke dono
+    // tareeqe (createCDPSession ya page.target()) —
+    // wahi usool: bane to dono, phir detach.
+    const pg = this.page;
+    let pSession = null;
+    let pErr = null;
     try {
-      const res = await session.send('Network.getAllCookies');
-      return res && Array.isArray(res.cookies) ? res.cookies : [];
-    } catch (e) {
-      return null;
-    } finally {
-      try { if (typeof session.detach === 'function') await session.detach(); } catch (e) {}
+      if (pg && !pg.isClosed()) {
+        if (typeof pg.createCDPSession === 'function') pSession = await pg.createCDPSession();
+        else if (pg.target && typeof pg.target === 'function') pSession = await pg.target().createCDPSession();
+      }
+    } catch (e) { pErr = e; }
+    if (pSession) {
+      try { noteRes('pStorage', await pSession.send('Storage.getCookies')); } catch (e) { noteErr('pStorage', e); }
+      try { noteRes('pNetwork', await pSession.send('Network.getAllCookies')); } catch (e) { noteErr('pNetwork', e); }
+      try { if (typeof pSession.detach === 'function') await pSession.detach(); } catch (e) {}
+    } else {
+      noteErr('pStorage', pErr || new Error('no page CDP session'));
+      noteErr('pNetwork', pErr || new Error('no page CDP session'));
     }
+    // (e) Puppeteer ka apna page.cookies() — CDP
+    // raaston se alag satah (Puppeteer-shakal ke
+    // cookie objects; mapCookiesForSetCookies unhe
+    // bhi sambhalta hai).
+    try {
+      if (pg && !pg.isClosed() && typeof pg.cookies === 'function') {
+        const arr = await pg.cookies('https://flow.google.com/', 'https://www.google.com/', 'https://accounts.google.com/');
+        results.pageApi = { cookies: Array.isArray(arr) ? arr : [] };
+      } else {
+        noteErr('pageApi', new Error('page.cookies unavailable'));
+      }
+    } catch (e) { noteErr('pageApi', e); }
+    const agg = headlessHarvest.aggregateCookieRead(results);
+    try { this.log(headlessHarvest.cookieReadLogLine(agg)); } catch (e) {}
+    return agg.cookies;
   }
 
   /**
@@ -7047,6 +7107,73 @@ class FlowAutomationEngine {
       if (r === 'saved') return true;
       if (r === 'ambiguous') return failOut();
     }
+    // v2.48.49 (TOO-SMALL MEDIA-LOAD MAUQA —
+    // ZEROCLICK16): bandhan tak kuch pahuncha hi
+    // nahi, lekin is attempt ki khidki me is task ki
+    // tile ki ek googlevideo stream SIRF
+    // 'stream-too-small' par ruki thi (chhota preview
+    // encode — 85,725B / 110,290B) to failOut se
+    // pehle usi URL par media-load ko EK mauqa do:
+    // adrishya element us pate ko load kare to media
+    // stack poori file ke range jawab kheench sakta
+    // hai aur .48 ki assembly unhe jod sakti hai.
+    // Us ke baad kitab dobara parhi jati hai
+    // (mainpageBodyForUrl + mediaBodyState) — body
+    // 'complete' ho to wahi bandhi-entry wali
+    // completion (saveGuard ke saare darwaze bilkul
+    // waisa hi faisla karte hain); warna attempt aaj
+    // ki tarah hi khatam hota hai. Trigger ka faisla
+    // khalis hai (saveGuard.mainpageTooSmallMediaPick)
+    // — bandhan/claim/tried-URL ke usool nahi badle;
+    // ye mauqa is attempt me sirf EK dafa chalta hai.
+    try {
+      const sightings = typeof cap.mainpageTooSmallSightings === 'function'
+        ? cap.mainpageTooSmallSightings() : [];
+      const pick = saveGuard.mainpageTooSmallMediaPick({
+        sightings,
+        taskStart: task.startTime || 0,
+        teacherUrl,
+        triedUrls
+      });
+      if (pick && pick.url && !this.isStopping && !task.mediaSaved) {
+        await this._loadMainpageFullViaMedia(pick.url);
+        const bookEntry = typeof cap.mainpageEntries === 'function'
+          ? cap.mainpageEntries().find(e => e && e.url === pick.url) : null;
+        const held = typeof cap.mainpageBodyForUrl === 'function'
+          ? cap.mainpageBodyForUrl(pick.url) : null;
+        if (!task.mediaSaved && mediaBodyState(bookEntry, held) === 'complete' && held && held.buffer && held.buffer.length > 0) {
+          // Jodi hui mukammal body ab bandhi entry ki
+          // shakal me wahi completion leti hai —
+          // partial=false / status=200 is liye ke body
+          // asal me mukammal hai (mediaBodyState ne
+          // 'complete' kaha hai); andar ke saare
+          // darwaze (floor / header / teacher / hash /
+          // duplicate) bilkul waisa hi faisla karte
+          // hain.
+          const entry = {
+            url: pick.url,
+            src: 'googlevideo',
+            byteLength: held.buffer.length,
+            headerOk: true,
+            partial: false,
+            status: 200,
+            contentRange: bookEntry && bookEntry.contentRange ? bookEntry.contentRange : '',
+            declaredLength: bookEntry && Number.isFinite(bookEntry.declared) ? bookEntry.declared : 0,
+            duplicate: false,
+            hash: null,
+            teacherHash,
+            bound: true,
+            bodyBytes: held.buffer.length,
+            at: bookEntry && Number.isFinite(bookEntry.at) ? bookEntry.at : Date.now(),
+            firstSeenAt: bookEntry && Number.isFinite(bookEntry.firstSeenAt) ? bookEntry.firstSeenAt : pick.firstSeenAt,
+            seq: bookEntry && Number.isFinite(bookEntry.seq) ? bookEntry.seq : null,
+            claimedBy: null
+          };
+          const outcome = await completeTracked(entry, 'too-small-media-load');
+          if (outcome === 'saved' || task.mediaSaved) return true;
+        }
+      }
+    } catch (e) {}
     return failOut();
   }
   /**

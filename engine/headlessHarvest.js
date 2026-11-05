@@ -431,6 +431,88 @@ function decideSessionPath(input) {
 }
 
 /**
+ * v2.48.49 (COOKIE-READ V2 — ZEROCLICK16): cookie
+ * read ke paanch tareeqon ki tartib — pehle
+ * BROWSER-level CDP session ke dono tareeqe, phir
+ * PAGE-level CDP session ke dono, aakhir me
+ * Puppeteer ka apna page.cookies() API. ZEROCLICK16
+ * ne dikhaya: .47/.48 ka akela 'Network.getAllCookies'
+ * (browser-level) live browser par 0 deta tha (ya
+ * chup-chaap nakam — dono haal 'cookies=0' me ek ho
+ * jate the) aur CDP transfer kabhi chuna hi nahi
+ * gaya; asal rukawat transfer nahi, READ thi.
+ */
+const COOKIE_READ_METHODS = Object.freeze(['bStorage', 'bNetwork', 'pStorage', 'pNetwork', 'pageApi']);
+
+/**
+ * v2.48.49: paanchon tareeqon ke nateeje jodo
+ * (khalis). Input: har tareeqe ke naam par ya to
+ * { cookies: [...] } (chal gaya — khaali ho sakta
+ * hai) ya { error: '<wajah, <=60 harf>' } (nakam).
+ * Gumshuda / kharab entry = nakam hi gina jata hai.
+ * Faisla:
+ *   - pehla tareeqa jis ne count>0 diya wahi
+ *     'chosen' hai, usi ki cookies lautti hain;
+ *   - koi >0 nahi lekin kam az kam ek chal gaya —
+ *     cookies [] (khaali, lekin nakami NAHI);
+ *   - paanchon nakam — cookies null (asal nakami;
+ *     dispatcher ise 'cookies=null' bolta hai,
+ *     khaali read ke 'cookies=0' se alag).
+ * Wapsi: { perMethod: { <naam>: { state:'ok', count,
+ * error:null } | { state:'err', count:0, error } },
+ * chosen: <naam>|'none', cookies: [...]|null,
+ * total: <chosen count> }.
+ */
+function aggregateCookieRead(results) {
+  const src = results && typeof results === 'object' ? results : {};
+  const perMethod = {};
+  let chosen = 'none';
+  let cookies = null;
+  let anyOk = false;
+  for (const name of COOKIE_READ_METHODS) {
+    const r = src[name];
+    if (r && Array.isArray(r.cookies)) {
+      perMethod[name] = { state: 'ok', count: r.cookies.length, error: null };
+      anyOk = true;
+      if (chosen === 'none' && r.cookies.length > 0) {
+        chosen = name;
+        cookies = r.cookies;
+      }
+    } else {
+      const raw = r && typeof r.error === 'string' ? r.error : 'not attempted';
+      perMethod[name] = { state: 'err', count: 0, error: raw.replace(/\s+/g, ' ').trim().slice(0, 60) || 'unknown error' };
+    }
+  }
+  if (chosen === 'none' && anyOk) cookies = [];
+  return {
+    perMethod,
+    chosen,
+    cookies,
+    total: chosen === 'none' ? 0 : perMethod[chosen].count
+  };
+}
+
+/**
+ * v2.48.49: cookieread ki EK log line (khalis) —
+ * har tareeqa count deta hai ya sirf 'err' (nakam
+ * par wajah line me nahi aati, sirf haal aata hai):
+ * '[ROOT] headless-cookieread bStorage=<n|err>
+ * bNetwork=<n|err> pStorage=<n|err>
+ * pNetwork=<n|err> pageApi=<n|err>
+ * chosen=<naam|none> total=<n>'.
+ */
+function cookieReadLogLine(agg) {
+  const a = agg && typeof agg === 'object' && agg.perMethod ? agg : aggregateCookieRead(null);
+  const fmt = (name) => {
+    const m = a.perMethod[name];
+    return m && m.state === 'ok' ? String(Math.max(0, Math.floor(m.count || 0))) : 'err';
+  };
+  const chosen = COOKIE_READ_METHODS.includes(a.chosen) ? a.chosen : 'none';
+  const total = Number.isFinite(a.total) ? Math.max(0, Math.floor(a.total)) : 0;
+  return `[ROOT] headless-cookieread bStorage=${fmt('bStorage')} bNetwork=${fmt('bNetwork')} pStorage=${fmt('pStorage')} pNetwork=${fmt('pNetwork')} pageApi=${fmt('pageApi')} chosen=${chosen} total=${total}`;
+}
+
+/**
  * Probe ke snapshot ka faisla (khalis). Snapshot engine
  * headless page se ikattha karta hai:
  *   { url, hasPromptBox, hasTiles, hasAvatar, hasSignIn,
@@ -527,6 +609,9 @@ module.exports = {
   removeHeadlessClone,
   mapCookiesForSetCookies,
   decideSessionPath,
+  COOKIE_READ_METHODS,
+  aggregateCookieRead,
+  cookieReadLogLine,
   classifyProbeSnapshot,
   createProbeCache,
   launchIsWindowless

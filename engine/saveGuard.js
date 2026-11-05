@@ -496,6 +496,58 @@ function mainpageCandidateGate(input) {
 }
 
 /**
+ * v2.48.49 (TOO-SMALL MEDIA-LOAD MAUQA — ZEROCLICK16):
+ * failOut se pehle media-load ko EK mauqa dene ka
+ * trigger (khalis). ZEROCLICK16: is run full-size
+ * stream aayi hi nahi — sirf too-small previews
+ * (85,725B / 110,290B) aayin, is liye koi ummeedwaar
+ * bandha hi nahi aur completion (media-load +
+ * assembly) kabhi engage hi nahi hua. Lekin wahi
+ * chhota preview URL aksar usi file ka pata hota
+ * hai — adrishya <video> element us URL ko load
+ * kare to media stack poori file ke range jawab
+ * kheench sakta hai (aur .48 ki assembly unhe jod
+ * sakti hai). Trigger ki shartein (saari ek saath):
+ *   - nazar capture ki too-small yaad me darj ho
+ *     (networkCapture.mainpageTooSmallSightings —
+ *     entry/umeedwaar wahan bhi NAHI banti);
+ *   - src googlevideo ho;
+ *   - ignore ki wajah SIRF 'stream-too-small' ho
+ *     (koi aur wajah = mauqa nahi);
+ *   - URL khaali na ho, teacher ka na ho, is
+ *     attempt me pehle aazmaya hua na ho;
+ *   - pehli nazar is task ke aaghaz se pehle ki na
+ *     ho (bandhan wali hi timing bandish — kisi aur
+ *     ki purani stream meri nahi ho sakti).
+ * input = { sightings, taskStart, teacherUrl,
+ *   triedUrls (Set ya array) }
+ * natija = { url, firstSeenAt } (sab se pehli
+ *   nazar wala) ya null.
+ */
+function mainpageTooSmallMediaPick(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const list = Array.isArray(o.sightings) ? o.sightings : [];
+  const taskStart = Number.isFinite(o.taskStart) ? o.taskStart : 0;
+  const teacherUrl = typeof o.teacherUrl === 'string' && o.teacherUrl ? o.teacherUrl : null;
+  const tried = o.triedUrls instanceof Set
+    ? o.triedUrls
+    : new Set(Array.isArray(o.triedUrls) ? o.triedUrls : []);
+  let best = null;
+  for (const s of list) {
+    if (!s || typeof s.url !== 'string' || !s.url) continue;
+    if (s.reason !== 'stream-too-small') continue;
+    if (s.src !== 'googlevideo') continue;
+    if (teacherUrl && s.url === teacherUrl) continue;
+    if (tried.has(s.url)) continue;
+    const seenAt = Number.isFinite(s.firstSeenAt) ? s.firstSeenAt
+      : (Number.isFinite(s.at) ? s.at : 0);
+    if (taskStart > 0 && seenAt > 0 && seenAt < taskStart) continue;
+    if (!best || seenAt < best.firstSeenAt) best = { url: s.url, firstSeenAt: seenAt };
+  }
+  return best;
+}
+
+/**
  * v2.48.42 (MAIN-PAGE BINDING PACK) → v2.48.43 (HOVER +
  * PATIENCE PACK): BINDING PLAN.
  * ZEROCLICK9 ka rukawat bandhan tha; .42 ka khidki-
@@ -697,4 +749,4 @@ function cascadeVerdict(input) {
   return { firstSeen, preEditorUrl: beforeEditor ? 'yes' : 'no' };
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, MAINPAGE_MIN_CANDIDATE_BYTES, mainpageCandidateGate, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, MAINPAGE_MIN_CANDIDATE_BYTES, mainpageCandidateGate, mainpageTooSmallMediaPick, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };

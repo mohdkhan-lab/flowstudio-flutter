@@ -2156,6 +2156,141 @@ async function main() {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // R. PARTNER TASK 1 (Issue #1, MK tasking + amendment,
+  //    2026-11-05) — headless-session ki do nayi lines
+  //    (ZEROCLICK15: transfer ki nakami chup rehti thi,
+  //    sirf clone ka EBUSY bolta tha):
+  //   (a) dispatcher har bulawa par EK 'headless-session
+  //       path=<cdp|clone> liveHandle=<..> cookies=<n>'
+  //       line — rasta chunne se PEHLE;
+  //   (b) transfer nakam ho to clone par girne se PEHLE
+  //       EK 'headless-transfer failed (<wajah>)' line —
+  //       wajah _headlessLaunchTransferred ki rakhi hui
+  //       this._lastTransferFailure (whitespace dabaa
+  //       kar, zyada se zyada 160 harf); wajah na mile
+  //       to 'unknown reason';
+  //   (c) safal transfer par, aur path=clone par, failed
+  //       line kabhi nahi banti.
+  // ---------------------------------------------------------------------------
+  {
+    const cdpWith = (cookies) => ({
+      async send(m) { if (m === 'Network.getAllCookies') return { cookies }; return {}; },
+      async detach() {}
+    });
+    {
+      // (a)+(c) cdp safal — session line ek, failed line koi nahi
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+      eng.browser = { target: () => ({ createCDPSession: async () => cdpWith([{ name: 'A', value: '1' }, { name: 'B', value: '2' }]) }) };
+      eng.page = null;
+      let cloned = 0;
+      eng._headlessLaunchTransferred = async () => ({ browser: {}, page: {}, capture: null, cloneDir: '/tmp/r' });
+      eng._headlessLaunchCloned = async () => { cloned++; return null; };
+      const sess = await eng._headlessLaunch({ id: 'acct-r' });
+      ok('R-DISPATCH cdp success returns the session', !!sess);
+      eq('R-DISPATCH clone untouched on success', cloned, 0);
+      eq('R-LINE session line appears exactly once', logs.filter(m => m.includes('headless-session path=')).length, 1);
+      ok('R-LINE session line names cdp, live handle and cookie count', logs.some(m => m === '[ROOT] headless-session path=cdp liveHandle=true cookies=2'));
+      eq('R-LINE no transfer-failed line on success', logs.filter(m => m.includes('headless-transfer failed')).length, 0);
+    }
+    {
+      // (b) transfer nakam, wajah maujud — line clone SE PEHLE
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+      eng.browser = { target: () => ({ createCDPSession: async () => cdpWith([{ name: 'A', value: '1' }]) }) };
+      eng.page = null;
+      eng._headlessLaunchTransferred = async function () { this._lastTransferFailure = 'Network.setCookies rejected: invalid cookie'; return null; };
+      eng._headlessLaunchCloned = async () => { logs.push('CLONE-RAN'); return null; };
+      await eng._headlessLaunch({ id: 'acct-r' });
+      eq('R-LINE failed line appears exactly once', logs.filter(m => m.includes('headless-transfer failed')).length, 1);
+      ok('R-LINE failed line carries the reason verbatim', logs.some(m => m === '[ROOT] headless-transfer failed (Network.setCookies rejected: invalid cookie) — clone fallback will run'));
+      ok('R-LINE failed line is logged before the clone runs', logs.findIndex(m => m.includes('headless-transfer failed')) >= 0 && logs.findIndex(m => m.includes('headless-transfer failed')) < logs.indexOf('CLONE-RAN'));
+    }
+    {
+      // (b2) wajah gum (purana bare-null andaaz) — phir bhi ek line
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+      eng.browser = { target: () => ({ createCDPSession: async () => cdpWith([{ name: 'A', value: '1' }]) }) };
+      eng.page = null;
+      let cloned = 0;
+      eng._headlessLaunchTransferred = async () => null;
+      eng._headlessLaunchCloned = async () => { cloned++; return null; };
+      await eng._headlessLaunch({ id: 'acct-r' });
+      ok('R-LINE a reason-less failure still names itself unknown', logs.some(m => m === '[ROOT] headless-transfer failed (unknown reason) — clone fallback will run'));
+      eq('R-DISPATCH a reason-less failure still falls back', cloned, 1);
+    }
+    {
+      // (b3) wajah ki safai — whitespace dabta hai, 160 harf ki hadd
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+      eng.browser = { target: () => ({ createCDPSession: async () => cdpWith([{ name: 'A', value: '1' }]) }) };
+      eng.page = null;
+      eng._headlessLaunchTransferred = async function () { this._lastTransferFailure = 'bad\n cookie\t' + 'x'.repeat(300); return null; };
+      eng._headlessLaunchCloned = async () => null;
+      await eng._headlessLaunch({ id: 'acct-r' });
+      const line = logs.find(m => m.includes('headless-transfer failed'));
+      ok('R-LINE the failed line exists for a messy reason', !!line);
+      ok('R-LINE the reason is whitespace-collapsed', !!line && !line.includes('\n') && !line.includes('\t'));
+      const reasonPart = line ? line.slice(line.indexOf('(') + 1, line.lastIndexOf(') — clone fallback')) : '';
+      ok('R-LINE the reason is capped at 160 chars', reasonPart.length > 0 && reasonPart.length <= 160);
+    }
+    {
+      // asal transferred, nakami ki qisam 1: mapped cookies zero
+      // (live read me cookie hai lekin naam wala koi nahi —
+      // Chrome bilkul nahi chalta, dispatch asal function se)
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+      eng.browser = {};
+      eng.page = null;
+      eng._headlessReadLiveCookies = async () => [{ value: 'nameless' }];
+      let cloned = 0;
+      eng._headlessLaunchCloned = async () => { cloned++; return null; };
+      await eng._headlessLaunch({ id: 'acct-r' });
+      ok('R-LINE session line counted the raw read', logs.some(m => m === '[ROOT] headless-session path=cdp liveHandle=true cookies=1'));
+      ok('R-CLASS zero mapped cookies names itself', logs.some(m => m.includes('headless-transfer failed (zero mapped cookies')));
+      eq('R-CLASS zero mapped falls back to clone', cloned, 1);
+    }
+    {
+      // asal transferred, nakami ki qisam 2: windowless guard ka
+      // inkaar (guard ko test ke liye band kiya gaya; launch
+      // bilkul nahi hota, temp dir banta aur mit jata hai)
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+      eng.browser = {};
+      eng.page = null;
+      eng._headlessReadLiveCookies = async () => [{ name: 'A', value: '1', domain: '.google.com', path: '/' }];
+      let cloned = 0;
+      eng._headlessLaunchCloned = async () => { cloned++; return null; };
+      const origGuard = headlessHarvest.launchIsWindowless;
+      headlessHarvest.launchIsWindowless = () => false;
+      try {
+        await eng._headlessLaunch({ id: 'acct-r' });
+      } finally {
+        headlessHarvest.launchIsWindowless = origGuard;
+      }
+      ok('R-CLASS guard refusal names the windowless reason', logs.some(m => m.includes('headless-transfer failed (a windowless (headless) launch is not guaranteed')));
+      eq('R-CLASS guard refusal falls back to clone', cloned, 1);
+    }
+    {
+      // (a) path=clone — session line clone ki, transfer kabhi
+      // nahi aazmaya jata, failed line koi nahi
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+      eng.browser = null;
+      eng.page = null;
+      let transferred = 0;
+      let cloned = 0;
+      eng._headlessLaunchTransferred = async () => { transferred++; return { browser: {} }; };
+      eng._headlessLaunchCloned = async () => { cloned++; return null; };
+      await eng._headlessLaunch({ id: 'acct-r' });
+      ok('R-LINE clone session line is exact', logs.some(m => m === '[ROOT] headless-session path=clone liveHandle=false cookies=0'));
+      eq('R-DISPATCH transfer never tried on the clone path', transferred, 0);
+      eq('R-LINE no transfer-failed line on the clone path', logs.filter(m => m.includes('headless-transfer failed')).length, 0);
+      eq('R-DISPATCH clone ran once', cloned, 1);
+    }
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

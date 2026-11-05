@@ -5483,6 +5483,35 @@ class FlowAutomationEngine {
    * Natija: { buf, status } | null.
    */
   async _fetchMainpageFullInPage(url, page) {
+    // v2.48.46: fetch ki nakami ab KHAMOSH nahi — har
+    // koshish ka aakhri status / bytes / error aur
+    // koshishon ki ginti darj rehti hai, aur nakam
+    // wapsi (null ya na-qabil-istemal 'best') par EK
+    // line log hoti hai. ZEROCLICK13: in-page fetch
+    // har live run me fail hua lekin us ke saare catch
+    // khaali the — CORS throw hai ya 403/empty, ye
+    // naam ab is line se milega. Fetch ka VYAVHAAR
+    // bilkul wahi hai (umeedwaar, tartib, waqt, wapsi).
+    let lastStatus = null;
+    let lastBytes = 0;
+    let lastErr = null;
+    let tries = 0;
+    let failLogged = false;
+    const noteErr = (e) => {
+      const raw = e && e.message ? String(e.message) : String(e || '');
+      const msg = raw.replace(/\s+/g, ' ').trim().slice(0, 160);
+      if (msg) lastErr = msg;
+    };
+    const logFetchFailure = () => {
+      if (failLogged || tries === 0) return;
+      failLogged = true;
+      try {
+        if (typeof this.log !== 'function') return;
+        let host = 'none';
+        try { host = networkCapture.hostOf(url) || 'none'; } catch (e) { host = 'none'; }
+        this.log(`[ROOT] mainpage-fetch failed host=${host} lastStatus=${lastStatus == null ? 'none' : lastStatus} lastBytes=${lastBytes} lastErr=${lastErr || 'none'} tries=${tries}`, 'warn');
+      } catch (e) {}
+    };
     try {
       // v2.48.44: page diya jaye to wahi (headless-harvest
       // apna adrishya page deta hai), warna apna MAIN page.
@@ -5492,6 +5521,7 @@ class FlowAutomationEngine {
       let best = null;
       for (const u of candidates) {
         for (const useRange of [false, true]) {
+          tries++;
           try {
             const res = await downloadGuard.withTimeout(
               pg.evaluate(async (uu, withRange) => {
@@ -5507,18 +5537,30 @@ class FlowAutomationEngine {
                 return { status: r.status, b64: btoa(out) };
               }, u, useRange),
               25000, 'mainpage full fetch');
-            if (!res || !res.b64) continue;
+            if (!res || !res.b64) {
+              if (res && Number.isFinite(res.status)) lastStatus = res.status;
+              continue;
+            }
             const buf = Buffer.from(res.b64, 'base64');
+            if (Number.isFinite(res.status)) lastStatus = res.status;
+            if (buf) lastBytes = buf.length;
             if (!buf || buf.length === 0 || buf.length > 16 * 1024 * 1024) continue;
             if (res.status !== 206 && downloadFetch.looksLikeVideoBuffer(buf)) {
               return { buf, status: res.status };
             }
             if (!best || buf.length > best.buf.length) best = { buf, status: res.status };
-          } catch (e) {}
+          } catch (e) { noteErr(e); }
         }
       }
+      // 'best' yahan pahuncha matlab koi jawab kaam ka
+      // nahi tha (206 ka tukda ya video-header ke
+      // baghair) — nakami naam se darj.
+      const usable = !!best && best.status !== 206 && downloadFetch.looksLikeVideoBuffer(best.buf);
+      if (!usable) logFetchFailure();
       return best;
     } catch (e) {
+      noteErr(e);
+      logFetchFailure();
       return null;
     }
   }
@@ -5638,7 +5680,11 @@ class FlowAutomationEngine {
    * bindReason, floorBytes, teacherUrl, teacherHash,
    * timingBucket, gapSec }. Jeet par address is task
    * ke naam claim hota hai (claim-once) aur khidki
-   * band hoti hai. Lautta hai: true (save) | false.
+   * band hoti hai. Lautta hai (v2.48.46): 'saved' |
+   * 'rejected' (faisla hua, action save nahi) |
+   * 'no-body' (body mili hi nahi — faisle se pehle
+   * wapsi; bulane wala isi farq par triedUrls ka
+   * zeher-khatma karta hai).
    */
   async _mainpageCompleteCandidate(task, downloadFolder, settings, attempts, entry, ctx) {
     const n = task.promptIndex + 1;
@@ -5668,7 +5714,16 @@ class FlowAutomationEngine {
         if (fetched.status === 206) entry.partial = true;
       }
     }
-    if (!haveBody || !buf) return false;
+    if (!haveBody || !buf) {
+      // v2.48.46: 'no body' wapsi ab naam se darj —
+      // .45 tak ye khamoshi se false laut jati thi
+      // (aur URL triedUrls me zeher ban kar reh jata
+      // tha). Host naam ke saath line banti hai.
+      try {
+        this.log(`[ROOT] [Prompt #${n}] mainpage-complete: no body from in-page fetch host=${networkCapture.hostOf(entry.url)}`, 'warn');
+      } catch (e) {}
+      return 'no-body';
+    }
     const verdictFor = (b, statusOverride) => {
       const hash = saveGuard.contentHash(b);
       let dup = false;
@@ -5702,7 +5757,7 @@ class FlowAutomationEngine {
     }
     if (verdict.action !== 'save') {
       this.log(`[ROOT] [Prompt #${n}] mainpage-harvest candidate rejected (${verdict.reason}) — trying the remaining main-page candidates`, 'warn');
-      return false;
+      return 'rejected';
     }
     try {
       cap.claimMainpageVideo(entry.url, { key: captureKey || null, label: String(n) });
@@ -5723,10 +5778,14 @@ class FlowAutomationEngine {
         this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${ctx.timingBucket()}`, 'info');
       } catch (e) {}
       attempts.push({ strategy: 'mainpage-harvest', ok: true, note: `the file was captured from the main project page's own stream (${entry.src}), bound to this video by ${ctx.bindReason || 'binding'}, and completed with a full fetch inside that same page — no editor opened anywhere, no click, no menu; render→save gap ${g}s` });
-      return true;
+      return 'saved';
     }
     attempts.push({ strategy: 'mainpage-harvest', ok: false, note: `the main-page stream for this video did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'})` });
-    return false;
+    // v2.48.46: body mili, faisla save tha, lekin save
+    // ki jaanch nakam — bulane wale ke liye ye bhi
+    // 'rejected' hi hai (URL triedUrls me rehta hai;
+    // zeher-khatma sirf 'no-body' par hota hai).
+    return 'rejected';
   }
 
   /**
@@ -5752,12 +5811,28 @@ class FlowAutomationEngine {
     try {
       clone = await headlessHarvest.buildHeadlessClone(profileRoot, cloneDir);
     } catch (e) {
+      // v2.48.46: clone FAIL par bhi us ka hisaab log
+      // hota hai — throw ke saath chipka cloneReport
+      // (ZEROCLICK13 me ye line sirf kamyabi par banti
+      // thi, is liye missing-vs-copy-fail ka farq live
+      // run me dikha hi nahi).
+      if (e && e.cloneReport) {
+        try { this.log(headlessHarvest.cloneLogLine(e.cloneReport)); } catch (ignored) {}
+        if (e.cloneReport.cookiesRel) {
+          try { this.log(`[ROOT] headless-clone cookies-found-at=${e.cloneReport.cookiesRel}`); } catch (ignored) {}
+        }
+      }
       await headlessHarvest.removeHeadlessClone(cloneDir);
       throw e;
     }
     // v2.48.45: clone ka hisaab ek line me — copy
     // warnings ab kahin gum nahi hoti.
     try { this.log(headlessHarvest.cloneLogLine(clone)); } catch (e) {}
+    // v2.48.46: scan se mili ghair-mamooli Cookies
+    // jagah bhi naam se darj.
+    if (clone && clone.cookiesRel) {
+      try { this.log(`[ROOT] headless-clone cookies-found-at=${clone.cookiesRel}`); } catch (e) {}
+    }
     const launchOpts = {
       executablePath: getChromeExecutablePath(),
       headless: headlessHarvest.HEADLESS_MODE,
@@ -6263,6 +6338,27 @@ class FlowAutomationEngine {
       task, downloadFolder, settings, attempts, entry,
       { captureKey, bindReason, floorBytes, teacherUrl, teacherHash, timingBucket, gapSec }
     );
+    // v2.48.46 (TRIED-URLS POISONING FIX — ZEROCLICK13):
+    // pehle har bandha URL completion se PEHLE
+    // triedUrls me daal diya jata tha aur 'no-body'
+    // nakami par wahan ZEHER ban kar reh jata tha —
+    // wahi mukammal-size stream (jo plan ne durust
+    // bandha tha) poori koshish ke liye bahar ho jati
+    // thi ('already-tried-this-attempt'). Ab hisaab
+    // completionTries me rehta hai: 'no-body' par URL
+    // triedUrls se NIKAL jata hai taaki watch use ek
+    // dafa aur parkh sake; dusri 'no-body' par (ginti
+    // 2) triedUrls me rehta hai. 'rejected' / 'saved'
+    // par purana vyavhaar hi hai.
+    const completionTries = new Map();
+    const completeTracked = async (entry, bindReason) => {
+      triedUrls.add(entry.url);
+      const count = (completionTries.get(entry.url) || 0) + 1;
+      completionTries.set(entry.url, count);
+      const outcome = await completeWith(entry, bindReason);
+      if (outcome === 'no-body' && count < 2) triedUrls.delete(entry.url);
+      return outcome;
+    };
     // Binding plan ek dafa chalao (maujooda kitab par):
     // 'saved' | 'ambiguous' | 'none'. v2.48.43: plan
     // ab TARTEEB par hai (saveGuard.mainpageBindingPlan)
@@ -6322,13 +6418,12 @@ class FlowAutomationEngine {
       if (plan.bind && plan.url) {
         const entry = live.find(a => a.url === plan.url);
         if (entry) {
-          triedUrls.add(entry.url);
           let bindReason = plan.reason;
           if (opts && Number.isFinite(opts.watchStart) && entry.firstSeenAt >= opts.watchStart) {
             bindReason = 'viewport-trigger';
           }
-          const saved = await completeWith(entry, bindReason);
-          if (saved || task.mediaSaved) return 'saved';
+          const outcome = await completeTracked(entry, bindReason);
+          if (outcome === 'saved' || task.mediaSaved) return 'saved';
         }
       }
       return 'none';
@@ -6346,9 +6441,8 @@ class FlowAutomationEngine {
         const pickRes = saveGuard.mainpageEntryPick({ entries: strong, teacherUrl, floorBytes });
         if (pickRes.pick && pickRes.url) {
           const entry = strong[pickRes.index];
-          triedUrls.add(entry.url);
-          const saved = await completeWith(entry, 'bound');
-          if (saved || task.mediaSaved) return true;
+          const outcome = await completeTracked(entry, 'bound');
+          if (outcome === 'saved' || task.mediaSaved) return true;
         }
       }
     }

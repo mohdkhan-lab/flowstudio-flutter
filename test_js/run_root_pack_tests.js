@@ -1676,6 +1676,219 @@ async function main() {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // P. v2.48.46 — FETCH DIAGNOSTICS + TRIED-URLS POISONING
+  //    FIX + CLONE FAILURE REPORT / COOKIES DISCOVERY
+  //    (ZEROCLICK13):
+  //   (a) clone throw: err.cloneReport chipka hua;
+  //       ibarat not-found vs copy-failed ka farq
+  //       naam se batati hai;
+  //   (b) cookies discovery scan: 'Profile 1/Network/
+  //       Cookies' milta hai (+ sidecar), gehrai >3
+  //       wala aur lock-naam dir wala NAHI milta;
+  //       khalis listDir detector se bhi;
+  //   (c) fetch diagnostics: nakam in-page fetch ki
+  //       EK line (host/status/bytes/error/tries);
+  //       kamyab fetch par koi line nahi;
+  //   (d) completion ke teen nateeje seedha
+  //       _mainpageCompleteCandidate se: 'no-body' /
+  //       'rejected' / 'saved';
+  //   (e) triedUrls zeher-khatma ENGINE ki satah par:
+  //       pehli no-body par URL ek dafa aur parkha
+  //       jata hai (fetch kul 2), dusri par tried
+  //       rehta hai; verdict-rejected par fetch
+  //       sirf EK dafa (hamesha tried).
+  // ---------------------------------------------------------------------------
+  {
+    const fsx = require('fs');
+    const osx = require('os');
+    const pathx = require('path');
+    const { buildHeadlessClone, removeHeadlessClone, cloneFilePlan, findCookiesRel, cloneLogLine } = headlessHarvest;
+    // (a1) source me Cookies hai hi nahi — not-found.
+    {
+      const root = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'hh46-miss-'));
+      fsx.writeFileSync(pathx.join(root, 'Local State'), '{}');
+      let err = null;
+      try { await buildHeadlessClone(root, pathx.join(osx.tmpdir(), `hh46-miss-clone-${Date.now()}`)); } catch (e) { err = e; }
+      ok('HH46-MISS the no-Cookies clone still throws', !!err);
+      eq('HH46-MISS the message says not found in the source profile', err && err.message, 'the profile copy has no Cookies file (not found in the source profile — see the headless-clone line)');
+      ok('HH46-MISS the error carries the clone report', !!err && !!err.cloneReport);
+      ok('HH46-MISS the report lists what was copied', !!err && err.cloneReport.copied.includes('Local State'));
+      ok('HH46-MISS the report lists both Cookies paths as missing', !!err && err.cloneReport.missing.includes(pathx.join('Default', 'Network', 'Cookies')) && err.cloneReport.missing.includes(pathx.join('Default', 'Cookies')));
+      ok('HH46-MISS the report warnings are an array', !!err && Array.isArray(err.cloneReport.warnings));
+      eq('HH46-MISS the report cookiesRel is null on the standard layout', err && err.cloneReport.cookiesRel, null);
+      ok('HH46-MISS the clone log line renders from the failure report', !!err && cloneLogLine(err.cloneReport).startsWith('[ROOT] headless-clone copied='));
+      fsx.rmSync(root, { recursive: true, force: true });
+    }
+    // (a2) Cookies plan me hai, copy nakam — copy-failed.
+    {
+      const root = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'hh46-fail-'));
+      const cloneDir = pathx.join(osx.tmpdir(), `hh46-fail-clone-${Date.now()}`);
+      const w = (rel, content) => { const p = pathx.join(root, rel); fsx.mkdirSync(pathx.dirname(p), { recursive: true }); fsx.writeFileSync(p, content); };
+      w('Local State', '{}');
+      w(pathx.join('Default', 'Network', 'Cookies'), 'COOKIES-DB');
+      const realCopyFile = fsx.promises.copyFile;
+      fsx.promises.copyFile = async (src, dest) => {
+        if (String(src).endsWith('Cookies')) { const e = new Error('simulated copy boom'); e.code = 'EIO'; throw e; }
+        return realCopyFile(src, dest);
+      };
+      let err = null;
+      try { await buildHeadlessClone(root, cloneDir); } catch (e) { err = e; } finally { fsx.promises.copyFile = realCopyFile; }
+      ok('HH46-FAIL the failed-copy clone throws', !!err);
+      ok('HH46-FAIL the message says copy failed', !!err && err.message.startsWith('the profile copy has no Cookies file (copy failed:'));
+      ok('HH46-FAIL the message carries the first copy warning', !!err && err.message.includes('simulated copy boom'));
+      ok('HH46-FAIL the report warning names the Cookies copy', !!err && err.cloneReport.warnings.some(x => x.includes('Cookies') && x.includes('simulated copy boom')));
+      ok('HH46-FAIL the Cookies file is not in the copied list', !!err && !err.cloneReport.copied.some(r => r.endsWith('Cookies')));
+      ok('HH46-FAIL Local State still copied', !!err && err.cloneReport.copied.includes('Local State'));
+      await removeHeadlessClone(cloneDir);
+      fsx.rmSync(root, { recursive: true, force: true });
+    }
+    // (b1) discovery scan — asal profile tree.
+    {
+      const root = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'hh46-scan-'));
+      const cloneDir = pathx.join(osx.tmpdir(), `hh46-scan-clone-${Date.now()}`);
+      const w = (rel, content) => { const p = pathx.join(root, rel); fsx.mkdirSync(pathx.dirname(p), { recursive: true }); fsx.writeFileSync(p, content); };
+      w('Local State', '{}');
+      w(pathx.join('Profile 1', 'Network', 'Cookies'), 'P1-COOKIES');
+      w(pathx.join('Profile 1', 'Network', 'Cookies') + '-wal', 'P1-WAL');
+      w(pathx.join('Deep', 'A', 'B', 'Cookies'), 'TOO-DEEP');
+      const foundRel = pathx.join('Profile 1', 'Network', 'Cookies');
+      eq('HH46-SCAN the scan finds the Profile 1 cookies', findCookiesRel(root), foundRel);
+      const plan = cloneFilePlan(root);
+      ok('HH46-SCAN the plan carries the scanned cookies entry', plan.some(p => p.rel === foundRel && p.viaScan === true));
+      ok('HH46-SCAN the plan carries the scanned sidecar too', plan.some(p => p.rel === foundRel + '-wal'));
+      const res = await buildHeadlessClone(root, cloneDir);
+      eq('HH46-SCAN the scanned cookies are copied', fsx.readFileSync(pathx.join(cloneDir, foundRel), 'utf8'), 'P1-COOKIES');
+      eq('HH46-SCAN the result reports where the cookies were found', res.cookiesRel, foundRel);
+      await removeHeadlessClone(cloneDir);
+      fsx.rmSync(root, { recursive: true, force: true });
+    }
+    // (b2) gehrai >3 wala aur lock-naam dir wala NAHI.
+    {
+      const root = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'hh46-deep-'));
+      const w = (rel, content) => { const p = pathx.join(root, rel); fsx.mkdirSync(pathx.dirname(p), { recursive: true }); fsx.writeFileSync(p, content); };
+      w('Local State', '{}');
+      w(pathx.join('Deep', 'A', 'B', 'Cookies'), 'TOO-DEEP');
+      w(pathx.join('lockfile', 'Cookies'), 'LOCKED-AWAY');
+      eq('HH46-SCAN a depth-4 or locked-away cookies file is not found', findCookiesRel(root), null);
+      fsx.rmSync(root, { recursive: true, force: true });
+    }
+    // (b3) khalis scan — jaali listDir detector.
+    {
+      const plan = cloneFilePlan('/nowhere', {
+        exists: () => false,
+        isDir: () => false,
+        listDir: (rel) => {
+          if (rel === '') return [{ name: 'Profile 9', isDir: true, isFile: false }];
+          if (rel === 'Profile 9') return [{ name: 'Cookies', isDir: false, isFile: true }];
+          return null;
+        }
+      });
+      ok('HH46-SCAN the pure plan uses the injected scan', plan.some(p => p.rel === pathx.join('Profile 9', 'Cookies') && p.viaScan === true));
+    }
+  }
+  {
+    // (c) FETCH DIAGNOSTICS — nakam fetch ki ek line.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+    eng.page = fakePage('main-fetch-diag', { evaluateResult: { status: 403, b64: Buffer.from('<html>forbidden</html>').toString('base64') } });
+    const best = await eng._fetchMainpageFullInPage(GV_URL);
+    ok('FETCHDIAG an unusable best is still returned as before', !!best && best.status === 403);
+    ok('FETCHDIAG the failure line names host and status', logs.some(m => m.includes('[ROOT] mainpage-fetch failed') && m.includes('host=rr2---sn-abc123.googlevideo.com') && m.includes('lastStatus=403')));
+    ok('FETCHDIAG the failure line counts the tries', logs.some(m => m.includes('[ROOT] mainpage-fetch failed') && /tries=[1-9]/.test(m)));
+    eq('FETCHDIAG the failure line comes exactly once', logs.filter(m => m.includes('[ROOT] mainpage-fetch failed')).length, 1);
+  }
+  {
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+    eng.page = fakePage('main-fetch-throw', { evaluateResult: () => { throw new Error('CORS blocked by policy'); } });
+    const none = await eng._fetchMainpageFullInPage(GV_URL);
+    eq('FETCHDIAG a throwing fetch still returns null', none, null);
+    ok('FETCHDIAG the failure line names the error', logs.some(m => m.includes('[ROOT] mainpage-fetch failed') && m.includes('lastStatus=none') && m.includes('CORS blocked by policy')));
+  }
+  {
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+    const full = mp4Buffer(1250000);
+    eng.page = fakePage('main-fetch-ok', { evaluateResult: { status: 200, b64: full.toString('base64') } });
+    const good = await eng._fetchMainpageFullInPage(GV_URL);
+    ok('FETCHDIAG a usable fetch returns the buffer', !!good && good.status === 200 && good.buf.length === 1250000);
+    ok('FETCHDIAG a usable fetch logs no failure line', !logs.some(m => m.includes('[ROOT] mainpage-fetch failed')));
+  }
+  {
+    // (d) COMPLETION KE TEEN NATEEJE — seedha
+    // _mainpageCompleteCandidate, jaali fetch ke saath.
+    const mkCtx = () => ({ captureKey: 'k-kinds', bindReason: 'order', floorBytes: 500000, teacherUrl: null, teacherHash: null, timingBucket: () => 'download-attempt', gapSec: () => '0.5' });
+    const mkEntry = () => ({ url: GV_URL, src: 'googlevideo', partial: true, status: 206, contentRange: '', declaredLength: 0 });
+    {
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+      eng._fetchMainpageFullInPage = async () => null;
+      const kind = await eng._mainpageCompleteCandidate({ promptIndex: 0 }, '/tmp', { duration: '10s' }, [], mkEntry(), mkCtx());
+      eq('KINDS a fetch that yields nothing is no-body', kind, 'no-body');
+      ok('KINDS the no-body line names the host', logs.some(m => m.includes('[ROOT] [Prompt #1] mainpage-complete: no body from in-page fetch') && m.includes('host=rr2---sn-abc123.googlevideo.com')));
+    }
+    {
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+      eng._fetchMainpageFullInPage = async () => ({ buf: Buffer.from('<html><body>not a video</body></html>'), status: 200 });
+      const kind = await eng._mainpageCompleteCandidate({ promptIndex: 0 }, '/tmp', { duration: '10s' }, [], mkEntry(), mkCtx());
+      eq('KINDS a verdict that is not save is rejected', kind, 'rejected');
+      ok('KINDS the rejection is logged as before', logs.some(m => m.includes('mainpage-harvest candidate rejected')));
+    }
+    {
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+      const full = mp4Buffer(1250000); full[200] = 0x46;
+      eng._fetchMainpageFullInPage = async () => ({ buf: full, status: 200 });
+      eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+      const attempts = [];
+      const kind = await eng._mainpageCompleteCandidate({ promptIndex: 0 }, '/tmp', { duration: '10s' }, attempts, mkEntry(), mkCtx());
+      eq('KINDS a saved completion is saved', kind, 'saved');
+      ok('KINDS the save is recorded in the attempts', attempts.some(a => a.strategy === 'mainpage-harvest' && a.ok));
+    }
+  }
+  {
+    // (e1) TRIED-URLS — pehli no-body par URL zeher
+    // NAHI banta: watch use ek dafa aur parakhta hai
+    // (fetch kul 2 dafa); dusri no-body ke baad wo
+    // tried rehta hai (aur fetch NAHI hota).
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 700, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
+    eng.page = fakePage('main-tried-nobody');
+    eng._readTileMediaState = async () => null;
+    let fetchCalls = 0;
+    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return null; };
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const nc = eng.netCapture;
+    nc.arm();
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000', contentType: 'video/mp4' }, mp4Buffer(224692), 224692, Date.now());
+    const task = { promptIndex: 0, captureKey: 'k-tried-nobody', videoId: 'k-tried-nobody', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-tried-nobody', 0);
+    eq('TRIED a no-body stream still saves nothing', okSave, false);
+    eq('TRIED the stream is completed exactly twice (the first no-body frees it, the second keeps it tried)', fetchCalls, 2);
+    ok('TRIED both no-body completions are logged', logs.filter(m => m.includes('mainpage-complete: no body')).length >= 2);
+  }
+  {
+    // (e2) TRIED-URLS — verdict-rejected URL hamesha
+    // tried rehta hai: poori koshish me fetch sirf
+    // EK dafa hota hai.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 700, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
+    eng.page = fakePage('main-tried-rejected');
+    eng._readTileMediaState = async () => null;
+    let fetchCalls = 0;
+    eng._fetchMainpageFullInPage = async () => { fetchCalls++; return { buf: Buffer.from('<html><body>not a video</body></html>'), status: 200 }; };
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const nc = eng.netCapture;
+    nc.arm();
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000', contentType: 'video/mp4' }, mp4Buffer(224692), 224692, Date.now());
+    const task = { promptIndex: 0, captureKey: 'k-tried-rejected', videoId: 'k-tried-rejected', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+    const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-tried-rejected', 0);
+    eq('TRIED a rejected stream saves nothing', okSave, false);
+    eq('TRIED a rejected stream is fetched exactly once', fetchCalls, 1);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

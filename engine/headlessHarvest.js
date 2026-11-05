@@ -173,11 +173,54 @@ function cloneLogLine(result) {
 }
 
 /**
+ * v2.48.46: COOKIES DISCOVERY SCAN — jab Cookies apni
+ * dono jaani-pehchani jaghon (Default/Network/Cookies,
+ * Default/Cookies) par NA mile, to profile root ke
+ * andar gehrai ≤3 tak bilkul 'Cookies' NAAM ki file
+ * dhundo (masalan 'Profile 1/Network/Cookies' — Chrome
+ * ke named profiles session wahan rakhte hain). Lock
+ * naam wali directories me nahi utarte (CLONE_SKIP_
+ * NAMES). Pehli mili jagah (gehrai pehle, phir naam
+ * ki tartib) wapas. Kuch na mile to null. `listDir`
+ * detector tests ke liye; na ho to asal fs.
+ */
+function findCookiesRel(profileRoot, detectors = {}) {
+  const listDir = typeof detectors.listDir === 'function'
+    ? detectors.listDir
+    : (rel) => {
+      try {
+        return fs.readdirSync(rel ? path.join(profileRoot, rel) : profileRoot, { withFileTypes: true })
+          .map(e => ({ name: e.name, isDir: e.isDirectory(), isFile: e.isFile() }));
+      } catch (e) { return null; }
+    };
+  const queue = [''];
+  while (queue.length > 0) {
+    const dirRel = queue.shift();
+    const depth = dirRel === '' ? 0 : dirRel.split(path.sep).length;
+    let entries = null;
+    try { entries = listDir(dirRel); } catch (e) { entries = null; }
+    if (!Array.isArray(entries)) continue;
+    const sorted = entries.slice().sort((a, b) => (a.name < b.name ? -1 : (a.name > b.name ? 1 : 0)));
+    for (const entry of sorted) {
+      if (!entry || typeof entry.name !== 'string') continue;
+      const rel = dirRel ? path.join(dirRel, entry.name) : entry.name;
+      if (entry.isFile && entry.name === 'Cookies') return rel;
+      if (entry.isDir && depth + 1 < 3 && !CLONE_SKIP_NAMES.has(entry.name)) queue.push(rel);
+    }
+  }
+  return null;
+}
+
+/**
  * Clone ki tarteeb (khalis): profile root me jo buniyadi
  * hisse MAUJUD hain, un ki { rel, kind } fehrist — kram
  * wahi jo CLONE_ESSENTIAL_* me hai. `exists(rel)` aur
  * `isDir(rel)` bulane wale ke diye hue (tests jaali
  * detector de sakte hain); na hon to asal fs se.
+ * v2.48.46: dono thahri Cookies jaghon par kuch na ho
+ * to discovery scan (findCookiesRel) — mili jagah plan
+ * me `viaScan` nishan ke saath cookies entry banti hai
+ * (us ke sidecars sameet).
  */
 function cloneFilePlan(profileRoot, detectors = {}) {
   const exists = typeof detectors.exists === 'function'
@@ -201,6 +244,20 @@ function cloneFilePlan(profileRoot, detectors = {}) {
   }
   for (const rel of CLONE_ESSENTIAL_DIRS) {
     if (exists(rel) && isDir(rel)) plan.push({ rel, kind: 'dir' });
+  }
+  // v2.48.46: Cookies ki koi thahri jagah plan me nahi
+  // aur source me maujud bhi nahi — scan se dhundo.
+  const planHasCookies = plan.some(p => p.rel.endsWith('Cookies'));
+  const stdCookiesExist = [path.join('Default', 'Network', 'Cookies'), path.join('Default', 'Cookies')]
+    .some(rel => exists(rel));
+  if (!planHasCookies && !stdCookiesExist) {
+    const found = findCookiesRel(profileRoot, detectors);
+    if (found) {
+      plan.push({ rel: found, kind: 'file', viaScan: true });
+      for (const side of cookieSidecarsFor(found)) {
+        if (exists(side) && !isDir(side)) plan.push({ rel: side, kind: 'file' });
+      }
+    }
   }
   return plan;
 }
@@ -231,18 +288,32 @@ async function copyDirEssentials(srcDir, destDir, copied, warnings) {
  * kabhi khola nahi jata, kabhi likha nahi jata, koi lock
  * file copy nahi hoti. cloneDir pehle se maujud ho to
  * pehle saaf (rm) karke taza banta hai.
- * Lautta hai: { copied: [rel...], missing: [rel...], warnings: [...] }.
+ * Lautta hai: { copied: [rel...], missing: [rel...],
+ * warnings: [...], cookiesRel } — cookiesRel scan se
+ * mili ghair-mamooli Cookies jagah hai (na mili ho to
+ * null); thahri jagah par cookiesRel null rehta hai.
  * Cookies ki koi bhi file na mile to error phenkta hai —
  * cookies ke baghair copy bekaar hai aur caller ko ye
- * EMAANDARI se kehna hai.
+ * EMAANDARI se kehna hai. v2.48.46: phenke gaye error
+ * par wahi hisaab `err.cloneReport` ban kar chipka
+ * rehta hai (ZEROCLICK13: throw function ke ANDAR se
+ * hota tha, is liye report gum ho jati thi aur clone
+ * log line fail par kabhi banti hi nahi thi); aur
+ * error ki ibarat farq batati hai — Cookies source me
+ * mili hi nahi (not found) ya plan me thi lekin us ki
+ * copy nakam rahi (copy failed: <pehli warning>).
  */
 async function buildHeadlessClone(profileRoot, cloneDir) {
   if (!profileRoot || !fs.existsSync(profileRoot)) {
-    throw new Error(`Profile not found at: ${profileRoot}`);
+    const err = new Error(`Profile not found at: ${profileRoot}`);
+    err.cloneReport = null;
+    throw err;
   }
   await fsp.rm(cloneDir, { recursive: true, force: true });
   await fsp.mkdir(cloneDir, { recursive: true });
   const plan = cloneFilePlan(profileRoot);
+  const scanned = plan.find(p => p.viaScan && p.rel.endsWith('Cookies'));
+  const cookiesRel = scanned ? scanned.rel : null;
   const copied = [];
   const missing = [];
   const warnings = [];
@@ -279,9 +350,25 @@ async function buildHeadlessClone(profileRoot, cloneDir) {
   }
   const hasCookies = copied.some(rel => rel.endsWith('Cookies'));
   if (!hasCookies) {
-    throw new Error('the profile copy has no Cookies file — the copied session cannot work');
+    // v2.48.46: report error ke saath chipka kar phenko
+    // (caller fail par bhi clone log line bana sake),
+    // aur ibarat source-missing vs copy-failed ka farq
+    // naam se bataye.
+    const report = { copied, missing, warnings, cookiesRel };
+    const planCookies = plan.filter(p => p.rel.endsWith('Cookies'));
+    let message;
+    if (planCookies.length === 0) {
+      message = 'the profile copy has no Cookies file (not found in the source profile — see the headless-clone line)';
+    } else {
+      const firstWarning = warnings.find(w => planCookies.some(p => w.startsWith(`${p.rel}:`)));
+      const detail = firstWarning ? firstWarning.slice(0, 120) : 'unknown copy error';
+      message = `the profile copy has no Cookies file (copy failed: ${detail})`;
+    }
+    const err = new Error(message);
+    err.cloneReport = report;
+    throw err;
   }
-  return { copied, missing, warnings };
+  return { copied, missing, warnings, cookiesRel };
 }
 
 /** Clone mita do (best-effort; kabhi throw nahi). */
@@ -381,6 +468,7 @@ module.exports = {
   launchFailureReason,
   launchFailNote,
   cloneLogLine,
+  findCookiesRel,
   cloneFilePlan,
   buildHeadlessClone,
   removeHeadlessClone,

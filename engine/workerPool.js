@@ -14,6 +14,7 @@ const stallWatch = require('./stallWatch');
 const downloadGuard = require('./downloadGuard');
 const tagNaming = require('./tagNaming');
 const fs = require('fs');
+const path = require('path');
 const crypto = require('crypto');
 const sequenceReport = require('./sequenceReport');
 const browserMode = require('./browserMode');
@@ -612,6 +613,24 @@ class WorkerPool {
     this.queuePromise = new Promise(resolve => { queueResolver = resolve; });
 
     try {
+      // v2.48.50 (item 17 — ROOT-LOG AUTO-EXPORT): is
+      // run ki tamam [ROOT] lines ek jagah jama karo —
+      // run ke aakhir me (finally) wo download folder
+      // me file ki shakal me utregi, taaki owner ko
+      // engine log haath se ikattha na karna pade.
+      // onLog ki ye lipti shakal SIRF is run ke liye
+      // hai; finally me asal onLog wapas lag jata hai.
+      const prevOnLog = this.onLog;
+      const rootLogLines = [];
+      this.onLog = (entry) => {
+        try {
+          if (entry && typeof entry.message === 'string' && entry.message.includes('[ROOT]')) {
+            rootLogLines.push(entry.message);
+          }
+        } catch (e) {}
+        return prevOnLog(entry);
+      };
+      this._rootLogExport = { lines: rootLogLines, prevOnLog, downloadFolder };
       // v2.48.3: prevent Windows sleep/idle during entire generation run
       sleepBlocker.acquire();
       this.isStopping = false;
@@ -2155,6 +2174,37 @@ class WorkerPool {
         } catch (e) {}
       }
 
+      // v2.48.50 (item 14 — RESUME-ALL SWEEP): run ke
+      // aakhir me, is run ke apne tasks ke ilawa jo
+      // PARKED (pending + needs_check) tasks reh gaye
+      // hain — purane runs ke, jin ki videos Flow me
+      // bani hui hain lekin download baqi hai — unhe
+      // bhi EK download-only mauqa milta hai: wohi
+      // check-only reconcile machinery jo run ke
+      // aaghaz me chalti hai (koi parallel system
+      // nahi), sab se purane pehle, hadd 20 tasks.
+      // Prompt KABHI dobara submit nahi hota — ye
+      // sirf download ki koshish hai (sacred rule).
+      if (!this.isStopping) {
+        try {
+          const ownIds = new Set(pendingTasks.map(t => t.id));
+          const parked = (dbService.getNeedsCheckTasks() || [])
+            .filter(r => r && r.id && !ownIds.has(r.id))
+            .slice(0, 20);
+          let saved = 0;
+          if (parked.length > 0) {
+            await this._reconcileNeedsCheck(parked, downloadFolder, settings);
+            for (const r of parked) {
+              try {
+                const row = dbService.getTask(r.id);
+                if (row && row.status === 'completed') saved++;
+              } catch (e) {}
+            }
+          }
+          this.log(`[ROOT] resume-sweep tasks=${parked.length} saved=${saved}`, saved > 0 ? 'success' : 'info');
+        } catch (e) {}
+      }
+
       // v2.45.0 (honest totals — Fix List E item 3 ka dusra hissa):
       // run ke dauraan har submission ke baad balance padhne ki
       // koshish hoti hai, lekin Flow apna kata-hua number kabhi
@@ -2342,6 +2392,24 @@ class WorkerPool {
         }
       }
     } finally {
+      // v2.48.50 (item 17): root-log ki file likho —
+      // best-effort, run ko kabhi fail nahi karti.
+      // Pehle onLog asal par wapas, phir 'Root log
+      // saved' wali aam (non-ROOT) line.
+      try {
+        const exp = this._rootLogExport;
+        if (exp) {
+          this.onLog = exp.prevOnLog;
+          if (exp.lines.length > 0 && exp.downloadFolder) {
+            const tag = this.currentBatchId || `run-${Date.now()}`;
+            const filePath = path.join(exp.downloadFolder, `fs-run-${tag}-rootlog.txt`);
+            try { fs.mkdirSync(exp.downloadFolder, { recursive: true }); } catch (e) {}
+            fs.writeFileSync(filePath, exp.lines.join('\n') + '\n');
+            this.log(`Root log saved: ${filePath}`, 'info');
+          }
+        }
+      } catch (e) {}
+      this._rootLogExport = null;
       sleepBlocker.release();
       if (queueResolver) queueResolver();
       this.queuePromise = null;

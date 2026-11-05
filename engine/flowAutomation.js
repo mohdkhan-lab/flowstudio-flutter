@@ -29,6 +29,7 @@ const mintReplay = require('./mintReplay');
 const saveGuard = require('./saveGuard');
 const stageLock = require('./stageLock');
 const headlessHarvest = require('./headlessHarvest');
+const cookiesDb = require('./cookiesDb');
 const os = require('os');
 
 function sleep(ms) {
@@ -74,8 +75,55 @@ function mediaLoadLogLine(info) {
   const host = o.host ? String(o.host) : 'none';
   const outcome = ['complete', 'ended', 'timeout', 'error'].includes(o.outcome) ? o.outcome : 'error';
   const bytes = Number.isFinite(o.bytes) ? Math.max(0, Math.floor(o.bytes)) : 0;
-  return `[ROOT] mainpage-media-load host=${host} outcome=${outcome} bytes=${bytes}`;
+  // v2.48.50 (MEGA PACK item 1 — TILE-ELEMENT COMPLETION):
+  // kaunsa element drive hua — 'tile' (task ki apni tile
+  // ka <video>) ya 'hidden' (purana adrishya element).
+  // Ajnabi qeemat 'hidden' hi banti hai (purani shakal).
+  const el = o.el === 'tile' ? 'tile' : 'hidden';
+  return `[ROOT] mainpage-media-load host=${host} outcome=${outcome} bytes=${bytes} el=${el}`;
 }
+
+/**
+ * v2.48.50 (item 1): tile-element chunav ka faisla
+ * (khalis). Tile ka <video> element mile AUR us ke
+ * paas apni stream ka koi nishan ho (src/currentSrc
+ * maujud, ya duration maloom) to drive TILE se hoga;
+ * warna purana hidden element hi chaara hai.
+ * probe = _probeMainpageTileVideo ki wapsi
+ * { found, hasSrc, duration, currentSrc }.
+ */
+function mediaLoadElementPick(probe) {
+  const p = probe && typeof probe === 'object' ? probe : {};
+  if (p.found && (p.hasSrc || (Number.isFinite(p.duration) && p.duration > 0))) return 'tile';
+  return 'hidden';
+}
+
+/**
+ * v2.48.50 (MEGA PACK item 16 — ATTEMPT SUMMARY): har
+ * video download attempt ke aakhir me EK line (khalis):
+ * '[ROOT] attempt-summary task=<promptIndex>
+ * best=<sabse badi nazar ke bytes> assembled=<jodi
+ * body ke bytes> mediaTile=<outcome|-> mediaHidden=
+ * <outcome|-> probe=<state|-> race=<winner|->
+ * saved=<yes|no>'. Saare hisse attempt ke apne darj
+ * haal se aate hain — koi vyavhaar-badal nahi.
+ */
+function attemptSummaryLogLine(info) {
+  const o = info && typeof info === 'object' ? info : {};
+  const num = (v) => (Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0);
+  const out = (v) => (['complete', 'ended', 'timeout', 'error'].includes(v) ? v : '-');
+  const word = (v) => (v ? String(v) : '-');
+  const taskIdx = Number.isFinite(o.task) ? Math.floor(o.task) : 0;
+  return `[ROOT] attempt-summary task=${taskIdx} best=${num(o.best)} assembled=${num(o.assembled)} mediaTile=${out(o.mediaTile)} mediaHidden=${out(o.mediaHidden)} probe=${word(o.probe)} race=${word(o.race)} saved=${o.saved ? 'yes' : 'no'}`;
+}
+
+/**
+ * v2.48.50 (item 1): tile-drive ki 'element is pal
+ * maujud nahi' wapsi ka nishan — bulane wala is par
+ * hidden chaara chalata hai; ye koi outcome NAHI hai
+ * (koi koshish hui hi nahi, koi line nahi banti).
+ */
+const TILE_DRIVE_MISSING = Symbol('fs-tile-drive-missing');
 
 /**
  * FlowStudio Lite — Google Flow automation engine (adapted from the audited
@@ -225,6 +273,14 @@ class FlowAutomationEngine {
       onMainpageAudit: (audit) => {
         try {
           this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${audit.timing || 'render-watch'}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.50 (item 18 — SEGMENT ASSEMBLY): ek
+      // logical stream ke 2+ URL hone ki khabar — sirf
+      // ek line, jab group pehli dafa banta hai.
+      onSegmentNote: (info) => {
+        try {
+          this.log(`[ROOT] mainpage-segments urls=${info && Number.isFinite(info.urls) ? Math.floor(info.urls) : 0}`, 'info');
         } catch (e) {}
       }
     });
@@ -719,6 +775,9 @@ class FlowAutomationEngine {
         this._captureTasks.clear();
         this._earlyBackend.clear();
         this._backendNoteLogged = false;
+        // v2.48.50 (item 6): pipeline prime ka nishan
+        // har naye session ke saath taaza.
+        this._pipelinePrimedRun = false;
         this.netCapture.attach(this.page);
         // v2.48.37 (SESSION-WIDE MINT WATCH): page/session
         // tayyar hai — mint watch ab poore session ke liye
@@ -3051,7 +3110,7 @@ class FlowAutomationEngine {
     }
   }
 
-  async _saveBufferForTask(task, downloadFolder, settings, buffer, sourceUrl) {
+  async _saveBufferForTask(task, downloadFolder, settings, buffer, sourceUrl, raceRoute) {
     if (!fs.existsSync(downloadFolder)) {
       fs.mkdirSync(downloadFolder, { recursive: true });
     }
@@ -3065,6 +3124,30 @@ class FlowAutomationEngine {
       this.log(`[FAST-DL] [Prompt #${task.promptIndex + 1}] A second save was refused — this video is already saved (${task.fileName || 'file'}); no duplicate will be written.`, 'warn');
       return false;
     }
+    // v2.48.50 (MEGA PACK item 7 — ROUTE RACE): is
+    // attempt me headless aur mainpage raaste PARALLEL
+    // chalte hain; file SIRF wahi likhega jo pehle is
+    // darwaze par dawa (claim) kare. Ye hissa async
+    // hone se pehle ka hai — dawa ek hi pal me bandhta
+    // hai, is liye do dawe mumkin nahi. Haar kar nikalne
+    // wala apna dawa CHHOD deta hai (releaseRaceClaim —
+    // neeche har nakam wapsi par), taaki dusra rasta
+    // apne achhe buffer ke saath phir dawa kar sake.
+    // raceRoute na diya ho (aam sequential bulawa) to
+    // ye hissa bilkul nahi chalta — vyavhaar aaj jaisa.
+    const raceClaimedHere = !!(raceRoute && task._raceActive && !task._raceWonBy);
+    if (raceRoute && task._raceActive) {
+      if (task._raceWonBy && task._raceWonBy !== raceRoute) {
+        task._saveRejectedReason = 'route-race';
+        return false;
+      }
+      if (!task._raceWonBy) task._raceWonBy = raceRoute;
+    }
+    const releaseRaceClaim = () => {
+      try {
+        if (raceClaimedHere && task._raceWonBy === raceRoute) task._raceWonBy = null;
+      } catch (e) {}
+    };
     const isImageMode = !!(settings && settings.type === 'Image');
     task._saveRejectedReason = null;
     // v2.48.29 (QUALITY GATE): buffer asal video ho lekin
@@ -3087,6 +3170,7 @@ class FlowAutomationEngine {
         const durLabel = durSec ? `${durSec}s` : String((settings && settings.duration) || 'unknown');
         this.log(`[QUALITY-GATE] [Prompt #${task.promptIndex + 1}] preview-quality buffer rejected (${buffer.length} < floor ${floorBytes} for ${durLabel}) — routes continue`, 'warn');
         task._saveRejectedReason = 'quality-gate';
+        releaseRaceClaim();
         return false;
       }
     }
@@ -3107,6 +3191,7 @@ class FlowAutomationEngine {
       if (verdict.duplicate) {
         this.log(`[GUARD] duplicate-content rejected for Prompt #${task.promptIndex + 1} — fetched bytes are identical to Prompt #${verdict.otherPromptIndex + 1}'s saved file`, 'warn');
         task._saveRejectedReason = 'duplicate-content';
+        releaseRaceClaim();
         return false;
       }
     }
@@ -3130,6 +3215,7 @@ class FlowAutomationEngine {
       if (!valid) {
         try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
         this.log(`The saved file ${fileName} failed the video check — this download has been treated as failed.`, 'warn');
+        releaseRaceClaim();
         return false;
       }
       // v2.48.30: verify ke intezaar ke dauraan koi dusra
@@ -3139,6 +3225,7 @@ class FlowAutomationEngine {
       if (task.mediaSaved) {
         try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
         this.log(`[FAST-DL] [Prompt #${task.promptIndex + 1}] This save finished second in the race — the duplicate file was removed; the first save stands.`, 'warn');
+        releaseRaceClaim();
         return false;
       }
     }
@@ -3153,6 +3240,14 @@ class FlowAutomationEngine {
     // bhi settled mark ke liye downloaded=true lete hain — ginati ke
     // liye wahi purani galti jhooti success line bana rahi thi).
     task.mediaSaved = true;
+    // v2.48.50 (item 7): race jeetne wale save ka asal
+    // URL darj — attempt ka aakhri hisaab
+    // completedVideoUrl ko isi par seedha karega (haar
+    // kar save karne wale raste ne apna URL pehle rakha
+    // ho to bhi jeet isi ki hai).
+    if (raceRoute && task._raceActive && task._raceWonBy === raceRoute) {
+      task._raceSavedUrl = sourceUrl || null;
+    }
     this._recordSavedPath(task, finalSavedFilePath);
     // v2.48.35 (GUARD): kamyaab save ki hash-kitab bandhi —
     // is run ke baaki tasks ke liye yahi hisaab duplicate
@@ -5478,8 +5573,11 @@ class FlowAutomationEngine {
         else cap.claimFlowContentVideo(entry.url);
       } catch (e) {}
       task.completedVideoUrl = entry.url;
-      const ok = await this._saveBufferForTask(task, downloadFolder, settings, entry.buffer, entry.url);
-      if (ok || task.mediaSaved) {
+      const ok = await this._saveBufferForTask(task, downloadFolder, settings, entry.buffer, entry.url, 'mainpage-harvest');
+      // v2.48.50 (item 7): race ki jeet dusre raste ki
+      // ho to ye save jeet nahi — khamosh wapsi.
+      const raceLostHs = !!(task._raceActive && task._raceWonBy && task._raceWonBy !== 'mainpage-harvest');
+      if ((ok || task.mediaSaved) && task._saveRejectedReason !== 'route-race' && !raceLostHs) {
         const gapSec = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
         try { if (typeof cap.mainpageMarkWindowDone === 'function') cap.mainpageMarkWindowDone(captureKey); } catch (e) {}
         this.log(`[ROOT] via=mainpage-harvest gap=${gapSec}s`, 'success');
@@ -5614,45 +5712,177 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.50 (MEGA PACK item 1 — TILE-ELEMENT COMPLETION):
+   * is task ki tile ke apne <video> element ki ek nazar.
+   * Tile wohi machinery dhoondti hai jo hover triggers
+   * istemal karte hain (_resolveTileIndexForTask —
+   * fingerprint pehle, phir hint). Element mil jaye to
+   * use window.__fsTileMediaEl par rakh diya jata hai
+   * (drive use wahi se uthata hai; element page ka hai —
+   * kabhi hataya nahi jata). Wapsi:
+   * { found, hasSrc, duration, currentSrc }.
+   */
+  async _probeMainpageTileVideo(task, tileIndexHint) {
+    const none = { found: false, hasSrc: false, duration: -1, currentSrc: '' };
+    try {
+      const pg = this.page;
+      if (!pg || pg.isClosed() || typeof pg.evaluate !== 'function' || !task) return none;
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isInteger(idx) || idx < 0) return none;
+      const info = await pg.evaluate((i) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const tile = tiles && tiles[i];
+          const vid = tile ? tile.querySelector('video') : null;
+          window.__fsTileMediaEl = vid || null;
+          if (!vid) return { found: false, hasSrc: false, duration: -1, currentSrc: '' };
+          const d = vid.duration;
+          return {
+            found: true,
+            hasSrc: !!(vid.currentSrc || vid.getAttribute('src')),
+            duration: Number.isFinite(d) ? d : -1,
+            currentSrc: String(vid.currentSrc || '')
+          };
+        } catch (e) {
+          return { found: false, hasSrc: false, duration: -1, currentSrc: '' };
+        }
+      }, idx);
+      return info && typeof info === 'object' ? info : none;
+    } catch (e) {
+      return none;
+    }
+  }
+
+  /**
    * v2.48.47 (MEDIA-LOAD COMPLETION — ZEROCLICK14):
    * bandha hua mainpage address usi PROJECT page ke ek
-   * ADHOC adrishya <video> element se poora load karo
-   * aur mukammal body CDP network capture se uthao.
-   * Wajah: flow.google.com ke page-JS ka fetch()
-   * googlevideo ki body nahi padh sakta ('Failed to
-   * fetch', CORS-class, koi HTTP jawab hi nahi — .46
-   * ki '[ROOT] mainpage-fetch failed' line saboot
-   * hai), lekin capture CDP satah ka hai aur us
-   * pabandi se bandha nahi — editor-harvest me editor
-   * ki playback body hamesha mukammal file thi.
-   * Element screen se BAHIR (left:-9999px), 8x8,
-   * opacity 0, muted (src se PEHLE — autoplay ki
-   * shart), playsInline; kabhi click nahi, kabhi
-   * navigation nahi; khatam ho ya haar jaye, element
-   * HAR haal me DOM se utarta hai. Poll har 500ms,
-   * hadd this.mainpageMediaLoadMs (30s): rukawat =
-   * capture me mukammal body (mediaBodyState
-   * 'complete') YA element ka 'ended' + 1.5s settle
-   * ke baad behtareen body YA waqt khatam. Har
-   * bulawa bilkul EK line deta hai:
+   * <video> element se poora load karo aur mukammal
+   * body CDP network capture se uthao. Wajah:
+   * flow.google.com ke page-JS ka fetch() googlevideo
+   * ki body nahi padh sakta ('Failed to fetch',
+   * CORS-class, koi HTTP jawab hi nahi — .46 ki
+   * '[ROOT] mainpage-fetch failed' line saboot hai),
+   * lekin capture CDP satah ka hai aur us pabandi se
+   * bandha nahi — editor-harvest me editor ki playback
+   * body hamesha mukammal file thi.
+   * v2.48.50 (item 1): element ab PEHLE task ki apni
+   * TILE ka <video> hota hai (mediaLoadElementPick) —
+   * ZEROCLICK17 ka saboot: tile ke element ne asal me
+   * 214,591B kheenche the jabke naya adrishya element
+   * 0 bytes laaya tha; jo element pehle se stream se
+   * bandha hai wahi aage bhi kheenchta hai. Tile
+   * element na mile / na chale to purana adrishya
+   * (hidden) element chaara hai (bilkul .47/.48 wala
+   * vyavhaar). Tile element ka currentSrc ummeedwaar
+   * URL se alag ho tab bhi drive TILE se hi hota hai
+   * (us ki stream by-construction isi task ki hai) —
+   * lekin drive khud KABHI save nahi karta; bandhan
+   * aur faisla capture kitab + saveGuard ke hi rehte
+   * hain (readBest hamesha ummeedwaar URL par hi
+   * bandha hai). Tile element page ka hai — drive use
+   * KABHI DOM se nahi hatata, src nahi badalta; sirf
+   * muted karke play karta hai aur aakhir me tab hi
+   * pause karta hai jab wo pehle se paused tha.
+   * Har ELEMENT-drive bilkul EK line deta hai:
    * '[ROOT] mainpage-media-load host=<h>
-   * outcome=<complete|ended|timeout|error>
-   * bytes=<n>'. Wapsi fetch jaisi shakal
-   * ({buf,status}) ya null; faisla hamesha
-   * saveGuard ke darwaze karte hain.
-   * v2.48.48 (MEDIA-LOAD V2 — SEEK USKAAM): poll ke
-   * dauraan duration maloom hote hi ek dafa aakhir
-   * ke paas seek (duration − 0.15), ~1s baad 0 par
-   * wapas seek + play() — taaki media stack ko sir
-   * aur aakhir ke range jawab NETWORK se lane paden
-   * (ZEROCLICK15 me element sirf buffer-shuda
-   * preview chala kar 'ended' ho gaya tha, koi naya
-   * traffic aaya hi nahi tha). Aur capture kitab ab
-   * tukde jodti hai, is liye readBest ki body jodi
-   * hui (assembled) hoti hai.
+   * outcome=<complete|ended|timeout|error> bytes=<n>
+   * el=<tile|hidden>'. Wapsi fetch jaisi shakal
+   * ({buf,status}) ya null.
+   * mediaOpts (v2.48.50): { task, tileIndexHint,
+   * forceEl, singleDrive, budgetMs } — task diya ho to
+   * har drive task._mpCompleteCycles ginata hai aur
+   * nateeja task._mediaElOutcomes me darj hota hai
+   * (items 4 + 16); attempt ki kul hadd 4 drives hai.
    */
-  async _loadMainpageFullViaMedia(url) {
+  async _loadMainpageFullViaMedia(url, mediaOpts = {}) {
+    const opts = mediaOpts && typeof mediaOpts === 'object' ? mediaOpts : {};
+    const task = opts.task || null;
+    // item 4: attempt-wide cycle hadd — 4 element
+    // drives ke baad is attempt me aur drive nahi;
+    // kitab ki behtareen body bina nayi line ke wapas.
+    if (task && (task._mpCompleteCycles || 0) >= 4) {
+      try {
+        const cap = this.netCapture;
+        const held = cap && typeof cap.mainpageBodyForUrl === 'function'
+          ? cap.mainpageBodyForUrl(url) : null;
+        if (held && held.buffer && held.buffer.length > 0) {
+          const entry = typeof cap.mainpageEntries === 'function'
+            ? (cap.mainpageEntries().find(e => e && e.url === url) || null) : null;
+          const state = mediaBodyState(entry, held);
+          return { buf: held.buffer, status: state === 'complete' ? 200 : 206 };
+        }
+      } catch (e) {}
+      return null;
+    }
+    const noteDrive = (el, outcome) => {
+      if (!task) return;
+      task._mpCompleteCycles = (task._mpCompleteCycles || 0) + 1;
+      if (!task._mediaElOutcomes || typeof task._mediaElOutcomes !== 'object') task._mediaElOutcomes = {};
+      task._mediaElOutcomes[el] = outcome;
+    };
+    // Element chunav: majboor shakal (forceEl) > tile
+    // probe (task diya ho) > hidden (purana vyavhaar —
+    // task ke baghair bulawa hamesha hidden hi tha).
+    let elKind = 'hidden';
+    if (opts.forceEl === 'tile' || opts.forceEl === 'hidden') {
+      elKind = opts.forceEl;
+      if (elKind === 'tile') {
+        const probe = await this._probeMainpageTileVideo(task, opts.tileIndexHint);
+        if (mediaLoadElementPick(probe) !== 'tile') elKind = 'hidden';
+      }
+    } else if (task) {
+      const probe = await this._probeMainpageTileVideo(task, opts.tileIndexHint);
+      elKind = mediaLoadElementPick(probe);
+    }
+    // Route race (item 7): task pehle hi save ho
+    // chuka ho to drive ka poll foran ruk jata hai.
+    const shouldAbort = typeof opts.shouldAbort === 'function'
+      ? opts.shouldAbort
+      : (task ? () => !!task.mediaSaved : null);
+    if (elKind === 'tile') {
+      const r = await this._driveMainpageMediaLoad(url, 'tile', opts.budgetMs, shouldAbort);
+      if (r !== TILE_DRIVE_MISSING) {
+        noteDrive('tile', r.outcome);
+        return r.best;
+      }
+      // Tile element drive ke pal DOM se gayab tha —
+      // is bulawa me hidden chaara (singleDrive par
+      // nahi: wahan EK drive ki hadd hai, item 4).
+      if (opts.singleDrive) return null;
+      const r2 = await this._driveMainpageMediaLoad(url, 'hidden', opts.budgetMs, shouldAbort);
+      noteDrive('hidden', r2.outcome);
+      return r2.best;
+    }
+    const r = await this._driveMainpageMediaLoad(url, 'hidden', opts.budgetMs, shouldAbort);
+    noteDrive('hidden', r.outcome);
+    return r.best;
+  }
+
+  /**
+   * Asal element-drive (v2.48.47 ki poll bandish, ab
+   * dono element qisam ke liye): poll har 500ms,
+   * hadd budgetMs (default this.mainpageMediaLoadMs
+   * 30s): rukawat = capture me mukammal body
+   * (mediaBodyState 'complete') YA element ka 'ended'
+   * + 1.5s settle ke baad behtareen body YA waqt
+   * khatam. Wapsi { best, outcome }; tile element
+   * drive ke pal gayab ho to TILE_DRIVE_MISSING
+   * (bulane wala hidden chaara chalata hai — is
+   * surat me koi line NAHI banti, kyunki koshish
+   * asal me hui hi nahi).
+   * v2.48.50 (item 2 — SEEK V3): duration maloom hote
+   * hi seek ka pura kram — ~25%, ~50%, ~75% aur
+   * duration−0.15, har seek ~700ms ke waqfe se, sirf
+   * tab jab capture abhi adhoora ho; aakhir me 0 par
+   * wapas seek + play(). Har quarter ke range jawab
+   * network se lane padte hain (.48 ka sirf-aakhir
+   * wala seek ZEROCLICK17 me kaafi nahi raha).
+   * Duration kabhi maloom na ho to koi seek nahi —
+   * vyavhaar .47 jaisa.
+   */
+  async _driveMainpageMediaLoad(url, elKind, budgetOverrideMs, shouldAbort) {
     const cap = this.netCapture;
+    const isTile = elKind === 'tile';
     let outcome = 'error';
     let best = null;
     const readBest = () => {
@@ -5669,59 +5899,126 @@ class FlowAutomationEngine {
         return { entry: null, held: null, state: 'none', candidate: null };
       }
     };
+    const logLine = (oc, bytes) => {
+      try {
+        let host = 'none';
+        try { host = networkCapture.hostOf(url || '') || 'none'; } catch (e) { host = 'none'; }
+        this.log(mediaLoadLogLine({ host, outcome: oc, bytes, el: isTile ? 'tile' : 'hidden' }), oc === 'error' ? 'warn' : 'info');
+      } catch (e) {}
+    };
     let pg = null;
     let started = false;
-    try {
-      pg = this.page;
-      if (!pg || pg.isClosed() || !url || !cap) {
-        outcome = 'error';
-        return null;
-      }
-      const startedFlag = await pg.evaluate((u) => {
-        try {
-          const prev = window.__fsMediaLoadEl;
-          if (prev) {
-            try { prev.pause(); } catch (e) {}
-            try { prev.removeAttribute('src'); prev.load(); } catch (e) {}
-            try { if (prev.parentNode) prev.parentNode.removeChild(prev); } catch (e) {}
-          }
-          window.__fsMediaLoadEl = null;
-          const el = document.createElement('video');
-          el.muted = true;
-          try { el.setAttribute('muted', ''); } catch (e) {}
-          el.playsInline = true;
-          try { el.setAttribute('playsinline', ''); } catch (e) {}
-          el.preload = 'auto';
-          el.style.cssText = 'position:fixed;left:-9999px;top:0;width:8px;height:8px;opacity:0;pointer-events:none;';
-          window.__fsMediaLoadEnded = false;
-          el.addEventListener('ended', () => { window.__fsMediaLoadEnded = true; });
-          el.src = u;
-          (document.body || document.documentElement).appendChild(el);
-          window.__fsMediaLoadEl = el;
-          const p = el.play();
-          if (p && typeof p.catch === 'function') p.catch(() => {});
-          return 'fs-media-load-started';
-        } catch (e) {
-          return 'fs-media-load-failed';
-        }
-      }, url);
-      if (startedFlag !== 'fs-media-load-started') {
-        // Asal page me element kabhi bana hi nahi (ya
-        // bulane wala koi jhootha test page hai) —
-        // khamosh haar; fetch chaara neeche chalta hai.
-        outcome = 'error';
-        return null;
-      }
+    let tileWasPaused = false;
+    pg = this.page;
+    if (!pg || pg.isClosed() || !url || !cap) {
+      // Kharab bulawa bhi purani tarah EK line deta hai.
+      logLine('error', 0);
+      return { best: null, outcome: 'error' };
+    }
+    if (isTile) {
+      // Tile element ko chalao — wo page ka hai: src
+      // NAHI badalta, DOM se NAHI hatata; sirf muted +
+      // play. Element is pal gayab ho to koi koshish
+      // hui hi nahi — khamosh TILE_DRIVE_MISSING.
+      let startInfo = null;
+      try {
+        startInfo = await pg.evaluate(() => {
+          try {
+            const el = window.__fsTileMediaEl;
+            if (!el || !el.isConnected) return { ok: false, wasPaused: false };
+            const wasPaused = !!el.paused;
+            try { el.muted = true; } catch (e) {}
+            const p = el.play();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+            return { ok: true, wasPaused };
+          } catch (e) { return { ok: false, wasPaused: false }; }
+        });
+      } catch (e) { startInfo = null; }
+      if (!startInfo || !startInfo.ok) return TILE_DRIVE_MISSING;
       started = true;
-      const budgetMs = Math.max(500, this.mainpageMediaLoadMs || 30000);
+      tileWasPaused = !!startInfo.wasPaused;
+    }
+    // Element-qisam ke hisaab se poll ke tukde — hidden
+    // wale bilkul .47/.48 ke asal evaluate hi hain.
+    const readDuration = async () => {
+      try {
+        return await pg.evaluate(isTile
+          ? () => { try { const el = window.__fsTileMediaEl; const d = el ? el.duration : NaN; return Number.isFinite(d) ? d : -1; } catch (e) { return -1; } }
+          : () => { try { const el = window.__fsMediaLoadEl; const d = el ? el.duration : NaN; return Number.isFinite(d) ? d : -1; } catch (e) { return -1; } });
+      } catch (e) { return -1; }
+    };
+    const doSeek = async (target) => {
+      try {
+        await pg.evaluate(isTile
+          ? (t) => { try { const el = window.__fsTileMediaEl; if (el) { el.currentTime = t; const p = el.play(); if (p && typeof p.catch === 'function') p.catch(() => {}); } } catch (e) {} return true; }
+          : (t) => { try { const el = window.__fsMediaLoadEl; if (el) { el.currentTime = t; const p = el.play(); if (p && typeof p.catch === 'function') p.catch(() => {}); } } catch (e) {} return true; },
+        target);
+      } catch (e) {}
+    };
+    const doSeekBack = async () => {
+      try {
+        await pg.evaluate(isTile
+          ? () => { try { const el = window.__fsTileMediaEl; if (el) { el.currentTime = 0; const p = el.play(); if (p && typeof p.catch === 'function') p.catch(() => {}); } } catch (e) {} return true; }
+          : () => { try { const el = window.__fsMediaLoadEl; if (el) { el.currentTime = 0; const p = el.play(); if (p && typeof p.catch === 'function') p.catch(() => {}); } } catch (e) {} return true; });
+      } catch (e) {}
+    };
+    const readEnded = async () => {
+      if (isTile) {
+        try {
+          return await pg.evaluate(() => { try { const el = window.__fsTileMediaEl; return !!el && el.ended === true; } catch (e) { return false; } });
+        } catch (e) { return false; }
+      }
+      return pg.evaluate(() => window.__fsMediaLoadEnded === true);
+    };
+    try {
+      if (!isTile) {
+        const startedFlag = await pg.evaluate((u) => {
+          try {
+            const prev = window.__fsMediaLoadEl;
+            if (prev) {
+              try { prev.pause(); } catch (e) {}
+              try { prev.removeAttribute('src'); prev.load(); } catch (e) {}
+              try { if (prev.parentNode) prev.parentNode.removeChild(prev); } catch (e) {}
+            }
+            window.__fsMediaLoadEl = null;
+            const el = document.createElement('video');
+            el.muted = true;
+            try { el.setAttribute('muted', ''); } catch (e) {}
+            el.playsInline = true;
+            try { el.setAttribute('playsinline', ''); } catch (e) {}
+            el.preload = 'auto';
+            el.style.cssText = 'position:fixed;left:-9999px;top:0;width:8px;height:8px;opacity:0;pointer-events:none;';
+            window.__fsMediaLoadEnded = false;
+            el.addEventListener('ended', () => { window.__fsMediaLoadEnded = true; });
+            el.src = u;
+            (document.body || document.documentElement).appendChild(el);
+            window.__fsMediaLoadEl = el;
+            const p = el.play();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+            return 'fs-media-load-started';
+          } catch (e) {
+            return 'fs-media-load-failed';
+          }
+        }, url);
+        if (startedFlag !== 'fs-media-load-started') {
+          // Asal page me element kabhi bana hi nahi (ya
+          // bulane wala koi jhootha test page hai) —
+          // khamosh haar; fetch chaara neeche chalta hai.
+          outcome = 'error';
+          return { best: null, outcome };
+        }
+        started = true;
+      }
+      const budgetMs = Number.isFinite(budgetOverrideMs) && budgetOverrideMs > 0
+        ? Math.max(500, Math.floor(budgetOverrideMs))
+        : Math.max(500, this.mainpageMediaLoadMs || 30000);
       const deadline = Date.now() + budgetMs;
       let endedAt = 0;
-      // v2.48.48 (MEDIA-LOAD V2 — SEEK): seek ki haalat
-      // (neeche poll me) — ek dafa aakhir ki taraf,
-      // ~1s baad wapas 0 par.
-      let seekDone = false;
-      let seekBackPending = false;
-      let seekBackAt = 0;
+      // v2.48.50 (SEEK V3): seek kram ki haalat —
+      // duration milte hi steps bandhte hain
+      // [25%, 50%, 75%, aakhir−0.15], har qadam
+      // ~700ms ke waqfe se, aakhir me seek-back.
+      let seekPlan = null;
       outcome = 'timeout';
       while (true) {
         const probe = readBest();
@@ -5744,70 +6041,40 @@ class FlowAutomationEngine {
           outcome = 'complete';
           break;
         }
-        // v2.48.48 (MEDIA-LOAD V2 — SEEK USKAAM):
-        // ZEROCLICK15 ka saboot: element ~6s me
-        // 'ended' bol deta tha aur NAYA network
-        // traffic bilkul NAHI aata tha — wo sirf
-        // page ka pehle se buffer-shuda preview
-        // dobara chalata tha, file ka baaqi hissa
-        // kabhi kheenchta hi nahi tha. Ilaaj: poll
-        // ke dauraan, duration maloom hote hi (finite
-        // aur > 1s) EK dafa aakhir ke bilkul paas
-        // seek karo (duration − 0.15) — media stack
-        // ko tail ke range jawab network se lane
-        // padte hain; ~1s baad 0 par wapas seek +
-        // play() — sir (head) wale range bhi phir
-        // network se aate hain. Duration kabhi
-        // maloom na ho to vyavhaar bilkul aaj jaisa.
-        if (seekBackPending && Date.now() >= seekBackAt) {
-          seekBackPending = false;
-          try {
-            await pg.evaluate(() => {
-              try {
-                const el = window.__fsMediaLoadEl;
-                if (el) {
-                  el.currentTime = 0;
-                  const p = el.play();
-                  if (p && typeof p.catch === 'function') p.catch(() => {});
-                }
-              } catch (e) {}
-              return true;
-            });
-          } catch (e) {}
-        }
-        if (!seekDone) {
-          let dur = -1;
-          try {
-            dur = await pg.evaluate(() => {
-              try {
-                const el = window.__fsMediaLoadEl;
-                const d = el ? el.duration : NaN;
-                return Number.isFinite(d) ? d : -1;
-              } catch (e) { return -1; }
-            });
-          } catch (e) { dur = -1; }
+        // Item 7 (ROUTE RACE): dusra rasta jeet chuka
+        // ho to drive foran band — element ki safai
+        // finally me hoti hai.
+        if (shouldAbort && shouldAbort()) break;
+        // SEEK V3 ka kram (upar wali doc dekho):
+        // pehle plan banao (duration pehli dafa
+        // maloom hote hi), phir jo qadam waqt par ho
+        // wo chalao — sirf tab jab capture abhi
+        // adhoora hai (mukammal checks upar guzar
+        // chuke hain).
+        if (!seekPlan) {
+          const dur = await readDuration();
           if (Number.isFinite(dur) && dur > 1) {
-            seekDone = true;
-            const target = Math.max(0, dur - 0.15);
-            try {
-              await pg.evaluate((t) => {
-                try {
-                  const el = window.__fsMediaLoadEl;
-                  if (el) {
-                    el.currentTime = t;
-                    const p = el.play();
-                    if (p && typeof p.catch === 'function') p.catch(() => {});
-                  }
-                } catch (e) {}
-                return true;
-              }, target);
-            } catch (e) {}
-            seekBackPending = true;
-            seekBackAt = Date.now() + 1000;
+            seekPlan = {
+              steps: [dur * 0.25, dur * 0.5, dur * 0.75, Math.max(0, dur - 0.15)],
+              idx: 0,
+              nextAt: 0,
+              backDone: false
+            };
+          }
+        }
+        if (seekPlan && !seekPlan.backDone && Date.now() >= seekPlan.nextAt) {
+          if (seekPlan.idx < seekPlan.steps.length) {
+            const target = seekPlan.steps[seekPlan.idx];
+            seekPlan.idx += 1;
+            await doSeek(target);
+            seekPlan.nextAt = Date.now() + 700;
+          } else {
+            await doSeekBack();
+            seekPlan.backDone = true;
           }
         }
         let ended = false;
-        try { ended = await pg.evaluate(() => window.__fsMediaLoadEnded === true); } catch (e) { outcome = 'error'; break; }
+        try { ended = await readEnded(); } catch (e) { outcome = 'error'; break; }
         if (ended) {
           if (!endedAt) endedAt = Date.now();
           if (Date.now() - endedAt >= 1500) {
@@ -5821,33 +6088,44 @@ class FlowAutomationEngine {
         if (Date.now() >= deadline || this.isStopping) { outcome = 'timeout'; break; }
         await sleep(500);
       }
-      return best;
+      return { best, outcome };
     } catch (e) {
       if (outcome !== 'complete' && outcome !== 'ended') outcome = 'error';
-      return best;
+      return { best, outcome };
     } finally {
       if (started && pg && !pg.isClosed()) {
-        try {
-          await pg.evaluate(() => {
-            try {
-              const el = window.__fsMediaLoadEl;
-              if (el) {
-                try { el.pause(); } catch (e) {}
-                try { el.removeAttribute('src'); el.load(); } catch (e) {}
-                try { if (el.parentNode) el.parentNode.removeChild(el); } catch (e) {}
-              }
-            } catch (e) {}
-            window.__fsMediaLoadEl = null;
-            window.__fsMediaLoadEnded = false;
-            return true;
-          });
-        } catch (e) {}
+        if (isTile) {
+          // Tile element page ka hai — hatana/src
+          // badalna KABHI nahi; sirf tab pause jab
+          // drive se pehle wo khud paused tha.
+          try {
+            await pg.evaluate((wp) => {
+              try {
+                const el = window.__fsTileMediaEl;
+                if (el && wp) { try { el.pause(); } catch (e) {} }
+              } catch (e) {}
+              return true;
+            }, tileWasPaused);
+          } catch (e) {}
+        } else {
+          try {
+            await pg.evaluate(() => {
+              try {
+                const el = window.__fsMediaLoadEl;
+                if (el) {
+                  try { el.pause(); } catch (e) {}
+                  try { el.removeAttribute('src'); el.load(); } catch (e) {}
+                  try { if (el.parentNode) el.parentNode.removeChild(el); } catch (e) {}
+                }
+              } catch (e) {}
+              window.__fsMediaLoadEl = null;
+              window.__fsMediaLoadEnded = false;
+              return true;
+            });
+          } catch (e) {}
+        }
       }
-      try {
-        let host = 'none';
-        try { host = networkCapture.hostOf(url || '') || 'none'; } catch (e) { host = 'none'; }
-        this.log(mediaLoadLogLine({ host, outcome, bytes: best ? best.buf.length : 0 }), outcome === 'error' ? 'warn' : 'info');
-      } catch (e) {}
+      logLine(outcome, best ? best.buf.length : 0);
     }
   }
 
@@ -6014,7 +6292,10 @@ class FlowAutomationEngine {
         }
       };
       const tryFetch = async () => { applyCompletion(await this._fetchMainpageFullInPage(entry.url)); };
-      const tryMedia = async () => { applyCompletion(await this._loadMainpageFullViaMedia(entry.url)); };
+      // v2.48.50 (item 1): media-load ab task + tile
+      // hint ke saath — pehle TILE ka apna element
+      // drive hoga, hidden sirf chaara.
+      const tryMedia = async () => { applyCompletion(await this._loadMainpageFullViaMedia(entry.url, { task, tileIndexHint: ctx.tileIndexHint })); };
       if (isGv) {
         await tryMedia();
         if (!haveBody) await tryFetch();
@@ -6072,8 +6353,15 @@ class FlowAutomationEngine {
       cap.claimMainpageVideo(entry.url, { key: captureKey || null, label: String(n) });
     } catch (e) {}
     task.completedVideoUrl = entry.url;
-    const ok = await this._saveBufferForTask(task, downloadFolder, settings, buf, entry.url);
-    if (ok || task.mediaSaved) {
+    const ok = await this._saveBufferForTask(task, downloadFolder, settings, buf, entry.url, 'mainpage-harvest');
+    // v2.48.50 (item 7): race me jeet DUSRE raste ki
+    // ho (mera save 'route-race' par ruka ho, ya
+    // mediaSaved usi ke save se true hua ho aur dawa
+    // usi ke naam ho) to ye jeet is raste ki NAHI hai
+    // — 'rejected' hi wapsi hai, warna
+    // via=mainpage-harvest ki jhooti line banti.
+    const raceLostMp = !!(task._raceActive && task._raceWonBy && task._raceWonBy !== 'mainpage-harvest');
+    if ((ok || task.mediaSaved) && task._saveRejectedReason !== 'route-race' && !raceLostMp) {
       const g = ctx.gapSec();
       try { if (typeof cap.mainpageMarkWindowDone === 'function') cap.mainpageMarkWindowDone(captureKey); } catch (e) {}
       this.log(`[ROOT] via=mainpage-harvest gap=${g}s`, 'success');
@@ -6286,13 +6574,19 @@ class FlowAutomationEngine {
    * this._lastTransferFailure me bhi rehti hai,
    * jise dispatcher ek line me bolta hai.
    */
-  async _headlessLaunchTransferred(cookies) {
+  async _headlessLaunchTransferred(cookies, userDirOverride) {
     // PARTNER TASK 1 (Issue #1, 2026-11-05): nakami
     // ki wajah ab gum nahi hoti — har nakam wapsi
     // this._lastTransferFailure me apni wajah rakhti
     // hai (dispatcher use 'headless-transfer failed'
     // line me bolta hai). Safal wapsi (session) ki
     // shakal bilkul waisi hi hai.
+    // v2.48.50 (Part B — COMBO): userDirOverride diya
+    // ho to session USI dir (tolerant clone) par
+    // khulta hai; us surat me dir ki malkiyat bulane
+    // wale ki hai — nakami par yahan se NAHI mitaya
+    // jata (combo khud saaf karta hai); session band
+    // hone par aam cloneDir safai hi use mitayegi.
     this._lastTransferFailure = null;
     const fail = (reason) => {
       try { this._lastTransferFailure = reason; } catch (e) {}
@@ -6303,9 +6597,11 @@ class FlowAutomationEngine {
       return fail(`zero mapped cookies (live read returned ${Array.isArray(cookies) ? cookies.length : 0})`);
     }
     let userDir = null;
+    let ownsDir = true;
     let browser = null;
     try {
-      userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-headless-'));
+      if (userDirOverride) { userDir = userDirOverride; ownsDir = false; }
+      else userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-headless-'));
       const launchOpts = {
         executablePath: getChromeExecutablePath(),
         headless: headlessHarvest.HEADLESS_MODE,
@@ -6328,7 +6624,7 @@ class FlowAutomationEngine {
         ignoreDefaultArgs: ['--enable-automation']
       };
       if (!headlessHarvest.launchIsWindowless(launchOpts)) {
-        await headlessHarvest.removeHeadlessClone(userDir);
+        if (ownsDir) await headlessHarvest.removeHeadlessClone(userDir);
         return fail('a windowless (headless) launch is not guaranteed on this platform');
       }
       browser = await puppeteer.launch(launchOpts);
@@ -6352,13 +6648,21 @@ class FlowAutomationEngine {
       try { await cdp.send('Network.enable'); } catch (e) {}
       await cdp.send('Network.setCookies', { cookies: mapped });
       try { await cdp.detach(); } catch (e) {}
-      try { this.log(`[ROOT] headless-transfer cookies=${mapped.length} via=cdp`); } catch (e) {}
+      // v2.48.50 (Part B): line me ab cookie ke SIRF
+      // NAAM bhi (sorted, hadd 300 harf) — qeematein
+      // kabhi nahi. Combo ki dobara transfer par bhi
+      // yahi line banti hai (wo bhi ek asal transfer
+      // hai).
+      try { this.log(`[ROOT] headless-transfer cookies=${mapped.length} via=cdp names=${headlessHarvest.cookieNamesForLog(mapped)}`); } catch (e) {}
       const capture = new networkCapture.NetworkCapture({});
       try { capture.attach(page); } catch (e) {}
-      return { browser, page, capture, cloneDir: userDir };
+      // v2.48.50: session par apna rasta + live cookies
+      // darj — combo ka trigger (headlessComboApplies)
+      // aur us ka setCookies inhi par bandha hai.
+      return { browser, page, capture, cloneDir: userDir, via: 'cdp', liveCookies: Array.isArray(cookies) ? cookies : [] };
     } catch (e) {
       try { if (browser) await browser.close(); } catch (ignored) {}
-      try { if (userDir) await headlessHarvest.removeHeadlessClone(userDir); } catch (ignored) {}
+      try { if (userDir && ownsDir) await headlessHarvest.removeHeadlessClone(userDir); } catch (ignored) {}
       // Launch ki nakami, CDP session ki ghair-
       // maujoodgi, setCookies ka inkaar — teeno yahin
       // aate hain; wajah launchFailureReason ki
@@ -6467,7 +6771,9 @@ class FlowAutomationEngine {
     } catch (e) {}
     const capture = new networkCapture.NetworkCapture({});
     try { capture.attach(page); } catch (e) {}
-    return { browser, page, capture, cloneDir };
+    // v2.48.50: rasta darj — combo sirf 'cdp' par
+    // lagta hai, clone raste par kabhi nahi.
+    return { browser, page, capture, cloneDir, via: 'clone' };
     }
   }
 
@@ -6511,11 +6817,9 @@ class FlowAutomationEngine {
    * hisaab se hota hai. Tests _headlessProbeSnapshot
    * ko stub karke asal classifier chalate hain.
    */
-  async _headlessProbeSnapshot(page) {
-    try {
-      await page.goto('https://flow.google.com/', { waitUntil: 'domcontentloaded', timeout: this.headlessNavTimeoutMs || 45000 });
-    } catch (e) {}
-    const deadline = Date.now() + 10000;
+  /** Nishaanon ka chhota intezaar — koi nishan dikhe to foran wapsi. */
+  async _headlessProbeWait(page, waitMs) {
+    const deadline = Date.now() + Math.max(0, waitMs || 0);
     let snap = null;
     for (;;) {
       snap = await this._headlessReadProbeDom(page);
@@ -6527,9 +6831,51 @@ class FlowAutomationEngine {
     return snap;
   }
 
+  async _headlessProbeSnapshot(page) {
+    try {
+      await page.goto('https://flow.google.com/', { waitUntil: 'domcontentloaded', timeout: this.headlessNavTimeoutMs || 45000 });
+    } catch (e) {}
+    // v2.48.50 (item 13 — PROBE PATIENCE): 'logged-out'
+    // ka faisla ab jaldi nahi hota. Pehli nazar me koi
+    // pakka nishan na mile (aur haal 'blocked' bhi na
+    // ho — wo deewaar foran wapas hoti hai) to:
+    // koshish 2 = network ke thaharne ka intezaar +
+    // taaza nazar; koshish 3 = EK reload + taaza
+    // nazar. Kul ~10s ki hadd me. Session kabhi kabhi
+    // der se jaagta hai (ZEROCLICK17 ke baad ye sabr
+    // asal farq ban sakta hai); 'logged-in'/'blocked'
+    // pehli nazar par hi pakke hain, un par sabr
+    // kabhi nahi lagta.
+    let snap = await this._headlessProbeWait(page, 4000);
+    if (!snap) return snap;
+    const classify = (s) => headlessHarvest.classifyProbeSnapshot(s);
+    if (classify(snap) !== 'logged-out' || this.isStopping) return snap;
+    try {
+      if (page && typeof page.waitForNetworkIdle === 'function') {
+        await page.waitForNetworkIdle({ timeout: 3000 });
+      }
+    } catch (e) {}
+    await sleep(500);
+    const snap2 = await this._headlessProbeWait(page, 2000);
+    if (snap2) snap = snap2;
+    if (classify(snap) !== 'logged-out' || this.isStopping) return snap;
+    try {
+      if (page && typeof page.reload === 'function') {
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: this.headlessNavTimeoutMs || 45000 });
+      }
+    } catch (e) {}
+    const snap3 = await this._headlessProbeWait(page, 3000);
+    if (snap3) snap = snap3;
+    return snap;
+  }
+
   /** Probe: snapshot lo aur faisla wapas karo ('logged-in' sirf pakke nishan par). */
   async _headlessProbeOnce(account, page) {
     const snap = await this._headlessProbeSnapshot(page);
+    // v2.48.50 (Part B): aakhri snapshot engine par
+    // rakho — probe ki log line url + nishan usi se
+    // bharti hai (classify wale hi fields).
+    try { this._lastHeadlessProbeSnap = snap || null; } catch (e) {}
     if (!snap) return 'logged-out';
     return headlessHarvest.classifyProbeSnapshot(snap);
   }
@@ -6570,6 +6916,73 @@ class FlowAutomationEngine {
       if (await this._inEditorView(hpage)) return true;
     }
     return await this._inEditorView(hpage);
+  }
+
+  /**
+   * v2.48.50 (Part B — CLONE+INJECT COMBO): transfer
+   * session ke 'logged-out' aane par dusra mauqa:
+   *   1. profile ka TOLERANT clone (sirf Cookies ki
+   *      kamzori qubool — baaqi har essential ki
+   *      nakami par haar, strict wali wajah ke saath);
+   *   2. clone ke andar live cookies se bani SYNTHETIC
+   *      Cookies DB (item 11) — clone ab 'mukammal'
+   *      hai, EBUSY wali kami DB se bhari;
+   *   3. wahi CDP transfer (setCookies, navigation se
+   *      pehle) lekin userDataDir = CLONE DIR — session
+   *      ab profile ki asal haalat (Local State /
+   *      storage) ke saath khulta hai;
+   *   4. probe2 — us ka faisla lautta hai.
+   * Safal par { session, verdict }; kisi bhi qadam ki
+   * nakami par { reason } (bulane wala 'headless-combo
+   * skipped' line banata hai) — kabhi throw nahi, aur
+   * nakami par apna banaya hua sab saaf.
+   */
+  async _headlessComboSession(account, oldSession) {
+    const cookies = oldSession && Array.isArray(oldSession.liveCookies) ? oldSession.liveCookies : null;
+    if (!cookies || !cookies.length) return { reason: 'no-live-cookies' };
+    const profileRoot = getAccountProfilePath(account.id);
+    const comboDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-headless-'));
+    let clone = null;
+    try {
+      clone = await headlessHarvest.buildHeadlessClone(profileRoot, comboDir, { tolerantCookiesOnly: true });
+    } catch (e) {
+      if (e && e.cloneReport) {
+        try { this.log(headlessHarvest.cloneLogLine(e.cloneReport)); } catch (ignored) {}
+        if (e.cloneReport.cookiesRel) {
+          try { this.log(`[ROOT] headless-clone cookies-found-at=${e.cloneReport.cookiesRel}`); } catch (ignored) {}
+        }
+      }
+      await headlessHarvest.removeHeadlessClone(comboDir);
+      return { reason: 'clone-build-failed' };
+    }
+    try { this.log(headlessHarvest.cloneLogLine(clone)); } catch (e) {}
+    if (clone && clone.cookiesRel) {
+      try { this.log(`[ROOT] headless-clone cookies-found-at=${clone.cookiesRel}`); } catch (e) {}
+    }
+    // Item 11: synthetic Cookies DB clone ke andar —
+    // parkhi hui (read-back validated) file hi likhi
+    // jati hai; na bane to line naam se kehti hai aur
+    // combo aage badhta hai (setCookies upar se lagta
+    // hi hai).
+    try {
+      const dbRes = await cookiesDb.buildCookiesDbFile(cookies, clone, comboDir);
+      if (dbRes && dbRes.built) {
+        this.log(`[ROOT] headless-cookiesdb built cookies=${dbRes.count}`);
+      } else {
+        this.log(`[ROOT] headless-cookiesdb skipped reason=${dbRes && dbRes.reason ? dbRes.reason : 'unbuilt'}`, 'warn');
+      }
+    } catch (e) {
+      this.log('[ROOT] headless-cookiesdb skipped reason=error', 'warn');
+    }
+    let session2 = null;
+    try { session2 = await this._headlessLaunchTransferred(cookies, comboDir); } catch (e) { session2 = null; }
+    if (!session2) {
+      await headlessHarvest.removeHeadlessClone(comboDir);
+      return { reason: 'combo-launch-failed' };
+    }
+    let verdict2 = 'logged-out';
+    try { verdict2 = await this._headlessProbeOnce(account, session2.page); } catch (e) { verdict2 = 'logged-out'; }
+    return { session: session2, verdict: verdict2 };
   }
 
   /**
@@ -6621,15 +7034,54 @@ class FlowAutomationEngine {
       return fail(headlessHarvest.launchFailNote(e));
     }
     try {
-      const hcap = session.capture;
-      const hpage = session.page;
-      try { if (hcap) hcap.harvestFloorBytes = downloadFetch.minBytesForDuration(settings && settings.duration); } catch (e) {}
-      try { if (hcap) hcap.beginSubmission(captureKey, Date.now()); } catch (e) {}
+      let hcap = session.capture;
+      let hpage = session.page;
+      const setupCapture = () => {
+        try { if (hcap) hcap.harvestFloorBytes = downloadFetch.minBytesForDuration(settings && settings.duration); } catch (e) {}
+        try { if (hcap) hcap.beginSubmission(captureKey, Date.now()); } catch (e) {}
+      };
+      setupCapture();
       let verdict = cached;
       if (!verdict) {
         verdict = await this._headlessProbeOnce(account, hpage);
+        try { task._headlessProbeState = verdict; } catch (e) {}
+        // v2.48.50 (Part B): probe line ab url + nishan
+        // ke saath (probeLogLine — snapshot ke wahi
+        // fields jo classifier khata hai).
+        const snap = this._lastHeadlessProbeSnap;
+        this.log(headlessHarvest.probeLogLine({
+          state: verdict, account: label,
+          url: snap && snap.url,
+          hasSignIn: !!(snap && snap.hasSignIn),
+          hasAvatar: !!(snap && snap.hasAvatar),
+          hasPromptBox: !!(snap && snap.hasPromptBox)
+        }), verdict === 'logged-in' ? 'success' : 'warn');
+        // v2.48.50 (Part B — CLONE+INJECT COMBO, DBSC
+        // discriminator): transfer session 'logged-out'
+        // aaya ho to EK dusra mauqa — tolerant clone
+        // (sirf Cookies ki kamzori qubool) ke UPDir par
+        // wahi transferred session, andar synthetic
+        // Cookies DB ke saath; probe2 ka faisla hi is
+        // attempt ka faisla banta hai. Combo na bane to
+        // 'headless-combo skipped' line + aaj wali haar.
+        // Probe cache ka set is ke BAAD hai — cache me
+        // hamesha aakhri faisla jata hai.
+        if (headlessHarvest.headlessComboApplies({ via: session && session.via, verdict, tried: false })) {
+          const combo = await this._headlessComboSession(account, session).catch(() => null);
+          if (combo && combo.session) {
+            await this._headlessCloseSession(session);
+            session = combo.session;
+            hcap = session.capture;
+            hpage = session.page;
+            setupCapture();
+            verdict = combo.verdict;
+            try { task._headlessProbeState = verdict; } catch (e) {}
+            this.log(`[ROOT] headless-probe2 state=${verdict} via=clone-inject`, verdict === 'logged-in' ? 'success' : 'warn');
+          } else {
+            this.log(`[ROOT] headless-combo skipped reason=${combo && combo.reason ? combo.reason : 'combo-failed'}`, 'warn');
+          }
+        }
         try { if (this._headlessProbeCache) this._headlessProbeCache.set(account.id, verdict); } catch (e) {}
-        this.log(`[ROOT] headless-probe state=${verdict} account=${label}`, verdict === 'logged-in' ? 'success' : 'warn');
       }
       if (verdict !== 'logged-in') {
         return fail(headlessHarvest.PROBE_REJECT_NOTE);
@@ -6658,8 +7110,11 @@ class FlowAutomationEngine {
         try { if (hcap) hcap.claimFlowContentVideo(url); } catch (e) {}
         try { if (this.netCapture) this.netCapture.claimFlowContentVideo(url); } catch (e) {}
         task.completedVideoUrl = url;
-        const ok = await this._saveBufferForTask(task, downloadFolder, settings, buffer, url);
-        return (ok || task.mediaSaved) ? 'saved' : 'rejected';
+        const ok = await this._saveBufferForTask(task, downloadFolder, settings, buffer, url, 'headless-harvest');
+        // v2.48.50 (item 7): race ki jeet mainpage ki
+        // ho to ye save jeet NAHI hai — 'rejected'.
+        const raceLostHh = !!(task._raceActive && task._raceWonBy && task._raceWonBy !== 'headless-harvest');
+        return ((ok || task.mediaSaved) && task._saveRejectedReason !== 'route-race' && !raceLostHh) ? 'saved' : 'rejected';
       };
       const waitMs = Math.max(1000, this.headlessHarvestWaitMs || 30000);
       const deadline = Date.now() + waitMs;
@@ -6799,6 +7254,10 @@ class FlowAutomationEngine {
     } catch (e) {}
     const triedUrls = new Set();
     const failOut = () => {
+      // v2.48.50 (item 7): race me dusra rasta jeet
+      // chuka ho to ye haar ki line/note jhooti hogi —
+      // khamoshi se jeet ki wapsi.
+      if (task.mediaSaved) return true;
       attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'no usable stream for this video was seen on the main project page (see the mainpage-audit lines) — grid replay ran next; nothing was opened or clicked' });
       this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: no usable stream for this video on the main project page — grid replay will run`, 'warn');
       return false;
@@ -6841,8 +7300,25 @@ class FlowAutomationEngine {
       } catch (e) {}
       const annotated = [];
       const seenUrls = new Set();
+      // v2.48.50 (item 9): tile ki apni stream (ya
+      // render-time pre-bound stream) ke liye fetch ke
+      // tried-zeher se chhoot — sirf tab jab pichhla
+      // completion nateeja 'no-body' raha ho aur is
+      // attempt ke element-drive cycles baqi hon.
+      // Fetch ke apne usool bilkul nahi badalte; ye
+      // sirf ELEMENT-drive wale raste ko dobara mauqa
+      // deta hai.
+      const tileTriedExempt = (url) => {
+        if (!url) return false;
+        const isTileEntry = (!!tileSrcUrl && url === tileSrcUrl)
+          || (!!task._preboundMainpageUrl && url === task._preboundMainpageUrl);
+        return isTileEntry
+          && lastOutcomeByUrl.get(url) === 'no-body'
+          && (task._mpCompleteCycles || 0) < 4;
+      };
       const pushEntry = (e, bound) => {
-        if (!e || !e.url || seenUrls.has(e.url) || triedUrls.has(e.url)) return;
+        if (!e || !e.url || seenUrls.has(e.url)) return;
+        if (triedUrls.has(e.url) && !tileTriedExempt(e.url)) return;
         seenUrls.add(e.url);
         annotated.push({
           url: e.url,
@@ -6887,12 +7363,17 @@ class FlowAutomationEngine {
           logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: e.firstSeenAt, why: 'claimed-by-other-task' });
           continue;
         }
-        if (triedUrls.has(e.url)) {
+        if (triedUrls.has(e.url) && !tileTriedExempt(e.url)) {
           logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: e.firstSeenAt, why: 'already-tried-this-attempt' });
           continue;
         }
         const isBound = !!boundUrl && e.url === boundUrl;
-        const isTile = !!tileSrcUrl && e.url === tileSrcUrl;
+        // v2.48.50 (item 5): render ke dauraan pehle se
+        // bandha (pre-bound) ummeedwaar bhi tile jaisa
+        // mazboot hai — completion usi par foran shuru
+        // hota hai, nayi hover watch ka intezaar nahi.
+        const isTile = (!!tileSrcUrl && e.url === tileSrcUrl)
+          || (!!task._preboundMainpageUrl && e.url === task._preboundMainpageUrl);
         if (!isBound && !isTile) {
           // timing bandish: meri PEHLI nazar mere render
           // se pehle ki hai to ye stream mera nahi ho
@@ -6919,7 +7400,10 @@ class FlowAutomationEngine {
     };
     const completeWith = (entry, bindReason) => this._mainpageCompleteCandidate(
       task, downloadFolder, settings, attempts, entry,
-      { captureKey, bindReason, floorBytes, teacherUrl, teacherHash, timingBucket, gapSec }
+      // v2.48.50 (item 1): tileIndexHint completion tak
+      // jata hai — media-load tile element wahi se
+      // dhoondta hai.
+      { captureKey, bindReason, floorBytes, teacherUrl, teacherHash, timingBucket, gapSec, tileIndexHint }
     );
     // v2.48.46 (TRIED-URLS POISONING FIX — ZEROCLICK13):
     // pehle har bandha URL completion se PEHLE
@@ -6934,12 +7418,23 @@ class FlowAutomationEngine {
     // 2) triedUrls me rehta hai. 'rejected' / 'saved'
     // par purana vyavhaar hi hai.
     const completionTries = new Map();
+    // v2.48.50 (item 9): har URL ka pichhla completion
+    // nateeja — tile-element ki tried-list chhoot isi
+    // par bandhi hai (sirf 'no-body' ke baad).
+    const lastOutcomeByUrl = new Map();
     const completeTracked = async (entry, bindReason) => {
       triedUrls.add(entry.url);
       const count = (completionTries.get(entry.url) || 0) + 1;
       completionTries.set(entry.url, count);
+      // v2.48.50 (item 4): completion cycles ab 2 ki
+      // jagah 4 — dobara koshish se pehle ~1.5s ka
+      // waqfa (stream ko aane ka waqt bhi, aur cycles
+      // ki spacing bhi). Pehli koshish par koi waqfa
+      // nahi.
+      if (count >= 2) await sleep(1500);
       const outcome = await completeWith(entry, bindReason);
-      if (outcome === 'no-body' && count < 2) triedUrls.delete(entry.url);
+      lastOutcomeByUrl.set(entry.url, outcome);
+      if (outcome === 'no-body' && count < 4) triedUrls.delete(entry.url);
       return outcome;
     };
     // Binding plan ek dafa chalao (maujooda kitab par):
@@ -7136,7 +7631,12 @@ class FlowAutomationEngine {
         triedUrls
       });
       if (pick && pick.url && !this.isStopping && !task.mediaSaved) {
-        await this._loadMainpageFullViaMedia(pick.url);
+        // v2.48.50 (item 1): ye mauqa bhi usi shared
+        // completion se — pehle TILE element, hidden
+        // chaara; lekin hadd EK drive ki hi rehti hai
+        // (singleDrive — ye aakhri chaara hai, cycle
+        // budget ka hissa ginata hai, item 4).
+        await this._loadMainpageFullViaMedia(pick.url, { task, tileIndexHint, singleDrive: true });
         const bookEntry = typeof cap.mainpageEntries === 'function'
           ? cap.mainpageEntries().find(e => e && e.url === pick.url) : null;
         const held = typeof cap.mainpageBodyForUrl === 'function'
@@ -7673,6 +8173,59 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.50 (MEGA PACK item 6 — PIPELINING): is task ki
+   * completion ke dauraan AGLI pending task ki tile ko
+   * viewport me la kar us ke preview element ko muted
+   * play karo — bilkul waisa hi in-place playback jo
+   * page khud hover par karta hai. Is se agle task ki
+   * stream peeche (background) aati rehti hai aur us ki
+   * completion apni baari par taaza stream se shuru
+   * hoti hai. Bandhan ki hifazat (reserved-for-earlier-
+   * pending) bilkul nahi badalti — ye sirf tile ko
+   * nazar me rakhna hai, koi bandhan/claim nahi. Run
+   * me ek dafa (har naye browser session par nishan
+   * taaza hota hai); safal ho to EK line:
+   * '[ROOT] mainpage-pipeline task=next-pending'.
+   * Best-effort — nakami khamosh hai.
+   */
+  async _primeNextPendingTile(task) {
+    if (this._pipelinePrimedRun) return;
+    const pg = this.page;
+    if (!pg || pg.isClosed() || typeof pg.evaluate !== 'function') return;
+    let next = null;
+    try {
+      for (const t of this._captureTasks.values()) {
+        if (t && t !== task && !t.mediaSaved && !t.completed) { next = t; break; }
+      }
+    } catch (e) {}
+    if (!next) return;
+    const idx = await this._resolveTileIndexForTask(next, undefined);
+    if (!Number.isInteger(idx) || idx < 0) return;
+    let primed = false;
+    try {
+      primed = await pg.evaluate((i) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const tile = tiles && tiles[i];
+          if (!tile) return false;
+          try { tile.scrollIntoView({ block: 'center' }); } catch (e) {}
+          const vid = tile.querySelector('video');
+          if (vid) {
+            try { vid.muted = true; } catch (e) {}
+            const p = vid.play();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+          }
+          return true;
+        } catch (e) { return false; }
+      }, idx);
+    } catch (e) { primed = false; }
+    if (primed) {
+      this._pipelinePrimedRun = true;
+      try { this.log('[ROOT] mainpage-pipeline task=next-pending', 'info'); } catch (e) {}
+    }
+  }
+
+  /**
    * v2.48.36 (ROOT PACK — B: GRID-SELECTION REPLAY):
    * editor khole baghair, sirf tile ko selected/focused
    * karke seekhi hui mint call hu-bahu chalana. Theory
@@ -7827,29 +8380,104 @@ class FlowAutomationEngine {
     // → tile-src → native UI) neeche bilkul waisi hi
     // chalti hai. ---
     if (!isImage) {
-      try {
-        const okHh = await this._tryHeadlessHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
-        if (okHh || task.mediaSaved) {
-          try {
-            this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
-          } catch (e) {}
-          const wonHh = attempts.filter(a => a.ok).pop();
-          return { ok: true, strategy: wonHh ? wonHh.strategy : 'headless-harvest', attempts };
+      // v2.48.50 (MEGA PACK): is attempt ke hisaab ki
+      // safaai — completion cycles / element outcomes /
+      // probe haal / race dawa har attempt me taaza.
+      task._mpCompleteCycles = 0;
+      task._mediaElOutcomes = {};
+      task._headlessProbeState = null;
+      task._raceActive = false;
+      task._raceWonBy = null;
+      task._raceSavedUrl = null;
+      // Items 16 + 4: attempt ka aakhri hisaab EK jagah
+      // se — census line, cycles line (sirf jab cycles
+      // chale hon), aur attempt-summary line. Har
+      // video wapsi (jeet ya haar) yahi se guzregi.
+      const finishVideoAttempt = (result) => {
+        try {
+          this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
+        } catch (e) {}
+        try {
+          if ((task._mpCompleteCycles || 0) > 0) {
+            this.log(`[ROOT] mainpage-complete cycles=${task._mpCompleteCycles}`, 'info');
+          }
+        } catch (e) {}
+        try {
+          let best = 0;
+          let bestUrl = null;
+          const capNow = this.netCapture;
+          if (capNow && typeof capNow.mainpageEntries === 'function') {
+            for (const e of capNow.mainpageEntries()) {
+              if (!e || !e.url) continue;
+              const t = Math.max(e.bytes || 0, e.declared || 0, e.knownTotal || 0);
+              if (t > best) { best = t; bestUrl = e.url; }
+            }
+          }
+          let assembled = 0;
+          if (bestUrl && capNow && typeof capNow.mainpageBodyForUrl === 'function') {
+            const held = capNow.mainpageBodyForUrl(bestUrl);
+            if (held && held.buffer) assembled = held.buffer.length;
+          }
+          const outcomes = task._mediaElOutcomes || {};
+          this.log(attemptSummaryLogLine({
+            task: task.promptIndex,
+            best,
+            assembled,
+            mediaTile: outcomes.tile,
+            mediaHidden: outcomes.hidden,
+            probe: task._headlessProbeState,
+            race: task._raceWonBy || null,
+            saved: !!task.mediaSaved
+          }), 'info');
+        } catch (e) {}
+        return result;
+      };
+      // Item 6 (PIPELINING): is task ki completion ke
+      // dauraan agli pending task ki tile viewport me
+      // chalti rahe — us ki stream peeche se aati
+      // rahegi (run me ek dafa, best-effort).
+      try { await this._primeNextPendingTile(task); } catch (e) {}
+      // v2.48.50 (item 7 — ROUTE RACE): headless aur
+      // mainpage ab EK SAATH chalte hain (pehle
+      // tartib thi: headless, phir mainpage). Jo rasta
+      // pehle saveGuard-passing save kare wahi jeet-ta
+      // hai — dawa (claim) _saveBufferForTask ke race
+      // darwaze par bandhta hai, is liye dusri copy
+      // kabhi nahi banti; haarne wala saaf rukta hai
+      // (headless session finally me band hota hai,
+      // media drives mediaSaved par poll rok deti
+      // hain, watch loop bhi wahi dekhta hai). Route
+      // ORDER ka dawa (downloadRouteOrder) nahi badla
+      // — ye sirf intezaar ka overlap hai, dawa hamesha
+      // sequential save par bandhta hai. Grid-replay
+      // dono ke baad hi aata hai, pehle jaisa.
+      task._raceActive = true;
+      const hhRun = (async () => {
+        try { return await this._tryHeadlessHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint); }
+        catch (e) {
+          attempts.push({ strategy: 'headless-harvest', ok: false, note: 'the invisible-browser harvest hit a problem — the main-page routes ran next' });
+          return false;
         }
-      } catch (e) {
-        attempts.push({ strategy: 'headless-harvest', ok: false, note: 'the invisible-browser harvest hit a problem — the main-page routes ran next' });
-      }
-      try {
-        const okMp = await this._tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
-        if (okMp || task.mediaSaved) {
-          try {
-            this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
-          } catch (e) {}
-          const wonMp = attempts.filter(a => a.ok).pop();
-          return { ok: true, strategy: wonMp ? wonMp.strategy : 'mainpage-harvest', attempts };
+      })();
+      const mpRun = (async () => {
+        try { return await this._tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint); }
+        catch (e) {
+          attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'the main-page harvest hit a problem — grid replay ran next' });
+          return false;
         }
-      } catch (e) {
-        attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'the main-page harvest hit a problem — grid replay ran next' });
+      })();
+      await Promise.all([hhRun, mpRun]);
+      task._raceActive = false;
+      try {
+        this.log(`[ROOT] route-race winner=${task.mediaSaved ? (task._raceWonBy || 'none') : 'none'}`, task.mediaSaved ? 'success' : 'info');
+      } catch (e) {}
+      if (task.mediaSaved) {
+        // Jeetne wale save ka URL hi asal hai (haarne
+        // wale ne apna URL completedVideoUrl par pehle
+        // rakha ho sakta hai).
+        if (task._raceSavedUrl) task.completedVideoUrl = task._raceSavedUrl;
+        const won = attempts.filter(a => a.ok).pop();
+        return finishVideoAttempt({ ok: true, strategy: won ? won.strategy : (task._raceWonBy || 'mainpage-harvest'), attempts });
       }
       try {
         const g = await this._tryGridReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
@@ -7858,20 +8486,14 @@ class FlowAutomationEngine {
           // bandhan khidki band (exclusion hisaab ke
           // liye ye task ab 'baqi' nahi).
           try { if (typeof this.netCapture.mainpageMarkWindowDone === 'function') this.netCapture.mainpageMarkWindowDone(captureKey); } catch (e) {}
-          try {
-            this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
-          } catch (e) {}
-          return { ok: true, strategy: 'grid-replay', attempts };
+          return finishVideoAttempt({ ok: true, strategy: 'grid-replay', attempts });
         }
       } catch (e) {
         attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid replay hit a problem' });
       }
       // EMAANDAR FAIL: is ke baad koi rasta nahi bacha.
       this.log(`[ROOT] [Prompt #${n}] Download failed honestly: the invisible-browser harvest did not produce this video's file, no usable stream for this video was seen on the main project page, and grid replay did not produce its file. Nothing was opened or clicked anywhere; the prompt was NOT resubmitted.`, 'warn');
-      try {
-        this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
-      } catch (e) {}
-      return { ok: false, attempts };
+      return finishVideoAttempt({ ok: false, attempts });
     }
 
     // --- IMAGE tasks ki purani tartib (v2.48.41 me
@@ -8922,6 +9544,34 @@ class FlowAutomationEngine {
                   elapsedSec: elapsedSec
                 });
               }
+              // v2.48.50 (item 5 — RENDER-TIME PRE-BIND):
+              // tile ki apni stream render ke dauraan hi
+              // is duration ke floor tak pahunch jaye to
+              // use is task ke naam pehle se bandha
+              // (pre-bound) darj kar do — render-complete
+              // par completion usi par foran shuru hoga,
+              // nayi hover watch ke intezaar ke baghair.
+              // Ye sirf ek NISHAN hai
+              // (task._preboundMainpageUrl) — claim,
+              // bandhan ka faisla aur saveGuard ke
+              // darwaze bilkul nahi badalte; buildCandidates
+              // use tile-jaisa mazboot ummeedwaar manta
+              // hai. Ek task par sirf ek dafa.
+              if (!task._preboundMainpageUrl && !task.mediaSaved) {
+                try {
+                  const tileUrl = bestTile.mediaUrl || bestTile.videoSrc || null;
+                  if (tileUrl && networkCapture.isGooglevideoPlaybackUrl(tileUrl)
+                    && this.netCapture && typeof this.netCapture.mainpageEntries === 'function') {
+                    const ent = this.netCapture.mainpageEntries().find(e => e && e.url === tileUrl);
+                    const tot = ent ? Math.max(ent.bytes || 0, ent.declared || 0, ent.knownTotal || 0) : 0;
+                    const floor = downloadFetch.minBytesForDuration(settings && settings.duration);
+                    if (ent && tot >= floor) {
+                      task._preboundMainpageUrl = tileUrl;
+                      this.log(`[ROOT] mainpage-prebind total=${Math.floor(tot)}`, 'info');
+                    }
+                  }
+                } catch (e) {}
+              }
             }
 
             // True completion: percentage gone AND a video/badge is present,
@@ -9122,4 +9772,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine };

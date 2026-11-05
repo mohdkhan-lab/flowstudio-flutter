@@ -538,6 +538,28 @@ function assembleMainpageChunks(chunks) {
   return parts.length === 1 ? parts[0] : Buffer.concat(parts);
 }
 
+/**
+ * v2.48.50 (item 18 — SEGMENT ASSEMBLY): ek googlevideo
+ * URL ki LOGICAL STREAM kunji (khalis). Do URL tab hi
+ * ek logical stream hain jab: dono googlevideo
+ * videoplayback hon, un ka rasta (pathname) ek ho, aur
+ * query ka media pehchan-wala 'id' ek ho — itag bhi
+ * kunji me hai (alag encode ek dusri file hai). 'id'
+ * na ho to kunji NAHI banti (null) — andaze se jod
+ * kabhi nahi. Host kunji me NAHI hai (rr<N> host badal
+ * sakta hai, file wahi rehti hai).
+ */
+function segmentKeyOf(url) {
+  try {
+    if (!isGooglevideoPlaybackUrl(url)) return null;
+    const u = new URL(String(url || ''));
+    const id = u.searchParams.get('id');
+    if (!id) return null;
+    const itag = u.searchParams.get('itag') || '';
+    return `${u.pathname}|${id}|${itag}`;
+  } catch (e) { return null; }
+}
+
 class NetworkCapture {
   constructor(opts = {}) {
     this.patterns = opts.patterns || CAPTURE_PATTERNS;
@@ -567,6 +589,11 @@ class NetworkCapture {
     // faisla/wajah/timing-bucket; asal URL kabhi bahar
     // nahi jata). Callback na ho to audit khamosh hai.
     this.onMainpageAudit = typeof opts.onMainpageAudit === 'function' ? opts.onMainpageAudit : null;
+    // v2.48.50 (MEGA PACK item 18 — SEGMENT ASSEMBLY):
+    // ek logical stream ke >1 URL hone ki khabar —
+    // engine use '[ROOT] mainpage-segments' line me
+    // badalta hai. Callback na ho to khabar khamosh hai.
+    this.onSegmentNote = typeof opts.onSegmentNote === 'function' ? opts.onSegmentNote : null;
     this._page = null;
     this._reqHandler = null;
     this._resHandler = null;
@@ -773,6 +800,15 @@ class NetworkCapture {
     // (ZEROCLICK16: sirf chhote previews aaye the aur
     // completion kabhi engage hi nahi hua tha).
     this._mainpageTooSmall = [];
+    // v2.48.50 (item 18 — SEGMENT ASSEMBLY): logical
+    // stream key -> us ke URLs ka Set. Do googlevideo
+    // URL jo sirf query me alag hon lekin rasta (path)
+    // aur media id (query ka 'id') ek rakhe hon, EK hi
+    // file ke tukde hain — un ke chunks assembly ke
+    // liye ek kitab me jod sakte hain (bandhan / claim
+    // / faisla bilkul nahi badalta — faisla hamesha
+    // bandhe ummeedwaar ki JODI hui body par hota hai).
+    this._mainpageSegments = new Map();
     // Engine har download round me apni duration ka size
     // floor yahan rakh deta hai (downloadFetch wala hisaab);
     // 0 = floor nahi (aam darwaze hi laagu).
@@ -1052,8 +1088,13 @@ class NetworkCapture {
         try {
           if (!e || !e.response || !e.response.url) return;
           const u = e.response.url;
-          if (isMediaHostUrl(u) || u.includes('/asb/')) {
-            this._cdpDlShape.set(e.requestId, urlShape(u));
+          // v2.48.50 (item 15 — CENSUS): googlevideo
+          // jawab bhi census me — lekin host har stream
+          // ka alag (rr<N>---sn-*) hota hai, is liye
+          // rollup shakal ek thahri 'googlevideo.com/
+          // videoplayback' hai (lh3/asb wali tarz).
+          if (isMediaHostUrl(u) || u.includes('/asb/') || isGooglevideoPlaybackUrl(u)) {
+            this._cdpDlShape.set(e.requestId, isGooglevideoPlaybackUrl(u) ? 'googlevideo.com/videoplayback' : urlShape(u));
           }
           // v2.48.27 (NET-BIG): HAR jawab ki shakal/nau/declared
           // size note karo — loadingFinished par encoded size ke
@@ -1141,7 +1182,15 @@ class NetworkCapture {
                 contentRange: headerValueOf(e.response.headers, 'content-range') || '',
                 // v2.48.43: ummeedwaar darwaze ke liye
                 // jawab ki asal type.
-                contentType: (rawType.split(';')[0] || '').trim().toLowerCase()
+                contentType: (rawType.split(';')[0] || '').trim().toLowerCase(),
+                // v2.48.50 (item 3 — CACHE STORE): jawab
+                // disk/prefetch cache se aaya ho to nishan
+                // — loadingFinished par body khaali aaye
+                // to ek dobara koshish hogi, aur nazar
+                // entry par fromCache darj hoga. Store ka
+                // rasta/cache ke baghair wala bilkul ek
+                // hai (wahi header darwaza offset 0 par).
+                fromCache: !!(e.response.fromDiskCache || e.response.fromPrefetchCache)
               });
             }
           }
@@ -1248,6 +1297,21 @@ class NetworkCapture {
                 const mres = await client.send('Network.getResponseBody', { requestId: e.requestId });
                 mbuf = decodeCdpBody(mres && mres.body, mres && mres.base64Encoded);
               } catch (merr) { mbuf = null; }
+              // v2.48.50 (item 3): cache se aaya jawab
+              // pehli getResponseBody par aksar khaali
+              // deta hai (body cache se serve hoti hai,
+              // CDP use foran nahi uthata) — ek chhota
+              // waqfa de kar EK dobara koshish; phir jo
+              // mile wahi nazar me jayega aur store ka
+              // rasta aam wala hi rahega.
+              if ((!mbuf || mbuf.length === 0) && mpend.fromCache) {
+                try {
+                  await new Promise(r => setTimeout(r, 200));
+                  const mres2 = await client.send('Network.getResponseBody', { requestId: e.requestId });
+                  const mbuf2 = decodeCdpBody(mres2 && mres2.body, mres2 && mres2.base64Encoded);
+                  if (mbuf2 && mbuf2.length > 0) mbuf = mbuf2;
+                } catch (merr) {}
+              }
             } else {
               mbuf = mainpageFcBody;
             }
@@ -1855,6 +1919,11 @@ class NetworkCapture {
         contentType: typeof pend.contentType === 'string' && pend.contentType ? pend.contentType : null,
         candidate: gate.candidate,
         partial,
+        // v2.48.50 (item 3): ye nazar cache-served
+        // jawab ki hai kya (CDP fromDiskCache /
+        // fromPrefetchCache) — store usi raste se hua
+        // hai; ye nishan sirf hisaab ke liye hai.
+        fromCache: pend.fromCache === true,
         // v2.48.48: googlevideo body-store ka nateeja
         // (neeche wala hissa bharta hai) — 'yes' | 'no',
         // na-rakhne ki wajah ke saath; flow-content par
@@ -1924,6 +1993,30 @@ class NetworkCapture {
         }
         entry.bodyStored = bodyStored;
         entry.bodyStoreReason = bodyStored === 'yes' ? null : bodyStoreReason;
+        // v2.48.50 (item 18 — SEGMENT ASSEMBLY): is
+        // URL ko us ki logical-stream group me darj
+        // karo — sirf tab jab kuch asal me store hua
+        // ho (assembly rakhe chunks se hi banti hai).
+        // Group pehli dafa 2 URL ka ho to engine ko
+        // khabar jati hai (wahan '[ROOT]
+        // mainpage-segments' line banti hai).
+        if (bodyStored === 'yes') {
+          try {
+            const segKey = segmentKeyOf(pend.url);
+            if (segKey) {
+              let segSet = this._mainpageSegments.get(segKey);
+              if (!segSet) { segSet = new Set(); this._mainpageSegments.set(segKey, segSet); }
+              const beforeSeg = segSet.size;
+              segSet.add(pend.url);
+              if (beforeSeg === 1 && segSet.size === 2 && typeof this.onSegmentNote === 'function') {
+                try { this.onSegmentNote({ key: segKey, urls: segSet.size }); } catch (e) {}
+              }
+              while (this._mainpageSegments.size > 20) {
+                this._mainpageSegments.delete(this._mainpageSegments.keys().next().value);
+              }
+            }
+          } catch (e) {}
+        }
       }
       // v2.48.43: darwaza na pass karne wali entry
       // kitab me rehti hai (dobara nazar ka hisaab)
@@ -1997,10 +2090,43 @@ class NetworkCapture {
     try {
       if (!url) return null;
       const held = this._mainpageBodies.get(url);
+      let best = null;
       if (held && Array.isArray(held.chunks) && held.chunks.length) {
         const assembled = assembleMainpageChunks(held.chunks);
-        if (assembled && assembled.length > 0) return { buffer: assembled, at: held.at };
+        if (assembled && assembled.length > 0) best = { buffer: assembled, at: held.at };
       }
+      // v2.48.50 (item 18 — SEGMENT ASSEMBLY): is URL
+      // ki logical stream ke BAAQI URLs ke rakhe
+      // chunks bhi jod kar dekho — union ki dod apni
+      // wali se lambi ho to wahi asal body hai (chunks
+      // apne Content-Range offsets par hi judte hain;
+      // bandhan/claim/faisla is se nahi badalta —
+      // faisla hamesha is bandhe URL ki jodi body par
+      // hota hai, jo ab segment-poori ho sakti hai).
+      try {
+        const segKey = segmentKeyOf(url);
+        if (segKey) {
+          const segSet = this._mainpageSegments.get(segKey);
+          if (segSet && segSet.size > 1) {
+            const allChunks = [];
+            let segAt = 0;
+            for (const segUrl of segSet) {
+              const segHeld = this._mainpageBodies.get(segUrl);
+              if (segHeld && Array.isArray(segHeld.chunks)) {
+                for (const ch of segHeld.chunks) allChunks.push(ch);
+                if (Number.isFinite(segHeld.at) && segHeld.at > segAt) segAt = segHeld.at;
+              }
+            }
+            if (allChunks.length) {
+              const union = assembleMainpageChunks(allChunks);
+              if (union && union.length > 0 && (!best || union.length > best.buffer.length)) {
+                best = { buffer: union, at: segAt || (held ? held.at : Date.now()) };
+              }
+            }
+          }
+        }
+      } catch (e) {}
+      if (best) return best;
       const byUrl = this._harvestByUrl.get(url);
       if (byUrl && byUrl.buffer && byUrl.buffer.length > 0) return byUrl;
       return null;
@@ -2758,4 +2884,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf };

@@ -303,7 +303,97 @@ async function copyDirEssentials(srcDir, destDir, copied, warnings) {
  * mili hi nahi (not found) ya plan me thi lekin us ki
  * copy nakam rahi (copy failed: <pehli warning>).
  */
-async function buildHeadlessClone(profileRoot, cloneDir) {
+/**
+ * v2.48.50 (TOLERANT CLONE — Part B): ek clone-plan rel
+ * SIRF Cookies khandan ki hai kya (asal Cookies file ya
+ * us ke sidecars: Cookies-wal / Cookies-journal). Rel
+ * kisi bhi separator shakal me ho sakta hai — faisla
+ * basename par hota hai.
+ */
+function isCookiesCloneRel(rel) {
+  if (!rel || typeof rel !== 'string') return false;
+  const base = rel.split(/[\\/]/).filter(Boolean).pop() || '';
+  return base === 'Cookies' || base.startsWith('Cookies-');
+}
+
+/**
+ * v2.48.50: TOLERANT clone ka faisla (khalis). Combo
+ * (clone+inject) ke liye clone tab qubool hai jab copy
+ * ki nakami SIRF Cookies khandan tak mehdood ho —
+ * kyunki woh kami live cookies se bani synthetic
+ * Cookies DB + CDP setCookies se bhari jayegi. Plan ka
+ * koi AUR hissa copy na hua ho (Local State, storage
+ * dirs, Preferences...) to faisla 'ok' NAHI hai —
+ * strict throw wali raah hi chalegi.
+ * Input: { plan: [{rel}], copied: [rel], missing: [rel] }
+ * (missing yahan faisle me NAHI ginata — jo hissa source
+ * me tha hi nahi, strict darwaza bhi use nahi rokta;
+ * Cookies source me bilkul na mile tab bhi plan-failure
+ * khaali rehta hai aur tolerance laagu hoti hai, kyunki
+ * DB wahi jagah bharegi.)
+ */
+function tolerantCloneDecision(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const plan = Array.isArray(o.plan) ? o.plan : [];
+  const copiedSet = new Set(Array.isArray(o.copied) ? o.copied : []);
+  const failed = plan.filter(p => p && p.rel && !copiedSet.has(p.rel)).map(p => p.rel);
+  const blocking = failed.filter(rel => !isCookiesCloneRel(rel));
+  return { ok: blocking.length === 0, failed, blocking };
+}
+
+/**
+ * v2.48.50: clone+inject COMBO ka trigger (khalis).
+ * Combo SIRF tab: session CDP transfer se aaya ho
+ * (via='cdp'), pehla probe bilkul 'logged-out' ho
+ * ('blocked' ek dusri deewaar hai — wahan combo
+ * bekaar hai), aur is attempt me combo pehle na
+ * aazmaya gaya ho.
+ */
+function headlessComboApplies(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  return o.via === 'cdp' && o.verdict === 'logged-out' && !o.tried;
+}
+
+/**
+ * v2.48.50 (Part B): probe ki EK wazeh line (khalis) —
+ * '[ROOT] headless-probe state=<s> account=<a>
+ * url=<host+path, zyada se zyada 80 harf>
+ * signIn=<bool> avatar=<bool> promptBox=<bool>'.
+ * Nishan snapshot ke wahi fields hain jo
+ * classifyProbeSnapshot khata hai; url se query kabhi
+ * nahi aati (host+path hi hai).
+ */
+function probeLogLine(info) {
+  const o = info && typeof info === 'object' ? info : {};
+  const state = o.state ? String(o.state) : 'logged-out';
+  const account = o.account ? String(o.account) : 'unknown';
+  let urlPart = 'none';
+  try {
+    const u = new URL(String(o.url || ''));
+    urlPart = (u.host + u.pathname).slice(0, 80) || 'none';
+  } catch (e) {
+    urlPart = String(o.url || '').replace(/^https?:\/\//, '').split('?')[0].slice(0, 80) || 'none';
+  }
+  const b = (v) => (v ? 'true' : 'false');
+  return `[ROOT] headless-probe state=${state} account=${account} url=${urlPart} signIn=${b(o.hasSignIn)} avatar=${b(o.hasAvatar)} promptBox=${b(o.hasPromptBox)}`;
+}
+
+/**
+ * v2.48.50 (Part B): transfer line ke liye cookie ke
+ * SIRF NAAM (khalis) — deduplicated, sorted, comma se
+ * jude, kul zyada se zyada 300 harf. Qeematein
+ * (values) KABHI nahi — ye function mapped (setCookies
+ * shakal) ya kachi CDP fehrist, dono se sirf .name
+ * uthata hai.
+ */
+function cookieNamesForLog(mapped) {
+  const names = [...new Set((Array.isArray(mapped) ? mapped : [])
+    .map(c => (c && typeof c.name === 'string' ? c.name : ''))
+    .filter(Boolean))].sort();
+  return names.join(',').slice(0, 300) || 'none';
+}
+
+async function buildHeadlessClone(profileRoot, cloneDir, options = {}) {
   if (!profileRoot || !fs.existsSync(profileRoot)) {
     const err = new Error(`Profile not found at: ${profileRoot}`);
     err.cloneReport = null;
@@ -350,6 +440,19 @@ async function buildHeadlessClone(profileRoot, cloneDir) {
   }
   const hasCookies = copied.some(rel => rel.endsWith('Cookies'));
   if (!hasCookies) {
+    // v2.48.50 (TOLERANT CLONE — combo ke liye): bulane
+    // wala tolerantCookiesOnly kahe aur copy ki nakami
+    // SIRF Cookies khandan tak mehdood ho to throw ki
+    // jagah report wapas — clone ka baaqi hissa mukammal
+    // hai aur Cookies ki jagah synthetic DB + CDP
+    // setCookies bharenge. Strict rasta (bina option)
+    // bilkul waisa hi throw karta hai jaisa aaj.
+    if (options && options.tolerantCookiesOnly) {
+      const decision = tolerantCloneDecision({ plan, copied, missing });
+      if (decision.ok) {
+        return { copied, missing, warnings, cookiesRel, tolerantCookies: true };
+      }
+    }
     // v2.48.46: report error ke saath chipka kar phenko
     // (caller fail par bhi clone log line bana sake),
     // aur ibarat source-missing vs copy-failed ka farq
@@ -612,6 +715,11 @@ module.exports = {
   COOKIE_READ_METHODS,
   aggregateCookieRead,
   cookieReadLogLine,
+  isCookiesCloneRel,
+  tolerantCloneDecision,
+  headlessComboApplies,
+  probeLogLine,
+  cookieNamesForLog,
   classifyProbeSnapshot,
   createProbeCache,
   launchIsWindowless

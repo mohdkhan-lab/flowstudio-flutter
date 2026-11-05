@@ -47,10 +47,11 @@ const {
   cascadeVerdict
 } = require('../engine/saveGuard');
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
-const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks } = require('../engine/networkCapture');
+const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
-const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine } = require('../engine/flowAutomation');
+const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
+const cookiesDb = require('../engine/cookiesDb');
 
 let passed = 0;
 let failed = 0;
@@ -1588,7 +1589,13 @@ async function main() {
     const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
     eq('HH-FALL the cascade still fails honestly overall', res.ok, false);
     const seq = res.attempts.map(a => a.strategy);
-    ok('HH-FALL headless ran first in the cascade', seq.indexOf('headless-harvest') >= 0 && seq.indexOf('headless-harvest') < seq.indexOf('mainpage-harvest'));
+    // v2.48.50 (item 7 — ROUTE RACE): headless aur
+    // mainpage ab EK SAATH chalte hain — attempts ki
+    // tartib khatam hone ki tartib hai, shuru hone ki
+    // nahi; is liye yahan sirf maujoodgi parkhi jati
+    // hai (route ORDER ka dawa task.downloadRouteOrder
+    // par neeche waisa hi pin hai).
+    ok('HH-FALL headless ran in the cascade', seq.indexOf('headless-harvest') >= 0);
     // grid-replay template na hone par khamoshi se skip
     // hota hai (koi attempt entry nahi) — entry ho to
     // mainpage ke BAAD hi hoga, aur haar ki line teeno
@@ -1867,7 +1874,14 @@ async function main() {
     const task = { promptIndex: 0, captureKey: 'k-tried-nobody', videoId: 'k-tried-nobody', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
     const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-tried-nobody', 0);
     eq('TRIED a no-body stream still saves nothing', okSave, false);
-    eq('TRIED the stream is completed exactly twice (the first no-body frees it, the second keeps it tried)', fetchCalls, 2);
+    // v2.48.50 (item 4): cycles ab 4 hain — pehli
+    // no-body par URL free hona barkarar hai (warna
+    // dusri completion hoti hi nahi), aur kul
+    // completions hadd ke andar rehti hain (watch ki
+    // hadd is setup me 3 par rok deti hai; cycle-cap
+    // 4 se zyada kabhi nahi).
+    ok('TRIED the stream is completed more than the old twice (first no-body frees it)', fetchCalls >= 3);
+    ok('TRIED completions stay bounded by the cycle cap of 4', fetchCalls <= 4);
     ok('TRIED both no-body completions are logged', logs.filter(m => m.includes('mainpage-complete: no body')).length >= 2);
   }
   {
@@ -2035,9 +2049,9 @@ async function main() {
     eq('Q-STATE a non-partial 200 is complete', mediaBodyState({ knownTotal: 0, declared: 0, partial: false, status: 200 }, { buffer: Buffer.alloc(10) }), 'complete');
     eq('Q-STATE a short chunk is partial', mediaBodyState({ knownTotal: 1000, declared: 1000, partial: true, status: 206 }, { buffer: Buffer.alloc(300) }), 'partial');
     eq('Q-STATE no entry is partial', mediaBodyState(null, { buffer: Buffer.alloc(10) }), 'partial');
-    eq('Q-LINE a complete line formats', mediaLoadLogLine({ host: 'rr4---sn-x.googlevideo.com', outcome: 'complete', bytes: 1201680 }), '[ROOT] mainpage-media-load host=rr4---sn-x.googlevideo.com outcome=complete bytes=1201680');
-    eq('Q-LINE an unknown outcome coerces to error', mediaLoadLogLine({ host: 'h', outcome: 'weird', bytes: -3 }), '[ROOT] mainpage-media-load host=h outcome=error bytes=0');
-    eq('Q-LINE garbage input is safe', mediaLoadLogLine(null), '[ROOT] mainpage-media-load host=none outcome=error bytes=0');
+    eq('Q-LINE a complete line formats', mediaLoadLogLine({ host: 'rr4---sn-x.googlevideo.com', outcome: 'complete', bytes: 1201680 }), '[ROOT] mainpage-media-load host=rr4---sn-x.googlevideo.com outcome=complete bytes=1201680 el=hidden');
+    eq('Q-LINE an unknown outcome coerces to error', mediaLoadLogLine({ host: 'h', outcome: 'weird', bytes: -3 }), '[ROOT] mainpage-media-load host=h outcome=error bytes=0 el=hidden');
+    eq('Q-LINE garbage input is safe', mediaLoadLogLine(null), '[ROOT] mainpage-media-load host=none outcome=error bytes=0 el=hidden');
   }
   {
     // (e) completion ki tartib
@@ -2427,16 +2441,21 @@ async function main() {
     ok('S-CAP the newer URLs survive eviction', !!nc2.mainpageBodyForUrl(mk('u2')) && !!nc2.mainpageBodyForUrl(mk('u3')));
   }
   {
-    // (d) media-load v2 — seek uskaam
+    // (d) media-load seek — v2.48.48 me v2 (sirf
+    // aakhir), v2.48.50 (item 2) me SEEK V3: 25/50/75%
+    // + duration−0.15, phir seek-back.
     const seekPage = (duration) => {
       const srcs = [];
+      const calls = [];
       return {
         srcs,
+        calls,
         _closed: false,
         isClosed() { return this._closed; },
-        async evaluate(fn) {
+        async evaluate(fn, arg) {
           const src = String(fn);
           srcs.push(src);
+          calls.push({ src, arg });
           if (src.includes('fs-media-load-started')) return 'fs-media-load-started';
           if (src.includes('__fsMediaLoadEnded === true')) return false;
           if (src.includes('el.duration')) return duration;
@@ -2445,19 +2464,21 @@ async function main() {
       };
     };
     {
-      // duration maloom — seek-to-end ek dafa, phir
-      // seek-back; phir bhi bilkul ek hi media-load line.
+      // duration maloom (4s) — chaar seeks tartib se
+      // [1, 2, 3, 3.85], phir EK seek-back; phir bhi
+      // bilkul ek hi media-load line.
       const logs = [];
-      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageMediaLoadMs: 2600 });
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageMediaLoadMs: 5200 });
       const page = seekPage(4);
       eng.page = page;
       const res = await eng._loadMainpageFullViaMedia(GV_URL);
       eq('S-SEEK nothing captured still returns null', res, null);
-      const seeks = page.srcs.map((s, i) => [s, i]).filter(([s]) => s.includes('el.currentTime = t'));
-      const backs = page.srcs.map((s, i) => [s, i]).filter(([s]) => s.includes('el.currentTime = 0'));
-      eq('S-SEEK seek-to-end happens exactly once', seeks.length, 1);
+      const seeks = page.calls.map((c, i) => [c, i]).filter(([c]) => c.src.includes('el.currentTime = t'));
+      const backs = page.calls.map((c, i) => [c, i]).filter(([c]) => c.src.includes('el.currentTime = 0'));
+      eq('S-SEEK v3 performs four seeks (25/50/75/end)', seeks.length, 4);
+      eq('S-SEEK v3 seek targets are the quarter points', JSON.stringify(seeks.map(([c]) => c.arg)), JSON.stringify([1, 2, 3, 3.85]));
       eq('S-SEEK seek-back happens exactly once', backs.length, 1);
-      ok('S-SEEK seek-to-end comes before seek-back', seeks.length === 1 && backs.length === 1 && seeks[0][1] < backs[0][1]);
+      ok('S-SEEK the last seek comes before seek-back', seeks.length === 4 && backs.length === 1 && seeks[3][1] < backs[0][1]);
       ok('S-SEEK still exactly one media-load line (timeout)', logs.filter(m => m.includes('mainpage-media-load')).length === 1 && logs.some(m => m.includes('outcome=timeout')));
     }
     {
@@ -2774,6 +2795,247 @@ async function main() {
     const okNone = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-ts-none', 0);
     eq('T-ENG no too-small sighting fails as before', okNone, false);
     eq('T-ENG media-load never runs without the trigger', mediaCalls, 0);
+  }
+
+  // ---------------------------------------------------------------------------
+  // U. v2.48.50 — MEGA PACK (18 items, owner order
+  //    2026-11-05: "ek saath 15-20 features dalo"):
+  //   (a) media-load log line el=tile / el=hidden
+  //       (khalis) + tile-first chunav (khalis);
+  //   (b) asal tile drive — element kabhi nahi
+  //       hat-ta, line el=tile ke saath;
+  //   (c) cycles — wrapper attempt-wide hadd 4,
+  //       outcomes task par darj;
+  //   (d) probe line (khalis) + transfer names
+  //       (khalis: sirf naam, sorted, truncated);
+  //   (e) tolerant clone faisla (khalis) + asal
+  //       clone par tolerant wapsi / strict throw;
+  //   (f) combo trigger (khalis);
+  //   (g) synthetic Cookies DB — build + read-back
+  //       parkh + file likhna;
+  //   (h) probe sabr (item 13) — reload wali teesri
+  //       koshish; blocked foran;
+  //   (i) segment kunji (khalis) + assembly union +
+  //       onSegmentNote; cache nazar (item 3) entry
+  //       par fromCache + stored=yes;
+  //   (j) attempt-summary line (khalis);
+  //   (k) route-race save darwaza — dusre ke dawe
+  //       par 'route-race' inkaar; nakami par dawa
+  //       chhoot jata hai.
+  // ---------------------------------------------------------------------------
+  {
+    // (a) line + chunav — khalis
+    eq('U-LINE el=tile formats', mediaLoadLogLine({ host: 'h', outcome: 'ended', bytes: 10, el: 'tile' }), '[ROOT] mainpage-media-load host=h outcome=ended bytes=10 el=tile');
+    eq('U-LINE el=hidden formats', mediaLoadLogLine({ host: 'h', outcome: 'complete', bytes: 5, el: 'hidden' }), '[ROOT] mainpage-media-load host=h outcome=complete bytes=5 el=hidden');
+    eq('U-LINE an unknown el coerces to hidden', mediaLoadLogLine({ host: 'h', outcome: 'complete', bytes: 5, el: 'weird' }), '[ROOT] mainpage-media-load host=h outcome=complete bytes=5 el=hidden');
+    eq('U-PICK a tile with src is picked', mediaLoadElementPick({ found: true, hasSrc: true, duration: -1 }), 'tile');
+    eq('U-PICK a tile with duration is picked', mediaLoadElementPick({ found: true, hasSrc: false, duration: 9.5 }), 'tile');
+    eq('U-PICK a tile with neither src nor duration falls back', mediaLoadElementPick({ found: true, hasSrc: false, duration: -1 }), 'hidden');
+    eq('U-PICK no tile element falls back', mediaLoadElementPick({ found: false, hasSrc: true, duration: 5 }), 'hidden');
+    eq('U-PICK garbage falls back', mediaLoadElementPick(null), 'hidden');
+  }
+  {
+    // (b) asal tile drive — jaali page jo tile
+    // element ke evaluate pehchanta hai.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageMediaLoadMs: 3000 });
+    const srcs = [];
+    eng.page = {
+      _closed: false,
+      isClosed() { return this._closed; },
+      async evaluate(fn) {
+        const src = String(fn);
+        srcs.push(src);
+        if (src.includes('__fsTileMediaEl') && src.includes('wasPaused')) return { ok: true, wasPaused: true };
+        return true;
+      }
+    };
+    const nc = eng.netCapture;
+    nc.arm();
+    nc._recordMainpageSighting({ url: GV_URL, src: 'googlevideo', declared: 1250000, status: 200, contentType: 'video/mp4' }, mp4Buffer(1250000), 1250000, Date.now());
+    const res = await eng._driveMainpageMediaLoad(GV_URL, 'tile', null, null);
+    ok('U-TILE a complete captured body returns via the tile drive', !!res && !!res.best && res.best.buf.length === 1250000);
+    eq('U-TILE the outcome is complete', res && res.outcome, 'complete');
+    ok('U-TILE the line says el=tile', logs.some(m => m.includes('mainpage-media-load') && m.includes('el=tile') && m.includes('outcome=complete')));
+    ok('U-TILE the tile element is never removed (no removeAttribute evaluate)', !srcs.some(s => s.includes('removeAttribute')));
+    ok('U-TILE no hidden element was created', !srcs.some(s => s.includes('fs-media-load-started')));
+  }
+  {
+    // (c) cycles — drive stub: har bulawa ginata
+    // hai; hadd 4 ke baad drive NAHI chalta.
+    const eng = new FlowAutomationEngine({ onLog: () => {} }, {});
+    let drives = 0;
+    const seenEls = [];
+    eng._driveMainpageMediaLoad = async (url, el) => { drives++; seenEls.push(el); return { best: null, outcome: 'timeout' }; };
+    eng._probeMainpageTileVideo = async () => ({ found: true, hasSrc: true, duration: 5, currentSrc: GV_URL });
+    const task = { promptIndex: 0 };
+    for (let i = 0; i < 5; i++) await eng._loadMainpageFullViaMedia(GV_URL, { task, tileIndexHint: 0 });
+    eq('U-CYCLE drives stop at the attempt cap of 4', drives, 4);
+    eq('U-CYCLE the task cycle count is 4', task._mpCompleteCycles, 4);
+    eq('U-CYCLE every drive chose the tile element', JSON.stringify(seenEls), JSON.stringify(['tile', 'tile', 'tile', 'tile']));
+    eq('U-CYCLE the tile outcome is recorded on the task', task._mediaElOutcomes && task._mediaElOutcomes.tile, 'timeout');
+  }
+  {
+    // (d) probe line + transfer names — khalis
+    eq('U-PROBE the line formats with url and markers', headlessHarvest.probeLogLine({ state: 'logged-out', account: 'acc', url: 'https://flow.google.com/project/abc?x=1', hasSignIn: true, hasAvatar: false, hasPromptBox: false }),
+      '[ROOT] headless-probe state=logged-out account=acc url=flow.google.com/project/abc signIn=true avatar=false promptBox=false');
+    eq('U-PROBE a missing url is none', headlessHarvest.probeLogLine({ state: 'blocked', account: 'a' }),
+      '[ROOT] headless-probe state=blocked account=a url=none signIn=false avatar=false promptBox=false');
+    const longUrl = 'https://flow.google.com/' + 'p'.repeat(200);
+    ok('U-PROBE the url is capped at 80 chars', headlessHarvest.probeLogLine({ state: 'logged-out', account: 'a', url: longUrl }).includes(`url=${('flow.google.com/' + 'p'.repeat(200)).slice(0, 80)} `));
+    eq('U-NAMES names are deduped and sorted', headlessHarvest.cookieNamesForLog([{ name: 'B' }, { name: 'A' }, { name: 'B' }, { name: 'C' }]), 'A,B,C');
+    eq('U-NAMES values never appear', headlessHarvest.cookieNamesForLog([{ name: 'SID', value: 'SECRET-VALUE' }]), 'SID');
+    eq('U-NAMES empty is none', headlessHarvest.cookieNamesForLog([]), 'none');
+    const many = Array.from({ length: 60 }, (_, i) => ({ name: `cookie-name-${String(i).padStart(3, '0')}` }));
+    ok('U-NAMES the list is truncated at 300 chars', headlessHarvest.cookieNamesForLog(many).length <= 300);
+  }
+  {
+    // (e) tolerant clone — khalis faisla
+    const plan = [{ rel: 'Local State' }, { rel: 'Default/Network/Cookies' }, { rel: 'Default/Network/Cookies-wal' }, { rel: 'Default/Preferences' }];
+    const decOk = headlessHarvest.tolerantCloneDecision({ plan, copied: ['Local State', 'Default/Preferences'], missing: [] });
+    eq('U-CLONE only-cookies-failed is tolerable', decOk.ok, true);
+    eq('U-CLONE the failed list names the cookies files', JSON.stringify(decOk.failed), JSON.stringify(['Default/Network/Cookies', 'Default/Network/Cookies-wal']));
+    const decBad = headlessHarvest.tolerantCloneDecision({ plan, copied: ['Default/Network/Cookies'], missing: [] });
+    eq('U-CLONE another essential failing blocks tolerance', decBad.ok, false);
+    eq('U-CLONE the blocking list names it', JSON.stringify(decBad.blocking), JSON.stringify(['Local State', 'Default/Preferences']));
+    eq('U-CLONE garbage input blocks nothing falsely', headlessHarvest.tolerantCloneDecision(null).ok, true);
+    eq('U-CLONE a cookies rel is recognised by basename', headlessHarvest.isCookiesCloneRel('Default\\Network\\Cookies-journal'), true);
+    eq('U-CLONE a non-cookies rel is not', headlessHarvest.isCookiesCloneRel('Default/Preferences'), false);
+  }
+  {
+    // (e2) asal clone — Cookies bilkul na ho:
+    // strict phenkta hai, tolerant report deta hai.
+    const fsx = require('fs');
+    const osx = require('os');
+    const pathx = require('path');
+    const root = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'fs-u-clone-'));
+    const profile = pathx.join(root, 'profile');
+    fsx.mkdirSync(pathx.join(profile, 'Default', 'Local Storage'), { recursive: true });
+    fsx.mkdirSync(pathx.join(profile, 'Default', 'Session Storage'), { recursive: true });
+    fsx.writeFileSync(pathx.join(profile, 'Local State'), '{}');
+    fsx.writeFileSync(pathx.join(profile, 'Default', 'Preferences'), '{}');
+    let strictThrew = false;
+    try { await headlessHarvest.buildHeadlessClone(profile, pathx.join(root, 'c1')); } catch (e) { strictThrew = /Cookies/.test(e.message); }
+    eq('U-CLONE strict mode still throws without Cookies', strictThrew, true);
+    const tol = await headlessHarvest.buildHeadlessClone(profile, pathx.join(root, 'c2'), { tolerantCookiesOnly: true });
+    ok('U-CLONE tolerant mode returns the clone report', !!tol && tol.tolerantCookies === true);
+    ok('U-CLONE the tolerant clone holds the other essentials', !!tol && tol.copied.some(r => r.endsWith('Local State')));
+    await headlessHarvest.removeHeadlessClone(root);
+  }
+  {
+    // (f) combo trigger — khalis
+    eq('U-COMBO cdp + logged-out + untried fires', headlessHarvest.headlessComboApplies({ via: 'cdp', verdict: 'logged-out', tried: false }), true);
+    eq('U-COMBO blocked never fires', headlessHarvest.headlessComboApplies({ via: 'cdp', verdict: 'blocked', tried: false }), false);
+    eq('U-COMBO the clone path never fires', headlessHarvest.headlessComboApplies({ via: 'clone', verdict: 'logged-out', tried: false }), false);
+    eq('U-COMBO an already-tried combo never refires', headlessHarvest.headlessComboApplies({ via: 'cdp', verdict: 'logged-out', tried: true }), false);
+    eq('U-COMBO logged-in never fires', headlessHarvest.headlessComboApplies({ via: 'cdp', verdict: 'logged-in', tried: false }), false);
+    eq('U-COMBO garbage never fires', headlessHarvest.headlessComboApplies(null), false);
+  }
+  {
+    // (g) synthetic Cookies DB — build + parkh
+    const sample = [
+      { name: 'SID', value: 'v1', domain: '.google.com', path: '/', expires: 1893456000, secure: true, httpOnly: true, sameSite: 'Lax' },
+      { name: 'HSID', value: 'v2', domain: '.google.com', path: '/', expires: -1, secure: true, httpOnly: true },
+      { name: 'flow', value: 'v3', domain: 'flow.google.com', path: '/', secure: false, httpOnly: false, sameSite: 'None' }
+    ];
+    const built = await cookiesDb.buildCookiesDbBuffer(sample);
+    eq('U-DB all cookies were written', built.rows.length, 3);
+    const back = await cookiesDb.readCookiesDbRows(built.buffer);
+    eq('U-DB the read-back row count matches', back.length, 3);
+    const sid = back.find(r => r.name === 'SID');
+    eq('U-DB expires converts to the Chrome epoch', sid && sid.expires_utc, Math.round((1893456000 + 11644473600) * 1000000));
+    eq('U-DB a persistent cookie has_expires=1', sid && sid.has_expires, 1);
+    eq('U-DB Lax maps to samesite 1', sid && sid.samesite, 1);
+    const hsid = back.find(r => r.name === 'HSID');
+    eq('U-DB a session cookie has expires_utc 0', hsid && hsid.expires_utc, 0);
+    eq('U-DB a session cookie is not persistent', hsid && hsid.is_persistent, 0);
+    eq('U-DB a nameless or domainless cookie is dropped', cookiesDb.cookieRowFor({ name: 'X', value: '1' }), null);
+    eq('U-DB samesite mapping', JSON.stringify([cookiesDb.sameSiteDbValue('None'), cookiesDb.sameSiteDbValue('Lax'), cookiesDb.sameSiteDbValue('Strict'), cookiesDb.sameSiteDbValue('x')]), JSON.stringify([0, 1, 2, -1]));
+    const fsx = require('fs');
+    const osx = require('os');
+    const pathx = require('path');
+    const dir = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'fs-u-db-'));
+    const wrote = await cookiesDb.buildCookiesDbFile(sample, null, dir);
+    ok('U-DB the file is written into the clone', wrote.built === true && wrote.count === 3 && fsx.existsSync(pathx.join(dir, 'Default', 'Network', 'Cookies')));
+    const wrote2 = await cookiesDb.buildCookiesDbFile(sample, { cookiesRel: 'Default/Cookies' }, dir);
+    ok('U-DB a scan cookiesRel is honoured', wrote2.built === true && fsx.existsSync(pathx.join(dir, 'Default', 'Cookies')));
+    const empty = await cookiesDb.buildCookiesDbFile([], null, dir);
+    eq('U-DB no cookies means not built', empty.built, false);
+    fsx.rmSync(dir, { recursive: true, force: true });
+  }
+  {
+    // (h) probe sabr — jaali page: sign-in deewaar
+    // do nazar, reload ke baad prompt box.
+    const eng = new FlowAutomationEngine({ onLog: () => {} });
+    const snaps = [
+      { url: 'https://flow.google.com/', hasSignIn: true },
+      { url: 'https://flow.google.com/', hasSignIn: true },
+      { url: 'https://flow.google.com/', hasPromptBox: true }
+    ];
+    let evals = 0;
+    let reloads = 0;
+    eng._headlessReadProbeDom = async () => snaps[Math.min(evals++, snaps.length - 1)];
+    const page = {
+      async goto() {},
+      async reload() { reloads++; },
+      async waitForNetworkIdle() {}
+    };
+    const snap = await eng._headlessProbeSnapshot(page);
+    ok('U-PROBE-PATIENCE the third look (after one reload) finds the session', !!snap && snap.hasPromptBox === true);
+    eq('U-PROBE-PATIENCE exactly one reload happened', reloads, 1);
+    const eng2 = new FlowAutomationEngine({ onLog: () => {} });
+    let evals2 = 0;
+    let reloads2 = 0;
+    eng2._headlessReadProbeDom = async () => { evals2++; return { url: 'https://flow.google.com/', hasCaptcha: true }; };
+    const snap2 = await eng2._headlessProbeSnapshot({ async goto() {}, async reload() { reloads2++; }, async waitForNetworkIdle() {} });
+    ok('U-PROBE-PATIENCE blocked returns immediately', !!snap2 && snap2.hasCaptcha === true && reloads2 === 0 && evals2 === 1);
+  }
+  {
+    // (i) segment kunji + assembly + cache nazar
+    const U1 = 'https://rr1---sn-a.googlevideo.com/videoplayback?expire=111&id=seg1&itag=18';
+    const U2 = 'https://rr2---sn-b.googlevideo.com/videoplayback?expire=222&id=seg1&itag=18&range=500000-999999';
+    eq('U-SEG the same id on another host shares the key', segmentKeyOf(U1), segmentKeyOf(U2));
+    ok('U-SEG a different id is a different stream', segmentKeyOf(U1) !== segmentKeyOf(U1.replace('id=seg1', 'id=seg2')));
+    eq('U-SEG no id means no key', segmentKeyOf('https://rr1---sn-a.googlevideo.com/videoplayback?itag=18'), null);
+    eq('U-SEG a non-googlevideo url has no key', segmentKeyOf('https://lh3.googleusercontent.com/x'), null);
+    const notes = [];
+    const nc = new NetworkCapture({ onSegmentNote: (i) => notes.push(i) });
+    nc.arm();
+    nc._recordMainpageSighting({ url: U1, src: 'googlevideo', declared: 500000, status: 206, contentRange: 'bytes 0-499999/1000000', contentType: 'video/mp4' }, mp4Buffer(500000), 500000, Date.now());
+    nc._recordMainpageSighting({ url: U2, src: 'googlevideo', declared: 500000, status: 206, contentRange: 'bytes 500000-999999/1000000', contentType: 'video/mp4' }, Buffer.alloc(500000, 0x07), 500000, Date.now());
+    eq('U-SEG the group note fired once with urls=2', notes.length === 1 && notes[0].urls, 2);
+    const heldU = nc.mainpageBodyForUrl(U1);
+    eq('U-SEG the union assembles across both urls', heldU && heldU.buffer.length, 1000000);
+    ok('U-SEG the seam bytes join correctly', !!heldU && heldU.buffer[499999] === 0 && heldU.buffer[500000] === 0x07);
+    // item 3: cache se aayi nazar — entry par nishan
+    // + store aam raste se hi (stored=yes).
+    const nc2 = new NetworkCapture({});
+    nc2.arm();
+    const UC = 'https://rr3---sn-c.googlevideo.com/videoplayback?expire=999&id=cache1&itag=18';
+    nc2._recordMainpageSighting({ url: UC, src: 'googlevideo', declared: 600000, status: 200, contentRange: '', contentType: 'video/mp4', fromCache: true }, mp4Buffer(600000), 600000, Date.now());
+    const eC = nc2.mainpageEntries().find(x => x.url === UC);
+    eq('U-CACHE a cache-served sighting is marked fromCache', eC && eC.fromCache, true);
+    eq('U-CACHE a cache-served body is stored like any other', eC && eC.bodyStored, 'yes');
+  }
+  {
+    // (j) attempt-summary — khalis
+    eq('U-SUMMARY the line formats fully', attemptSummaryLogLine({ task: 2, best: 1197606, assembled: 214591, mediaTile: 'ended', mediaHidden: undefined, probe: 'logged-out', race: null, saved: false }),
+      '[ROOT] attempt-summary task=2 best=1197606 assembled=214591 mediaTile=ended mediaHidden=- probe=logged-out race=- saved=no');
+    eq('U-SUMMARY garbage is safe', attemptSummaryLogLine(null),
+      '[ROOT] attempt-summary task=0 best=0 assembled=0 mediaTile=- mediaHidden=- probe=- race=- saved=no');
+  }
+  {
+    // (k) route-race save darwaza
+    const eng = new FlowAutomationEngine({ onLog: () => {} }, {});
+    const taskA = { promptIndex: 0, _raceActive: true, _raceWonBy: 'headless-harvest' };
+    const rA = await eng._saveBufferForTask(taskA, '/tmp', { duration: '10s', type: 'Video' }, mp4Buffer(600000), 'https://x', 'mainpage-harvest');
+    eq('U-RACE the losing route is refused', rA, false);
+    eq('U-RACE the refusal reason is route-race', taskA._saveRejectedReason, 'route-race');
+    const taskB = { promptIndex: 0, _raceActive: true, _raceWonBy: null };
+    const rB = await eng._saveBufferForTask(taskB, '/tmp', { duration: '10s', type: 'Video' }, mp4Buffer(1000), 'https://x', 'headless-harvest');
+    eq('U-RACE a quality-rejected save still fails', rB, false);
+    eq('U-RACE its reason is the quality gate, not the race', taskB._saveRejectedReason, 'quality-gate');
+    eq('U-RACE a failed claim is released for the other route', taskB._raceWonBy, null);
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

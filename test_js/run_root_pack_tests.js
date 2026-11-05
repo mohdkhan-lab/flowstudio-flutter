@@ -46,7 +46,7 @@ const {
   cascadeVerdict
 } = require('../engine/saveGuard');
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
-const { NetworkCapture, isGooglevideoPlaybackUrl } = require('../engine/networkCapture');
+const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
 const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
@@ -2288,6 +2288,187 @@ async function main() {
       eq('R-DISPATCH transfer never tried on the clone path', transferred, 0);
       eq('R-LINE no transfer-failed line on the clone path', logs.filter(m => m.includes('headless-transfer failed')).length, 0);
       eq('R-DISPATCH clone ran once', cloned, 1);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // S. v2.48.48 — CHUNK STORE + STORE-OUTCOME + MEDIA-LOAD V2 SEEK
+  //    (ZEROCLICK15: poori-size stream aayi aur bandhi, lekin
+  //    kitab fi-URL ek hi body rakhti thi aur header darwaza
+  //    offset>0 wale range tukde hamesha gira deta tha —
+  //    completion ke paas kabhi jodi hui body thi hi nahi;
+  //    aur media-load ka element sirf buffer-shuda preview
+  //    chala kar 'ended' ho jata tha, naya traffic zero):
+  //   (a) parseContentRangeOffset (khalis)
+  //   (b) chunk store + assembly — header darwaza sirf
+  //       offset 0 par; lagi-hui dod; khaali jagah par
+  //       rukawat; overlap pehle-rakha-jeeta; fi-URL cap;
+  //       URL-hadd (2) barkarar; dobara nazar cap nahi khaati
+  //   (c) store-outcome — entry ke fields + audit ki
+  //       'stored=' pucchh (yes / no:header / no:size / no:empty)
+  //   (d) media-load v2 seek — duration maloom ho to
+  //       seek-to-end ek dafa + seek-back; na ho to koi seek nahi
+  // ---------------------------------------------------------------------------
+  {
+    // (a) offset hisaab (khalis)
+    eq('S-OFFSET range start parses', parseContentRangeOffset('bytes 500000-999999/1250000'), 500000);
+    eq('S-OFFSET zero range is 0', parseContentRangeOffset('bytes 0-224691/1250000'), 0);
+    eq('S-OFFSET absent range is 0', parseContentRangeOffset(''), 0);
+    eq('S-OFFSET null range is 0', parseContentRangeOffset(null), 0);
+    eq('S-OFFSET malformed range is 0', parseContentRangeOffset('items 5-9/20'), 0);
+    eq('S-OFFSET star total still parses the start', parseContentRangeOffset('bytes 42-99/*'), 42);
+  }
+  {
+    // (b0) assembly (khalis) — lagi-hui / khaali / overlap
+    const cA = { offset: 0, buffer: Buffer.alloc(100, 0x41) };
+    const cB = { offset: 100, buffer: Buffer.alloc(100, 0x42) };
+    const joined = assembleMainpageChunks([cA, cB]);
+    eq('S-ASM contiguous chunks join fully', joined && joined.length, 200);
+    ok('S-ASM joined bytes keep their sides', !!joined && joined[0] === 0x41 && joined[150] === 0x42);
+    const gapped = assembleMainpageChunks([cA, { offset: 200, buffer: Buffer.alloc(100, 0x43) }]);
+    eq('S-ASM a gap stops the run at the gap', gapped && gapped.length, 100);
+    eq('S-ASM no zero-start chunk means no body', assembleMainpageChunks([{ offset: 100, buffer: Buffer.alloc(10, 0x44) }]), null);
+    const overlap = assembleMainpageChunks([
+      { offset: 0, buffer: Buffer.alloc(100, 0x41) },
+      { offset: 50, buffer: Buffer.alloc(100, 0x42) }
+    ]);
+    eq('S-ASM overlap extends only past the covered part', overlap && overlap.length, 150);
+    ok('S-ASM first-stored wins the overlap', !!overlap && overlap[75] === 0x41 && overlap[120] === 0x42);
+    const sameSpot = assembleMainpageChunks([
+      { offset: 0, buffer: Buffer.alloc(100, 0x41) },
+      { offset: 0, buffer: Buffer.alloc(100, 0x42) }
+    ]);
+    ok('S-ASM a same-offset re-store never overwrites', !!sameSpot && sameSpot.length === 100 && sameSpot[10] === 0x41);
+    const pieces = uncoveredChunkPieces(50, Buffer.alloc(100, 0x42), [cA]);
+    eq('S-PIECES only the uncovered tail is new', pieces.length === 1 && pieces[0].offset, 100);
+    eq('S-PIECES a fully covered chunk adds nothing', uncoveredChunkPieces(0, Buffer.alloc(50, 0x41), [cA]).length, 0);
+  }
+  {
+    // (b1) + (c) asal kitab — tukde jodte hain, header
+    // darwaza offset>0 par nahi lagta, nateeja entry +
+    // audit par bolta hai.
+    const audits = [];
+    const nc = new NetworkCapture({ onMainpageAudit: (a) => audits.push(a) });
+    nc.arm();
+    const GV_S = 'https://rr9---sn-testcase.googlevideo.com/videoplayback?expire=999&id=s1';
+    nc._recordMainpageSighting({ url: GV_S, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000', contentType: 'video/mp4' }, mp4Buffer(224692), 224692, Date.now());
+    let e = nc.mainpageEntries().find(x => x.url === GV_S);
+    eq('S-STORE first chunk stored=yes', e && e.bodyStored, 'yes');
+    eq('S-STORE stored chunk audit carries stored=yes', audits[audits.length - 1].stored, 'yes');
+    ok('S-STORE audit line ends with stored=yes', formatMainpageAudit(audits[audits.length - 1]).endsWith(' stored=yes'));
+    eq('S-STORE held body is the first chunk', (nc.mainpageBodyForUrl(GV_S) || {}).buffer?.length, 224692);
+    // dusra tukda — header NAHI hai (0x07 bhara hua),
+    // lekin offset>0 hai is liye darwaza nahi lagta.
+    nc._recordMainpageSighting({ url: GV_S, src: 'googlevideo', declared: 300000, status: 206, contentRange: 'bytes 224692-524691/1250000', contentType: 'video/mp4' }, Buffer.alloc(300000, 0x07), 300000, Date.now());
+    e = nc.mainpageEntries().find(x => x.url === GV_S);
+    eq('S-STORE a headerless tail chunk is stored too', e && e.bodyStored, 'yes');
+    const held2 = nc.mainpageBodyForUrl(GV_S);
+    eq('S-STORE assembled body spans both chunks', held2 && held2.buffer.length, 524692);
+    ok('S-STORE assembled bytes join at the seam', !!held2 && held2.buffer[224691] === 0 && held2.buffer[224692] === 0x07);
+    // khaali jagah ke paar wala tukda — rakha jata hai
+    // lekin dod wahi rukti hai.
+    nc._recordMainpageSighting({ url: GV_S, src: 'googlevideo', declared: 100000, status: 206, contentRange: 'bytes 600000-699999/1250000', contentType: 'video/mp4' }, Buffer.alloc(100000, 0x09), 100000, Date.now());
+    eq('S-STORE the assembled run still stops at the gap', (nc.mainpageBodyForUrl(GV_S) || {}).buffer?.length, 524692);
+  }
+  {
+    // (c) na-rakhne ki teenon wajhein, naam ke saath
+    const audits = [];
+    const nc = new NetworkCapture({ onMainpageAudit: (a) => audits.push(a) });
+    nc.arm();
+    const GV_H = 'https://rr9---sn-testcase.googlevideo.com/videoplayback?expire=999&id=s2';
+    nc._recordMainpageSighting({ url: GV_H, src: 'googlevideo', declared: 224692, status: 206, contentRange: 'bytes 0-224691/1250000', contentType: 'video/mp4' }, Buffer.alloc(224692, 0x05), 224692, Date.now());
+    let e = nc.mainpageEntries().find(x => x.url === GV_H);
+    eq('S-OUTCOME a headerless first chunk is not stored', e && e.bodyStored, 'no');
+    eq('S-OUTCOME its reason is header', e && e.bodyStoreReason, 'header');
+    ok('S-OUTCOME audit line ends with stored=no:header', formatMainpageAudit(audits[audits.length - 1]).endsWith(' stored=no:header'));
+    eq('S-OUTCOME nothing is held after a header rejection', nc.mainpageBodyForUrl(GV_H), null);
+    const GV_BIG = 'https://rr9---sn-testcase.googlevideo.com/videoplayback?expire=999&id=s3';
+    nc._recordMainpageSighting({ url: GV_BIG, src: 'googlevideo', declared: 8388609, status: 206, contentRange: 'bytes 0-8388608/8388609', contentType: 'video/mp4' }, mp4Buffer(8388609), 8388609, Date.now());
+    e = nc.mainpageEntries().find(x => x.url === GV_BIG);
+    eq('S-OUTCOME an oversize body reason is size', e && e.bodyStoreReason, 'size');
+    ok('S-OUTCOME audit line ends with stored=no:size', formatMainpageAudit(audits[audits.length - 1]).endsWith(' stored=no:size'));
+    const GV_E = 'https://rr9---sn-testcase.googlevideo.com/videoplayback?expire=999&id=s4';
+    nc._recordMainpageSighting({ url: GV_E, src: 'googlevideo', declared: 1250000, status: 206, contentRange: 'bytes 0-0/1250000', contentType: 'video/mp4' }, null, 0, Date.now());
+    e = nc.mainpageEntries().find(x => x.url === GV_E);
+    eq('S-OUTCOME an empty body reason is empty', e && e.bodyStoreReason, 'empty');
+    ok('S-OUTCOME audit line ends with stored=no:empty', formatMainpageAudit(audits[audits.length - 1]).endsWith(' stored=no:empty'));
+    // saveGuard ki khalis shakal — bina store-info ke
+    // purani line bilkul waisi hi rehti hai.
+    eq('S-OUTCOME auditOf maps yes', mainpageAuditOf({ bodyStored: 'yes' }).stored, 'yes');
+    eq('S-OUTCOME auditOf maps no+reason', mainpageAuditOf({ bodyStored: 'no', bodyStoreReason: 'header' }).stored, 'no:header');
+    eq('S-OUTCOME auditOf without store info has no stored field', 'stored' in mainpageAuditOf({ host: 'h' }), false);
+    ok('S-OUTCOME a line without store info gains no suffix', !formatMainpageAudit(mainpageAuditOf({ host: 'h', bytes: 1, src: 'googlevideo', decision: 'captured', reason: 'ok' })).includes('stored='));
+  }
+  {
+    // (b2) fi-URL cap + dobara nazar + URL-hadd (2)
+    const nc = new NetworkCapture({});
+    nc.arm();
+    const GV_C = 'https://rr9---sn-testcase.googlevideo.com/videoplayback?expire=999&id=s5';
+    const chunk4 = mp4Buffer(4194304);
+    nc._recordMainpageSighting({ url: GV_C, src: 'googlevideo', declared: 4194304, status: 206, contentRange: 'bytes 0-4194303/12582912', contentType: 'video/mp4' }, chunk4, 4194304, Date.now());
+    // wahi tukda dobara — cap do dafa nahi khata.
+    nc._recordMainpageSighting({ url: GV_C, src: 'googlevideo', declared: 4194304, status: 206, contentRange: 'bytes 0-4194303/12582912', contentType: 'video/mp4' }, chunk4, 4194304, Date.now());
+    nc._recordMainpageSighting({ url: GV_C, src: 'googlevideo', declared: 4194304, status: 206, contentRange: 'bytes 4194304-8388607/12582912', contentType: 'video/mp4' }, Buffer.alloc(4194304, 0x03), 4194304, Date.now());
+    let e = nc.mainpageEntries().find(x => x.url === GV_C);
+    eq('S-CAP a re-sighting does not double-count the cap', e && e.bodyStored, 'yes');
+    eq('S-CAP two unique chunks fill exactly to the cap', (nc.mainpageBodyForUrl(GV_C) || {}).buffer?.length, 8388608);
+    nc._recordMainpageSighting({ url: GV_C, src: 'googlevideo', declared: 100000, status: 206, contentRange: 'bytes 8388608-8488607/12582912', contentType: 'video/mp4' }, Buffer.alloc(100000, 0x04), 100000, Date.now());
+    e = nc.mainpageEntries().find(x => x.url === GV_C);
+    eq('S-CAP a chunk past the per-URL cap is size', e && e.bodyStoreReason, 'size');
+    // URL-hadd: teesra URL pehle ko nikal deta hai.
+    const nc2 = new NetworkCapture({});
+    nc2.arm();
+    const mk = (id) => `https://rr9---sn-testcase.googlevideo.com/videoplayback?expire=999&id=${id}`;
+    for (const id of ['u1', 'u2', 'u3']) {
+      nc2._recordMainpageSighting({ url: mk(id), src: 'googlevideo', declared: 100000, status: 206, contentRange: 'bytes 0-99999/1000000', contentType: 'video/mp4' }, mp4Buffer(100000), 100000, Date.now());
+    }
+    eq('S-CAP the two-URL cap evicts the oldest URL whole', nc2.mainpageBodyForUrl(mk('u1')), null);
+    ok('S-CAP the newer URLs survive eviction', !!nc2.mainpageBodyForUrl(mk('u2')) && !!nc2.mainpageBodyForUrl(mk('u3')));
+  }
+  {
+    // (d) media-load v2 — seek uskaam
+    const seekPage = (duration) => {
+      const srcs = [];
+      return {
+        srcs,
+        _closed: false,
+        isClosed() { return this._closed; },
+        async evaluate(fn) {
+          const src = String(fn);
+          srcs.push(src);
+          if (src.includes('fs-media-load-started')) return 'fs-media-load-started';
+          if (src.includes('__fsMediaLoadEnded === true')) return false;
+          if (src.includes('el.duration')) return duration;
+          return true;
+        }
+      };
+    };
+    {
+      // duration maloom — seek-to-end ek dafa, phir
+      // seek-back; phir bhi bilkul ek hi media-load line.
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageMediaLoadMs: 2600 });
+      const page = seekPage(4);
+      eng.page = page;
+      const res = await eng._loadMainpageFullViaMedia(GV_URL);
+      eq('S-SEEK nothing captured still returns null', res, null);
+      const seeks = page.srcs.map((s, i) => [s, i]).filter(([s]) => s.includes('el.currentTime = t'));
+      const backs = page.srcs.map((s, i) => [s, i]).filter(([s]) => s.includes('el.currentTime = 0'));
+      eq('S-SEEK seek-to-end happens exactly once', seeks.length, 1);
+      eq('S-SEEK seek-back happens exactly once', backs.length, 1);
+      ok('S-SEEK seek-to-end comes before seek-back', seeks.length === 1 && backs.length === 1 && seeks[0][1] < backs[0][1]);
+      ok('S-SEEK still exactly one media-load line (timeout)', logs.filter(m => m.includes('mainpage-media-load')).length === 1 && logs.some(m => m.includes('outcome=timeout')));
+    }
+    {
+      // duration kabhi maloom nahi — koi seek nahi,
+      // vyavhaar .47 jaisa (timeout).
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageMediaLoadMs: 1300 });
+      const page = seekPage(-1);
+      eng.page = page;
+      const res = await eng._loadMainpageFullViaMedia(GV_URL);
+      eq('S-SEEK no duration still returns null', res, null);
+      eq('S-SEEK no duration means no seek evaluates at all', page.srcs.filter(s => s.includes('el.currentTime')).length, 0);
     }
   }
 

@@ -436,6 +436,13 @@ function mainpageAuditOf(input) {
   // me thi).
   if (typeof o.bindReason === 'string' && o.bindReason) out.bindReason = o.bindReason;
   if (typeof o.claimedBy === 'string' && o.claimedBy) out.claimedBy = o.claimedBy;
+  // v2.48.48: googlevideo body-store ka nateeja — jab
+  // diya jaye to 'yes' ya 'no:<wajah>' ban kar rehta
+  // hai (capture kitab ka store is se pehle khamosh
+  // tha: tukda na rakha jaye tab bhi audit sirf
+  // 'captured' kehta tha).
+  if (o.bodyStored === 'yes') out.stored = 'yes';
+  else if (o.bodyStored === 'no') out.stored = `no:${typeof o.bodyStoreReason === 'string' && o.bodyStoreReason ? o.bodyStoreReason : 'unknown'}`;
   return out;
 }
 
@@ -446,6 +453,9 @@ function formatMainpageAudit(audit) {
   // v2.48.42: bindReason/claimedBy sirf tab jab maujood hon.
   if (a.bindReason) line += ` bindReason=${a.bindReason}`;
   if (a.claimedBy) line += ` claimedBy=${a.claimedBy}`;
+  // v2.48.48: stored hamesha fields ke AAKHIR me,
+  // sirf tab jab maujood ho.
+  if (a.stored) line += ` stored=${a.stored}`;
   return line;
 }
 

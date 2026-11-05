@@ -463,6 +463,81 @@ function scanBodyForCapture(bodyBuffer, patterns = CAPTURE_PATTERNS) {
   return out;
 }
 
+/**
+ * v2.48.48 (CHUNK STORE + ASSEMBLY): Content-Range
+ * ('bytes <start>-<end>/<total>') se tukde ka offset
+ * nikalo (khalis). Range na ho ya shakal na mile to
+ * 0 — bina-range jawab tanha body hota hai, us ka
+ * offset hamesha 0 hota hai.
+ */
+function parseContentRangeOffset(contentRange) {
+  try {
+    if (typeof contentRange !== 'string' || !contentRange) return 0;
+    const m = contentRange.match(/^\s*bytes\s+(\d+)\s*-/i);
+    if (!m) return 0;
+    const n = parseInt(m[1], 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch (e) { return 0; }
+}
+
+/**
+ * v2.48.48: [offset, offset+len) ke woh hisse jo
+ * maujuda chunks se DHAKE hue nahi hain (khalis).
+ * Natija: [{ offset, buffer }] — buffer asal body ke
+ * subarray hain; khaali list = poora hissa pehle se
+ * rakha hua hai (dobara nazar cap nahi khaati).
+ */
+function uncoveredChunkPieces(offset, buffer, chunks) {
+  if (!buffer || !buffer.length) return [];
+  const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+  let pieces = [[start, start + buffer.length]];
+  const list = Array.isArray(chunks) ? chunks : [];
+  for (const c of list) {
+    if (!c || !c.buffer || !c.buffer.length) continue;
+    const cs = Number.isFinite(c.offset) && c.offset > 0 ? Math.floor(c.offset) : 0;
+    const ce = cs + c.buffer.length;
+    const next = [];
+    for (const [s, e] of pieces) {
+      if (ce <= s || cs >= e) { next.push([s, e]); continue; }
+      if (cs > s) next.push([s, Math.min(cs, e)]);
+      if (ce < e) next.push([Math.max(ce, s), e]);
+    }
+    pieces = next;
+    if (!pieces.length) break;
+  }
+  return pieces.map(([s, e]) => ({ offset: s, buffer: buffer.subarray(s - start, e - start) }));
+}
+
+/**
+ * v2.48.48: chunks (rakhne ki tartib me) se offset 0
+ * se shuru sab se lambi lagi-hui (contiguous) dod
+ * banao (khalis). Overlap par PEHLE rakha gaya hissa
+ * jeet-ta hai (pehle-darj, pehle-jeet — tay-shuda).
+ * Offset 0 se dod hi na bane to null.
+ */
+function assembleMainpageChunks(chunks) {
+  const list = Array.isArray(chunks) ? chunks : [];
+  const placed = []; // { start, end, buffer } — disjoint
+  for (const c of list) {
+    if (!c || !c.buffer || !c.buffer.length) continue;
+    const asChunks = placed.map(p => ({ offset: p.start, buffer: p.buffer }));
+    for (const piece of uncoveredChunkPieces(c.offset, c.buffer, asChunks)) {
+      placed.push({ start: piece.offset, end: piece.offset + piece.buffer.length, buffer: piece.buffer });
+    }
+  }
+  if (!placed.length) return null;
+  placed.sort((a, b) => a.start - b.start);
+  if (placed[0].start !== 0) return null;
+  const parts = [placed[0].buffer];
+  let runEnd = placed[0].end;
+  for (let i = 1; i < placed.length; i++) {
+    if (placed[i].start !== runEnd) break;
+    parts.push(placed[i].buffer);
+    runEnd = placed[i].end;
+  }
+  return parts.length === 1 ? parts[0] : Buffer.concat(parts);
+}
+
 class NetworkCapture {
   constructor(opts = {}) {
     this.patterns = opts.patterns || CAPTURE_PATTERNS;
@@ -679,7 +754,13 @@ class NetworkCapture {
     this._mainpageSeq = 0;
     this.mainpageWindows = new Map(); // captureKey -> { start, done }
     this._mainpagePending = new Map(); // CDP requestId -> { url, src, declared, status, contentRange }
-    this._mainpageBodies = new Map(); // url -> { buffer, at } (googlevideo tukde)
+    // v2.48.48: googlevideo bodies ab URL ke hisaab se
+    // TUKDON (chunks) me rehte hain — har nazar apna
+    // { offset, buffer } deti hai; mainpageBodyForUrl
+    // unhe jod (assemble) kar lautata hai. bytes =
+    // rakhe hue kul (unique) bytes, cap wahi
+    // HARVEST_MAX_BYTES fi-URL.
+    this._mainpageBodies = new Map(); // url -> { chunks: [{ offset, buffer }], bytes, at }
     // Engine har download round me apni duration ka size
     // floor yahan rakh deta hai (downloadFetch wala hisaab);
     // 0 = floor nahi (aam darwaze hi laagu).
@@ -1673,6 +1754,14 @@ class NetworkCapture {
         declaredLength: total > 0 ? total : (pend.declared || 0),
         floorBytes: this.harvestFloorBytes || 0
       });
+      // v2.48.48 (STORE-OUTCOME): googlevideo body ke
+      // store ka nateeja — store wale hisse me bharta
+      // hai, audit line ke aakhir me 'stored=' ban kar
+      // aata hai (iss se pehle store khamoshi se skip
+      // kar sakta tha aur audit phir bhi 'captured'
+      // kehta tha).
+      let bodyStored = null;
+      let bodyStoreReason = null;
       const emit = (decision, reason) => {
         if (!this.onMainpageAudit) return;
         try {
@@ -1683,7 +1772,14 @@ class NetworkCapture {
             // bandha (bindReason=none); naam ho chuka ho
             // to us task ka label.
             bindReason: 'none',
-            claimedBy: this.mainpageClaimedByLabel(pend.url) || 'none'
+            claimedBy: this.mainpageClaimedByLabel(pend.url) || 'none',
+            // v2.48.48: store ka nateeja sirf googlevideo
+            // nazar par (aur sirf jab store aazmaya gaya
+            // ho — entry banne se pehle wale emits par
+            // bodyStored abhi null rehta hai).
+            ...(pend.src === 'googlevideo' && bodyStored
+              ? { bodyStored, bodyStoreReason }
+              : {})
           });
           a.timing = bucket;
           a.partial = partial;
@@ -1735,21 +1831,76 @@ class NetworkCapture {
         knownTotal,
         contentType: typeof pend.contentType === 'string' && pend.contentType ? pend.contentType : null,
         candidate: gate.candidate,
-        partial
+        partial,
+        // v2.48.48: googlevideo body-store ka nateeja
+        // (neeche wala hissa bharta hai) — 'yes' | 'no',
+        // na-rakhne ki wajah ke saath; flow-content par
+        // null (wahan store is kitab me hota hi nahi).
+        bodyStored: null,
+        bodyStoreReason: null
       };
       if (prevIdx >= 0) this.mainpageVideos.splice(prevIdx, 1);
       this.mainpageVideos.push(entry);
       while (this.mainpageVideos.length > 50) this.mainpageVideos.shift();
-      // googlevideo tukda kitab me — hadd 2, size hadd
-      // wahi purani (HARVEST_MAX_BYTES); header video ka
-      // na ho to tukda kabhi nahi rakha jata.
-      if (entry.src === 'googlevideo' && bodyLen > 0 && bodyLen <= saveGuard.HARVEST_MAX_BYTES
-        && downloadFetch.looksLikeVideoBuffer(buffer)) {
-        if (!this._mainpageBodies.has(pend.url) && this._mainpageBodies.size >= 2) {
-          const firstKey = this._mainpageBodies.keys().next().value;
-          this._mainpageBodies.delete(firstKey);
+      // v2.48.48 (CHUNK STORE + STORE-OUTCOME):
+      // googlevideo body ab TUKDON me rakhi jati hai —
+      // har nazar apne Content-Range offset ke saath
+      // ek chunk deti hai, aur mainpageBodyForUrl unhe
+      // jod kar deta hai. Is se pehle kitab fi-URL
+      // SIRF EK body rakhti thi aur header darwaza
+      // har woh tukda gira deta tha jo file ke header
+      // se shuru nahi hota tha — yani offset>0 wale
+      // range tukde KABHI rakhe hi nahi jate the aur
+      // jod (assembly) mumkin hi nahi tha
+      // (ZEROCLICK15: poori-size stream aayi, bandhi,
+      // lekin completion ke paas hamesha sirf adhoora
+      // prefix tha). Usool ab:
+      //   - header darwaza (looksLikeVideoBuffer) sirf
+      //     offset===0 wale tukde par (bina-range body
+      //     bhi offset 0 hi hai);
+      //   - fi-URL kul rakhe bytes ki hadd wahi
+      //     HARVEST_MAX_BYTES; URL ki hadd wahi 2
+      //     (poora URL nikalta hai, tukda nahi);
+      //   - pehle se dhaake hue hisse dobara nahi
+      //     rakhe jate (dobara nazar cap nahi khaati).
+      // Nateeja entry par + audit ke liye local me
+      // darj hota hai (bodyStored/bodyStoreReason).
+      if (entry.src === 'googlevideo') {
+        const offset = parseContentRangeOffset(cr);
+        if (bodyLen === 0) {
+          bodyStored = 'no'; bodyStoreReason = 'empty';
+        } else if (bodyLen > saveGuard.HARVEST_MAX_BYTES) {
+          bodyStored = 'no'; bodyStoreReason = 'size';
+        } else if (offset === 0 && !downloadFetch.looksLikeVideoBuffer(buffer)) {
+          bodyStored = 'no'; bodyStoreReason = 'header';
+        } else {
+          let rec = this._mainpageBodies.get(pend.url) || null;
+          const pieces = uncoveredChunkPieces(offset, buffer, rec ? rec.chunks : []);
+          const newBytes = pieces.reduce((s, p) => s + p.buffer.length, 0);
+          if (pieces.length > 0 && (rec ? rec.bytes : 0) + newBytes > saveGuard.HARVEST_MAX_BYTES) {
+            bodyStored = 'no'; bodyStoreReason = 'size';
+          } else {
+            // pieces khaali = poora hissa pehle se
+            // rakha hua — woh bhi 'yes' hai (body
+            // kitab me maujood hai).
+            bodyStored = 'yes';
+            if (pieces.length > 0) {
+              if (!rec) {
+                if (this._mainpageBodies.size >= 2) {
+                  const firstKey = this._mainpageBodies.keys().next().value;
+                  this._mainpageBodies.delete(firstKey);
+                }
+                rec = { chunks: [], bytes: 0, at: now };
+                this._mainpageBodies.set(pend.url, rec);
+              }
+              for (const piece of pieces) rec.chunks.push(piece);
+              rec.bytes += newBytes;
+              rec.at = now;
+            }
+          }
         }
-        this._mainpageBodies.set(pend.url, { buffer, at: now });
+        entry.bodyStored = bodyStored;
+        entry.bodyStoreReason = bodyStored === 'yes' ? null : bodyStoreReason;
       }
       // v2.48.43: darwaza na pass karne wali entry
       // kitab me rehti hai (dobara nazar ka hisaab)
@@ -1780,12 +1931,21 @@ class NetworkCapture {
    * _mainpageBodies se, flow-content ke liye purani
    * harvest kitab (_harvestByUrl) se. Kuch na ho to
    * null. Natija: { buffer, at }.
+   * v2.48.48: googlevideo taraf ab JODI HUI (assembled)
+   * body lautti hai — rakhe hue chunks ko offset 0 se
+   * sab se lambi lagi-hui dod me jod kar
+   * (assembleMainpageChunks); tanha bina-range body
+   * wahi ek-chunk wali dod hai. Bulane walon ke liye
+   * shakal bilkul wahi { buffer, at }.
    */
   mainpageBodyForUrl(url) {
     try {
       if (!url) return null;
       const held = this._mainpageBodies.get(url);
-      if (held && held.buffer && held.buffer.length > 0) return held;
+      if (held && Array.isArray(held.chunks) && held.chunks.length) {
+        const assembled = assembleMainpageChunks(held.chunks);
+        if (assembled && assembled.length > 0) return { buffer: assembled, at: held.at };
+      }
       const byUrl = this._harvestByUrl.get(url);
       if (byUrl && byUrl.buffer && byUrl.buffer.length > 0) return byUrl;
       return null;
@@ -2543,4 +2703,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks };

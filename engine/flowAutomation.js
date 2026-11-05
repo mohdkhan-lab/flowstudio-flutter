@@ -5640,6 +5640,16 @@ class FlowAutomationEngine {
    * bytes=<n>'. Wapsi fetch jaisi shakal
    * ({buf,status}) ya null; faisla hamesha
    * saveGuard ke darwaze karte hain.
+   * v2.48.48 (MEDIA-LOAD V2 — SEEK USKAAM): poll ke
+   * dauraan duration maloom hote hi ek dafa aakhir
+   * ke paas seek (duration − 0.15), ~1s baad 0 par
+   * wapas seek + play() — taaki media stack ko sir
+   * aur aakhir ke range jawab NETWORK se lane paden
+   * (ZEROCLICK15 me element sirf buffer-shuda
+   * preview chala kar 'ended' ho gaya tha, koi naya
+   * traffic aaya hi nahi tha). Aur capture kitab ab
+   * tukde jodti hai, is liye readBest ki body jodi
+   * hui (assembled) hoti hai.
    */
   async _loadMainpageFullViaMedia(url) {
     const cap = this.netCapture;
@@ -5706,13 +5716,19 @@ class FlowAutomationEngine {
       const budgetMs = Math.max(500, this.mainpageMediaLoadMs || 30000);
       const deadline = Date.now() + budgetMs;
       let endedAt = 0;
+      // v2.48.48 (MEDIA-LOAD V2 — SEEK): seek ki haalat
+      // (neeche poll me) — ek dafa aakhir ki taraf,
+      // ~1s baad wapas 0 par.
+      let seekDone = false;
+      let seekBackPending = false;
+      let seekBackAt = 0;
       outcome = 'timeout';
       while (true) {
         const probe = readBest();
-        // Capture kitab har URL ki SIRF aakhri body
-        // rakhti hai — is liye behtareen = sab se BADI
-        // body jo is dauraan dikhi (chhoti seek-chunk
-        // badi ko kabhi nahi dabati).
+        // Behtareen = sab se BADI body jo is dauraan
+        // dikhi (.48 se kitab tukde jodti hai, phir
+        // bhi koi darmiyani chhoti reading badi ko
+        // kabhi nahi dabati).
         if (probe.candidate && (!best || probe.candidate.buf.length > best.buf.length)) best = probe.candidate;
         if (probe.state === 'complete') { best = probe.candidate; outcome = 'complete'; break; }
         // Pakdi hui SAB SE BADI body kul ko cover kar
@@ -5727,6 +5743,68 @@ class FlowAutomationEngine {
           best = { buf: best.buf, status: 200 };
           outcome = 'complete';
           break;
+        }
+        // v2.48.48 (MEDIA-LOAD V2 — SEEK USKAAM):
+        // ZEROCLICK15 ka saboot: element ~6s me
+        // 'ended' bol deta tha aur NAYA network
+        // traffic bilkul NAHI aata tha — wo sirf
+        // page ka pehle se buffer-shuda preview
+        // dobara chalata tha, file ka baaqi hissa
+        // kabhi kheenchta hi nahi tha. Ilaaj: poll
+        // ke dauraan, duration maloom hote hi (finite
+        // aur > 1s) EK dafa aakhir ke bilkul paas
+        // seek karo (duration − 0.15) — media stack
+        // ko tail ke range jawab network se lane
+        // padte hain; ~1s baad 0 par wapas seek +
+        // play() — sir (head) wale range bhi phir
+        // network se aate hain. Duration kabhi
+        // maloom na ho to vyavhaar bilkul aaj jaisa.
+        if (seekBackPending && Date.now() >= seekBackAt) {
+          seekBackPending = false;
+          try {
+            await pg.evaluate(() => {
+              try {
+                const el = window.__fsMediaLoadEl;
+                if (el) {
+                  el.currentTime = 0;
+                  const p = el.play();
+                  if (p && typeof p.catch === 'function') p.catch(() => {});
+                }
+              } catch (e) {}
+              return true;
+            });
+          } catch (e) {}
+        }
+        if (!seekDone) {
+          let dur = -1;
+          try {
+            dur = await pg.evaluate(() => {
+              try {
+                const el = window.__fsMediaLoadEl;
+                const d = el ? el.duration : NaN;
+                return Number.isFinite(d) ? d : -1;
+              } catch (e) { return -1; }
+            });
+          } catch (e) { dur = -1; }
+          if (Number.isFinite(dur) && dur > 1) {
+            seekDone = true;
+            const target = Math.max(0, dur - 0.15);
+            try {
+              await pg.evaluate((t) => {
+                try {
+                  const el = window.__fsMediaLoadEl;
+                  if (el) {
+                    el.currentTime = t;
+                    const p = el.play();
+                    if (p && typeof p.catch === 'function') p.catch(() => {});
+                  }
+                } catch (e) {}
+                return true;
+              }, target);
+            } catch (e) {}
+            seekBackPending = true;
+            seekBackAt = Date.now() + 1000;
+          }
         }
         let ended = false;
         try { ended = await pg.evaluate(() => window.__fsMediaLoadEnded === true); } catch (e) { outcome = 'error'; break; }

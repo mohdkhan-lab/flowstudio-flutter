@@ -1296,6 +1296,99 @@ async function main() {
     ok('HOV-ENG promoted audit carries bindReason=order', logs.some(m => m.includes('decision=promoted') && m.includes('bindReason=order')));
     eq('HOV-ENG the stream is claimed by my task', nc.mainpageClaimedKey(GV_URL), 'k-zc-me');
   }
+  {
+    // (c6) v2.48.45 — BINDCHECK DIAGNOSTIC
+    // (ZEROCLICK12 addendum): poori-size stream
+    // bandhan par parkha jaye aur bandhe NAHI to
+    // '[ROOT] mainpage-bindcheck' line wajah NAAM se
+    // deti hai. Bandhan ka vyavhaar bilkul nahi
+    // badla — ye test har darwaze par line ki
+    // maujoodgi + sahi wajah jaanchte hain, aur ye
+    // bhi ke inkaar barkarar hai (fetch ZERO).
+    const GV_BC = 'https://rr5---sn-qxaelnes.googlevideo.com/videoplayback?expire=999&id=bc12&itag=18';
+    const bcEngine = (logs) => {
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { mainpageViewportWaitMs: 200, mainpagePatienceMs: 700, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
+      eng.page = fakePage('main-bindcheck');
+      eng._readTileMediaState = async () => null;
+      eng._fetchMainpageFullInPage = async () => ({ buf: mp4Buffer(1225554), status: 200 });
+      eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+      eng.netCapture.arm();
+      return eng;
+    };
+    const bcRecord = (nc, url, at) => nc._recordMainpageSighting(
+      { url, src: 'googlevideo', declared: 242544, status: 206, contentRange: 'bytes 0-242543/1225554', contentType: 'video/mp4' },
+      mp4Buffer(242544), 242544, at || Date.now());
+    // plan ka myIdx field (bindcheck ki buniyad).
+    eq('BINDCHECK plan reports myIdx for the second pending', mainpageBindingPlan({ candidates: [{ url: 'u-x', firstSeenAt: 3000, seq: 1 }], ownKey: 'k2', ownStart: 2000, pendingOrder: [{ key: 'k1', start: 1000 }, { key: 'k2', start: 2000 }], pendingOthers: 1 }).myIdx, 1);
+    eq('BINDCHECK plan reports myIdx 0 for the first pending', mainpageBindingPlan({ candidates: [{ url: 'u-x', firstSeenAt: 3000, seq: 1 }], ownKey: 'k1', ownStart: 1000, pendingOrder: [{ key: 'k1', start: 1000 }, { key: 'k2', start: 2000 }], pendingOthers: 1 }).myIdx, 0);
+    {
+      // darwaza 1: stream kisi AUR task ke naam
+      // (keyByUrl) — mere liye hamesha ruka, wajah
+      // claimed-by-other-task.
+      const logs = [];
+      const eng = bcEngine(logs);
+      const nc = eng.netCapture;
+      bcRecord(nc, GV_BC);
+      nc.keyByUrl.set(GV_BC, 'k-other-task');
+      const task = { promptIndex: 0, captureKey: 'k-bc-claim', videoId: 'k-bc-claim', startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 500 };
+      const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-bc-claim', 0);
+      eq('BINDCHECK a stream claimed by another task still saves nothing', okSave, false);
+      ok('BINDCHECK the bindcheck line names claimed-by-other-task', logs.some(m => m.includes('[ROOT] mainpage-bindcheck') && m.includes('total=1225554') && m.includes('why=claimed-by-other-task')));
+      ok('BINDCHECK the bindcheck line carries firstSeen and renderDone', logs.some(m => m.includes('[ROOT] mainpage-bindcheck') && m.includes('firstSeen=') && m.includes('renderDone=')));
+    }
+    {
+      // darwaza 2: akela stream kataar me mujh se
+      // PEHLE wale baqi download ke hisse ka hai —
+      // wajah reserved-for-earlier-pending.
+      const logs = [];
+      const eng = bcEngine(logs);
+      const nc = eng.netCapture;
+      const now = Date.now();
+      nc.mainpageNoteWindow('k-bc-earlier', now - 5000);
+      bcRecord(nc, GV_BC, now - 100);
+      const task = { promptIndex: 1, captureKey: 'k-bc-res', videoId: 'k-bc-res', startTime: now - 4000, renderCompletedAt: now - 2000 };
+      const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-bc-res', 0);
+      eq('BINDCHECK the earlier pending task keeps its reservation', okSave, false);
+      ok('BINDCHECK the bindcheck line names reserved-for-earlier-pending', logs.some(m => m.includes('[ROOT] mainpage-bindcheck') && m.includes('why=reserved-for-earlier-pending')));
+    }
+    {
+      // darwaza 3: stream meri task ke aaghaz se
+      // PEHLE pehli dafa dikha tha — wajah
+      // seen-before-task-start.
+      const logs = [];
+      const eng = bcEngine(logs);
+      const nc = eng.netCapture;
+      const now = Date.now();
+      bcRecord(nc, GV_BC, now - 10000);
+      const task = { promptIndex: 0, captureKey: 'k-bc-early', videoId: 'k-bc-early', startTime: now - 5000, renderCompletedAt: now - 500 };
+      const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-bc-early', 0);
+      eq('BINDCHECK a stream first seen before my start saves nothing', okSave, false);
+      ok('BINDCHECK the bindcheck line names seen-before-task-start', logs.some(m => m.includes('[ROOT] mainpage-bindcheck') && m.includes('why=seen-before-task-start')));
+    }
+    {
+      // darwaza 4: ASAL bandh-ganth — do poori
+      // streams, ek hi pal, capture tartib bhi
+      // nahi (seq hataya gaya) — inkaar barkarar,
+      // wajah ambiguous-tie, fetch ZERO.
+      const logs = [];
+      const eng = bcEngine(logs);
+      const nc = eng.netCapture;
+      const GV_BC2 = 'https://rr6---sn-bc2222.googlevideo.com/videoplayback?expire=999&id=bc22&itag=18';
+      let fetchCalls = 0;
+      eng._fetchMainpageFullInPage = async () => { fetchCalls++; return { buf: mp4Buffer(1225554), status: 200 }; };
+      const now = Date.now();
+      bcRecord(nc, GV_BC, now - 1000);
+      bcRecord(nc, GV_BC2, now - 900);
+      for (const e of nc.mainpageVideos) {
+        if (e.url === GV_BC || e.url === GV_BC2) { e.firstSeenAt = now - 1000; e.seq = null; }
+      }
+      const task = { promptIndex: 0, captureKey: 'k-bc-tie', videoId: 'k-bc-tie', startTime: now - 10000, renderCompletedAt: now - 2000 };
+      const okSave = await eng._tryMainpageHarvest(task, '/tmp', { duration: '10s' }, [], 'k-bc-tie', 0);
+      eq('BINDCHECK a genuine tie still refuses', okSave, false);
+      eq('BINDCHECK a genuine tie fetches nothing', fetchCalls, 0);
+      ok('BINDCHECK the bindcheck line names ambiguous-tie as refused', logs.some(m => m.includes('[ROOT] mainpage-bindcheck') && m.includes('decision=refused') && m.includes('why=ambiguous-tie')));
+    }
+  }
 
   // ---------------------------------------------------------------------------
   // O. v2.48.44 — HEADLESS HARVEST PACK (OPTION 2):
@@ -1318,6 +1411,13 @@ async function main() {
   //   (g) ENGINE: stream waqt par na aaye to haar, aur
   //       cascade ki tartib headless → mainpage → grid
   //       (fall-through), probe phir bhi ek hi dafa.
+  //   (h) v2.48.45 — LAUNCH DIAGNOSTICS + CLONE
+  //       HARDENING (ZEROCLICK12): launch fail ki
+  //       strategy note + warn line me ASAL wajah
+  //       (message + code); clone log line (copied /
+  //       missing / warnings); Cookies ke SQLite
+  //       sidecars (-wal/-journal) plan + copy me;
+  //       nazuk files ki copy EBUSY par retry.
   // ---------------------------------------------------------------------------
   {
     const fsx = require('fs');
@@ -1496,6 +1596,84 @@ async function main() {
     ok('HH-FALL the honest-fail line names all three routes', logs.some(m => m.includes('Download failed honestly') && m.includes('invisible-browser harvest') && m.includes('grid replay')));
     eq('HH-FALL the probe still ran only once across rounds', st.probeCount, 1);
     eq('HH-FALL the task route order is the three-step order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['headless-harvest', 'mainpage-harvest', 'grid-replay']));
+  }
+  {
+    // (h) v2.48.45 — LAUNCH DIAGNOSTICS + CLONE HARDENING.
+    const fsx = require('fs');
+    const osx = require('os');
+    const pathx = require('path');
+    const { cloneFilePlan, buildHeadlessClone, removeHeadlessClone, copyFileWithRetry, cloneLogLine, launchFailNote, launchFailureReason } = headlessHarvest;
+    // (i) ENGINE: _headlessLaunch phenke to strategy
+    // note AUR warn line dono me asal wajah (message +
+    // code) — ZEROCLICK12 ki gum-shuda wajah ab nahi.
+    {
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { headlessHarvestWaitMs: 300 });
+      eng.currentAccount = { id: 'acc-hh-launchfail', name: 'HH LaunchFail' };
+      eng.page = fakePage('main-hh-launchfail');
+      const boom = new Error('Profile not found at: C:\\Users\\prof');
+      boom.code = 'ENOENT';
+      eng._headlessLaunch = async () => { throw boom; };
+      const task = { promptIndex: 0, captureKey: 'k-hh-lf', videoId: 'k-hh-lf', startTime: Date.now(), renderCompletedAt: Date.now() };
+      const attempts = [];
+      const r = await eng._tryHeadlessHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-hh-lf', 0);
+      eq('HH-LAUNCHFAIL the route fails', r, false);
+      ok('HH-LAUNCHFAIL the note carries the underlying error message', attempts.length === 1 && attempts[0].note.includes('Profile not found at:'));
+      ok('HH-LAUNCHFAIL the note carries the error code', attempts.length === 1 && attempts[0].note.includes('[ENOENT]'));
+      ok('HH-LAUNCHFAIL the note uses the launch-failed shape', attempts.length === 1 && attempts[0].note.startsWith('headless-harvest: launch failed ('));
+      ok('HH-LAUNCHFAIL the warn log carries the reason too', logs.some(m => m.includes('headless-harvest: launch failed (') && m.includes('Profile not found at:')));
+    }
+    // Wajah saaf-suthri: code na ho to sirf message;
+    // lamba message ~200 harf par kata.
+    eq('HH-REASON a message without a code stays bare', launchFailureReason(new Error('plain boom')), 'plain boom');
+    ok('HH-REASON a long message is truncated to ~200 chars', launchFailureReason(new Error('x'.repeat(500))).length <= 200);
+    eq('HH-REASON the note shape is pinned', launchFailNote(new Error('kaboom')), 'headless-harvest: launch failed (kaboom) — the main-page routes ran next');
+    // (ii) Clone log line.
+    eq('HH-CLONELOG a clean clone line', cloneLogLine({ copied: ['a', 'b', 'c'], missing: [], warnings: [] }), '[ROOT] headless-clone copied=3 missing=none warnings=none');
+    eq('HH-CLONELOG missing and warnings are listed, warnings capped at 3', cloneLogLine({ copied: ['a'], missing: ['Default/Cookies'], warnings: ['w1', 'w2', 'w3', 'w4'] }), '[ROOT] headless-clone copied=1 missing=Default/Cookies warnings=w1 | w2 | w3');
+    eq('HH-CLONELOG garbage input still yields a line', cloneLogLine(null), '[ROOT] headless-clone copied=0 missing=none warnings=none');
+    // (iii) Sidecars — khalis tarteeb + asal copy.
+    const planSide = cloneFilePlan('/nowhere', {
+      exists: (rel) => [pathx.join('Default', 'Network', 'Cookies'), pathx.join('Default', 'Network', 'Cookies') + '-wal', pathx.join('Default', 'Cookies'), pathx.join('Default', 'Cookies') + '-journal'].includes(rel),
+      isDir: () => false
+    });
+    ok('HH-SIDECAR the plan includes the Network Cookies -wal', planSide.some(p => p.rel === pathx.join('Default', 'Network', 'Cookies') + '-wal'));
+    ok('HH-SIDECAR the plan includes the plain Cookies -journal', planSide.some(p => p.rel === pathx.join('Default', 'Cookies') + '-journal'));
+    eq('HH-SIDECAR sidecars only ride along with their Cookies file', planSide.length, 4);
+    {
+      const root = fsx.mkdtempSync(pathx.join(osx.tmpdir(), 'hh-side-'));
+      const cloneDir = pathx.join(osx.tmpdir(), `hh-side-clone-${Date.now()}`);
+      const w = (rel, content) => { const p = pathx.join(root, rel); fsx.mkdirSync(pathx.dirname(p), { recursive: true }); fsx.writeFileSync(p, content); };
+      w('Local State', '{}');
+      w(pathx.join('Default', 'Network', 'Cookies'), 'COOKIES-DB');
+      w(pathx.join('Default', 'Network', 'Cookies') + '-wal', 'WAL-DATA');
+      w(pathx.join('Default', 'Network', 'Cookies') + '-journal', 'JOURNAL-DATA');
+      const res = await buildHeadlessClone(root, cloneDir);
+      eq('HH-SIDECAR the -wal file is copied', fsx.readFileSync(pathx.join(cloneDir, 'Default', 'Network', 'Cookies') + '-wal', 'utf8'), 'WAL-DATA');
+      eq('HH-SIDECAR the -journal file is copied', fsx.readFileSync(pathx.join(cloneDir, 'Default', 'Network', 'Cookies') + '-journal', 'utf8'), 'JOURNAL-DATA');
+      ok('HH-SIDECAR the clone result counts the sidecars as copied', res.copied.some(r => r.endsWith('Cookies-wal')) && res.copied.some(r => r.endsWith('Cookies-journal')));
+      ok('HH-SIDECAR the clone log line counts them too', cloneLogLine(res).startsWith(`[ROOT] headless-clone copied=${res.copied.length}`));
+      await removeHeadlessClone(cloneDir);
+      fsx.rmSync(root, { recursive: true, force: true });
+    }
+    // (iv) EBUSY retry — jaali copy function ke saath.
+    {
+      let calls = 0;
+      const flaky = async () => { calls++; if (calls < 3) { const e = new Error('resource busy'); e.code = 'EBUSY'; throw e; } };
+      await copyFileWithRetry('src', 'dest', { copyFile: flaky, sleep: async () => {} });
+      eq('HH-RETRY an EBUSY copy succeeds on the third attempt', calls, 3);
+      let calls2 = 0;
+      const locked = async () => { calls2++; const e = new Error('still busy'); e.code = 'EBUSY'; throw e; };
+      let threw2 = false;
+      try { await copyFileWithRetry('src', 'dest', { copyFile: locked, sleep: async () => {} }); } catch (e) { threw2 = e.code === 'EBUSY'; }
+      ok('HH-RETRY a copy that stays busy throws after the bounded attempts', threw2);
+      eq('HH-RETRY the attempts are bounded at 3', calls2, 3);
+      let calls3 = 0;
+      const gone = async () => { calls3++; const e = new Error('no such file'); e.code = 'ENOENT'; throw e; };
+      let threw3 = false;
+      try { await copyFileWithRetry('src', 'dest', { copyFile: gone, sleep: async () => {} }); } catch (e) { threw3 = e.code === 'ENOENT'; }
+      ok('HH-RETRY a non-retryable error throws at once', threw3 && calls3 === 1);
+    }
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

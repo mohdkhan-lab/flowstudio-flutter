@@ -5742,13 +5742,22 @@ class FlowAutomationEngine {
    */
   async _headlessLaunch(account) {
     const profileRoot = getAccountProfilePath(account.id);
+    // v2.48.45: launch fail ho to EK dafa taza clone ke
+    // saath dobara koshish (neeche loop) — aur har
+    // koshish ki asal wajah log/note me (ZEROCLICK12 ka
+    // diagnostic gap band).
+    for (let launchAttempt = 1; ; launchAttempt++) {
     const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-headless-'));
+    let clone = null;
     try {
-      await headlessHarvest.buildHeadlessClone(profileRoot, cloneDir);
+      clone = await headlessHarvest.buildHeadlessClone(profileRoot, cloneDir);
     } catch (e) {
       await headlessHarvest.removeHeadlessClone(cloneDir);
       throw e;
     }
+    // v2.48.45: clone ka hisaab ek line me — copy
+    // warnings ab kahin gum nahi hoti.
+    try { this.log(headlessHarvest.cloneLogLine(clone)); } catch (e) {}
     const launchOpts = {
       executablePath: getChromeExecutablePath(),
       headless: headlessHarvest.HEADLESS_MODE,
@@ -5782,6 +5791,12 @@ class FlowAutomationEngine {
       browser = await puppeteer.launch(launchOpts);
     } catch (e) {
       await headlessHarvest.removeHeadlessClone(cloneDir);
+      if (launchAttempt === 1) {
+        // v2.48.45: pehli launch ki wajah hamesha log
+        // hoti hai; phir taza clone ke saath ek retry.
+        this.log(`[ROOT] headless-harvest: launch failed (${headlessHarvest.launchFailureReason(e)}) — retrying once with a fresh copy of the session`, 'warn');
+        continue;
+      }
       throw e;
     }
     const pages = await browser.pages();
@@ -5795,6 +5810,7 @@ class FlowAutomationEngine {
     const capture = new networkCapture.NetworkCapture({});
     try { capture.attach(page); } catch (e) {}
     return { browser, page, capture, cloneDir };
+    }
   }
 
   /** Headless session band karo + clone mita do (hamesha, har surat me). */
@@ -5940,8 +5956,11 @@ class FlowAutomationEngine {
     try {
       session = await this._headlessLaunch(account);
     } catch (e) {
-      this.log(`[ROOT] [Prompt #${n}] headless-harvest: the invisible browser could not be started from the copied session — the main-page routes will run`, 'warn');
-      return fail('the invisible browser could not be started from the copied session — the main-page routes ran next');
+      // v2.48.45: asal wajah (exception message + code)
+      // log AUR strategy note dono me — ZEROCLICK12 me
+      // launch fail ki wajah kahin record nahi hoti thi.
+      this.log(`[ROOT] [Prompt #${n}] headless-harvest: launch failed (${headlessHarvest.launchFailureReason(e)}) — the main-page routes will run`, 'warn');
+      return fail(headlessHarvest.launchFailNote(e));
     }
     try {
       const hcap = session.capture;
@@ -6126,6 +6145,33 @@ class FlowAutomationEngine {
       this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: no usable stream for this video on the main project page — grid replay will run`, 'warn');
       return false;
     };
+    // v2.48.45 (BINDCHECK — ZEROCLICK12 addendum):
+    // poori-size (>= is duration ki hadd) stream bandhan
+    // ke liye parkha jaye aur bandhe NAHI to ek
+    // diagnostic line — kis darwaze par ruka, wajah ke
+    // saath. ZEROCLICK12 #1: 1,225,554B ki stream apni
+    // hi hover watch me aayi, kitab me 'captured' darj
+    // hui, phir bhi kabhi bandhi nahi aur wajah kahin
+    // record nahi hui — agli live run me ye line asal
+    // wajah NAAM se degi. Ek attempt me ek URL+wajah
+    // ki jodi sirf ek dafa (watch har 250ms plan
+    // dobara banata hai — line baadh nahi banegi).
+    // Ye SIRF mushahida hai — bandhan ka vyavhaar
+    // bilkul nahi badalta.
+    const bindcheckSeen = new Set();
+    const logBindcheck = (info) => {
+      try {
+        if (!info || !info.url || !info.why) return;
+        const total = Math.max(0, Math.floor(info.total || 0));
+        if (total < floorBytes) return;
+        const dedupeKey = `${info.url}|${info.why}`;
+        if (bindcheckSeen.has(dedupeKey)) return;
+        bindcheckSeen.add(dedupeKey);
+        const firstSeen = Number.isFinite(info.firstSeenAt) ? Math.floor(info.firstSeenAt) : 0;
+        this.log(`[ROOT] mainpage-bindcheck total=${total} firstSeen=${firstSeen} renderDone=${Math.floor(windowStart)} decision=${info.decision || 'unbound'} why=${info.why}`, 'info');
+      } catch (e) {}
+    };
+    const entryTotal = (e) => Math.max(e.bytes || 0, e.declared || 0, e.knownTotal || 0);
     // Ummeedwaar ikatthe karo — kitab se (teacher /
     // claimed / doosri task ke naam hue / pehle aazmaye
     // hue bahar) + tile-src wala mazboot ummeedwaar.
@@ -6166,11 +6212,27 @@ class FlowAutomationEngine {
         // entry (chhoti stream / video-type na ho)
         // bandhan ke liye kabhi nahi uth ti.
         if (e.candidate === false) continue;
-        if (teacherUrl && e.url === teacherUrl) continue;
+        // v2.48.45 (BINDCHECK): poori-size stream jo
+        // kisi darwaze par ruke — wajah line me darj
+        // (vyavhaar wahi; sirf naam milta hai).
+        if (teacherUrl && e.url === teacherUrl) {
+          logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: e.firstSeenAt, why: 'teacher-url' });
+          continue;
+        }
         let claimed = false;
         try { claimed = cap.isMainpageClaimed(e.url); } catch (err) { claimed = false; }
-        if (claimed) continue;
-        if (this._urlClaimedByOtherTask(e.url, captureKey)) continue;
+        if (claimed) {
+          logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: e.firstSeenAt, why: 'already-claimed' });
+          continue;
+        }
+        if (this._urlClaimedByOtherTask(e.url, captureKey)) {
+          logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: e.firstSeenAt, why: 'claimed-by-other-task' });
+          continue;
+        }
+        if (triedUrls.has(e.url)) {
+          logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: e.firstSeenAt, why: 'already-tried-this-attempt' });
+          continue;
+        }
         const isBound = !!boundUrl && e.url === boundUrl;
         const isTile = !!tileSrcUrl && e.url === tileSrcUrl;
         if (!isBound && !isTile) {
@@ -6178,7 +6240,10 @@ class FlowAutomationEngine {
           // se pehle ki hai to ye stream mera nahi ho
           // sakta (kisi aur ki khidki ka hai ya purana).
           const seenAt = Number.isFinite(e.firstSeenAt) ? e.firstSeenAt : (e.at || 0);
-          if ((task.startTime || 0) > 0 && seenAt > 0 && seenAt < task.startTime) continue;
+          if ((task.startTime || 0) > 0 && seenAt > 0 && seenAt < task.startTime) {
+            logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: seenAt, why: 'seen-before-task-start' });
+            continue;
+          }
         }
         pushEntry(e, isBound || isTile);
       }
@@ -6215,13 +6280,41 @@ class FlowAutomationEngine {
         : (typeof cap.mainpageWindowsList === 'function'
           ? cap.mainpageWindowsList().filter(w => !w.done).map(w => ({ key: w.key, start: w.start }))
           : []);
+      const pendingOthers = typeof cap.mainpagePendingOthers === 'function' ? cap.mainpagePendingOthers(captureKey) : 0;
       const plan = saveGuard.mainpageBindingPlan({
         candidates: live.map(a => ({ url: a.url, firstSeenAt: a.firstSeenAt, seq: a.seq })),
         ownKey: captureKey,
         ownStart: windowStart,
         pendingOrder,
-        pendingOthers: typeof cap.mainpagePendingOthers === 'function' ? cap.mainpagePendingOthers(captureKey) : 0
+        pendingOthers
       });
+      // v2.48.45 (BINDCHECK): plan ne jo poori-size
+      // ummeedwaar NAHI bandha, us ki wajah naam se —
+      // kataar me us ki jagah (plan wali hi tartib:
+      // firstSeenAt, phir seq) aur meri jagah (myIdx)
+      // ke muqable se. Bandha hua ummeedwaar is hisse
+      // ko chhuta hi nahi.
+      try {
+        const sorted = live.slice().sort((a, b) => {
+          if (a.firstSeenAt !== b.firstSeenAt) return a.firstSeenAt - b.firstSeenAt;
+          const sa = Number.isFinite(a.seq) ? a.seq : null;
+          const sb = Number.isFinite(b.seq) ? b.seq : null;
+          if (sa !== null && sb !== null) return sa - sb;
+          return 0;
+        });
+        sorted.forEach((a, pos) => {
+          const total = Math.max(a.byteLength || 0, a.declaredLength || 0);
+          if (plan.bind && plan.url === a.url) return;
+          let why = null;
+          let decision = 'unbound';
+          if (plan.reason === 'ambiguous') { why = 'ambiguous-tie'; decision = 'refused'; }
+          else if (plan.bind) why = 'ordinal-pair-was-another-stream';
+          else if (Number.isFinite(plan.myIdx) && pos < plan.myIdx) why = 'reserved-for-earlier-pending';
+          else if (pendingOthers > 0) why = 'exclusion-blocked-by-pending-download';
+          else why = 'no-pair-at-my-position';
+          if (why) logBindcheck({ url: a.url, total, firstSeenAt: a.firstSeenAt, decision, why });
+        });
+      } catch (e) {}
       if (plan.reason === 'ambiguous') {
         this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: ${plan.count} unbound streams seen on the main page and none is bound to this video — not fetching any of them (a wrong video is worse than a miss)`, 'warn');
         return 'ambiguous';

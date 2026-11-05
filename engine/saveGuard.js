@@ -565,7 +565,11 @@ function mainpageBindingPlan(input) {
     myIdx = order.filter(w => w.start <= ownStart).length;
   }
   const count = candidates.length;
-  if (count === 0) return { bind: false, reason: 'none', url: null, count: 0 };
+  // v2.48.45 (BINDCHECK): myIdx natije me bhi jata hai
+  // — engine ki bindcheck line har ummeedwaar ki
+  // kataar-jagah isi se naam deti hai (vyavhaar par
+  // koi asar nahi; sirf ek aur field).
+  if (count === 0) return { bind: false, reason: 'none', url: null, count: 0, myIdx };
   // Do ummeedwaar asal me be-tarteeb (tie) kab hain:
   // ek hi pal pehli nazar AUR capture tartib bhi
   // alag na kar sake (seq dono ka na ho ya barabar).
@@ -578,17 +582,17 @@ function mainpageBindingPlan(input) {
     const mine = candidates[myIdx];
     const next = candidates[myIdx + 1] || null;
     if (next && tied(mine, next)) {
-      return { bind: false, reason: 'ambiguous', url: null, count };
+      return { bind: false, reason: 'ambiguous', url: null, count, myIdx };
     }
-    return { bind: true, reason: 'order', url: mine.url, count };
+    return { bind: true, reason: 'order', url: mine.url, count, myIdx };
   }
   // Exclusion fallback: tartib me meri jodi nahi,
   // lekin kitab me akela ummeedwaar aur koi aur baqi
   // download nahi — wo akela mera.
   if (count === 1 && pendingOthers === 0) {
-    return { bind: true, reason: 'exclusion', url: candidates[0].url, count };
+    return { bind: true, reason: 'exclusion', url: candidates[0].url, count, myIdx };
   }
-  return { bind: false, reason: 'none', url: null, count };
+  return { bind: false, reason: 'none', url: null, count, myIdx };
 }
 
 /**

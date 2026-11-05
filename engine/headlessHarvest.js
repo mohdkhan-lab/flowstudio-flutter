@@ -78,6 +78,101 @@ const CLONE_ESSENTIAL_DIRS = Object.freeze([
 const CLONE_SKIP_NAMES = new Set([...LOCK_FILE_NAMES]);
 
 /**
+ * v2.48.45: Cookies SQLite ke saathi hisse — asal DB ke
+ * saath -wal/-journal bhi copy hon to copied DB apne
+ * aakhri committed haal me khulti hai (warna aakhri
+ * writes wal me reh kar kho sakti hain).
+ */
+const COOKIE_SIDECAR_SUFFIXES = Object.freeze(['-wal', '-journal']);
+
+/** Ek Cookies file ke sidecar relative paths (khaali = Cookies nahi). */
+function cookieSidecarsFor(rel) {
+  if (!rel || !rel.endsWith('Cookies')) return [];
+  return COOKIE_SIDECAR_SUFFIXES.map(sfx => rel + sfx);
+}
+
+/**
+ * v2.48.45: NAZUK (critical) session files — Local State
+ * aur Cookies (+ unke sidecars). In ki copy par retry
+ * chalta hai: asal profile visible worker ke Chrome me
+ * khula ho sakta hai, aur ek pal ka EBUSY/EPERM/EACCES
+ * copy ko gira sakta hai.
+ */
+function isCriticalCloneRel(rel) {
+  if (!rel) return false;
+  if (rel === 'Local State') return true;
+  if (rel.endsWith('Cookies')) return true;
+  return COOKIE_SIDECAR_SUFFIXES.some(sfx => rel.endsWith('Cookies' + sfx));
+}
+
+const RETRYABLE_COPY_CODES = new Set(['EBUSY', 'EPERM', 'EACCES']);
+const CRITICAL_COPY_ATTEMPTS = 3;
+const CRITICAL_COPY_DELAY_MS = 400;
+
+function isRetryableCopyError(err) {
+  return !!(err && RETRYABLE_COPY_CODES.has(err.code));
+}
+
+/**
+ * Ek file copy karo; nazuk lock-wale codes (EBUSY /
+ * EPERM / EACCES) par bounded retry (~400ms ke waqfe
+ * ke saath, default 3 koshishen). Aakhri error waisa
+ * hi phenkta hai — caller use warning bana sakta hai.
+ * Tests ke liye copyFile/sleep ghusaye ja sakte hain.
+ */
+async function copyFileWithRetry(src, dest, opts = {}) {
+  const attempts = Math.max(1, opts.attempts || CRITICAL_COPY_ATTEMPTS);
+  const delayMs = opts.delayMs != null ? opts.delayMs : CRITICAL_COPY_DELAY_MS;
+  const copyFn = opts.copyFile || fsp.copyFile;
+  const sleep = opts.sleep || ((ms) => new Promise(r => setTimeout(r, ms)));
+  let lastErr = null;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await copyFn(src, dest);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableCopyError(err) || i === attempts - 1) throw err;
+      await sleep(delayMs);
+    }
+  }
+  throw lastErr;
+}
+
+/**
+ * v2.48.45: launch fail ki ASAL wajah, chhoti aur saaf
+ * suthri — exception ka message (~200 harf tak kata
+ * hua, whitespace dabaa hua) + code ho to [CODE].
+ * ZEROCLICK12 me yahi wajah kahin record nahi hoti thi.
+ */
+function launchFailureReason(err) {
+  const raw = err && err.message ? String(err.message) : String(err || 'unknown error');
+  const msg = raw.replace(/\s+/g, ' ').trim().slice(0, 200);
+  const code = err && err.code ? String(err.code) : '';
+  return code ? `${msg} [${code}]` : msg;
+}
+
+/** Launch-fail ki strategy note (Activity) — wajah ke saath. */
+function launchFailNote(err) {
+  return `headless-harvest: launch failed (${launchFailureReason(err)}) — the main-page routes ran next`;
+}
+
+/**
+ * v2.48.45: clone ke nateeje ki ek line — kya copy
+ * hua, kya reh gaya, aur pehli (zyada se zyada 3)
+ * warnings. v2.48.44 me ye warnings kahin dikhti hi
+ * nahi thi.
+ */
+function cloneLogLine(result) {
+  const copied = result && Array.isArray(result.copied) ? result.copied : [];
+  const missing = result && Array.isArray(result.missing) ? result.missing : [];
+  const warnings = result && Array.isArray(result.warnings) ? result.warnings : [];
+  const miss = missing.length ? missing.join(', ') : 'none';
+  const warn = warnings.length ? warnings.slice(0, 3).join(' | ') : 'none';
+  return `[ROOT] headless-clone copied=${copied.length} missing=${miss} warnings=${warn}`;
+}
+
+/**
  * Clone ki tarteeb (khalis): profile root me jo buniyadi
  * hisse MAUJUD hain, un ki { rel, kind } fehrist — kram
  * wahi jo CLONE_ESSENTIAL_* me hai. `exists(rel)` aur
@@ -95,7 +190,14 @@ function cloneFilePlan(profileRoot, detectors = {}) {
     };
   const plan = [];
   for (const rel of CLONE_ESSENTIAL_FILES) {
-    if (exists(rel) && !isDir(rel)) plan.push({ rel, kind: 'file' });
+    if (exists(rel) && !isDir(rel)) {
+      plan.push({ rel, kind: 'file' });
+      // v2.48.45: Cookies ke saath us ke SQLite sidecars
+      // bhi (jo maujud hon) — copied DB consistent rahe.
+      for (const side of cookieSidecarsFor(rel)) {
+        if (exists(side) && !isDir(side)) plan.push({ rel: side, kind: 'file' });
+      }
+    }
   }
   for (const rel of CLONE_ESSENTIAL_DIRS) {
     if (exists(rel) && isDir(rel)) plan.push({ rel, kind: 'dir' });
@@ -150,7 +252,17 @@ async function buildHeadlessClone(profileRoot, cloneDir) {
     try {
       if (item.kind === 'file') {
         await fsp.mkdir(path.dirname(dest), { recursive: true });
-        await fsp.copyFile(src, dest);
+        // v2.48.45: nazuk session files (Local State,
+        // Cookies + sidecars) par EBUSY/EPERM/EACCES
+        // retry — asal profile visible Chrome me khula
+        // ho sakta hai. Phir bhi fail ho to warning hi
+        // rehta hai (neeche wala hasCookies darwaza
+        // Cookies ke baghair copy ko inkaar karta hai).
+        if (isCriticalCloneRel(item.rel)) {
+          await copyFileWithRetry(src, dest);
+        } else {
+          await fsp.copyFile(src, dest);
+        }
         copied.push(item.rel);
       } else {
         await fsp.mkdir(dest, { recursive: true });
@@ -259,6 +371,16 @@ module.exports = {
   CLONE_ESSENTIAL_FILES,
   CLONE_ESSENTIAL_DIRS,
   BLOCKED_TEXT_MARKERS,
+  COOKIE_SIDECAR_SUFFIXES,
+  CRITICAL_COPY_ATTEMPTS,
+  CRITICAL_COPY_DELAY_MS,
+  cookieSidecarsFor,
+  isCriticalCloneRel,
+  isRetryableCopyError,
+  copyFileWithRetry,
+  launchFailureReason,
+  launchFailNote,
+  cloneLogLine,
   cloneFilePlan,
   buildHeadlessClone,
   removeHeadlessClone,

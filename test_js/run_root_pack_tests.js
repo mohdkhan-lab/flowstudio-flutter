@@ -4456,6 +4456,37 @@ async function main() {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
   }
 
+  // ---- X61: USABLE-CREDITS TOTAL (v2.48.61) --------------------
+  // Owner's bug: the top bar / MCP total summed STORED balances of
+  // dead-session accounts (53 shown, 3 spendable). The one
+  // definition mirrors the planner's pool rule (status !==
+  // 'Need Login'); storedCredits keeps the old sum under its own
+  // name.
+  {
+    const { isUsableAccount, usableCreditsTotal, storedCreditsTotal } = require('../engine/usableCredits');
+    const ownerMix = [
+      { name: '(22)', status: 'Ready', credits: 2 },
+      { name: '(18)', status: 'Ready', credits: 1 },
+      { name: 'plain', status: 'Exhausted', credits: 0 },
+      { name: '(20)', status: 'Need Login', credits: 42 },
+      { name: '(24)', status: 'Need Login', credits: 8 },
+    ];
+    eq('X61 the owner mix usable total is the spendable 3', usableCreditsTotal(ownerMix), 3);
+    eq('X61 the owner mix stored total is the old 53', storedCreditsTotal(ownerMix), 53);
+    eq('X61 Ready is usable', isUsableAccount({ status: 'Ready' }), true);
+    eq('X61 Need Login is NOT usable', isUsableAccount({ status: 'Need Login' }), false);
+    eq('X61 Exhausted is usable (adds its real 0)', isUsableAccount({ status: 'Exhausted' }), true);
+    eq('X61 LowCredits stays usable (planner pool rule)', isUsableAccount({ status: 'LowCredits' }), true);
+    eq('X61 LowCredits balance counts toward usable', usableCreditsTotal([{ status: 'LowCredits', credits: 3 }]), 3);
+    eq('X61 all-Ready usable equals the plain sum', usableCreditsTotal([{ status: 'Ready', credits: 50 }, { status: 'Ready', credits: 7 }]), 57);
+    eq('X61 all-Ready stored equals usable', storedCreditsTotal([{ status: 'Ready', credits: 50 }, { status: 'Ready', credits: 7 }]), 57);
+    eq('X61 no accounts gives 0', usableCreditsTotal([]), 0);
+    eq('X61 a non-array gives 0', usableCreditsTotal(null), 0);
+    eq('X61 an unread (null) balance contributes 0', usableCreditsTotal([{ status: 'Ready', credits: null }]), 0);
+    eq('X61 a null balance is not stored either', storedCreditsTotal([{ status: 'Ready', credits: null }]), 0);
+    eq('X61 a dead-session balance is stored but never usable', usableCreditsTotal([{ status: 'Need Login', credits: 42 }]), 0);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

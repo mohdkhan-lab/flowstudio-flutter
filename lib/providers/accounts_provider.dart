@@ -321,14 +321,29 @@ class AccountsProvider with ChangeNotifier {
   // ALL accounts' credits, ticked or not. It used to count only
   // ticked accounts, so it disagreed with the settings-bar estimate
   // (which counts Live accounts) on the same screen.
-  int get totalCredits =>
-      _accounts.fold(0, (sum, a) => sum + a.credits);
+  // v2.48.61 (owner's bug, 2026-11-06): the sum above posed as
+  // spendable money — it included 'Need Login' accounts whose
+  // Google session is dead and which cannot spend a single credit
+  // (the bar showed 53 while only 3 were usable). The total now
+  // mirrors the engine planner's ONE definition of usable
+  // (workerPool: pool = status !== 'Need Login'; engine side:
+  // engine/usableCredits.js): loginRequired accounts contribute
+  // nothing. Ready / lowCredits / outOfCredits (its real 0) count
+  // exactly as the planner's pool counts them.
+  int get totalCredits => _accounts.fold(
+      0,
+      (sum, a) =>
+          sum + (a.status == AccountStatus.loginRequired ? 0 : a.credits));
 
   // v2.45.0 (honest totals): true when at least one account's
   // balance is only an estimate — the header total then wears a
   // '~' so the sum never poses as fully live-verified.
-  bool get anyEstimateCredits =>
-      _accounts.any((a) => a.creditsSource == 'estimate');
+  // v2.48.61: only usable accounts count toward the '~' — an
+  // excluded account's estimate must not mark a total it is not
+  // part of.
+  bool get anyEstimateCredits => _accounts.any((a) =>
+      a.status != AccountStatus.loginRequired &&
+      a.creditsSource == 'estimate');
 
   int get activeAccountsCount =>
       _accounts.where((a) => a.isChecked && a.status == AccountStatus.ready).length;

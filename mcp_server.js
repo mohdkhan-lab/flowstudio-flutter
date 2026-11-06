@@ -19,10 +19,11 @@
 const http = require('http');
 const crypto = require('crypto');
 const os = require('os');
+const { usableCreditsTotal, storedCreditsTotal } = require('./engine/usableCredits');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.48.60';
+const SERVER_VERSION = '2.48.61';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -176,7 +177,7 @@ const TOOLS = [
   },
   {
     name: 'flowstudio_get_credits',
-    description: 'Total Flow credits across all accounts, plus the per-account breakdown.',
+    description: 'Total SPENDABLE Flow credits (usable accounts only — a Need Login account\'s stored balance is not spendable), plus the per-account breakdown and the stored all-accounts sum.',
     inputSchema: { type: 'object', properties: {} },
     run: async () => {
       const res = await bridgeCall('GET', '/api/accounts');
@@ -185,8 +186,11 @@ const TOOLS = [
         status: a.status,
         credits: a.credits,
       }));
-      const total = accounts.reduce((sum, a) => sum + (Number(a.credits) || 0), 0);
-      return { ok: true, totalCredits: total, accounts };
+      // v2.48.61: totalCredits is the USABLE (spendable) sum — the
+      // planner's definition (status !== 'Need Login'), via
+      // engine/usableCredits. storedCredits keeps the old
+      // all-accounts stored sum under its own honest name.
+      return { ok: true, totalCredits: usableCreditsTotal(accounts), storedCredits: storedCreditsTotal(accounts), accounts };
     },
   },
   {

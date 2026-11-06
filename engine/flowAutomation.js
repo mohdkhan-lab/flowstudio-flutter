@@ -19,10 +19,188 @@ const { sanitizeFilePart } = require('./pathSecurity');
 const tagNaming = require('./tagNaming');
 const downloadGuard = require('./downloadGuard');
 const downloadFetch = require('./downloadFetch');
+const { describeUrlShape, formatUrlShape } = require('./urlShape');
+const blobHarvest = require('./blobHarvest');
+const downloadRouteOrder = require('./downloadRouteOrder');
+const flowContent = require('./flowContent');
+const downloadEventMatch = require('./downloadEventMatch');
+const mintWindow = require('./mintWindow');
+const mintReplay = require('./mintReplay');
+const saveGuard = require('./saveGuard');
+const stageLock = require('./stageLock');
+const headlessHarvest = require('./headlessHarvest');
+const cookiesDb = require('./cookiesDb');
+const os = require('os');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
+
+/**
+ * v2.48.47 (MEDIA-LOAD COMPLETION): capture kitab ke
+ * hisaab se ek mainpage address ki pakdi hui body ki
+ * haalat (khalis). entry = capture ki mainpage entry
+ * (partial / status / knownTotal / declared), held =
+ * mainpageBodyForUrl ka jawab ({ buffer } | null).
+ *   'complete' — pakdi body ASAL file hai: ya to kul
+ *     (knownTotal/declared) us body se cover ho jata
+ *     hai, ya aakhri nazar ek mukammal 200 jawab thi
+ *     (partial nahi) aur yahi body us ki hai;
+ *   'partial'  — body hai lekin mukammal sabit nahi;
+ *   'none'     — koi body hi nahi.
+ * Aakhri faisla hamesha saveGuard ke darwaze karte
+ * hain — ye sirf poll rokne aur status chunne ke liye.
+ */
+function mediaBodyState(entry, held) {
+  const buf = held && held.buffer && held.buffer.length > 0 ? held.buffer : null;
+  if (!buf) return 'none';
+  if (!entry) return 'partial';
+  const total = Math.max(
+    Number.isFinite(entry.knownTotal) ? entry.knownTotal : 0,
+    Number.isFinite(entry.declared) ? entry.declared : 0
+  );
+  if (total > 0 && buf.length >= total) return 'complete';
+  if (entry.partial === false && Number(entry.status) === 200) return 'complete';
+  return 'partial';
+}
+
+/**
+ * v2.48.47: media-load ki EK log line (khalis) —
+ * '[ROOT] mainpage-media-load host=<h> outcome=<o>
+ * bytes=<n>'. outcome sirf complete | ended |
+ * timeout | error; ajnabi qeemat 'error' banti hai.
+ */
+function mediaLoadLogLine(info) {
+  const o = info && typeof info === 'object' ? info : {};
+  const host = o.host ? String(o.host) : 'none';
+  const outcome = ['complete', 'ended', 'timeout', 'error'].includes(o.outcome) ? o.outcome : 'error';
+  const bytes = Number.isFinite(o.bytes) ? Math.max(0, Math.floor(o.bytes)) : 0;
+  // v2.48.50 (MEGA PACK item 1 — TILE-ELEMENT COMPLETION):
+  // kaunsa element drive hua — 'tile' (task ki apni tile
+  // ka <video>) ya 'hidden' (purana adrishya element).
+  // Ajnabi qeemat 'hidden' hi banti hai (purani shakal).
+  const el = o.el === 'tile' ? 'tile' : 'hidden';
+  return `[ROOT] mainpage-media-load host=${host} outcome=${outcome} bytes=${bytes} el=${el}`;
+}
+
+/**
+ * v2.48.50 (item 1): tile-element chunav ka faisla
+ * (khalis). Tile ka <video> element mile AUR us ke
+ * paas apni stream ka koi nishan ho (src/currentSrc
+ * maujud, ya duration maloom) to drive TILE se hoga;
+ * warna purana hidden element hi chaara hai.
+ * probe = _probeMainpageTileVideo ki wapsi
+ * { found, hasSrc, duration, currentSrc }.
+ */
+function mediaLoadElementPick(probe) {
+  const p = probe && typeof probe === 'object' ? probe : {};
+  if (p.found && (p.hasSrc || (Number.isFinite(p.duration) && p.duration > 0))) return 'tile';
+  return 'hidden';
+}
+
+/**
+ * v2.48.50 (MEGA PACK item 16 — ATTEMPT SUMMARY): har
+ * video download attempt ke aakhir me EK line (khalis):
+ * '[ROOT] attempt-summary task=<promptIndex>
+ * best=<sabse badi nazar ke bytes> assembled=<jodi
+ * body ke bytes> mediaTile=<outcome|-> mediaHidden=
+ * <outcome|-> probe=<state|-> race=<winner|->
+ * saved=<yes|no>'. Saare hisse attempt ke apne darj
+ * haal se aate hain — koi vyavhaar-badal nahi.
+ */
+function attemptSummaryLogLine(info) {
+  const o = info && typeof info === 'object' ? info : {};
+  const num = (v) => (Number.isFinite(v) ? Math.max(0, Math.floor(v)) : 0);
+  const out = (v) => (['complete', 'ended', 'timeout', 'error'].includes(v) ? v : '-');
+  const word = (v) => (v ? String(v) : '-');
+  // v2.48.52 (ROUTE 1A PACK): netload ka anjaam bhi
+  // isi line me — saved / error / rejected, warna '-'
+  // (1A is attempt me chala hi nahi).
+  const nl = (v) => (['saved', 'error', 'rejected'].includes(v) ? v : '-');
+  const taskIdx = Number.isFinite(o.task) ? Math.floor(o.task) : 0;
+  return `[ROOT] attempt-summary task=${taskIdx} best=${num(o.best)} assembled=${num(o.assembled)} mediaTile=${out(o.mediaTile)} mediaHidden=${out(o.mediaHidden)} probe=${word(o.probe)} race=${word(o.race)} netload=${nl(o.netload)} saved=${o.saved ? 'yes' : 'no'}`;
+}
+
+/**
+ * v2.48.52 (ROUTE 1A PACK): netload (CDP
+ * Network.loadNetworkResource) koshish ki [ROOT]
+ * line (khalis). Ek koshish = ek line: kaun sa host,
+ * kaun sa range param hata (range|rn|rbuf|none),
+ * HTTP status (na mile to '-'), kitne bytes aaye,
+ * aur anjaam — saved / rejected:<wajah-chhoti> /
+ * error:<wajah-chhoti>. Asal URL ya query kabhi
+ * line me nahi jata.
+ * input = { host, stripped, status, bytes, result }
+ * — result 'saved' | 'rejected:<wajah>' | 'error:<wajah>'.
+ */
+function netloadLogLine(info) {
+  const o = info && typeof info === 'object' ? info : {};
+  const host = typeof o.host === 'string' && o.host ? o.host.slice(0, 60) : '-';
+  const stripped = o.stripped === 'range' || o.stripped === 'rn' || o.stripped === 'rbuf' ? o.stripped : 'none';
+  const status = Number.isFinite(o.status) && o.status > 0 ? String(Math.floor(o.status)) : '-';
+  const bytes = Number.isFinite(o.bytes) && o.bytes > 0 ? String(Math.floor(o.bytes)) : '0';
+  let result = 'error';
+  if (o.result === 'saved') result = 'saved';
+  else if (typeof o.result === 'string' && o.result.startsWith('rejected')) result = 'rejected:' + (o.result.slice('rejected'.length).replace(/^:/, '').replace(/\s+/g, '-').slice(0, 24) || 'rejected');
+  else if (typeof o.result === 'string' && o.result.startsWith('error')) result = 'error:' + (o.result.slice('error'.length).replace(/^:/, '').replace(/\s+/g, '-').slice(0, 24) || 'error');
+  return `[ROOT] mainpage-netload host=${host} stripped=${stripped} status=${status} bytes=${bytes} result=${result}`;
+}
+
+/**
+ * v2.48.52 (ROUTE 1A PACK): netload ke PROTOCOL
+ * nakami ki [ROOT] line (khalis) — loadNetworkResource
+ * khud na chala / stream na mili / drain bigda.
+ * Ghalti ka paigham ek line me sameet kar
+ * (whitespace dabaa kar, zyada se zyada 120 harf)
+ * dikhaya jata hai; asal URL line me nahi jata.
+ * input = { host, err }
+ */
+function netloadFailedLogLine(info) {
+  const o = info && typeof info === 'object' ? info : {};
+  const host = typeof o.host === 'string' && o.host ? o.host.slice(0, 60) : '-';
+  const err = String(o.err || 'error').replace(/\s+/g, ' ').trim().slice(0, 120) || 'error';
+  return `[ROOT] mainpage-netload failed host=${host} err=${err}`;
+}
+
+/**
+ * v2.48.52 (ROUTE 1A PACK): CDP IO stream ko poora
+ * khaali karo (loadNetworkResource se mila handle) —
+ * IO.read baar baar, har tukde ka apna base64Encoded
+ * jhanda, EOF par ruk. Natija ek Buffer; stream ka
+ * hisaab bigde (data string na ho aur EOF bhi na
+ * ho, hadd se zyada tukde/bytes, ya read khud gire)
+ * to null — bulane wala use protocol-nakami samajh
+ * kar purani completion silsile par girta hai.
+ * send fn = (method, params) => Promise.
+ */
+async function drainNetloadStream(send, handle) {
+  if (typeof send !== 'function' || !handle) return null;
+  const parts = [];
+  let total = 0;
+  for (let i = 0; i < 1024; i++) {
+    let r;
+    try { r = await send('IO.read', { handle }); } catch (e) { return null; }
+    if (!r || typeof r !== 'object') return null;
+    const data = typeof r.data === 'string' ? r.data : '';
+    if (data) {
+      const chunk = r.base64Encoded ? Buffer.from(data, 'base64') : Buffer.from(data, 'utf8');
+      parts.push(chunk);
+      total += chunk.length;
+      if (total > 64 * 1024 * 1024) return null;
+    }
+    if (r.eof) return parts.length === 1 ? parts[0] : Buffer.concat(parts);
+    if (!data) return null;
+  }
+  return null;
+}
+
+/**
+ * v2.48.50 (item 1): tile-drive ki 'element is pal
+ * maujud nahi' wapsi ka nishan — bulane wala is par
+ * hidden chaara chalata hai; ye koi outcome NAHI hai
+ * (koi koshish hui hi nahi, koi line nahi banti).
+ */
+const TILE_DRIVE_MISSING = Symbol('fs-tile-drive-missing');
 
 /**
  * FlowStudio Lite — Google Flow automation engine (adapted from the audited
@@ -89,13 +267,160 @@ class FlowAutomationEngine {
     this.netCapture = new networkCapture.NetworkCapture({
       onMediaBound: (key, url, via) => {
         try { this._onBackendMediaBound(key, url, via); } catch (e) {}
+      },
+      // v2.48.27 (NET-BIG): ≥200KB ka har network jawab ek line —
+      // Download click ke baad file ke bytes kis channel se aate
+      // hain, uska shikar. Stage ka andaza: kisi task ka download
+      // chal raha ho to 'download-attempt', monitor chal raha ho
+      // to 'render-monitor', warna khaali.
+      onNetBig: (info) => {
+        try {
+          let stage = '';
+          try {
+            let dlActive = false;
+            for (const t of this._captureTasks.values()) {
+              if (t && t._downloadInProgress) { dlActive = true; break; }
+            }
+            stage = dlActive ? 'download-attempt'
+              : (this._monitorTasks && this._monitorTasks.length ? 'render-monitor' : '');
+          } catch (e) {}
+          this.log(`[NET-BIG] host=${info.host} path=${info.shape} type=${info.type || 'unknown'} bytes=${info.bytes}${stage ? ` timing=${stage}` : ''}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.31 (MINT): mint watch ki khabrein — [MINT] lines.
+      // Request wali line SIRF tab jab is pal kisi task ki mint
+      // khidki (resolution click → pehli flow-content sighting)
+      // khuli ho; ginati aur cap tracker (mintWindow) rakhta hai.
+      onMintRequest: (entry) => {
+        try {
+          const tr = this._mintTracker;
+          if (!tr || !tr.isOpen()) return;
+          const r = tr.noteRequest(entry);
+          if (r === 'cap') {
+            this.log(`[MINT] req … (mint-window log cap ${mintWindow.DEFAULT_WINDOW_CAP} reached — further requests in this window are counted, not listed)`, 'info');
+          } else if (r) {
+            this.log(`[MINT] req method=${r.method} host=${r.host} path=${r.path}`, 'info');
+          }
+        } catch (e) {}
+      },
+      // Kisi jawab ke Location/body me file ke server address ka
+      // nishan — kaunsi API call asal me signed URL laati hai,
+      // yehi (B) sawal ka saboot hai.
+      onMintCarriesUrl: (info) => {
+        try {
+          this.log(`[MINT] response-carries-file-url method=${info.method} host=${info.host} path=${info.path}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.33 (ZEROCLICK): wohi carries wali darkhwast ab
+      // replay template ke roop me seekh li gayi hai — khabar
+      // me sirf shakal hai (rpcids = backend function ke naam,
+      // body ki size, aur is task ke ID ki occurrences ki
+      // ginti). Ek task se ek hi dafa (round ke andar wahi
+      // call kai jawab de sakti hai; capture khud bhi waisa
+      // template dobara nahi bhejta).
+      onMintTemplate: (info) => {
+        try {
+          if (!this._mintLearnedKeys) this._mintLearnedKeys = new Set();
+          const k = info.taskKey || '(unknown)';
+          if (this._mintLearnedKeys.has(k)) return;
+          this._mintLearnedKeys.add(k);
+          const rpcids = Array.isArray(info.rpcids) && info.rpcids.length ? info.rpcids.join(',') : '(none)';
+          this.log(`[ZEROCLICK] mint-template learned rpcids=${rpcids} bodyBytes=${info.bodyBytes} idsInBody=${info.idsInBody} idsInUrl=${info.idsInUrl}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.38 (EDITOR-HARVEST PACK): HARVEST-AUDIT —
+      // download attempt / editor-khidki ke dauraan har
+      // mukammal flow-content jawab ki ek line (asal me
+      // promotion hua ya nahi, aur kyun nahi). ZEROCLICK4/5
+      // me yehi khabar ghayab thi ke page-harvest kyun nahi
+      // chala tha. Sirf hisaab hai — vyavhaar nahi badalta.
+      onHarvestAudit: (audit) => {
+        try {
+          this.log(`[ROOT] harvest-audit ${saveGuard.formatHarvestAudit(audit)}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.41 (MAIN-PAGE HARVEST PACK): MAINPAGE-AUDIT —
+      // render watch / download attempt ke dauraan MAIN
+      // page par aane wale har video-jese jawab ki ek
+      // line: host, bytes, alamat ki qisam (flow-content
+      // | googlevideo), faisla (captured/ignored +
+      // wajah) aur timing bucket. Owner ke sawal ka
+      // saboot: kya main page khud tile ki stream mangti
+      // hai — dawa koi nahi, jo dikhega wahi log hoga.
+      onMainpageAudit: (audit) => {
+        try {
+          this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${audit.timing || 'render-watch'}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.50 (item 18 — SEGMENT ASSEMBLY): ek
+      // logical stream ke 2+ URL hone ki khabar — sirf
+      // ek line, jab group pehli dafa banta hai.
+      onSegmentNote: (info) => {
+        try {
+          this.log(`[ROOT] mainpage-segments urls=${info && Number.isFinite(info.urls) ? Math.floor(info.urls) : 0}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.52 (ROUTE 1B — FETCH-RANGE-REWRITE):
+      // rewrite apni pehli nakami par khud band ho
+      // gaya — sirf EK line; run is ke baghair
+      // bilkul waisa hi chalta hai.
+      onFetchRwDisabled: (info) => {
+        try {
+          const reason = String((info && info.reason) || 'error').replace(/\s+/g, ' ').trim().slice(0, 60) || 'error';
+          this.log(`[ROOT] mainpage-fetchrw disabled reason=${reason}`, 'warn');
+        } catch (e) {}
+      },
+      // v2.48.53 (RPC-BODY SCAN): batchexecute jawab
+      // ke andar pehli dafa dikha googlevideo address
+      // — sirf host/clen/itag (asal URL kabhi nahi).
+      onRpcVideoUrls: (info) => {
+        try {
+          const items = info && Array.isArray(info.items) ? info.items : [];
+          if (!items.length) return;
+          const rpcids = info && Array.isArray(info.rpcids) && info.rpcids.length ? info.rpcids.join(',') : '-';
+          const clens = items.map(i => (i && Number.isFinite(i.clen)) ? Math.floor(i.clen) : '-').join(',');
+          const itags = items.map(i => (i && i.itag) ? String(i.itag) : '-').join(',');
+          this.log(`[ROOT] rpc-video-urls rpcid=${rpcids} count=${items.length} clens=${clens} itags=${itags}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.53 (ROUTE 1B SABOOT): Fetch rewrite asal
+      // me kisi darkhwast par laga — kis host par, asal
+      // Range kya tha, kaunsa param hata.
+      onFetchRwRewrite: (info) => {
+        try {
+          const host = String((info && info.host) || '').slice(0, 60) || '-';
+          const origRange = info && info.origRange ? String(info.origRange).replace(/\s+/g, ' ').slice(0, 40) : 'none';
+          const stripped = info && Array.isArray(info.stripped) && info.stripped.length ? info.stripped.join(',') : 'none';
+          this.log(`[ROOT] mainpage-fetchrw rewritten host=${host} origRange=${origRange} stripped=${stripped} newRange=bytes=0-`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.53 (FOCUS EMULATION): page ke CDP client
+      // par focus-emulation lag gaya / nahi laga.
+      onFocusEmulation: (info) => {
+        try {
+          if (info && info.ok) this.log(`[ROOT] focus-emulation enabled`, 'info');
+          else this.log(`[ROOT] focus-emulation failed`, 'warn');
+        } catch (e) {}
       }
     });
+    // v2.48.36 (ROOT PACK — A): download-stage ka tala —
+    // capture-session ke hisaab se bandha hua (isi liye
+    // stageLockFor): is page/capture par chalne wala har
+    // download round (monitor ho ya drain/retry) ek hi
+    // kataar se guzarta hai; generation/rendering is se
+    // bilkul alag aur parallel rehti hai.
+    this._downloadStageLock = stageLock.stageLockFor(this.netCapture);
     // v2.8.0: captureKey -> live engine task (registered by the
     // monitor / download-retry), and captureKey -> {url, via} for
     // bindings that landed before the task object was registered.
     this._captureTasks = new Map();
     this._earlyBackend = new Map();
+    // v2.48.13: direct-API pollers (videoId -> poll state). Har
+    // submit ke baad ek poller us task ke workflow ki haal-jaanch
+    // wali asal API request ko page ke andar se replay karke
+    // backend ko seedha poochhta rehta hai — link jawab me aate hi
+    // maujood capture-bandish download foran shuru kar deti hai.
+    this._apiPolls = new Map();
     // v2.8.0: the "backend par koi video link nahi dikha" line is
     // spoken ONCE per browser session, not once per task.
     this._backendNoteLogged = false;
@@ -159,6 +484,54 @@ class FlowAutomationEngine {
     // download whose file stops growing for 45s is abandoned as
     // stalled, and the post-run watcher sweep fires after 5 minutes.
     this.downloadRoundTimeoutMs = Number(options.downloadRoundTimeoutMs) > 0 ? Number(options.downloadRoundTimeoutMs) : 150000;
+    // v2.48.42 (MAIN-PAGE BINDING PACK): viewport
+    // trigger ki hadd bandhi intezaar khidki — tile ko
+    // nazar me laane ke baad stream ke aane ka intezaar
+    // (production 9s) aur pehle naye stream ke baad ka
+    // settle (1.2s — doosra aane wala ho to ambiguity
+    // pakdi jaye). Constructor options taaki test
+    // ghata saken.
+    this.mainpageViewportWaitMs = Number(options.mainpageViewportWaitMs) > 0 ? Number(options.mainpageViewportWaitMs) : 9000;
+    this.mainpageViewportSettleMs = Number(options.mainpageViewportSettleMs) > 0 ? Number(options.mainpageViewportSettleMs) : 1200;
+    // v2.48.43 (HOVER + PATIENCE PACK): SABR ki khidki
+    // — download attempt apne render-complete se itni
+    // der (production 60s) main page par stream ka
+    // intezaar karta hai (Flow ke previews render ke
+    // 15–45s baad apni marzi se aate hain — ZEROCLICK9/
+    // 10 ka saboot). Hover trigger ki seedhi: scroll ke
+    // baad itni der me stream na aaye to synthetic
+    // mouse ishara (hoverGrace), us ke baad itni aur
+    // der me na aaye to asal pointer hover (pointer
+    // Grace) — pointer baqi intezaar wahi ruka rehta
+    // hai. Constructor options taaki test ghata saken.
+    this.mainpagePatienceMs = Number(options.mainpagePatienceMs) > 0 ? Number(options.mainpagePatienceMs) : 60000;
+    this.mainpageHoverGraceMs = Number(options.mainpageHoverGraceMs) > 0 ? Number(options.mainpageHoverGraceMs) : 4000;
+    this.mainpagePointerGraceMs = Number(options.mainpagePointerGraceMs) > 0 ? Number(options.mainpagePointerGraceMs) : 4000;
+    // v2.48.44 (HEADLESS HARVEST PACK — OPTION 2):
+    // adrishya (bina-window) browser me editor ki
+    // playback stream ke mukammal hone ka intezaar
+    // (production 30s) aur headless navigation ki hadd
+    // (production 45s). Probe ka faisla per-run cache
+    // me rehta hai — ek account, ek run, ek probe;
+    // naya browser launch (naya run) cache saaf kar
+    // deta hai. Constructor options taaki test ghata
+    // saken.
+    this.headlessHarvestWaitMs = Number(options.headlessHarvestWaitMs) > 0 ? Number(options.headlessHarvestWaitMs) : 30000;
+    this.headlessNavTimeoutMs = Number(options.headlessNavTimeoutMs) > 0 ? Number(options.headlessNavTimeoutMs) : 45000;
+    // v2.48.47 (MEDIA-LOAD COMPLETION): bandhe hue
+    // mainpage address ko usi page ke ek adrishya
+    // <video> element se poora load karne ka intezaar
+    // (production 30s). Constructor option taaki test
+    // ghata saken.
+    this.mainpageMediaLoadMs = Number(options.mainpageMediaLoadMs) > 0 ? Number(options.mainpageMediaLoadMs) : 30000;
+    this._headlessProbeCache = headlessHarvest.createProbeCache();
+    // v2.48.51 (item 2 — combo yaad): jin accounts ke
+    // liye probe2 (clone+inject) is RUN me 'logged-in'
+    // de chuka hai, un ke account ids — baad ke
+    // attempts seedha combo session banate hain, bare
+    // transfer probe nahi. Per-run: browser launch par
+    // probe cache ke saath saaf.
+    this._headlessComboAccounts = new Set();
     this.nativeDownloadStallMs = Number(options.nativeDownloadStallMs) > 0 ? Number(options.nativeDownloadStallMs) : 45000;
     this.watcherSweepDelayMs = Number(options.watcherSweepDelayMs) > 0 ? Number(options.watcherSweepDelayMs) : 300000;
     this._watcherSweepTimer = null;
@@ -201,6 +574,13 @@ class FlowAutomationEngine {
     // file, each overwriting the previous (live-proven 2026-10-26).
     this.savedPathOwners = new Map();
     this.consumedVideoUrls = new Set();
+    // v2.48.35 (GUARD): is run/session me save hue files ke
+    // content hashes ki kitab (hash -> {key, promptIndex}) —
+    // saveGuard ka per-run registry. Kisi AUR task jaisi
+    // byte-identical file dobara save hone ki koshish yahin
+    // pakdi jati hai (ZEROCLICK2 cross-task contamination).
+    // Hash kabhi log nahi hota — sirf andarooni hisaab hai.
+    this._runSavedContentHashes = new Map();
     // v2.38.0: the browser session's REAL User-Agent, read once per
     // launch and reused by every direct fetch — the cookies a fetch
     // carries come from this same session, so the UA must name the
@@ -217,6 +597,11 @@ class FlowAutomationEngine {
     this.capturedVideoUrls = [];
     this.capturedVideoBuffers = new Map();
     this.capturedVideoBytes = 0;
+    // v2.48.29 (HTML-POISON): jin bound/captured links ne is run
+    // me HTML page diya, wo dobara fetch NAHI hote (FASTTEST3:
+    // ek hi asb link 4 dafa, har dafa wahi HTML, ~32s zaaya).
+    // Capture state ke saath launch par reset hota hai.
+    this._htmlPoisonGuard = downloadFetch.createPoisonGuard();
     this.lastLaunchError = null;
     // v1.1 freeze fix: video-stream capture stays DISARMED until the first
     // prompt of the session is actually submitted (see submitPrompt). The
@@ -273,6 +658,13 @@ class FlowAutomationEngine {
     this._browserUA = null;
     // v2.48.12: remember where this run's files belong.
     this.currentDownloadDir = downloadDir || null;
+    // v2.48.44: naya browser launch = naya run — headless
+    // probe ka per-run cache yahin saaf (ek run me ek
+    // account ka probe sirf ek dafa hota hai).
+    try { if (this._headlessProbeCache) this._headlessProbeCache.clear(); } catch (e) {}
+    // v2.48.51 (item 2): combo yaad bhi per-run hai —
+    // probe cache ke saath hi saaf.
+    try { if (this._headlessComboAccounts) this._headlessComboAccounts.clear(); } catch (e) {}
 
     const chromePath = getChromeExecutablePath();
     const profilePath = getAccountProfilePath(account.id);
@@ -368,6 +760,11 @@ class FlowAutomationEngine {
         if (genPid) liveBrowsers.register(account.id, genPid, 'generation');
       } catch (e) {}
 
+      // v2.48.25 (E1 — observe-only): browser-level download events.
+      // Best-effort and fully detached from the working route: if it
+      // fails, the launch continues exactly as before.
+      try { await this._attachE1DownloadListener(this.browserDownloadDir || downloadDir); } catch (e) {}
+
       const pages = await this.browser.pages();
       this.page = pages.length > 0 ? pages[0] : await this.browser.newPage();
 
@@ -404,6 +801,15 @@ class FlowAutomationEngine {
         }
       });
 
+      // v2.48.26 (FAST-DL): in-page video-blob registry — the hook
+      // is installed before any Flow script runs and only OBSERVES:
+      // video blobs the page creates or fetches are recorded in
+      // window.__mkBlobRegistry. (v2.48.41: the blob-harvest
+      // download route is gone from the attempt path — the hook
+      // stays as passive observation only; the video download
+      // itself now comes from the main-page stream harvest.)
+      try { await this.page.evaluateOnNewDocument(blobHarvest.HOOK_SOURCE); } catch (e) {}
+
       try {
         this.cdpSession = await this.page.target().createCDPSession();
         // v2.6.0 (background mode): focus emulation — the page keeps
@@ -431,6 +837,14 @@ class FlowAutomationEngine {
       this.capturedVideoUrls = [];
       this.capturedVideoBuffers = new Map();
       this.capturedVideoBytes = 0;
+      // v2.48.26 (FAST-DL): in-page registry entries already saved
+      // by the blob harvest on THIS browser — a later task on the
+      // same page must never be handed the same bytes again.
+      this._fastDlConsumedBlobs = new Set();
+      // v2.48.29: naya browser = nayi run-haalat — HTML-poison
+      // wala hisaab bhi yahin se saaf (capture state ki tarah).
+      this._htmlPoisonGuard = downloadFetch.createPoisonGuard();
+      this._fastDlFailedBlobs = new Set();
       this.page.on('response', async (res) => {
         try {
           // v1.1: ignore ALL traffic until a prompt has been submitted —
@@ -490,7 +904,20 @@ class FlowAutomationEngine {
         this._captureTasks.clear();
         this._earlyBackend.clear();
         this._backendNoteLogged = false;
+        // v2.48.50 (item 6): pipeline prime ka nishan
+        // har naye session ke saath taaza.
+        this._pipelinePrimedRun = false;
         this.netCapture.attach(this.page);
+        // v2.48.37 (SESSION-WIDE MINT WATCH): page/session
+        // tayyar hai — mint watch ab poore session ke liye
+        // chalu. Template kisi bhi pal seekha ja sakta hai
+        // (round ke andar ya bahar); band account chhodne /
+        // sweep / browser band hone par hota hai. ZEROCLICK4
+        // me round-gated watch ki wajah se ROOT routes ek
+        // bhi dafa chal hi nahi paye the.
+        if (typeof this.netCapture.setMintSessionWatch === 'function') {
+          this.netCapture.setMintSessionWatch(true);
+        }
       } catch (e) {}
 
       this.currentAccount = account;
@@ -551,6 +978,8 @@ class FlowAutomationEngine {
     const hadBrowser = !!(this.browser && this.page && !this.page.isClosed());
     const wasArmed = !!(this.captureArmed || (this.netCapture && this.netCapture.armed));
     try { if (this.netCapture) this.netCapture.disarm(); } catch (e) {}
+    // v2.48.37: session mint watch bhi band (worker account chhod raha hai).
+    try { if (this.netCapture && typeof this.netCapture.setMintSessionWatch === 'function') this.netCapture.setMintSessionWatch(false); } catch (e) {}
     try { if (this.netCapture) this.netCapture.detach(); } catch (e) {}
     this.captureArmed = false;
     if (this.capturedVideoBuffers) {
@@ -582,6 +1011,8 @@ class FlowAutomationEngine {
     // koi listener leak nahi, koi purana binding naye session me nahi.
     try { this.netCapture.detach(); } catch (e) {}
     try { this.netCapture.disarm(); } catch (e) {}
+    // v2.48.37: session mint watch bhi band.
+    try { if (typeof this.netCapture.setMintSessionWatch === 'function') this.netCapture.setMintSessionWatch(false); } catch (e) {}
     if (this._captureTasks) this._captureTasks.clear();
     if (this._earlyBackend) this._earlyBackend.clear();
     if (this.browser) {
@@ -590,6 +1021,11 @@ class FlowAutomationEngine {
         if (pid && this.currentAccount) liveBrowsers.unregister(this.currentAccount.id, pid);
       } catch (e) {}
       try { await this.browser.close(); } catch (e) {}
+      // v2.48.25 (E1): the browser-level session dies with the browser.
+      if (this.browserCdpSession) {
+        try { await this.browserCdpSession.detach(); } catch (e) {}
+        this.browserCdpSession = null;
+      }
       this.browser = null;
       this.page = null;
       this.cdpSession = null;
@@ -610,6 +1046,7 @@ class FlowAutomationEngine {
     if (this.claimedTileIndices) this.claimedTileIndices.clear();
     if (this.claimedTileFingerprints) this.claimedTileFingerprints.clear();
     if (this.consumedVideoUrls) this.consumedVideoUrls.clear();
+    if (this._htmlPoisonGuard) this._htmlPoisonGuard.clear();
   }
 
   /**
@@ -2323,6 +2760,9 @@ class FlowAutomationEngine {
         this.registerBackendTask(submittedTask, this.currentDownloadDir, this.currentSettings);
       }
     } catch (e) {}
+    // v2.48.13: DIRECT-API POLL bhi isi pal se — page ke tile par
+    // nazar rakhne ke bajaye backend ko seedha poochhna shuru.
+    try { this._startApiPoll(submittedTask); } catch (e) {}
     return submittedTask;
   }
 
@@ -2331,10 +2771,14 @@ class FlowAutomationEngine {
    * (normalized aria). Indices shift as new tiles arrive; fingerprints
    * do not. Returns -1 when the tile is not in the grid right now.
    */
-  async _resolveTileIndexByFingerprint(fingerprint) {
-    if (!fingerprint || !this.page || this.page.isClosed()) return -1;
+  async _resolveTileIndexByFingerprint(fingerprint, page) {
+    // v2.48.40: page diya jaye to wahi, warna worker ka
+    // apna page. (v2.48.41: background page khatam hai —
+    // asal istemal hamesha worker ka apna page hai.)
+    const pg = page || this.page;
+    if (!fingerprint || !pg || pg.isClosed()) return -1;
     try {
-      return await this.page.evaluate((fp) => {
+      return await pg.evaluate((fp) => {
         const norm = (s) => String(s || '').toLowerCase().replace(/[^a-z0-9 ]/g, ' ').replace(/\s+/g, ' ').trim();
         const containers = Array.from(document.querySelectorAll('flow-grid-tile-container'));
         for (let i = 0; i < containers.length; i++) {
@@ -2361,11 +2805,14 @@ class FlowAutomationEngine {
    * download/prompt mismatch the owner kept hitting even after tile
    * ASSIGNMENT was fixed in v1.5.0.
    */
-  async _resolveTileIndexForTask(task, fallbackIdx) {
-    if (!this.page || this.page.isClosed()) return -1;
+  async _resolveTileIndexForTask(task, fallbackIdx, page) {
+    // v2.48.40: page diya jaye to wahi, warna apna page
+    // (v2.48.41: background page khatam — hamesha apna page).
+    const pg = page || this.page;
+    if (!pg || pg.isClosed()) return -1;
     const fp = task ? (task.lockedTileFingerprint || null) : null;
     if (fp) {
-      const byFp = await this._resolveTileIndexByFingerprint(fp);
+      const byFp = await this._resolveTileIndexByFingerprint(fp, pg);
       if (byFp >= 0) return byFp;
     }
     return (typeof fallbackIdx === 'number' && fallbackIdx >= 0) ? fallbackIdx : -1;
@@ -2792,9 +3239,90 @@ class FlowAutomationEngine {
     }
   }
 
-  async _saveBufferForTask(task, downloadFolder, settings, buffer, sourceUrl) {
+  async _saveBufferForTask(task, downloadFolder, settings, buffer, sourceUrl, raceRoute) {
     if (!fs.existsSync(downloadFolder)) {
       fs.mkdirSync(downloadFolder, { recursive: true });
+    }
+    // v2.48.30 (POST-CLICK RACE ki hifazat): ek task = EK hi
+    // saved file. Race me do raaste (app ka server fetch aur
+    // Chrome ka blob download) ek saath khatam ho sakte hain —
+    // jo pehle mediaSaved kar gaya, dusre ka save yahin ruk
+    // jata hai; dohri file aur dohri kitab-bandhi mumkin hi
+    // nahi rehti.
+    if (task.mediaSaved) {
+      this.log(`[FAST-DL] [Prompt #${task.promptIndex + 1}] A second save was refused — this video is already saved (${task.fileName || 'file'}); no duplicate will be written.`, 'warn');
+      return false;
+    }
+    // v2.48.50 (MEGA PACK item 7 — ROUTE RACE): is
+    // attempt me headless aur mainpage raaste PARALLEL
+    // chalte hain; file SIRF wahi likhega jo pehle is
+    // darwaze par dawa (claim) kare. Ye hissa async
+    // hone se pehle ka hai — dawa ek hi pal me bandhta
+    // hai, is liye do dawe mumkin nahi. Haar kar nikalne
+    // wala apna dawa CHHOD deta hai (releaseRaceClaim —
+    // neeche har nakam wapsi par), taaki dusra rasta
+    // apne achhe buffer ke saath phir dawa kar sake.
+    // raceRoute na diya ho (aam sequential bulawa) to
+    // ye hissa bilkul nahi chalta — vyavhaar aaj jaisa.
+    const raceClaimedHere = !!(raceRoute && task._raceActive && !task._raceWonBy);
+    if (raceRoute && task._raceActive) {
+      if (task._raceWonBy && task._raceWonBy !== raceRoute) {
+        task._saveRejectedReason = 'route-race';
+        return false;
+      }
+      if (!task._raceWonBy) task._raceWonBy = raceRoute;
+    }
+    const releaseRaceClaim = () => {
+      try {
+        if (raceClaimedHere && task._raceWonBy === raceRoute) task._raceWonBy = null;
+      } catch (e) {}
+    };
+    const isImageMode = !!(settings && settings.type === 'Image');
+    task._saveRejectedReason = null;
+    // v2.48.29 (QUALITY GATE): buffer asal video ho lekin
+    // duration ke hisaab se size floor se neeche ho to ye
+    // PREVIEW-quality hai — final save KABHI nahi. FASTTEST3
+    // (2026-11-02, ffprobe-sabit): tile-src wali preview encode
+    // 80,843 bytes / 3.97s (~163 kbps) "safal" save ho gayi thi,
+    // asal Original (1.2 MB, ~2.4 Mbps) se ~15 guna halki. Ab
+    // aisi file yahin rukti hai: na file banti hai, na success
+    // ginati hoti hai — raaste aage chalte hain aur kuch behtar
+    // na mile to task park (needs_check) hota hai, bilkul baaki
+    // nakam raaston ki tarah. Sirf video tasks par (tasveeron
+    // par nahi). Floor ka hisaab downloadFetch ke pure helpers
+    // me hai (unit-tested); wajah task._saveRejectedReason me
+    // bulane wale ke liye rehti hai.
+    if (!isImageMode && buffer && downloadFetch.looksLikeVideoBuffer(buffer)) {
+      const floorBytes = downloadFetch.minBytesForDuration(settings && settings.duration);
+      if (buffer.length < floorBytes) {
+        const durSec = downloadFetch.parseDurationSeconds(settings && settings.duration);
+        const durLabel = durSec ? `${durSec}s` : String((settings && settings.duration) || 'unknown');
+        this.log(`[QUALITY-GATE] [Prompt #${task.promptIndex + 1}] preview-quality buffer rejected (${buffer.length} < floor ${floorBytes} for ${durLabel}) — routes continue`, 'warn');
+        task._saveRejectedReason = 'quality-gate';
+        releaseRaceClaim();
+        return false;
+      }
+    }
+    // v2.48.35 (CONTENT-HASH GUARD): is run me kisi AUR task
+    // ke naam par save hue bytes ke HU-BAHU yehi bytes dobara
+    // aaye hain to ye is task ki video ho hi nahi sakti —
+    // save reject, file likhi hi nahi jati, raaste aage
+    // chalte hain. ZEROCLICK2 (v2.48.34) ka cross-task
+    // contamination yahin rukta hai: registry wala rasta
+    // Prompt #1 ke bytes Prompt #2 ke naam par de raha tha
+    // aur koi jaanch use pakad nahi rahi thi. Apne hi task
+    // ki dobara save (race / retry) jaiz hai — faisla
+    // saveGuard ke khalis hisaab se hota hai, hash kabhi
+    // log nahi hota.
+    const bufHash = (!isImageMode && buffer && buffer.length > 0) ? saveGuard.contentHash(buffer) : null;
+    if (bufHash) {
+      const verdict = saveGuard.checkDuplicate(this._runSavedContentHashes, this._taskKey(task), bufHash);
+      if (verdict.duplicate) {
+        this.log(`[GUARD] duplicate-content rejected for Prompt #${task.promptIndex + 1} — fetched bytes are identical to Prompt #${verdict.otherPromptIndex + 1}'s saved file`, 'warn');
+        task._saveRejectedReason = 'duplicate-content';
+        releaseRaceClaim();
+        return false;
+      }
     }
     // v1.7.0: never silently overwrite a file this engine did not
     // itself save — a previous run's same-named video stays intact
@@ -2811,18 +3339,29 @@ class FlowAutomationEngine {
 
     // Validate the saved file is a real, probeable video (when ffprobe is
     // available). A corrupt payload must not count as a completion.
-    const isImageMode = (settings.type === 'Image');
     if (!isImageMode) {
       const valid = await FFmpegService.verifyVideoFile(finalSavedFilePath, 20000);
       if (!valid) {
         try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
         this.log(`The saved file ${fileName} failed the video check — this download has been treated as failed.`, 'warn');
+        releaseRaceClaim();
+        return false;
+      }
+      // v2.48.30: verify ke intezaar ke dauraan koi dusra
+      // rasta (race ka browser download) is task ko pehle hi
+      // save kar chuka ho to apni file hata do — dohri
+      // kitab-bandhi kabhi nahi.
+      if (task.mediaSaved) {
+        try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
+        this.log(`[FAST-DL] [Prompt #${task.promptIndex + 1}] This save finished second in the race — the duplicate file was removed; the first save stands.`, 'warn');
+        releaseRaceClaim();
         return false;
       }
     }
 
     const sizeMb = (buffer.length / (1024 * 1024)).toFixed(2);
     this.log(`Video saved: ${fileName} (${sizeMb} MB).`, 'success');
+    this._logNetBigWindow(task, task.startTime || 0);
 
     task.downloaded = true;
     task.completed = true;
@@ -2830,7 +3369,19 @@ class FlowAutomationEngine {
     // bhi settled mark ke liye downloaded=true lete hain — ginati ke
     // liye wahi purani galti jhooti success line bana rahi thi).
     task.mediaSaved = true;
+    // v2.48.50 (item 7): race jeetne wale save ka asal
+    // URL darj — attempt ka aakhri hisaab
+    // completedVideoUrl ko isi par seedha karega (haar
+    // kar save karne wale raste ne apna URL pehle rakha
+    // ho to bhi jeet isi ki hai).
+    if (raceRoute && task._raceActive && task._raceWonBy === raceRoute) {
+      task._raceSavedUrl = sourceUrl || null;
+    }
     this._recordSavedPath(task, finalSavedFilePath);
+    // v2.48.35 (GUARD): kamyaab save ki hash-kitab bandhi —
+    // is run ke baaki tasks ke liye yahi hisaab duplicate
+    // jaanch ka langar hai.
+    if (bufHash) saveGuard.recordSave(this._runSavedContentHashes, this._taskKey(task), bufHash, task.promptIndex);
     this._markTaskUrlConsumed(task, sourceUrl);
     if (sourceUrl && this.capturedVideoBuffers && this.capturedVideoBuffers.has(sourceUrl)) {
       this.capturedVideoBytes -= this.capturedVideoBuffers.get(sourceUrl).length;
@@ -3021,6 +3572,18 @@ class FlowAutomationEngine {
     // call's outcome, not an earlier one's.
     task._lastFetchSteps = [];
     let savedBuffer = null;
+
+    // v2.48.29 (HTML-POISON): ye link is run me pehle hi HTML
+    // page de chuka hai to dobara network par haath hi NAHI
+    // padta — FASTTEST3 me ek hi asb link chaar dafa fetch
+    // hokar har dafa wahi HTML laya tha (~32s zaaya). Saare
+    // fetch raaste isi function se guzarte hain, is liye
+    // darwaza yahin kaafi hai.
+    if (targetUrl.startsWith('http') && this._htmlPoisonGuard && this._htmlPoisonGuard.isPoisoned(targetUrl)) {
+      this._noteFetchStep(task, { step: 'poison-skip', ok: false, error: 'this link already returned an HTML page in this run — it was not fetched again' });
+      this.log(`[Prompt #${task.promptIndex + 1}] This link already returned an HTML page earlier in this run — it will NOT be fetched again. The remaining routes will be tried.`, 'warn');
+      return false;
+    }
 
     // v2.48.12: hot paths (backend fetch / background queue) skip
     // the captured buffer too — the owner's standing order is
@@ -3231,14 +3794,43 @@ class FlowAutomationEngine {
       }
     }
 
+    // v2.48.15: CONTENT GATE — save se pehle magic bytes. Backend
+    // se bandha link kabhi-kabhi asal video nahi hota (TEST492:
+    // tile ka poster image) — aisi file save karke ffprobe par
+    // marne ke bajaye buffer yahin reject hota hai, wajah ke
+    // saath. Sirf video tasks par (image tasks par nahi).
+    if (savedBuffer && savedBuffer.length > 10000
+      && !(settings && settings.type === 'Image')
+      && !downloadFetch.looksLikeVideoBuffer(savedBuffer)) {
+      this._noteFetchStep(task, { step: 'content-check', ok: false, error: 'the fetched data is not a video file (no video header — likely an image or an error page)' });
+      this.log(`[Prompt #${task.promptIndex + 1}] The data fetched from the link is NOT a video file (it has no video header — probably an image) — it was not saved. The remaining routes will be tried. · fetched: ${savedBuffer.length} bytes, format: ${downloadFetch.classifyBufferMagic(savedBuffer)}, head: ${savedBuffer.subarray(0, 16).toString('hex')}, boxes: ${JSON.stringify(downloadFetch.findBoxOffsets(savedBuffer))}`, 'warn');
+      // v2.48.29 (HTML-POISON): data asal me HTML page hai to
+      // is link ko is run ke liye zeher-yafta mark kar do —
+      // koi bhi stage (backend, tile-src, retry) use dobara
+      // fetch NAHI karega. Tasveer (poster) wali rukawat par
+      // poison NAHI lagta — wo link kisi aur roop me asal
+      // video bhi de sakta hai.
+      if (targetUrl && targetUrl.startsWith('http') && downloadFetch.looksLikeHtmlBuffer(savedBuffer)) {
+        if (this._htmlPoisonGuard) this._htmlPoisonGuard.poison(targetUrl);
+        this.log(`[Prompt #${task.promptIndex + 1}] That link returned an HTML page — it is marked poisoned for this run and will not be fetched again.`, 'warn');
+      }
+      return false;
+    }
+
     if (savedBuffer && savedBuffer.length > 10000) {
       const savedOk = await this._saveBufferForTask(task, downloadFolder, settings, savedBuffer, targetUrl);
       if (!savedOk) {
-        // _saveBufferForTask returns false ONLY when the saved
-        // file failed the ffprobe video check (it logs the line
-        // itself) — record it so the strategy note names the real
-        // cause instead of "the data was not received".
-        this._noteFetchStep(task, { step: 'save-verify', ok: false, error: 'the saved file failed the video check (ffprobe)' });
+        // _saveBufferForTask returns false when the saved file
+        // failed the ffprobe video check (it logs the line
+        // itself) — ya v2.48.29 se, jab QUALITY GATE ne buffer
+        // ko preview-quality keh kar save se PEHLE roka ho.
+        // Note me asal wajah hi aaye, is liye wajah alag padhi
+        // jati hai.
+        if (task._saveRejectedReason === 'quality-gate') {
+          this._noteFetchStep(task, { step: 'quality-gate', ok: false, error: 'the fetched video was preview quality (below the size floor for its duration) — not saved as the final file' });
+        } else {
+          this._noteFetchStep(task, { step: 'save-verify', ok: false, error: 'the saved file failed the video check (ffprobe)' });
+        }
       }
       return savedOk;
     }
@@ -3339,6 +3931,196 @@ class FlowAutomationEngine {
    * backend network capture hai (downloadTaskMedia ki tartib dekho).
    * Jo selector mile, wo log hota hai. File aate hi ruk jao.
    */
+
+  /**
+   * v2.48.25 (E1 — OBSERVE ONLY): browser-level CDP download events.
+   *
+   * Research (2026-11-02) proved the file arrives through Chrome's
+   * own download manager and that this transfer never appears in
+   * page-target Network events — the app has only ever configured
+   * the PAGE-level Page.setDownloadBehavior and polled the disk.
+   * The Browser domain is the documented place where the download
+   * manager announces the REAL url it is about to fetch
+   * (Browser.downloadWillBegin), but only when download events are
+   * explicitly enabled (Browser.setDownloadBehavior eventsEnabled,
+   * default false).
+   *
+   * This listener changes NOTHING about downloads: it sends the
+   * same behavior ('allow') and the same download folder the
+   * page-level calls already use; the only addition is
+   * eventsEnabled: true at browser level. On downloadWillBegin it
+   * logs ONE [E1-DL] line with the URL's SHAPE only (scheme, host,
+   * redacted path pattern, query KEY names, length) — the full
+   * signed URL and its values never reach the log.
+   *
+   * Defensive by design: any failure logs one warning and the
+   * launch/download flow continues exactly as before.
+   */
+  async _attachE1DownloadListener(downloadPath) {
+    try {
+      if (!this.browser) return;
+      if (this.browserCdpSession) return; // one listener per browser
+      const target = typeof this.browser.target === 'function' ? this.browser.target() : null;
+      if (!target || typeof target.createCDPSession !== 'function') {
+        this.log('[E1-DL] Browser-level download events are not available on this browser target — continuing with the existing page-level download route.', 'warn');
+        return;
+      }
+      const session = await target.createCDPSession();
+      this.browserCdpSession = session;
+      // v2.48.27 (MENU-FIRST): E1 wala observe-only listener ab
+      // sirf log nahi karta — download events ka hisaab bhi rakhta
+      // hai, taaki menu route ka save filesystem ke 1s poll ki
+      // jagah downloadProgress 'completed' event se foran bandhe
+      // (event hi asal completion hai; disk ki jaanch ≤100ms par
+      // uski pushti ke liye rehti hai). Vyavhaar phir bhi waisa
+      // hi: behavior 'allow', wahi folder — badla sirf intezaar
+      // ka tareeka hai.
+      if (!this._dlEventState) {
+        this._dlEventState = { begins: [], completed: new Map(), waiters: new Set() };
+      }
+      const dlState = this._dlEventState;
+      const onWillBegin = (ev) => {
+        try {
+          const shape = formatUrlShape(describeUrlShape(ev && ev.url ? ev.url : ''));
+          const fname = ev && ev.suggestedFilename ? String(ev.suggestedFilename) : '';
+          const guid = ev && ev.guid ? String(ev.guid) : '';
+          const hasFrame = ev && ev.frameId ? 'yes' : 'no';
+          this.log(`[E1-DL] downloadWillBegin ${shape} suggestedFilename="${fname}" guid=${guid} frameId=${hasFrame}`, 'info');
+          if (guid) {
+            dlState.begins.push({ guid, suggestedFilename: fname, at: Date.now() });
+            if (dlState.begins.length > 50) dlState.begins.splice(0, dlState.begins.length - 50);
+          }
+          this._notifyDlWaiters();
+        } catch (e) {}
+      };
+      const onProgress = (ev) => {
+        try {
+          if (!ev || (ev.state !== 'completed' && ev.state !== 'canceled')) return;
+          const guid = ev.guid ? String(ev.guid) : '';
+          const total = Number.isFinite(ev.totalBytes) ? ev.totalBytes : -1;
+          const received = Number.isFinite(ev.receivedBytes) ? ev.receivedBytes : -1;
+          this.log(`[E1-DL] downloadProgress guid=${guid} state=${ev.state} received=${received} total=${total}`, 'info');
+          if (guid) {
+            dlState.completed.set(guid, { state: ev.state, at: Date.now(), receivedBytes: received, totalBytes: total });
+          }
+          this._notifyDlWaiters();
+        } catch (e) {}
+      };
+      if (typeof session.on === 'function') {
+        session.on('Browser.downloadWillBegin', onWillBegin);
+        session.on('Browser.downloadProgress', onProgress);
+      }
+      const targetDownloadPath = downloadPath || this.browserDownloadDir;
+      if (targetDownloadPath && !fs.existsSync(targetDownloadPath)) {
+        try { fs.mkdirSync(targetDownloadPath, { recursive: true }); } catch (e) {}
+      }
+      await session.send('Browser.setDownloadBehavior', {
+        behavior: 'allow',
+        downloadPath: targetDownloadPath,
+        eventsEnabled: true
+      });
+      this.log('[E1-DL] Browser-level download events enabled (observe-only) — download behaviour is unchanged.', 'info');
+    } catch (e) {
+      try { this.browserCdpSession = null; } catch (e2) {}
+      try {
+        this.log('[E1-DL] Browser-level download events could not be enabled — continuing with the existing page-level download route.', 'warn');
+      } catch (e2) {}
+    }
+  }
+
+  /**
+   * v2.48.27: download-event waiters ko jagao (koi download shuru
+   * ya mukammal hua). Waiter khud apni shart jaanch kar so jata ya
+   * uth jata hai — yahan sirf ghanti bajti hai.
+   */
+  _notifyDlWaiters() {
+    try {
+      const st = this._dlEventState;
+      if (!st || !st.waiters || st.waiters.size === 0) return;
+      const waiters = Array.from(st.waiters);
+      st.waiters.clear();
+      for (const w of waiters) { try { w(); } catch (e) {} }
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.27: itne waqt (ms) so jao, lekin koi download event aate
+   * hi foran uth jao — menu route ke save ka intezaar isi se
+   * event-driven banta hai. Event state na ho to aam neend.
+   */
+  _dlSleep(ms) {
+    const st = this._dlEventState;
+    if (!st || !st.waiters) return sleep(ms);
+    return new Promise((resolve) => {
+      let done = false;
+      let timer = null;
+      const wake = () => {
+        if (done) return;
+        done = true;
+        if (timer) { try { clearTimeout(timer); } catch (e) {} }
+        try { st.waiters.delete(wake); } catch (e) {}
+        resolve();
+      };
+      timer = setTimeout(wake, Math.max(10, ms));
+      if (timer && typeof timer.unref === 'function') timer.unref();
+      st.waiters.add(wake);
+    });
+  }
+
+  /**
+   * v2.48.27: `sinceMs` ke baad SHURU hue downloads me se wo jo
+   * downloadProgress 'completed' tak pahunch gaya ho — sab se
+   * pehla aisa event lautao, warna null.
+   * v2.48.30: asal milaan ab engine/downloadEventMatch.js ke
+   * KHALIS (pure) hisaab me hai — fileName diya ho to naam ka
+   * milaan Chrome ke " (1)" dedup suffix ki riayat ke saath,
+   * aur fileSize diya ho to exact byte-size ka milaan bhi
+   * chalega. State yahan pehle se maujood hai to event
+   * intezaar shuru hone se PEHLE fire hua ho to bhi gina
+   * jata hai (FASTTEST4 wala regression yahi tha).
+   */
+  _dlCompletedSince(sinceMs, fileName, fileSize) {
+    try {
+      const st = this._dlEventState;
+      if (!st || !st.begins || !st.completed) return null;
+      return downloadEventMatch.matchCompletedDownload(st, { sinceMs, fileName, fileSize });
+    } catch (e) {}
+    return null;
+  }
+
+  /**
+   * v2.48.27 (FAST-DL diagnostic): is pal page ki blob registry
+   * me kitni entries hain — menu click ke pal ki ek line ke liye.
+   * Sirf GINATI hai; koi extraction NAHI (wo is build ke dayre
+   * se bahar hai). Na padh sake to -1.
+   */
+  async _blobRegistryCount() {
+    try {
+      if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return -1;
+      const n = await this.page.evaluate(() => (window.__mkBlobRegistry || []).length);
+      return Number.isFinite(n) ? n : -1;
+    } catch (e) { return -1; }
+  }
+
+  /**
+   * v2.48.27 (NET-BIG): har download ke aakhir me EK summary
+   * line — render-complete se save tak har host ke KUL bytes
+   * (descending). Click ke baad jo ~1.2MB file taiyaar hoti hai,
+   * uske bytes jis host se aaye honge wo is line me sab se upar
+   * hoga — wahi Flow-server wala channel hai jise agla build
+   * seedha istemal karega. Sirf logging; khidki khaali ho to
+   * koi line nahi.
+   */
+  _logNetBigWindow(task, fallbackSinceMs) {
+    try {
+      if (!this.netCapture || typeof this.netCapture.netBigWindowSummary !== 'function') return;
+      const since = (task && task.renderCompletedAt)
+        || (task && task.startTime)
+        || fallbackSinceMs || 0;
+      const summary = this.netCapture.netBigWindowSummary(since);
+      if (summary) this.log(`[NET-BIG] window render→save: ${summary}`, 'info');
+    } catch (e) {}
+  }
 
   /** CDP download folder taiyaar + maujooda files ka snapshot. */
   async _nativePrepareWatch(downloadFolder) {
@@ -3463,6 +4245,16 @@ class FlowAutomationEngine {
     let newlyDownloadedFile = null;
     const pollStart = Date.now();
     const timeout = Math.max(5000, Number(timeoutMs) || 90000);
+    // v2.48.27 (MENU-FIRST): completion ab EVENT-driven hai —
+    // browser-level CDP session (v2.48.25 wala) maujood ho to
+    // downloadProgress 'completed' hi asal "ho gaya" hai; disk ki
+    // jaanch ≤100ms par sirf uski pushti/file-dhoondh ke liye
+    // rehti hai, aur event aate hi neend turant toot-ti hai
+    // (_dlSleep). CDP session na ho to purana 1s poll bilkul
+    // pehle ki tarah (koi badlav nahi).
+    const useDlEvents = !!this.browserCdpSession;
+    const pollMs = useDlEvents ? 100 : 1000;
+    let eventSave = null;
     // v2.31.3 (download fix pack): PROGRESS STALL CHECK — the poll
     // used to see only FINISHED files; a browser download whose
     // bytes simply stopped moving (dead connection, wedged Chrome
@@ -3476,8 +4268,14 @@ class FlowAutomationEngine {
     const stallMs = this.nativeDownloadStallMs || 45000;
     const partials = new Map(); // folder|name -> { size, lastGrowAt, fullPath }
     let stalledPartial = null;
-    while (Date.now() - pollStart < timeout && !this.isStopping) {
-      await sleep(1000);
+    // v2.48.30: post-click race ka dusra rasta (server fetch)
+    // pehle save kar de to ye intezaar foran chhod do —
+    // _raceAbandoned wahi nishaan hai, mediaSaved asal sach.
+    while (Date.now() - pollStart < timeout && !this.isStopping && !task._raceAbandoned && !task.mediaSaved) {
+      await this._dlSleep(pollMs);
+      // Is click ke baad shuru hue download ka completed event —
+      // mila ho to is iteration ki disk-jaanch usi ki pushti hai.
+      const evtDone = useDlEvents ? this._dlCompletedSince(clickTime - 2000) : null;
       for (const fld of prep.foldersToWatch) {
         if (!fs.existsSync(fld)) continue;
         const currentFiles = fs.readdirSync(fld);
@@ -3494,6 +4292,12 @@ class FlowAutomationEngine {
           // v1.7.0: the file must post-date THIS download click.
           if (stats.size > 20000 && stats.mtimeMs >= clickTime - 2000) {
             newlyDownloadedFile = fullPath;
+            // v2.48.27: completed event isi file ka hai (naam
+            // mile ya event bina-naame ho) to save event-driven
+            // bandha — gap wali line me event=yes yahi se aayega.
+            if (evtDone && (!evtDone.suggestedFilename || evtDone.suggestedFilename === finished)) {
+              eventSave = evtDone;
+            }
             break;
           }
         }
@@ -3534,6 +4338,42 @@ class FlowAutomationEngine {
       try { fs.unlinkSync(stalledPartial.fullPath); } catch (e) {}
     }
 
+    // v2.48.30 (EVENT RECONCILIATION — FASTTEST4 ke event=no
+    // ka ilaaj): poll loop me eventSave SIRF usi iteration me
+    // bandhta tha jis me file disk par pehli baar dikhe, aur
+    // evtDone us iteration ke AAGHAZ me gina jata tha. Chrome
+    // file ka rename aksar downloadProgress 'completed' event
+    // ke Node tak pahunchne se pehle kar deta hai — file pehle
+    // dikh gayi, event us iteration me state me tha hi nahi,
+    // loop toot gaya aur save event=no keh kar 1s-poll wala
+    // ginne laga, halanke [E1-DL] lines sabit karti hain ke
+    // event fire hua tha aur state me darj bhi hua tha (bas
+    // ek tick der se). Ab: file mil gayi ho aur eventSave
+    // khaali ho to ek mukhtasar (≤1.5s, event-driven) dobara
+    // milaan — naam (dedup-suffix riayat ke saath) ya exact
+    // size se — taaki jo event asal me is download ka hai wo
+    // ginati me aaye, chahe wo intezaar ki aakhri tick ke
+    // baad darj hua ho.
+    if (newlyDownloadedFile && !eventSave && useDlEvents && !task.mediaSaved) {
+      try {
+        let foundSize = 0;
+        try { foundSize = fs.statSync(newlyDownloadedFile).size; } catch (e) {}
+        const foundName = path.basename(newlyDownloadedFile);
+        const reconDeadline = Date.now() + 1500;
+        while (Date.now() < reconDeadline) {
+          const evt = this._dlCompletedSince(clickTime - 2000, foundName, foundSize);
+          if (evt) {
+            eventSave = evt;
+            this.log(`[FAST-DL] [Prompt #${task.promptIndex + 1}] The browser download's completion event was confirmed just after the file landed (name/size match) — this save counts as event-driven.`, 'info');
+            break;
+          }
+          const remain = reconDeadline - Date.now();
+          if (remain <= 0) break;
+          await this._dlSleep(Math.min(remain, 250));
+        }
+      } catch (e) {}
+    }
+
     // Return the viewer to the grid either way — VERIFIED (v1.6.1).
     // The old single Escape + aria-only button hunt could leave the
     // page sitting in Flow's editor, where the monitor sees no tiles
@@ -3541,6 +4381,11 @@ class FlowAutomationEngine {
     await this._returnToProjectGrid();
 
     if (!newlyDownloadedFile) return false;
+
+    // v2.48.30: race ka dusra rasta (server fetch) is dauraan
+    // pehle hi save kar chuka ho to yahan kitab-bandhi dobara
+    // NAHI hogi — ek task, ek file.
+    if (task._raceAbandoned || task.mediaSaved) return false;
 
     // v1.7.0: never overwrite a file this engine did not save itself
     // (e.g. a previous run's scene001.mp4) — take a suffixed name.
@@ -3570,14 +4415,51 @@ class FlowAutomationEngine {
       }
     }
 
+    // v2.48.30: ffprobe verify ke intezaar ke dauraan race ka
+    // server fetch is task ko pehle save kar chuka ho to ye
+    // file duplicate hai — hata do, kitab-bandhi ek hi hogi.
+    if (task.mediaSaved) {
+      try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
+      return false;
+    }
+
+    // v2.48.35 (GUARD — browser-download wala rasta bhi):
+    // zameen par utri file ka hash is run ki kitab se mila
+    // kar dekho — kisi AUR task ki save hue bytes ki hu-bahu
+    // copy ho to ye is task ki save NAHI hai: file hatao,
+    // haar maano, baaki raaste chalein. Apne hi task ki
+    // dobara-utri copy jaiz hai (faisla saveGuard se).
+    let nativeHash = null;
+    if (!isImageMode) {
+      try { nativeHash = saveGuard.contentHash(fs.readFileSync(finalSavedFilePath)); } catch (e) { nativeHash = null; }
+      if (nativeHash) {
+        const verdict = saveGuard.checkDuplicate(this._runSavedContentHashes, this._taskKey(task), nativeHash);
+        if (verdict.duplicate) {
+          try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
+          this.log(`[GUARD] duplicate-content rejected for Prompt #${task.promptIndex + 1} — fetched bytes are identical to Prompt #${verdict.otherPromptIndex + 1}'s saved file`, 'warn');
+          return false;
+        }
+      }
+    }
+
     const fileStats = fs.statSync(finalSavedFilePath);
     const sizeMb = (fileStats.size / (1024 * 1024)).toFixed(2);
     this.log(`Video saved: ${task.fileName} (${sizeMb} MB).`, 'success');
+    this._logNetBigWindow(task, clickTime);
+
+    // v2.48.27: ye save downloadProgress event se bandha tha ya
+    // sirf disk-poll se — gap wali [FAST-DL] line ke liye nishaan.
+    task._nativeEventDriven = !!eventSave;
+    task._nativeSavedAt = Date.now();
 
     task.downloaded = true;
     task.completed = true;
     task.mediaSaved = true;
     this._recordSavedPath(task, finalSavedFilePath);
+    // v2.48.35 (GUARD): browser-download se utri file ki
+    // hash-kitab bandhi bhi wahi registry me — taaki baad
+    // wale tasks ki jaanch is save ko bhi pehchane.
+    if (nativeHash) saveGuard.recordSave(this._runSavedContentHashes, this._taskKey(task), nativeHash, task.promptIndex);
 
     const result = {
       filePath: finalSavedFilePath,
@@ -3616,9 +4498,12 @@ class FlowAutomationEngine {
    * button ke liye hai. Overlay (menu) ke andar ke controls yahan
    * nahi ginne jate — wo menu wale roop ki jagah hai.
    */
-  async _findEditorDownloadControl() {
+  async _findEditorDownloadControl(page) {
+    // v2.48.40: page diya jaye to wahi, warna apna page
+    // (v2.48.41: background page khatam — hamesha apna page).
+    const pg = page || this.page;
     try {
-      return await this.page.evaluate(() => {
+      return await pg.evaluate(() => {
         const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
         const all = Array.from(document.querySelectorAll('button, [role="button"]'));
         for (const b of all) {
@@ -3639,9 +4524,12 @@ class FlowAutomationEngine {
   }
 
   /** Tile ke center ke coordinates (hover/click ke liye). */
-  async _tileCenterCoords(tileIndex) {
+  async _tileCenterCoords(tileIndex, page) {
+    // v2.48.40: page diya jaye to wahi, warna apna page
+    // (v2.48.41: background page khatam — hamesha apna page).
+    const pg = page || this.page;
     try {
-      return await this.page.evaluate(({ idx }) => {
+      return await pg.evaluate(({ idx }) => {
         const tiles = Array.from(document.querySelectorAll('flow-grid-tile-container'));
         const target = (typeof idx === 'number') ? tiles[idx] : null;
         if (!target) return { found: false };
@@ -3669,13 +4557,16 @@ class FlowAutomationEngine {
    * to editor khulne ke baad bhi "grid par hi raha" padh sakta tha
    * (owner ke v2.8.0 PC run me native-editor theek yahin mara).
    */
-  async _inEditorView() {
+  async _inEditorView(page) {
+    // v2.48.40: page diya jaye to wahi, warna apna page
+    // (v2.48.41: background page khatam — hamesha apna page).
+    const pg = page || this.page;
     try {
-      const u = this.page.url() || '';
+      const u = pg.url() || '';
       if (u.includes('/edit/')) return true;
     } catch (e) {}
     try {
-      const ctl = await this._findEditorDownloadControl();
+      const ctl = await this._findEditorDownloadControl(pg);
       if (ctl && ctl.found) return true;
     } catch (e) {}
     return false;
@@ -3857,19 +4748,158 @@ class FlowAutomationEngine {
     }
     if (!item.found) {
       this.log(`[Prompt #${n}] The ⋮ menu opened, but no Download item was found inside it.`, 'warn');
+      // v2.48.29 (MENU-DIAG): menu khula lekin Download nahi
+      // mila — andar asal me tha KYA, ye ek line me note kar
+      // lo (sirf menu ke label — koi URL nahi). FASTTEST2 aur
+      // FASTTEST3 dono me menu lagatar is mor par haara; agli
+      // tashkhees isi saboot se hogi. Koi behavior change nahi.
+      try {
+        const menuTexts = await this.page.evaluate(() => {
+          const items = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane button, .mat-mdc-menu-panel [role="menuitem"], .mat-mdc-menu-panel button, [role="menu"] [role="menuitem"], [role="menu"] button'));
+          const out = [];
+          for (const b of items) {
+            const r = b.getBoundingClientRect();
+            if (!(r.width > 0 && r.height > 0)) continue;
+            const t = String(b.innerText || b.textContent || '').replace(/\s+/g, ' ').trim().substring(0, 40);
+            if (t && !out.includes(t)) out.push(t);
+            if (out.length >= 12) break;
+          }
+          return out;
+        });
+        this.log(`[MENU-DIAG] [Prompt #${n}] menu items: ${Array.isArray(menuTexts) && menuTexts.length ? menuTexts.join(', ') : '(none visible)'}`, 'warn');
+      } catch (e) {}
       attempts.push({ strategy: 'native-menu', ok: false, note: 'the menu opened but it had no Download item' });
       try { await this.page.keyboard.press('Escape'); } catch (e) {}
       await this._returnToProjectGrid();
       return false;
     }
     this.log(`[Prompt #${n}] Found the Download item inside the menu ("${item.how}") — clicking…`, 'info');
+    // v2.48.27 (FAST-DL diagnostic): click ke is pal page ki blob
+    // registry kitni bhari hai — sirf EK line; click-time
+    // extraction is build me NAHI hai (bhavishya ke liye data).
+    try {
+      const regAtClick = await this._blobRegistryCount();
+      this.log(`[FAST-DL] registry at click: ${regAtClick < 0 ? 'unknown' : regAtClick} entries`, 'info');
+    } catch (e) {}
     const clickTime = Date.now();
     await this.page.mouse.click(item.x, item.y);
     const res = await this._nativePickResolution(settings && settings.quality);
-    const ok = await this._nativeAwaitAndSave(task, prep, res.clickedAt || clickTime, 90000, downloadFolder, settings);
+    // v2.48.31 (MINT-WINDOW): resolution click ke is pal se
+    // mint khidki khul gayi — pehli flow-content sighting tak
+    // ki har request [MINT] req line banegi, aur sighting par
+    // khulasa (beech me kitni requests gayin). Sawal (B): kisi
+    // API jawab ke andar signed URL aata hai kya — carries
+    // wali [MINT] lines wahi batayengi.
+    this._mintOpenWindow(res.clickedAt || clickTime);
+    // v2.48.30 (POST-CLICK RACE): seedha intezaar nahi —
+    // resolution click ke baad browser download ke intezaar
+    // ke saath-saath server channel par bhi nazar rehti hai
+    // (taaza flow-content URL dikhte hi parallel fetch).
+    const ok = await this._nativeAwaitWithRace(task, prep, res.clickedAt || clickTime, 90000, downloadFolder, settings);
+    if (ok) {
+      // Owner ka standing rule: render→save gap har video ka ALAG.
+      const gapBase = task.renderCompletedAt || clickTime;
+      const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
+      this.log(`[FAST-DL] [Prompt #${n}] menu-first save gap=${gapSec}s event=${task._nativeEventDriven ? 'yes' : 'no'}`, 'success');
+    }
     attempts.push({ strategy: 'native-menu', ok, note: ok ? 'the file came from the menu\'s Download item' : 'the menu\'s Download item was clicked, but no file arrived' });
     if (!ok) this.log(`[Prompt #${n}] No file came from the menu route either.`, 'warn');
     return ok;
+  }
+
+  /**
+   * v2.48.30 (POST-CLICK RACE): _nativeAwaitAndSave ke gird
+   * muqabla. Menu ke resolution ("360p Original size") click
+   * ke BAAD — jab ke page file ko flow-content.google se
+   * mangwa raha hota hai aur blob banne me ~7–15s lagte hain
+   * (E1TEST/FASTTEST4 ke log) — browser download ke intezaar
+   * ke saath-saath networkCapture par nazar rakho (~200ms
+   * poll): is attempt ke APNE click ke baad pehli baar dikha
+   * taaza flow-content video URL (pehchan ka langar yahi
+   * click hai; flowContent.pickRaceFlowContentUrl — stale /
+   * claimed / ajnabi URL hamesha inkaar) milte hi wahi file
+   * Node se seedha fetch karo, maujooda mashineri se hi
+   * (_serverFetchSave → downloadFromCapturedStream: session
+   * cookies + asal UA + content gate + quality gate +
+   * _saveBufferForTask).
+   *
+   * JEET KA FAISLA: jo pehle VERIFIED save de — app fetch ya
+   * Chrome ka blob download (asal _nativeAwaitAndSave wali
+   * finalization) — wahi jeeta. Haarne wala saaf chhod diya
+   * jata hai: task._raceAbandoned nishaan native intezaar ko
+   * rokta hai, aur _saveBufferForTask / native finalization
+   * dono jagah "task.mediaSaved ho to dusra save NAHI" wala
+   * darwaza dohri file aur dohri kitab-bandhi ko namumkin
+   * karta hai — finalization hamesha EK hi rehti hai.
+   * Click ke baad koi flow-content URL native intezaar ke
+   * maujooda budget me na aaye to vyavhaar bilkul v2.48.29
+   * jaisa hai (race chup rehti hai).
+   */
+  async _nativeAwaitWithRace(task, prep, clickTime, timeoutMs, downloadFolder, settings) {
+    const n = task.promptIndex + 1;
+    task._raceAbandoned = false;
+    let settled = false;
+    let raceUrl = '';
+    const NEVER = new Promise(() => {});
+
+    const nativePromise = this._nativeAwaitAndSave(task, prep, clickTime, timeoutMs, downloadFolder, settings)
+      .then(v => { settled = true; return v; }, () => { settled = true; return false; });
+    const nativeWin = nativePromise.then(v => (v ? { via: 'browser-download' } : NEVER));
+
+    const serverWin = (async () => {
+      const deadline = Date.now() + Math.max(5000, Number(timeoutMs) || 90000);
+      while (!settled && Date.now() < deadline) {
+        await sleep(200);
+        if (settled || task.mediaSaved) break;
+        let entries = [];
+        try {
+          entries = (this.netCapture && typeof this.netCapture.recentFlowContentVideos === 'function')
+            ? this.netCapture.recentFlowContentVideos(clickTime)
+            : [];
+        } catch (e) { entries = []; }
+        if (!entries || entries.length === 0) continue;
+        const pick = flowContent.pickRaceFlowContentUrl(entries, {
+          sinceMs: clickTime,
+          isClaimed: (u) => {
+            // v2.48.35: sirf claimed-set hi nahi — capture me
+            // kisi AUR task ke naam bandha URL bhi "claimed"
+            // hai (_pickServerFetchUrl wali hi discipline).
+            try { return !!((this.netCapture && this.netCapture.isFlowContentClaimed(u)) || this._urlClaimedByOtherTask(u, task.captureKey || task.videoId || null)); } catch (e) { return false; }
+          },
+          isOwnUrl: (u) => this._isTaskOwnUrl(task, u)
+        });
+        if (!pick) continue;
+        if (pick.ambiguous) {
+          this.log(`[FAST-DL] [Prompt #${n}] post-click race: ${pick.count} fresh server addresses appeared after the click and none could be proven to be this task's own — the direct fetch was NOT used; the browser download continues alone.`, 'warn');
+          return NEVER;
+        }
+        raceUrl = pick.url;
+        this.log(`[FAST-DL] [Prompt #${n}] post-click race: a fresh server video address appeared after this attempt's own resolution click (click at ${new Date(clickTime).toISOString()}, first seen ${new Date(pick.at).toISOString()} — the click is the ownership anchor) — fetching it in parallel with the browser download…`, 'info');
+        // v2.48.31 (MINT-WINDOW): yahi is khidki ki pehli
+        // sighting hai — khulasa darj karo (beech ki ginati).
+        this._mintNoteSighting(pick.at);
+        let okFetch = false;
+        try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: pick.url, via: 'post-click-race' }); } catch (e) { okFetch = false; }
+        return (okFetch || task.mediaSaved) ? { via: 'server-fetch' } : NEVER;
+      }
+      return NEVER;
+    })();
+
+    const timeoutGuard = sleep(Math.max(5000, Number(timeoutMs) || 90000) + 5000).then(() => ({ via: null }));
+    const winner = await Promise.race([nativeWin, serverWin, timeoutGuard]);
+
+    if (winner && winner.via) {
+      // Haarne wale ko saaf roko — kitab-bandhi EK hi hogi.
+      task._raceAbandoned = true;
+      if (raceUrl) {
+        const gapBase = task.renderCompletedAt || clickTime;
+        const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
+        this.log(`[FAST-DL] [Prompt #${n}] post-click race via=${winner.via} gap=${gapSec}s`, winner.via === 'server-fetch' ? 'success' : 'info');
+      }
+      if (winner.via === 'server-fetch') return true;
+      return await nativePromise;
+    }
+    return await nativePromise;
   }
 
   /**
@@ -3879,12 +4909,15 @@ class FlowAutomationEngine {
    * top bar ka "Download media". Hover wala roop v2.8.0 me gaya —
    * tile par hover karne se download button aata hi NAHI hai.
    */
-  async _downloadViaNativeUi(task, downloadFolder, settings, tileIndexHint, attempts) {
+  async _downloadViaNativeUi(task, downloadFolder, settings, tileIndexHint, attempts, opts = {}) {
     const prep = await this._nativePrepareWatch(downloadFolder);
-    const forms = [
-      () => this._nativeMenuForm(task, prep, downloadFolder, settings, tileIndexHint, attempts),
-      () => this._nativeEditorForm(task, prep, downloadFolder, settings, tileIndexHint, attempts)
-    ];
+    // v2.48.27: menu roop agar is round me pehle hi (menu-first)
+    // chal chuka ho to yahan dobara NAHI — sirf editor roop.
+    const forms = [];
+    if (!opts.skipMenuForm) {
+      forms.push(() => this._nativeMenuForm(task, prep, downloadFolder, settings, tileIndexHint, attempts));
+    }
+    forms.push(() => this._nativeEditorForm(task, prep, downloadFolder, settings, tileIndexHint, attempts));
     for (const run of forms) {
       if (this.isStopping) return false;
       let ok = false;
@@ -3895,19 +4928,6 @@ class FlowAutomationEngine {
       if (ok) return true;
     }
     return false;
-  }
-
-  /**
-   * Download path B (purana naam, ab andar se kai-roop wala):
-   * reconcile jaise purane callers ke liye barkarar. Sirf is task ki
-   * apni claimed tile par chalta hai; tile na mile to false — koi
-   * newest-tile fallback NAHI hai (audit fix #6).
-   */
-  async downloadViaFlowNativeMenu(task, downloadFolder, settings, tileIndex) {
-    const attempts = [];
-    const ok = await this._downloadViaNativeUi(task, downloadFolder, settings, tileIndex, attempts);
-    task.downloadAttempts = (task.downloadAttempts || []).concat(attempts);
-    return ok;
   }
 
   /**
@@ -3945,6 +4965,101 @@ class FlowAutomationEngine {
    * se bandha link ho to wahi uthaya jata hai aur fetch turant
    * shuru ho jata hai.
    */
+
+  /**
+   * v2.48.13 — DIRECT-API POLL (owner ki demand: "render hote hi
+   * link fetch ho jaye"). Passive capture page ke apne jawabon ka
+   * intezaar karta hai; ye poller us se aage hai: page khud haal
+   * jaanne ke liye jo asal API request bhejta hai (GetWorkflow /
+   * List* — capture use template ke roop me yaad rakhta hai), poller
+   * USI request ko page ke andar se har 1.5s replay karta hai.
+   * Replay ka jawab maujood capture pipeline (ingestResponse) se
+   * guzarta hai — pehchan/bandish ke saare usool waise ke waise;
+   * link bandhte hi _onBackendMediaBound download foran shuru kar
+   * deta hai. Template na mile (page ne abhi koi status call nahi
+   * ki) to poller khamoshi se intezaar karta hai — passive capture
+   * peeche chal hi raha hota hai. 5 lagatar nakam replays par
+   * poller khud band ho jata hai (passive raasta hamesha zinda).
+   */
+  _startApiPoll(task) {
+    const key = task && (task.captureKey || task.videoId) ? (task.captureKey || task.videoId) : null;
+    if (!key || this._apiPolls.has(key)) return;
+    const state = { stopped: false, fails: 0, timer: null, startedAt: Date.now(), announced: false, tplSeen: false };
+    this._apiPolls.set(key, state);
+    const loop = async () => {
+      if (state.stopped) return;
+      try { await this._apiPollTick(task, key, state); } catch (e) {}
+      if (!state.stopped) state.timer = setTimeout(loop, 1500);
+    };
+    state.timer = setTimeout(loop, 1200);
+  }
+
+  _stopApiPoll(key) {
+    const state = this._apiPolls.get(key);
+    if (!state) return;
+    state.stopped = true;
+    if (state.timer) { try { clearTimeout(state.timer); } catch (e) {} }
+    this._apiPolls.delete(key);
+  }
+
+  async _apiPollTick(task, key, state) {
+    // Band hone ki shartein: engine ruk raha ho, page band ho,
+    // link pehle hi bandh gaya ho, ya task ki 20-minute hadd.
+    if (this.isStopping || !this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) {
+      this._stopApiPoll(key); return;
+    }
+    if (Date.now() - state.startedAt > 20 * 60 * 1000) { this._stopApiPoll(key); return; }
+    let bound = null;
+    try { bound = this.netCapture.urlForKey(key); } catch (e) {}
+    if (bound) { this._stopApiPoll(key); return; }
+    let tpl = null;
+    try { tpl = this.netCapture.templateForKey(key); } catch (e) {}
+    if (!tpl) return; // template abhi nahi — passive capture chal raha hai
+    if (!state.tplSeen) {
+      state.tplSeen = true;
+      this.log(`[Prompt #${(task.promptIndex || 0) + 1}] Direct API check is active — asking Flow's backend directly for this video's link every 1.5s.`, 'info');
+    }
+    let res = null;
+    try {
+      res = await downloadGuard.withTimeout(
+        this.page.evaluate(async (u, h, b64) => {
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const r = await fetch(u, { method: 'POST', headers: h, body: bytes, credentials: 'include' });
+          const buf = await r.arrayBuffer();
+          const u8 = new Uint8Array(buf);
+          let s = '';
+          for (let i = 0; i < u8.length; i += 8192) {
+            s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+          }
+          return { status: r.status, b64: btoa(s) };
+        }, tpl.url, tpl.headers, tpl.body.toString('base64')),
+        10000, 'direct-api poll');
+    } catch (e) { res = null; }
+    if (!res || res.status >= 400 || !res.b64) {
+      state.fails++;
+      if (state.fails >= 5) this._stopApiPoll(key);
+      return;
+    }
+    state.fails = 0;
+    try {
+      const buf = Buffer.from(res.b64, 'base64');
+      if (buf.length > 0) {
+        this.netCapture.ingestResponse({ url: tpl.url, contentType: 'application/grpc-web+proto', bodyBuffer: buf, at: Date.now() });
+      }
+    } catch (e) {}
+    try {
+      if (this.netCapture.urlForKey(key)) {
+        if (!state.announced) {
+          state.announced = true;
+          this.log('Direct API check: the video link arrived from the backend — download starting now.', 'info');
+        }
+        this._stopApiPoll(key);
+      }
+    } catch (e) {}
+  }
+
   registerBackendTask(task, downloadFolder, settings) {
     if (!task) return;
     const key = task.captureKey || task.videoId || null;
@@ -3996,7 +5111,7 @@ class FlowAutomationEngine {
     const viaShabd = task.backendUrlVia === 'workflow-id'
       ? 'bound by workflowId identification'
       : (task.backendUrlVia === 'currentSrc' ? 'confirmed from the tile\'s currentSrc' : 'bound by sequence order');
-    this.log(`[Prompt #${n}] Got a direct link from the backend (${viaShabd}) — downloading, without any button…`, 'info');
+    this.log(`[Prompt #${n}] Got a direct link from the backend (${viaShabd}) — downloading, without any button… · link shape: ${networkCapture.urlShape(url)}`, 'info');
     if (!task._backendNotified) {
       task._backendNotified = true;
       try { this.onBackendMedia(task, { via: task.backendUrlVia || 'workflow-id', host: networkCapture.hostOf(url) }); } catch (e) {}
@@ -4100,6 +5215,22 @@ class FlowAutomationEngine {
       try {
         const snap = this.netCapture.statsSnapshot();
         diag = ` (Network check: ${snap.responsesSeen} responses came in total, API ${snap.apiResponses}, media responses ${snap.mediaResponsesSeen}; hosts: ${snap.topHosts || '—'})`;
+        // v2.48.16 DIAGNOSTIC: poora census — API requests (sirf
+        // jawab nahi), saare hosts, aur WebSocket ki poori
+        // tafseel. TEST493 me API responses 0 the; ye line
+        // batayegi ke data asal me kis raaste aata hai.
+        const ws = snap.ws || {};
+        diag += ` [DIAGNOSTIC — API requests: ${JSON.stringify(snap.apiRequests || {})}; all hosts: ${snap.allHosts || '—'}; WebSockets: ${ws.sockets || 0} opened (${(ws.urls || []).join(', ') || 'none'}), frames in ${ws.framesIn || 0} (${ws.bytesIn || 0} bytes), frames out ${ws.framesOut || 0}, frames carrying a media link: ${ws.mediaFrames || 0}, frames carrying a workflow id: ${ws.workflowFrames || 0}]`;
+        // v2.48.17 DIAGNOSTIC-2: request paths + flow ke apne
+        // jawabon ke andar ki talash (CDP-wala WebSocket hisaab
+        // upar wale [DIAGNOSTIC] me hi aata hai).
+        const fb = snap.flowBodies || {};
+        diag += ` [DIAGNOSTIC-2 — request paths: ${snap.topPaths || '—'}; flow.google.com bodies scanned: ${fb.scanned || 0}, carrying a media host: ${fb.mediaHostHits || 0}, carrying a workflow id: ${fb.workflowHits || 0}, mentioning aisandbox: ${fb.aisandboxHits || 0}]`;
+        // v2.48.18 DIAGNOSTIC-3: sirf batchexecute darwaze ka
+        // poora hisaab — requests/rpcids, jawab, padhe gaye
+        // bodies, chhoote huon ki wajah, aur andar ke nishan.
+        const b = snap.batch || {};
+        diag += ` [DIAGNOSTIC-3 — batchexecute requests: ${b.requests || 0} (rpcids: ${JSON.stringify(b.rpcids || {})}), responses: ${b.responses || 0} (content-types: ${JSON.stringify(b.contentTypes || {})}), bodies read: ${b.bodiesFetched || 0}, CDP bodies read: ${b.cdpBodies || 0}, streamed chunks: ${b.streamChunks || 0}, stream-bound: ${b.streamBound || 0}, skipped too-big: ${b.skipTooBig || 0}, skipped buffer-fail: ${b.skipBuffer || 0}; bodies carrying: media host ${b.withMediaHost || 0}, videoplayback ${b.withVideoplayback || 0}, workflow word ${b.withWorkflow || 0}, fife word ${b.withFife || 0}, download word ${b.withDownloadWord || 0}; link shapes inside bodies: ${JSON.stringify(b.urlShapes || {}).slice(0, 500)}]`;
       } catch (e) {}
       this.log(`[Prompt #${n}] No video link was seen on the backend — the UI routes are being tried.${diag}`, 'warn');
     }
@@ -4196,7 +5327,36 @@ class FlowAutomationEngine {
     }
     task._downloadInProgress = true;
     let result = null;
+    // v2.48.36 (ROOT PACK — A): DOWNLOAD-STAGE SERIALIZATION.
+    // Poora download marhala (pehle route se save/aakhri
+    // fallback tak) is capture session par ek pal me sirf
+    // EK task ka chalta hai — generation/rendering is tale
+    // se bahar aur parallel rehti hai. ZEROCLICK3 ki seekh:
+    // do tasks ki harkat ek hi page par ulajhne se pehle
+    // task ki mint binding download ke pal gum ho jati thi.
+    // Kataar ka intezaar 1s se zyada ho to [ROOT] line.
+    let stageHandle = null;
     try {
+      stageHandle = await this._downloadStageLock.acquire();
+      if (stageHandle.waitedMs > 1000) {
+        this.log(`[ROOT] [Prompt #${n}] download-stage queued +${(stageHandle.waitedMs / 1000).toFixed(1)}s`, 'info');
+      }
+      // v2.48.36 (ROOT PACK — D): is round ki duration ka
+      // size floor capture ko de do — page-fetch harvest
+      // ke darwaze isi par chalte hain.
+      try {
+        if (this.netCapture) {
+          this.netCapture.harvestFloorBytes = downloadFetch.minBytesForDuration(settings && settings.duration);
+        }
+      } catch (e) {}
+      // v2.48.38 (EDITOR-HARVEST PACK): harvest-audit ki
+      // khidki — ye round (stage-lock holder) chal raha hai,
+      // ye khabar capture ko do; band finally me hota hai.
+      try {
+        if (this.netCapture && typeof this.netCapture.setDownloadAttempt === 'function') {
+          this.netCapture.setDownloadAttempt(task.captureKey || task.videoId || null);
+        }
+      } catch (e) {}
       // v2.30.0 (2nd-video stall fix): the whole strategy chain runs
       // under downloadGuard — a hard deadline around a step that
       // used to have NO timeout anywhere, so one stuck await froze
@@ -4219,13 +5379,70 @@ class FlowAutomationEngine {
       );
     } finally {
       task._downloadInProgress = false;
+      // v2.48.31 (MINT): round khatam — mint watch band (har
+      // rasta/timeout yahin se guzarta hai).
+      try { this._mintEndWatch(); } catch (e) {}
+      // v2.48.36 (ROOT PACK — D): is task ka harvest ab
+      // kisi kaam ka nahi — kitab saaf (agli video ke liye
+      // purani body kabhi candidate nahi banti).
+      try {
+        if (this.netCapture) this.netCapture.evictHarvest(task.captureKey || task.videoId || null);
+      } catch (e) {}
+      // v2.48.38 (EDITOR-HARVEST PACK): audit khidki bhi
+      // band — is round ke baad ke jawab is task ke kabhi
+      // nahi ginne jayenge. (v2.48.41: editor-khidki aur
+      // background page dono khatam — editor ab kabhi
+      // khulta hi nahi, is liye saaf karne ko kuch nahi.)
+      try {
+        if (this.netCapture) {
+          const roundKey = task.captureKey || task.videoId || null;
+          if (typeof this.netCapture.clearDownloadAttempt === 'function') this.netCapture.clearDownloadAttempt(roundKey);
+        }
+      } catch (e) {}
+      if (stageHandle) { try { stageHandle.release(); } catch (e) {} }
     }
+    // v2.48.40 (CASCADE DIAGNOSTIC — observe-only): is
+    // attempt ke aakhir par ek line — is task ki file
+    // ka address sab se pehle KAHAN dekha gaya tha aur
+    // kya wo kisi editor ke khulne se pehle hi aa chuka
+    // tha. Koi faisla is par nahi chalta; ye sirf agli
+    // tehqeeq ka saboot hai (preEditorUrl=yes bane to
+    // editor khole baghair wala rasta mumkin hai).
+    // v2.48.41: editor ab kabhi khulta hi nahi — is liye
+    // preEditorUrl address dikhne par hamesha 'yes'
+    // rahega aur firstSeen kabhi 'editor-open' nahi
+    // banega; line muqable ke liye barkarar hai.
+    try {
+      if (!(settings && settings.type === 'Image')
+        && this.netCapture && typeof this.netCapture.cascadeForKey === 'function') {
+        const cKey = task.captureKey || task.videoId || null;
+        let cUrl = task.completedVideoUrl || task.backendVideoUrl || null;
+        if (!cUrl && cKey) {
+          try {
+            const bound = this.netCapture.urlForKey(cKey);
+            if (bound && bound.url) cUrl = bound.url;
+          } catch (e) {}
+        }
+        const c = this.netCapture.cascadeForKey(cKey, cUrl);
+        this.log(`[ROOT] cascade firstSeen=${c.firstSeen} preEditorUrl=${c.preEditorUrl}`, 'info');
+      }
+    } catch (e) {}
     // Settle the round in the persisted ledger — success resets the
     // budget to 0, failure records the round and its reason (in the
     // SAME channel the round was spent from, v2.48.0).
     if (taskId) {
       try {
         if (result && result.ok) {
+          // v2.48.37: kamyaab download ka bandha hua address
+          // session ka teacher langar bane (template seekha
+          // gaya ho ya na ho) — replay muqabla ab langar ke
+          // baghair nahi rahega jab kam se kam ek download
+          // ho chuka ho.
+          try {
+            if (this.netCapture && typeof this.netCapture.noteTeacherUrlForKey === 'function') {
+              this.netCapture.noteTeacherUrlForKey(task.captureKey || task.videoId || null);
+            }
+          } catch (e) {}
           this.downloadPort.roundSettled(taskId, true, '', channel);
         } else {
           const failedNotes = (result && Array.isArray(result.attempts))
@@ -4238,6 +5455,25 @@ class FlowAutomationEngine {
         }
       } catch (e) {}
     }
+    // v2.48.54 (GEMINI ZIP-REVIEW fix 3): aakhri
+    // round bhi fail — is task ki mainpage khidki AB
+    // band karo. Pehle khidki sirf save par band
+    // hoti thi; fail par wo khuli reh jati aur baad
+    // wali tasks ke rpcfeed/binding hisaab me ye
+    // PARK ho chuki task hamesha 'pending' ginni
+    // jati thi. Asal pending tasks ki reservation
+    // barkarar hai — ye band sirf settle ke baad
+    // hota hai, aur dobara koshish (Resume/sweep)
+    // par khidki phir khul jati hai (noteWindow).
+    try {
+      if (result && !result.ok && !task.mediaSaved && roundNo >= ROUND_CAP) {
+        const wKey = task.captureKey || task.videoId || null;
+        if (this.netCapture && wKey && typeof this.netCapture.mainpageMarkWindowDone === 'function') {
+          this.netCapture.mainpageMarkWindowDone(wKey);
+          this.log(`[ROOT] [Prompt #${n}] mainpage-window-closed reason=attempts-exhausted`, 'info');
+        }
+      }
+    } catch (e) {}
     return result;
   }
 
@@ -4293,7 +5529,10 @@ class FlowAutomationEngine {
       }
       const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
       if (idx < 0) return; // tile not locatable — the strategies report it, as today
-      const WAIT_MS = 25000;
+      // v2.48.24: 25s -> 8s. TEST499/500 me bandhan ~1s me aa
+      // gaya tha; TEST501 me 25s me bhi nahi aaya — lamba
+      // intezaar sirf menu wale pakke raaste ko der karta hai.
+      const WAIT_MS = 8000;
       const startedAt = Date.now();
       this.log(`[Prompt #${n}] The tile's video has not loaded on the page yet — bringing it into view and waiting for its link before trying the download routes…`, 'info');
       let ready = false;
@@ -4359,24 +5598,3718 @@ class FlowAutomationEngine {
     }
   }
 
+  /**
+   * v2.48.35 (CLAIM DISCIPLINE EVERYWHERE): capture ke
+   * bandhan (keyByUrl) me ye URL kisi AUR task ke naam hai
+   * kya? Faisla saveGuard ke khalis usool se hota hai; ye
+   * helper sirf kitab (map) tak pahunch deta hai. Har
+   * opportunistic / registry / race wala rasta jo koi
+   * URL ummeedwaar banata hai, isi darwaze se guzrega —
+   * _pickServerFetchUrl pehle se yahi karta tha, ab
+   * registry (blob) wala rasta aur race-pickeron ke
+   * isClaimed callback bhi yahi karte hain (ZEROCLICK2:
+   * registry ne Prompt #1 ke bandhe hue address ke bytes
+   * Prompt #2 ke naam par save kar diye the).
+   */
+  _urlClaimedByOtherTask(url, captureKey) {
+    try {
+      if (!url || !this.netCapture || !this.netCapture.keyByUrl) return false;
+      return saveGuard.claimedByOtherTask(this.netCapture.keyByUrl.get(url), captureKey || null);
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.28: server-fetch ke liye URL chunna — pehchan ke
+   * darwaze (audit fix #6 wala usool):
+   *   - URL flowContent ke exact matcher se guzra ho (bulane
+   *     wala sirf capture ki fehrist deta hai, phir bhi yahan
+   *     dobara jaanch hai);
+   *   - _isTaskOwnUrl: purana (pre-existing) ya pehle istemal
+   *     shuda URL kabhi nahi;
+   *   - capture ne use KISI AUR task ke naam kiya ho to kabhi
+   *     nahi; ISI task ke naam ho to sab se mazboot (bound);
+   *   - is khidki ka AKELA ummeedwaar bhi chalega — ye wahi
+   *     kram-wali pehchan hai jo claimByOrder barson se deta
+   *     hai, farq sirf itna ke khidki is attempt tak mehdood
+   *     hai (v2.48.30: prime khatam — khidki attempt ke
+   *     aaghaz se is pal tak ki hai);
+   *   - kai ummeedwaar hon to sirf registry candidate ke URL se
+   *     exact cross-match wala chalega — warna inkaar (doubt
+   *     me galat video lene se behtar hai menu wala rasta).
+   * Lautta hai: { url, via } | { ambiguous:true, count } | null.
+   * null = is pal koi qabil URL nahi (inkar ki wajah pehle hi
+   * filter me chhup gayi — ghalat URL 'usable' me aata hi nahi).
+   */
+  _pickServerFetchUrl(task, captureKey, entries, registryCandidateUrl) {
+    if (!Array.isArray(entries) || entries.length === 0) return null;
+    const usable = [];
+    for (const e of entries) {
+      const url = e && e.url;
+      if (!url || !flowContent.isFlowContentVideoUrl(url, e.type)) continue;
+      if (!this._isTaskOwnUrl(task, url)) continue;
+      let claimedBy = null;
+      try { claimedBy = (this.netCapture && this.netCapture.keyByUrl) ? this.netCapture.keyByUrl.get(url) : null; } catch (err) {}
+      if (saveGuard.claimedByOtherTask(claimedBy, captureKey)) continue;
+      usable.push({ url, at: (e && e.at) || 0, bound: !!claimedBy });
+    }
+    if (usable.length === 0) return null;
+    const bound = usable.find(u => u.bound);
+    if (bound) return { url: bound.url, via: 'capture-bound' };
+    if (usable.length === 1) return { url: usable[0].url, via: 'sole-candidate' };
+    if (registryCandidateUrl) {
+      const hit = usable.find(u => u.url === registryCandidateUrl);
+      if (hit) return { url: hit.url, via: 'registry-cross-match' };
+    }
+    return { ambiguous: true, count: usable.length };
+  }
+
+  /**
+   * v2.48.28: chune hue asal server URL ko Node se fetch karo —
+   * poori mashineri wahi jo downloadFromCapturedStream ki hai
+   * (session cookies + asal UA + ranged/plain koshishen +
+   * content gate + _saveBufferForTask ki ffprobe pushti).
+   * Fetch se pehle URL capture me claim ho jata hai, taaki
+   * doosra task use is dauraan na le le.
+   */
+  async _serverFetchSave(task, downloadFolder, settings, pick) {
+    const n = task.promptIndex + 1;
+    this.log(`[FAST-DL] [Prompt #${n}] The file's own server address was seen (Flow's CDN flow-content.google, via=${pick.via}) — fetching the file straight from the server…`, 'info');
+    try { if (this.netCapture) this.netCapture.claimFlowContentVideo(pick.url); } catch (e) {}
+    task.completedVideoUrl = pick.url;
+    let ok = false;
+    try { ok = await this.downloadFromCapturedStream(task, downloadFolder, settings); } catch (e) { ok = false; }
+    if (!ok && !task.mediaSaved) {
+      const why = this._fetchSummary(task);
+      this.log(`[FAST-DL] [Prompt #${n}] The direct server fetch did not save the file${why ? ` — ${why}` : ''} — it will not be retried in this attempt; the remaining routes will run.`, 'warn');
+    }
+    return !!(ok || task.mediaSaved);
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — D) → v2.48.41 (MAIN-PAGE HARVEST
+   * PACK): MAIN page ne khud server se jo mukammal bytes
+   * khinche the, capture ne unhe is task ke naam kitab me
+   * rakha hai to wohi EXACT file yahin save karo — koi
+   * download click nahi, koi menu nahi, koi editor nahi,
+   * koi dobara fetch nahi. Ye mainpage-harvest raaste ka
+   * pehla (sab se tez) qadam hai. Save wahi
+   * _saveBufferForTask se hota hai, is liye quality gate
+   * + content-hash guard + ffprobe sab laagu rehte hain.
+   * Bytes ek hi dafa istemal hote hain (koshish ke baad
+   * kitab se hat jate hain — reject hue bytes dobara
+   * candidate nahi bante).
+   * Lautta hai: true (save ho gaya) | false.
+   */
+  async _tryHarvestSave(task, downloadFolder, settings, attempts) {
+    try {
+      const cap = this.netCapture;
+      if (!cap || typeof cap.harvestForKey !== 'function') return false;
+      if (!task || task.mediaSaved) return false;
+      const captureKey = task.captureKey || task.videoId || null;
+      const entry = cap.harvestForKey(captureKey);
+      if (!entry || !entry.buffer) return false;
+      const n = task.promptIndex + 1;
+      try { cap.evictHarvest(captureKey); } catch (e) {}
+      // Ye address ab is task ke naam claim bhi kar do —
+      // koi aur task use is run me dobara na le
+      // (v2.48.42: naam kis task ka hai wo bhi darj —
+      // claim-once kitab).
+      try {
+        if (typeof cap.claimMainpageVideo === 'function') cap.claimMainpageVideo(entry.url, { key: captureKey || null, label: String(n) });
+        else cap.claimFlowContentVideo(entry.url);
+      } catch (e) {}
+      task.completedVideoUrl = entry.url;
+      const ok = await this._saveBufferForTask(task, downloadFolder, settings, entry.buffer, entry.url, 'mainpage-harvest');
+      // v2.48.50 (item 7): race ki jeet dusre raste ki
+      // ho to ye save jeet nahi — khamosh wapsi.
+      const raceLostHs = !!(task._raceActive && task._raceWonBy && task._raceWonBy !== 'mainpage-harvest');
+      if ((ok || task.mediaSaved) && task._saveRejectedReason !== 'route-race' && !raceLostHs) {
+        const gapSec = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+        try { if (typeof cap.mainpageMarkWindowDone === 'function') cap.mainpageMarkWindowDone(captureKey); } catch (e) {}
+        this.log(`[ROOT] via=mainpage-harvest gap=${gapSec}s`, 'success');
+        try {
+          this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(saveGuard.mainpageAuditOf({ host: networkCapture.hostOf(entry.url), bytes: entry.buffer.length, src: 'flow-content', decision: 'promoted', reason: 'ok', bindReason: 'bound', claimedBy: String(n) }))} timing=${cap && typeof cap._mainpageTimingBucket === 'function' ? cap._mainpageTimingBucket() : 'download-attempt'}`, 'info');
+        } catch (e) {}
+        attempts.push({ strategy: 'mainpage-harvest', ok: true, note: `the exact file was saved from the complete body the main project page itself had already fetched from Flow's server — no editor, no download click, no menu, no second fetch; render→save gap ${gapSec}s` });
+        return true;
+      }
+      attempts.push({ strategy: 'mainpage-harvest', ok: false, note: `the bytes the main page had fetched did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'})` });
+      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest bytes did not pass the save checks`, 'warn');
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — D): hadd bandhe waqt tak harvest
+   * ka intezaar — render-complete ke aas-paas main page ki
+   * stream chand second me aa sakti hai (mainpage-harvest
+   * yahi bulata hai).
+   */
+  async _pollHarvestSave(task, downloadFolder, settings, attempts, waitMs) {
+    const deadline = Date.now() + Math.max(0, Number(waitMs) || 0);
+    for (;;) {
+      const ok = await this._tryHarvestSave(task, downloadFolder, settings, attempts);
+      if (ok || (task && task.mediaSaved)) return true;
+      if (Date.now() >= deadline || this.isStopping) return false;
+      await sleep(250);
+    }
+  }
+
+  /**
+   * v2.48.41 (MAIN-PAGE HARVEST PACK): ek mainpage address
+   * ka POORA fetch MAIN page ke apne JS context se
+   * (page.evaluate fetch, credentials sameet) — koi naya
+   * page/tab nahi khulta, kuch click nahi hota. Adhoore
+   * (googlevideo range) jawab ke liye tareeqe is kram me:
+   *   1. asal URL ka seedha GET;
+   *   2. wahi GET Range: bytes=0- ke saath;
+   *   3. URL ke range-wale hisse hata kar (saveGuard.
+   *      fullFetchUrlCandidates) seedha GET, phir
+   *      Range: bytes=0- ke saath.
+   * Pehla 200 + video-header wala jawab foran wapas;
+   * warna sab se bada mila buf apne status ke saath
+   * (faisla — partial hai ya nahi — bulane wale ka
+   * verdict karega). Kuch na mile to null.
+   * Natija: { buf, status } | null.
+   */
+  async _fetchMainpageFullInPage(url, page) {
+    // v2.48.46: fetch ki nakami ab KHAMOSH nahi — har
+    // koshish ka aakhri status / bytes / error aur
+    // koshishon ki ginti darj rehti hai, aur nakam
+    // wapsi (null ya na-qabil-istemal 'best') par EK
+    // line log hoti hai. ZEROCLICK13: in-page fetch
+    // har live run me fail hua lekin us ke saare catch
+    // khaali the — CORS throw hai ya 403/empty, ye
+    // naam ab is line se milega. Fetch ka VYAVHAAR
+    // bilkul wahi hai (umeedwaar, tartib, waqt, wapsi).
+    let lastStatus = null;
+    let lastBytes = 0;
+    let lastErr = null;
+    let tries = 0;
+    let failLogged = false;
+    const noteErr = (e) => {
+      const raw = e && e.message ? String(e.message) : String(e || '');
+      const msg = raw.replace(/\s+/g, ' ').trim().slice(0, 160);
+      if (msg) lastErr = msg;
+    };
+    const logFetchFailure = () => {
+      if (failLogged || tries === 0) return;
+      failLogged = true;
+      try {
+        if (typeof this.log !== 'function') return;
+        let host = 'none';
+        try { host = networkCapture.hostOf(url) || 'none'; } catch (e) { host = 'none'; }
+        this.log(`[ROOT] mainpage-fetch failed host=${host} lastStatus=${lastStatus == null ? 'none' : lastStatus} lastBytes=${lastBytes} lastErr=${lastErr || 'none'} tries=${tries}`, 'warn');
+      } catch (e) {}
+    };
+    try {
+      // v2.48.44: page diya jaye to wahi (headless-harvest
+      // apna adrishya page deta hai), warna apna MAIN page.
+      const pg = page || this.page;
+      if (!pg || pg.isClosed() || !url) return null;
+      const candidates = saveGuard.fullFetchUrlCandidates(url);
+      let best = null;
+      for (const u of candidates) {
+        for (const useRange of [false, true]) {
+          tries++;
+          try {
+            const res = await downloadGuard.withTimeout(
+              pg.evaluate(async (uu, withRange) => {
+                const headers = {};
+                if (withRange) headers['Range'] = 'bytes=0-';
+                const r = await fetch(uu, { method: 'GET', headers, credentials: 'include' });
+                const ab = await r.arrayBuffer();
+                const u8 = new Uint8Array(ab);
+                let out = '';
+                for (let i = 0; i < u8.length; i += 8192) {
+                  out += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+                }
+                return { status: r.status, b64: btoa(out) };
+              }, u, useRange),
+              25000, 'mainpage full fetch');
+            if (!res || !res.b64) {
+              if (res && Number.isFinite(res.status)) lastStatus = res.status;
+              continue;
+            }
+            const buf = Buffer.from(res.b64, 'base64');
+            if (Number.isFinite(res.status)) lastStatus = res.status;
+            if (buf) lastBytes = buf.length;
+            if (!buf || buf.length === 0 || buf.length > 16 * 1024 * 1024) continue;
+            if (res.status !== 206 && downloadFetch.looksLikeVideoBuffer(buf)) {
+              return { buf, status: res.status };
+            }
+            if (!best || buf.length > best.buf.length) best = { buf, status: res.status };
+          } catch (e) { noteErr(e); }
+        }
+      }
+      // 'best' yahan pahuncha matlab koi jawab kaam ka
+      // nahi tha (206 ka tukda ya video-header ke
+      // baghair) — nakami naam se darj.
+      const usable = !!best && best.status !== 206 && downloadFetch.looksLikeVideoBuffer(best.buf);
+      if (!usable) logFetchFailure();
+      return best;
+    } catch (e) {
+      noteErr(e);
+      logFetchFailure();
+      return null;
+    }
+  }
+
+  /**
+   * v2.48.50 (MEGA PACK item 1 — TILE-ELEMENT COMPLETION):
+   * is task ki tile ke apne <video> element ki ek nazar.
+   * Tile wohi machinery dhoondti hai jo hover triggers
+   * istemal karte hain (_resolveTileIndexForTask —
+   * fingerprint pehle, phir hint). Element mil jaye to
+   * use window.__fsTileMediaEl par rakh diya jata hai
+   * (drive use wahi se uthata hai; element page ka hai —
+   * kabhi hataya nahi jata). Wapsi:
+   * { found, hasSrc, duration, currentSrc }.
+   */
+  async _probeMainpageTileVideo(task, tileIndexHint) {
+    const none = { found: false, hasSrc: false, duration: -1, currentSrc: '' };
+    try {
+      const pg = this.page;
+      if (!pg || pg.isClosed() || typeof pg.evaluate !== 'function' || !task) return none;
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isInteger(idx) || idx < 0) return none;
+      const info = await pg.evaluate((i) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const tile = tiles && tiles[i];
+          const vid = tile ? tile.querySelector('video') : null;
+          window.__fsTileMediaEl = vid || null;
+          if (!vid) return { found: false, hasSrc: false, duration: -1, currentSrc: '' };
+          const d = vid.duration;
+          return {
+            found: true,
+            hasSrc: !!(vid.currentSrc || vid.getAttribute('src')),
+            duration: Number.isFinite(d) ? d : -1,
+            currentSrc: String(vid.currentSrc || '')
+          };
+        } catch (e) {
+          return { found: false, hasSrc: false, duration: -1, currentSrc: '' };
+        }
+      }, idx);
+      return info && typeof info === 'object' ? info : none;
+    } catch (e) {
+      return none;
+    }
+  }
+
+  /**
+   * v2.48.47 (MEDIA-LOAD COMPLETION — ZEROCLICK14):
+   * bandha hua mainpage address usi PROJECT page ke ek
+   * <video> element se poora load karo aur mukammal
+   * body CDP network capture se uthao. Wajah:
+   * flow.google.com ke page-JS ka fetch() googlevideo
+   * ki body nahi padh sakta ('Failed to fetch',
+   * CORS-class, koi HTTP jawab hi nahi — .46 ki
+   * '[ROOT] mainpage-fetch failed' line saboot hai),
+   * lekin capture CDP satah ka hai aur us pabandi se
+   * bandha nahi — editor-harvest me editor ki playback
+   * body hamesha mukammal file thi.
+   * v2.48.50 (item 1): element ab PEHLE task ki apni
+   * TILE ka <video> hota hai (mediaLoadElementPick) —
+   * ZEROCLICK17 ka saboot: tile ke element ne asal me
+   * 214,591B kheenche the jabke naya adrishya element
+   * 0 bytes laaya tha; jo element pehle se stream se
+   * bandha hai wahi aage bhi kheenchta hai. Tile
+   * element na mile / na chale to purana adrishya
+   * (hidden) element chaara hai (bilkul .47/.48 wala
+   * vyavhaar). Tile element ka currentSrc ummeedwaar
+   * URL se alag ho tab bhi drive TILE se hi hota hai
+   * (us ki stream by-construction isi task ki hai) —
+   * lekin drive khud KABHI save nahi karta; bandhan
+   * aur faisla capture kitab + saveGuard ke hi rehte
+   * hain (readBest hamesha ummeedwaar URL par hi
+   * bandha hai). Tile element page ka hai — drive use
+   * KABHI DOM se nahi hatata, src nahi badalta; sirf
+   * muted karke play karta hai aur aakhir me tab hi
+   * pause karta hai jab wo pehle se paused tha.
+   * Har ELEMENT-drive bilkul EK line deta hai:
+   * '[ROOT] mainpage-media-load host=<h>
+   * outcome=<complete|ended|timeout|error> bytes=<n>
+   * el=<tile|hidden>'. Wapsi fetch jaisi shakal
+   * ({buf,status}) ya null.
+   * mediaOpts (v2.48.50): { task, tileIndexHint,
+   * forceEl, singleDrive, budgetMs } — task diya ho to
+   * har drive task._mpCompleteCycles ginata hai aur
+   * nateeja task._mediaElOutcomes me darj hota hai
+   * (items 4 + 16); attempt ki kul hadd 4 drives hai.
+   */
+  async _loadMainpageFullViaMedia(url, mediaOpts = {}) {
+    const opts = mediaOpts && typeof mediaOpts === 'object' ? mediaOpts : {};
+    const task = opts.task || null;
+    // item 4: attempt-wide cycle hadd — 4 element
+    // drives ke baad is attempt me aur drive nahi;
+    // kitab ki behtareen body bina nayi line ke wapas.
+    if (task && (task._mpCompleteCycles || 0) >= 4) {
+      try {
+        const cap = this.netCapture;
+        const held = cap && typeof cap.mainpageBodyForUrl === 'function'
+          ? cap.mainpageBodyForUrl(url) : null;
+        if (held && held.buffer && held.buffer.length > 0) {
+          const entry = typeof cap.mainpageEntries === 'function'
+            ? (cap.mainpageEntries().find(e => e && e.url === url) || null) : null;
+          const state = mediaBodyState(entry, held);
+          return { buf: held.buffer, status: state === 'complete' ? 200 : 206 };
+        }
+      } catch (e) {}
+      return null;
+    }
+    const noteDrive = (el, outcome) => {
+      if (!task) return;
+      task._mpCompleteCycles = (task._mpCompleteCycles || 0) + 1;
+      if (!task._mediaElOutcomes || typeof task._mediaElOutcomes !== 'object') task._mediaElOutcomes = {};
+      task._mediaElOutcomes[el] = outcome;
+    };
+    // Element chunav: majboor shakal (forceEl) > tile
+    // probe (task diya ho) > hidden (purana vyavhaar —
+    // task ke baghair bulawa hamesha hidden hi tha).
+    let elKind = 'hidden';
+    if (opts.forceEl === 'tile' || opts.forceEl === 'hidden') {
+      elKind = opts.forceEl;
+      if (elKind === 'tile') {
+        const probe = await this._probeMainpageTileVideo(task, opts.tileIndexHint);
+        if (mediaLoadElementPick(probe) !== 'tile') elKind = 'hidden';
+      }
+    } else if (task) {
+      const probe = await this._probeMainpageTileVideo(task, opts.tileIndexHint);
+      elKind = mediaLoadElementPick(probe);
+    }
+    // Route race (item 7): task pehle hi save ho
+    // chuka ho to drive ka poll foran ruk jata hai.
+    const shouldAbort = typeof opts.shouldAbort === 'function'
+      ? opts.shouldAbort
+      : (task ? () => !!task.mediaSaved : null);
+    if (elKind === 'tile') {
+      const r = await this._driveMainpageMediaLoad(url, 'tile', opts.budgetMs, shouldAbort);
+      if (r !== TILE_DRIVE_MISSING) {
+        noteDrive('tile', r.outcome);
+        return r.best;
+      }
+      // Tile element drive ke pal DOM se gayab tha —
+      // is bulawa me hidden chaara (singleDrive par
+      // nahi: wahan EK drive ki hadd hai, item 4).
+      if (opts.singleDrive) return null;
+      const r2 = await this._driveMainpageMediaLoad(url, 'hidden', opts.budgetMs, shouldAbort);
+      noteDrive('hidden', r2.outcome);
+      return r2.best;
+    }
+    const r = await this._driveMainpageMediaLoad(url, 'hidden', opts.budgetMs, shouldAbort);
+    noteDrive('hidden', r.outcome);
+    return r.best;
+  }
+
+  /**
+   * Asal element-drive (v2.48.47 ki poll bandish, ab
+   * dono element qisam ke liye): poll har 500ms,
+   * hadd budgetMs (default this.mainpageMediaLoadMs
+   * 30s): rukawat = capture me mukammal body
+   * (mediaBodyState 'complete') YA element ka 'ended'
+   * + 1.5s settle ke baad behtareen body YA waqt
+   * khatam. Wapsi { best, outcome }; tile element
+   * drive ke pal gayab ho to TILE_DRIVE_MISSING
+   * (bulane wala hidden chaara chalata hai — is
+   * surat me koi line NAHI banti, kyunki koshish
+   * asal me hui hi nahi).
+   * v2.48.50 (item 2 — SEEK V3): duration maloom hote
+   * hi seek ka pura kram — ~25%, ~50%, ~75% aur
+   * duration−0.15, har seek ~700ms ke waqfe se, sirf
+   * tab jab capture abhi adhoora ho; aakhir me 0 par
+   * wapas seek + play(). Har quarter ke range jawab
+   * network se lane padte hain (.48 ka sirf-aakhir
+   * wala seek ZEROCLICK17 me kaafi nahi raha).
+   * Duration kabhi maloom na ho to koi seek nahi —
+   * vyavhaar .47 jaisa.
+   */
+  async _driveMainpageMediaLoad(url, elKind, budgetOverrideMs, shouldAbort) {
+    const cap = this.netCapture;
+    const isTile = elKind === 'tile';
+    let outcome = 'error';
+    let best = null;
+    const readBest = () => {
+      try {
+        const entry = cap && typeof cap.mainpageEntries === 'function'
+          ? cap.mainpageEntries().find(e => e && e.url === url) : null;
+        const held = cap && typeof cap.mainpageBodyForUrl === 'function'
+          ? cap.mainpageBodyForUrl(url) : null;
+        const state = mediaBodyState(entry, held);
+        const status = state === 'complete' ? 200
+          : (entry && Number.isFinite(entry.status) && entry.status > 0 ? entry.status : 206);
+        return { entry, held, state, candidate: held && held.buffer ? { buf: held.buffer, status } : null };
+      } catch (e) {
+        return { entry: null, held: null, state: 'none', candidate: null };
+      }
+    };
+    const logLine = (oc, bytes) => {
+      try {
+        let host = 'none';
+        try { host = networkCapture.hostOf(url || '') || 'none'; } catch (e) { host = 'none'; }
+        this.log(mediaLoadLogLine({ host, outcome: oc, bytes, el: isTile ? 'tile' : 'hidden' }), oc === 'error' ? 'warn' : 'info');
+      } catch (e) {}
+    };
+    let pg = null;
+    let started = false;
+    let tileWasPaused = false;
+    pg = this.page;
+    if (!pg || pg.isClosed() || !url || !cap) {
+      // Kharab bulawa bhi purani tarah EK line deta hai.
+      logLine('error', 0);
+      return { best: null, outcome: 'error' };
+    }
+    if (isTile) {
+      // Tile element ko chalao — wo page ka hai: src
+      // NAHI badalta, DOM se NAHI hatata; sirf muted +
+      // play. Element is pal gayab ho to koi koshish
+      // hui hi nahi — khamosh TILE_DRIVE_MISSING.
+      let startInfo = null;
+      try {
+        startInfo = await pg.evaluate(() => {
+          try {
+            const el = window.__fsTileMediaEl;
+            if (!el || !el.isConnected) return { ok: false, wasPaused: false };
+            const wasPaused = !!el.paused;
+            try { el.muted = true; } catch (e) {}
+            const p = el.play();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+            return { ok: true, wasPaused };
+          } catch (e) { return { ok: false, wasPaused: false }; }
+        });
+      } catch (e) { startInfo = null; }
+      if (!startInfo || !startInfo.ok) return TILE_DRIVE_MISSING;
+      started = true;
+      tileWasPaused = !!startInfo.wasPaused;
+    }
+    // Element-qisam ke hisaab se poll ke tukde — hidden
+    // wale bilkul .47/.48 ke asal evaluate hi hain.
+    const readDuration = async () => {
+      try {
+        return await pg.evaluate(isTile
+          ? () => { try { const el = window.__fsTileMediaEl; const d = el ? el.duration : NaN; return Number.isFinite(d) ? d : -1; } catch (e) { return -1; } }
+          : () => { try { const el = window.__fsMediaLoadEl; const d = el ? el.duration : NaN; return Number.isFinite(d) ? d : -1; } catch (e) { return -1; } });
+      } catch (e) { return -1; }
+    };
+    const doSeek = async (target) => {
+      try {
+        await pg.evaluate(isTile
+          ? (t) => { try { const el = window.__fsTileMediaEl; if (el) { el.currentTime = t; const p = el.play(); if (p && typeof p.catch === 'function') p.catch(() => {}); } } catch (e) {} return true; }
+          : (t) => { try { const el = window.__fsMediaLoadEl; if (el) { el.currentTime = t; const p = el.play(); if (p && typeof p.catch === 'function') p.catch(() => {}); } } catch (e) {} return true; },
+        target);
+      } catch (e) {}
+    };
+    const doSeekBack = async () => {
+      try {
+        await pg.evaluate(isTile
+          ? () => { try { const el = window.__fsTileMediaEl; if (el) { el.currentTime = 0; const p = el.play(); if (p && typeof p.catch === 'function') p.catch(() => {}); } } catch (e) {} return true; }
+          : () => { try { const el = window.__fsMediaLoadEl; if (el) { el.currentTime = 0; const p = el.play(); if (p && typeof p.catch === 'function') p.catch(() => {}); } } catch (e) {} return true; });
+      } catch (e) {}
+    };
+    const readEnded = async () => {
+      if (isTile) {
+        try {
+          return await pg.evaluate(() => { try { const el = window.__fsTileMediaEl; return !!el && el.ended === true; } catch (e) { return false; } });
+        } catch (e) { return false; }
+      }
+      return pg.evaluate(() => window.__fsMediaLoadEnded === true);
+    };
+    try {
+      if (!isTile) {
+        const startedFlag = await pg.evaluate((u) => {
+          try {
+            const prev = window.__fsMediaLoadEl;
+            if (prev) {
+              try { prev.pause(); } catch (e) {}
+              try { prev.removeAttribute('src'); prev.load(); } catch (e) {}
+              try { if (prev.parentNode) prev.parentNode.removeChild(prev); } catch (e) {}
+            }
+            window.__fsMediaLoadEl = null;
+            const el = document.createElement('video');
+            el.muted = true;
+            try { el.setAttribute('muted', ''); } catch (e) {}
+            el.playsInline = true;
+            try { el.setAttribute('playsinline', ''); } catch (e) {}
+            el.preload = 'auto';
+            el.style.cssText = 'position:fixed;left:-9999px;top:0;width:8px;height:8px;opacity:0;pointer-events:none;';
+            window.__fsMediaLoadEnded = false;
+            el.addEventListener('ended', () => { window.__fsMediaLoadEnded = true; });
+            el.src = u;
+            (document.body || document.documentElement).appendChild(el);
+            window.__fsMediaLoadEl = el;
+            const p = el.play();
+            if (p && typeof p.catch === 'function') p.catch(() => {});
+            return 'fs-media-load-started';
+          } catch (e) {
+            return 'fs-media-load-failed';
+          }
+        }, url);
+        if (startedFlag !== 'fs-media-load-started') {
+          // Asal page me element kabhi bana hi nahi (ya
+          // bulane wala koi jhootha test page hai) —
+          // khamosh haar; fetch chaara neeche chalta hai.
+          outcome = 'error';
+          return { best: null, outcome };
+        }
+        started = true;
+      }
+      const budgetMs = Number.isFinite(budgetOverrideMs) && budgetOverrideMs > 0
+        ? Math.max(500, Math.floor(budgetOverrideMs))
+        : Math.max(500, this.mainpageMediaLoadMs || 30000);
+      const deadline = Date.now() + budgetMs;
+      let endedAt = 0;
+      // v2.48.50 (SEEK V3): seek kram ki haalat —
+      // duration milte hi steps bandhte hain
+      // [25%, 50%, 75%, aakhir−0.15], har qadam
+      // ~700ms ke waqfe se, aakhir me seek-back.
+      let seekPlan = null;
+      outcome = 'timeout';
+      while (true) {
+        const probe = readBest();
+        // Behtareen = sab se BADI body jo is dauraan
+        // dikhi (.48 se kitab tukde jodti hai, phir
+        // bhi koi darmiyani chhoti reading badi ko
+        // kabhi nahi dabati).
+        if (probe.candidate && (!best || probe.candidate.buf.length > best.buf.length)) best = probe.candidate;
+        if (probe.state === 'complete') { best = probe.candidate; outcome = 'complete'; break; }
+        // Pakdi hui SAB SE BADI body kul ko cover kar
+        // le to bhi mukammal hai (baad ki chhoti
+        // seek-chunk kitab me badi ki jagah le chuki
+        // ho tab bhi).
+        const seenTotal = probe.entry ? Math.max(
+          Number.isFinite(probe.entry.knownTotal) ? probe.entry.knownTotal : 0,
+          Number.isFinite(probe.entry.declared) ? probe.entry.declared : 0
+        ) : 0;
+        if (best && seenTotal > 0 && best.buf.length >= seenTotal) {
+          best = { buf: best.buf, status: 200 };
+          outcome = 'complete';
+          break;
+        }
+        // Item 7 (ROUTE RACE): dusra rasta jeet chuka
+        // ho to drive foran band — element ki safai
+        // finally me hoti hai.
+        if (shouldAbort && shouldAbort()) break;
+        // SEEK V3 ka kram (upar wali doc dekho):
+        // pehle plan banao (duration pehli dafa
+        // maloom hote hi), phir jo qadam waqt par ho
+        // wo chalao — sirf tab jab capture abhi
+        // adhoora hai (mukammal checks upar guzar
+        // chuke hain).
+        if (!seekPlan) {
+          const dur = await readDuration();
+          if (Number.isFinite(dur) && dur > 1) {
+            seekPlan = {
+              steps: [dur * 0.25, dur * 0.5, dur * 0.75, Math.max(0, dur - 0.15)],
+              idx: 0,
+              nextAt: 0,
+              backDone: false
+            };
+          }
+        }
+        if (seekPlan && !seekPlan.backDone && Date.now() >= seekPlan.nextAt) {
+          if (seekPlan.idx < seekPlan.steps.length) {
+            const target = seekPlan.steps[seekPlan.idx];
+            seekPlan.idx += 1;
+            await doSeek(target);
+            seekPlan.nextAt = Date.now() + 700;
+          } else {
+            await doSeekBack();
+            seekPlan.backDone = true;
+          }
+        }
+        let ended = false;
+        try { ended = await readEnded(); } catch (e) { outcome = 'error'; break; }
+        if (ended) {
+          if (!endedAt) endedAt = Date.now();
+          if (Date.now() - endedAt >= 1500) {
+            const settle = readBest();
+            if (settle.candidate && (!best || settle.candidate.buf.length > best.buf.length)) best = settle.candidate;
+            outcome = settle.state === 'complete' ? 'complete' : 'ended';
+            if (outcome === 'complete') best = settle.candidate;
+            break;
+          }
+        }
+        if (Date.now() >= deadline || this.isStopping) { outcome = 'timeout'; break; }
+        await sleep(500);
+      }
+      return { best, outcome };
+    } catch (e) {
+      if (outcome !== 'complete' && outcome !== 'ended') outcome = 'error';
+      return { best, outcome };
+    } finally {
+      if (started && pg && !pg.isClosed()) {
+        if (isTile) {
+          // Tile element page ka hai — hatana/src
+          // badalna KABHI nahi; sirf tab pause jab
+          // drive se pehle wo khud paused tha.
+          try {
+            await pg.evaluate((wp) => {
+              try {
+                const el = window.__fsTileMediaEl;
+                if (el && wp) { try { el.pause(); } catch (e) {} }
+              } catch (e) {}
+              return true;
+            }, tileWasPaused);
+          } catch (e) {}
+        } else {
+          try {
+            await pg.evaluate(() => {
+              try {
+                const el = window.__fsMediaLoadEl;
+                if (el) {
+                  try { el.pause(); } catch (e) {}
+                  try { el.removeAttribute('src'); el.load(); } catch (e) {}
+                  try { if (el.parentNode) el.parentNode.removeChild(el); } catch (e) {}
+                }
+              } catch (e) {}
+              window.__fsMediaLoadEl = null;
+              window.__fsMediaLoadEnded = false;
+              return true;
+            });
+          } catch (e) {}
+        }
+      }
+      logLine(outcome, best ? best.buf.length : 0);
+    }
+  }
+
+  /**
+   * v2.48.42 (MAIN-PAGE BINDING PACK): VIEWPORT TRIGGER —
+   * is task ki tile ko main project page par sirf
+   * scrollIntoView se viewport me lao. Page grid par hi
+   * rehta hai; ye CLICK nahi hai, kuch khulta nahi, koi
+   * naya tab/page nahi banta — download ke dauraan
+   * ijaazat-shuda ek-matra page interaction yahi hai.
+   * Flow apne grid tiles ki preview stream aksar sirf
+   * tab bhejta hai jab tile nazar ke saamne ho
+   * (ZEROCLICK9: pehli koshish me koi stream nahi,
+   * retry me tile nazar aate hi stream aa gaya) — is
+   * scroll ke baad pehli baar dikha stream is task ke
+   * liye bandhta hai (bulane wala faisla karta hai).
+   * Lautta hai: true (scroll hua) | false.
+   */
+  /**
+   * v2.48.53 (CLEAN HOVER-EXIT — Gemini brief-2 §5.5
+   * rank 2): agli task ki hover watch se pehle
+   * pichhli tile se SAAF exit — us ke <video> ko
+   * pause, pointer (1,1) par, 300ms saans. Khayal ye
+   * hai ke Flow ka ek-waqt-ek active-preview
+   * controller pichhli tile par chipka rehta hai to
+   * agli tile ki poori stream kabhi nahi aati
+   * (ZEROCLICK11–21: dusri task ki stream 0/10).
+   * Kuch khulta nahi, click nahi hota. Ye function
+   * kabhi throw nahi karta.
+   */
+  async _exitPrevMainpageHover(task) {
+    try {
+      const st = this._mpHoverState;
+      if (!st) return;
+      const myKey = task && (task.captureKey || task.videoId) ? String(task.captureKey || task.videoId) : String(task && Number.isFinite(task.promptIndex) ? task.promptIndex : '');
+      if (st.key && myKey && st.key === myKey) return;
+      await this._exitMainpageHoverState();
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.54 (GEMINI ZIP-REVIEW fix 5 — hissa):
+   * apni hi tile ka hover bhi harvest khatam hote
+   * hi chhodo — agli task ki baari tak pointer wahi
+   * chipka na rahe (ZC23 me #1 ke save ke baad ~11s
+   * wahi ruka raha tha).
+   */
+  async _exitOwnMainpageHover(task) {
+    try {
+      const st = this._mpHoverState;
+      if (!st) return;
+      const myKey = task && (task.captureKey || task.videoId) ? String(task.captureKey || task.videoId) : String(task && Number.isFinite(task.promptIndex) ? task.promptIndex : '');
+      if (!st.key || !myKey || st.key !== myKey) return;
+      await this._exitMainpageHoverState();
+    } catch (e) {}
+  }
+
+  async _exitMainpageHoverState() {
+    try {
+      const st = this._mpHoverState;
+      if (!st) return;
+      this._mpHoverState = null;
+      if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return;
+      try {
+        await this.page.evaluate((tileIdx) => {
+          try {
+            const tiles = document.querySelectorAll('flow-grid-tile-container');
+            const el = tiles && tiles[tileIdx];
+            // v2.48.55 (Gemini ZIP-fix se liya): sirf
+            // pause kafi nahi — grid ke JS handlers me
+            // hover haalaat leave isharon se saaf hoti
+            // hai; container + <video> dono par bhejo.
+            if (el && typeof el.dispatchEvent === 'function') {
+              const outOpts = { bubbles: true, cancelable: true, composed: true, view: window };
+              const leaveOpts = { bubbles: false, cancelable: true, composed: true, view: window };
+              try { el.dispatchEvent(new PointerEvent('pointerout', outOpts)); } catch (e) {}
+              try { el.dispatchEvent(new PointerEvent('pointerleave', leaveOpts)); } catch (e) {}
+              try { el.dispatchEvent(new MouseEvent('mouseout', outOpts)); } catch (e) {}
+              try { el.dispatchEvent(new MouseEvent('mouseleave', leaveOpts)); } catch (e) {}
+            }
+            const v = el && typeof el.querySelector === 'function' ? el.querySelector('video') : null;
+            if (v) {
+              if (typeof v.pause === 'function') v.pause();
+              if (typeof v.dispatchEvent === 'function') {
+                try { v.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, cancelable: true, composed: true, view: window })); } catch (e) {}
+                try { v.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false, cancelable: true, composed: true, view: window })); } catch (e) {}
+              }
+            }
+          } catch (e) {}
+        }, st.idx);
+      } catch (e) {}
+      try { if (this.page.mouse && typeof this.page.mouse.move === 'function') await this.page.mouse.move(1, 1); } catch (e) {}
+      await sleep(300);
+      this.log(`[ROOT] mainpage-hover-exit prev=#${(Number.isFinite(st.promptIndex) ? st.promptIndex : 0) + 1}`, 'info');
+    } catch (e) {}
+  }
+
+  async _scrollMainpageTileIntoView(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return false;
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return false;
+      const r = await this.page.evaluate((tileIdx) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (!el || typeof el.scrollIntoView !== 'function') return false;
+          el.scrollIntoView({ block: 'center', inline: 'nearest' });
+          // v2.48.55 (Gemini ZIP-fix se liya): scroll
+          // wale pal bhi tile ka <video> muted play —
+          // player jaage to stream ki guzaarish jaldi
+          // aati hai (baaki hover seedhiyon jaisa hi).
+          try {
+            const vid = el.querySelector('video');
+            if (vid) { vid.muted = true; const pr = vid.play(); if (pr && typeof pr.catch === 'function') pr.catch(() => {}); }
+          } catch (e) {}
+          return true;
+        } catch (e) { return false; }
+      }, idx);
+      return !!r;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.43 (HOVER + PATIENCE PACK): HOVER TRIGGER
+   * seedhi ki dusri seedhi — tile par page ke andar
+   * se synthetic mouse ishare (mouseover + mouseenter
+   * + mousemove) bhejo. OS cursor HILTA nahi, kuch
+   * click nahi hota, kuch khulta nahi; page grid par
+   * hi rehta hai. Flow ka grid preview loader aksar
+   * hover par jaagta hai — scroll akela ZEROCLICK10
+   * me teen dafa nakam raha. Lautta hai: true
+   * (ishare gaye) | false.
+   */
+  async _syntheticHoverMainpageTile(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return false;
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return false;
+      const r = await this.page.evaluate((tileIdx) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (!el || typeof el.dispatchEvent !== 'function') return false;
+          const opts = { bubbles: true, cancelable: true, view: window };
+          try { el.dispatchEvent(new MouseEvent('mouseover', opts)); } catch (e) {}
+          try { el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false, cancelable: true, view: window })); } catch (e) {}
+          try { el.dispatchEvent(new MouseEvent('mousemove', opts)); } catch (e) {}
+          // v2.48.54 (GEMINI ZIP-REVIEW fix 5 — polish):
+          // PointerEvent wale ishare bhi (kuch grid
+          // handlers sirf yahi sunte hain) + tile ke
+          // <video> ko muted play — player apni stream
+          // kheenchna shuru kare to capture use dekhta
+          // hai. Click kabhi nahi, kuch khulta nahi.
+          try { el.dispatchEvent(new PointerEvent('pointerover', opts)); } catch (e) {}
+          try { el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, cancelable: true, view: window })); } catch (e) {}
+          try { el.dispatchEvent(new PointerEvent('pointermove', opts)); } catch (e) {}
+          try {
+            const vid = el.querySelector('video');
+            if (vid) { vid.muted = true; const pr = vid.play(); if (pr && typeof pr.catch === 'function') pr.catch(() => {}); }
+          } catch (e) {}
+          return true;
+        } catch (e) { return false; }
+      }, idx);
+      // v2.48.55 (Gemini ZIP-fix se liya): synthetic
+      // hover par bhi hover-state darj karo — exit
+      // machinery ko is tile ka bhi pata ho (pehle
+      // sirf pointer hover par darj hota tha).
+      if (r) {
+        try {
+          this._mpHoverState = {
+            key: task && (task.captureKey || task.videoId) ? String(task.captureKey || task.videoId) : String(task && Number.isFinite(task.promptIndex) ? task.promptIndex : ''),
+            idx,
+            promptIndex: task && Number.isFinite(task.promptIndex) ? task.promptIndex : 0
+          };
+        } catch (e) {}
+      }
+      return !!r;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.43 (HOVER + PATIENCE PACK): HOVER TRIGGER
+   * seedhi ki aakhri seedhi — page ke mouse ko tile
+   * ke WAST par le jaa kar WAHI roke rakho (bulane
+   * wala watch khatam hone tak dobara hilata nahi).
+   * Ye asal hover hai lekin CLICK kabhi nahi; kuch
+   * khulta nahi, page grid par hi rehta hai. Lautta
+   * hai: true (pointer tile par hai) | false.
+   */
+  async _pointerHoverMainpageTile(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return false;
+      if (!this.page.mouse || typeof this.page.mouse.move !== 'function') return false;
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return false;
+      const pt = await this.page.evaluate((tileIdx) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (!el || typeof el.getBoundingClientRect !== 'function') return null;
+          // v2.48.55 (Gemini ZIP-fix se liya): rect
+          // napne se pehle tile ko phir wast me lao +
+          // <video> muted play — rect taza bhi milega,
+          // player bhi jaaga rahega.
+          try { if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+          try {
+            const vid = el.querySelector('video');
+            if (vid) { vid.muted = true; const pr = vid.play(); if (pr && typeof pr.catch === 'function') pr.catch(() => {}); }
+          } catch (e) {}
+          const r = el.getBoundingClientRect();
+          if (!r || !(r.width > 0) || !(r.height > 0)) return null;
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+        } catch (e) { return null; }
+      }, idx);
+      if (!pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return false;
+      // v2.48.54 (fix 5 — polish): kenare se wast tak
+      // naram harkat (steps) — teleport par kuch hover
+      // handlers jaagte hi nahi.
+      await this.page.mouse.move(pt.x, pt.y, { steps: 5 });
+      // v2.48.53 (CLEAN HOVER-EXIT): ye tile ab is
+      // engine ki 'hover wali tile' hai — agli task ki
+      // harvest se pehle _exitPrevMainpageHover isi
+      // nishani par saaf exit karega (Gemini brief-2
+      // §5.5 rank 2: pichhli tile ka hover/decoder
+      // chipka rahe to agli tile upgrade nahi hoti).
+      try {
+        this._mpHoverState = {
+          key: task && (task.captureKey || task.videoId) ? String(task.captureKey || task.videoId) : String(task && Number.isFinite(task.promptIndex) ? task.promptIndex : ''),
+          idx,
+          promptIndex: task && Number.isFinite(task.promptIndex) ? task.promptIndex : 0
+        };
+      } catch (e) {}
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.52 (ROUTE 1A PACK): ek task ke netload
+   * anjaam ki darj-shudaayi (attempt-summary ke
+   * liye). Tartib: saved > rejected > error — ek
+   * attempt me kai koshishein hon to sab se acha
+   * anjaam hi rehta hai.
+   */
+  _noteNetloadOutcome(task, kind) {
+    try {
+      const rank = { error: 1, rejected: 2, saved: 3 };
+      const cur = task._mpNetloadOutcome;
+      if (!cur || (rank[kind] || 0) > (rank[cur] || 0)) task._mpNetloadOutcome = kind;
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.52 (ROUTE 1A PACK): Route 1A completion —
+   * ummeedwaar URL ki POORI file MAIN page ke apne
+   * CDP session se Network.loadNetworkResource ke
+   * zariye uthao. Peeche ki soch: in-page fetch()
+   * googlevideo par CORS se mar jata hai ('Failed
+   * to fetch', koi HTTP jawab hi nahi — zc14..zc20
+   * ka saboot) aur tile ka media-load sirf chhota
+   * preview tukda kheenchta hai; lekin CDP ka ye
+   * hukm page-JS se NAHI, browser ke NETWORK hisse
+   * se chalta hai — wahi session, wahi cookies,
+   * koi naya browser nahi (captcha deewaar wahan
+   * khadi hi nahi hoti), koi click nahi, koi editor
+   * nahi. URL tayyari: 'range=' (aur 'rn=' / 'rbuf=')
+   * query hisse hatao — chhoti nazar aksar USI poori
+   * file ke pate par range mehdood karke aati hai;
+   * hissa hata kar maango to server poori file deta
+   * hai. Phir resource.stream ko IO.read se poora
+   * drain karke ek Buffer.
+   * Budget: ek download-attempt me ek task ke liye
+   * zyada se zyada 2 netload koshishein (task.
+   * _mpNetloadCount); protocol-nakami wala URL
+   * (task._mpNetloadProtoFailed) usi attempt me
+   * dobara NAHI aazmaya jata — fetch tried-list
+   * wali hi nazakat.
+   * WAPSI: kamyabi par { buf, status, host,
+   * stripped }; kisi bhi nakami par null (bulane
+   * wala purani completion silsile par girta hai).
+   * Protocol nakami par '[ROOT] mainpage-netload
+   * failed' line + summary-outcome 'error' yahin
+   * darj hota hai; resource.success === false par
+   * per-attempt wali line bhi yahin banti hai
+   * (result=error:<netErrorName>). Page hi na ho /
+   * band ho to khamosh null — wo koshish hi nahi.
+   * Ye function KABHI throw nahi karta.
+   */
+  async _netloadMainpageFull(task, url) {
+    try {
+      if (!task || typeof url !== 'string' || !url) return null;
+      if (task._mpNetloadProtoFailed && task._mpNetloadProtoFailed.has(url)) return null;
+      if (Number.isFinite(task._mpNetloadCount) && task._mpNetloadCount >= 2) return null;
+      const page = this.page;
+      if (!page || (typeof page.isClosed === 'function' && page.isClosed())) return null;
+      task._mpNetloadCount = (Number.isFinite(task._mpNetloadCount) ? task._mpNetloadCount : 0) + 1;
+      const host = networkCapture.hostOf(url) || '';
+      const prep = networkCapture.rangeStripOf(url);
+      const strippedLabel = prep.stripped.length ? prep.stripped[0] : 'none';
+      const protoFail = (errMsg, lineResult) => {
+        try { if (!task._mpNetloadProtoFailed) task._mpNetloadProtoFailed = new Set(); task._mpNetloadProtoFailed.add(url); } catch (e) {}
+        try { this.log(netloadFailedLogLine({ host, err: errMsg }), 'warn'); } catch (e) {}
+        if (lineResult) {
+          try { this.log(netloadLogLine({ host, stripped: strippedLabel, status: 0, bytes: 0, result: lineResult }), 'warn'); } catch (e) {}
+        }
+        this._noteNetloadOutcome(task, 'error');
+        return null;
+      };
+      let session = null;
+      try {
+        session = typeof page.createCDPSession === 'function'
+          ? await page.createCDPSession()
+          : await page.target().createCDPSession();
+      } catch (e) { session = null; }
+      if (!session || typeof session.send !== 'function') {
+        return protoFail('cdp session unavailable');
+      }
+      try {
+        try { await session.send('Network.enable'); } catch (e) {}
+        let frameId = null;
+        try {
+          const mf = typeof page.mainFrame === 'function' ? page.mainFrame() : null;
+          frameId = mf && mf._id ? mf._id : null;
+        } catch (e) { frameId = null; }
+        if (!frameId) return protoFail('main frame id unavailable');
+        let resp = null;
+        try {
+          resp = await session.send('Network.loadNetworkResource', {
+            frameId, url: prep.url,
+            options: { disableCache: true, includeCredentials: true }
+          });
+        } catch (e) {
+          return protoFail(e && e.message ? e.message : String(e));
+        }
+        const resource = resp && resp.resource && typeof resp.resource === 'object' ? resp.resource : null;
+        if (!resource || !resource.stream) {
+          return protoFail('loadNetworkResource returned no stream');
+        }
+        if (resource.success === false) {
+          const name = typeof resource.netErrorName === 'string' && resource.netErrorName ? resource.netErrorName : 'load-failed';
+          try { if (!task._mpNetloadProtoFailed) task._mpNetloadProtoFailed = new Set(); task._mpNetloadProtoFailed.add(url); } catch (e) {}
+          try { this.log(netloadLogLine({ host, stripped: strippedLabel, status: Number(resource.httpStatusCode) || 0, bytes: 0, result: 'error:' + name }), 'warn'); } catch (e) {}
+          this._noteNetloadOutcome(task, 'error');
+          return null;
+        }
+        const buf = await drainNetloadStream((m, p) => session.send(m, p), resource.stream);
+        if (!buf) return protoFail('stream drain failed');
+        return { buf, status: Number(resource.httpStatusCode) || 0, host, stripped: strippedLabel };
+      } finally {
+        try { if (session && typeof session.detach === 'function') await session.detach(); } catch (e) {}
+      }
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * v2.48.42: ek BANDHE hue mainpage ummeedwaar ko
+   * mukammal karna — kitab me mukammal body ho to wohi,
+   * warna usi URL ka POORA fetch MAIN page ke andar se
+   * (_fetchMainpageFullInPage); phir saveGuard ke
+   * darwaze (teacher-url / content-hash / duplicate)
+   * aur save. Yahi .41 wala completion rasta hai, sirf
+   * alag function me taaki har bandhan-raasta
+   * (bound / first-appearance / viewport-trigger /
+   * exclusion) isi ek se guzre. ctx = { captureKey,
+   * bindReason, floorBytes, teacherUrl, teacherHash,
+   * timingBucket, gapSec }. Jeet par address is task
+   * ke naam claim hota hai (claim-once) aur khidki
+   * band hoti hai. Lautta hai (v2.48.46): 'saved' |
+   * 'rejected' (faisla hua, action save nahi) |
+   * 'no-body' (body mili hi nahi — faisle se pehle
+   * wapsi; bulane wala isi farq par triedUrls ka
+   * zeher-khatma karta hai).
+   */
+  async _mainpageCompleteCandidate(task, downloadFolder, settings, attempts, entry, ctx) {
+    const n = task.promptIndex + 1;
+    const cap = this.netCapture;
+    const captureKey = ctx.captureKey;
+    const floorBytes = ctx.floorBytes;
+    const teacherUrl = ctx.teacherUrl;
+    const teacherHash = ctx.teacherHash;
+    let buf = null;
+    let haveBody = false;
+    // v2.48.52 (ROUTE 1A PACK): netload se aayi body
+    // ka hisaab (host / stripped / status) — is ki
+    // [ROOT] line koshish ke aakhri faisle par EK
+    // dafa emitNetload se banti hai (protocol nakami
+    // ki line helper khud pehle hi chhod deta hai).
+    let netloadMeta = null;
+    const emitNetload = (result) => {
+      if (!netloadMeta) return;
+      try {
+        this.log(netloadLogLine({ host: netloadMeta.host, stripped: netloadMeta.stripped, status: netloadMeta.status, bytes: netloadMeta.buf.length, result }), 'info');
+      } catch (e) {}
+      this._noteNetloadOutcome(task, result === 'saved' ? 'saved' : 'rejected');
+    };
+    // v2.48.52 (ROUTE 1A PACK): bulane wale ne
+    // netload ki body pehle se haath me di ho
+    // (too-small wala rasta — wahan netload seedha
+    // bulaya jata hai taaki chhote pate par in-page
+    // fetch kabhi na chale) to wahi body aur wahi
+    // hisaab is completion ki body hai — kitab /
+    // media / fetch dobara nahi ghumte.
+    if (entry._netloadBody && entry._netloadBody.length > 0) {
+      buf = entry._netloadBody;
+      haveBody = true;
+      netloadMeta = entry._netloadMeta || null;
+      if (netloadMeta && netloadMeta.status) entry.status = netloadMeta.status;
+    }
+    // kitab me pehle se pakdi hui body (mukammal ho
+    // to) — netload wali body haath me ho to kitab
+    // use badal NAHI sakti (wahan is pate ki sirf
+    // chhoti nazar rakhi hoti hai).
+    try {
+      const held = typeof cap.mainpageBodyForUrl === 'function' ? cap.mainpageBodyForUrl(entry.url) : null;
+      if (!netloadMeta && held && held.buffer && held.buffer.length > 0) { buf = held.buffer; haveBody = true; }
+    } catch (e) {}
+    // v2.48.52 (ROUTE 1A PACK — gate fix): is nazar
+    // ka MALOOM kul size. partial ka matlab ab
+    // 'rakhe bytes < kul size' hai — bytes kul ke
+    // barabar hon to body POORI hai, chahe us jawab
+    // ka status 206 hi kyon na raha ho; kul na
+    // maloom ho to purana rawaiya (status / partial
+    // jhanda) bilkul waisa hi.
+    const knownTotal = saveGuard.mainpageKnownTotalOf({
+      knownTotal: entry.knownTotal, contentRange: entry.contentRange,
+      declaredLength: entry.declaredLength, declared: entry.declared, status: entry.status
+    });
+    if (haveBody && !netloadMeta && entry.partial && entry.src === 'googlevideo') {
+      // googlevideo tukda mukammal nahi — mukammal
+      // karne ke raste neeche hain (media-load / fetch).
+      // v2.48.52: rakhi body kul size tak pahunch
+      // gayi ho to wo tukda NAHI rahi — phainkna
+      // band, wahi body seedha faisle par jayegi.
+      // (netload se aayi body is phaink se bahar
+      // hai — wo capture ka tukda hai hi nahi.)
+      if (!(knownTotal !== null && buf.length >= knownTotal)) { buf = null; haveBody = false; }
+    }
+    if (!haveBody) {
+      // v2.48.47 (MEDIA-LOAD COMPLETION — ZEROCLICK14):
+      // in-page fetch() googlevideo ki body NAHI padh
+      // sakta ('Failed to fetch', koi HTTP jawab hi
+      // nahi — page-JS par CORS-class inkaar), lekin
+      // CDP capture us pabandi se bandha nahi hai
+      // (editor-harvest ki promoted body is ka saboot
+      // hai). Is liye googlevideo par pehle MEDIA-LOAD
+      // (usi page ka adrishya <video> element poori
+      // file khinchta hai, body capture se milti hai),
+      // fetch aakhri chaara. Baaki (flow-content)
+      // addresses par purani tartib: fetch pehle,
+      // nakam ho to media-load.
+      const isGv = entry.src === 'googlevideo' || networkCapture.isGooglevideoPlaybackUrl(entry.url);
+      const applyCompletion = (res) => {
+        if (res && res.buf) {
+          buf = res.buf;
+          haveBody = true;
+          entry.status = res.status || entry.status;
+          if (res.status === 206) entry.partial = true;
+        }
+      };
+      const tryFetch = async () => { applyCompletion(await this._fetchMainpageFullInPage(entry.url)); };
+      // v2.48.50 (item 1): media-load ab task + tile
+      // hint ke saath — pehle TILE ka apna element
+      // drive hoga, hidden sirf chaara.
+      const tryMedia = async () => { applyCompletion(await this._loadMainpageFullViaMedia(entry.url, { task, tileIndexHint: ctx.tileIndexHint })); };
+      // v2.48.52 (ROUTE 1A PACK): googlevideo par SAB
+      // se pehle NETLOAD — URL ka range param hata
+      // kar MAIN page ke apne CDP session se
+      // Network.loadNetworkResource; body browser ke
+      // network hisse se aati hai (na page-JS fetch
+      // ki CORS deewaar, na naya browser, na click,
+      // na editor). Nakam ho to purani tartib
+      // (media-load, phir fetch) bilkul waisi hi —
+      // .52, .51 ka strict superset hai.
+      const tryNetload = async () => {
+        const res = await this._netloadMainpageFull(task, entry.url);
+        if (res && res.buf) { netloadMeta = res; applyCompletion(res); }
+      };
+      if (isGv) {
+        await tryNetload();
+        if (!haveBody) await tryMedia();
+        if (!haveBody) await tryFetch();
+      } else {
+        await tryFetch();
+        if (!haveBody) await tryMedia();
+      }
+    }
+    if (!haveBody || !buf) {
+      // v2.48.46: 'no body' wapsi ab naam se darj —
+      // .45 tak ye khamoshi se false laut jati thi
+      // (aur URL triedUrls me zeher ban kar reh jata
+      // tha). Host naam ke saath line banti hai.
+      try {
+        this.log(`[ROOT] [Prompt #${n}] mainpage-complete: no body from in-page fetch host=${networkCapture.hostOf(entry.url)}`, 'warn');
+      } catch (e) {}
+      return 'no-body';
+    }
+    const verdictFor = (b, statusOverride) => {
+      const hash = saveGuard.contentHash(b);
+      let dup = false;
+      try { dup = !!saveGuard.checkDuplicate(b, captureKey || null).dup; } catch (e) { dup = false; }
+      const hdrOk = downloadFetch.looksLikeVideoBuffer(b);
+      return saveGuard.mainpageHarvestVerdict({
+        bound: true,
+        url: entry.url,
+        teacherUrl,
+        byteLength: b.length,
+        floorBytes,
+        headerOk: hdrOk,
+        // v2.48.52 (gate fix): kul size maloom ho to
+        // partial = rakhe bytes kul se kam — status
+        // 206 ke bawajood bytes kul ke barabar hon
+        // to body POORI ummeedwaar hai. Kul na
+        // maloom ho to purana usool (status 206 =
+        // partial) bilkul waisa hi. EK hifazat:
+        // partial sirf tab jab body asal video ki
+        // ho (header durust) — kachra body (HTML
+        // error page) 'adhoora video' NAHI hoti;
+        // faisle me partial header-darwaze se PEHLE
+        // aata hai, is liye kachra wahan fetch-full
+        // ki jagah header par hi rukna chahiye
+        // (warna har error page ek dobara-fetch
+        // mangta — .51 ka rawaiya bhi yahi tha).
+        partial: knownTotal !== null ? (hdrOk && b.length < knownTotal) : ((statusOverride || entry.status) === 206 ? true : false),
+        status: statusOverride || entry.status,
+        contentRange: entry.contentRange,
+        declaredLength: entry.declaredLength,
+        duplicate: dup,
+        hash,
+        teacherHash
+      });
+    };
+    let verdict = verdictFor(buf);
+    if (verdict.action === 'fetch-full') {
+      // kitab wali body adhoori nikli — usi URL ka
+      // poora fetch MAIN page ke andar se, phir
+      // faisla dobara.
+      // v2.48.52: agar ye body NETLOAD se aayi thi
+      // to us koshish ka anjaam yahin darj hai
+      // (rejected:partial) — purana fetch-full
+      // rasta neeche bilkul waisa hi chalta hai.
+      // EK pabandi: too-small wale raste ki entry
+      // (_noInPageFetch) par in-page fetch kabhi
+      // nahi — chhota pata sirf netload / media-load
+      // se parkha jata hai (.51 ki hifazat barkarar).
+      if (netloadMeta) emitNetload('rejected:partial');
+      if (!entry._noInPageFetch) {
+        const fetched = await this._fetchMainpageFullInPage(entry.url);
+        if (fetched && fetched.buf && fetched.buf.length > 0) {
+          buf = fetched.buf;
+          verdict = verdictFor(buf, fetched.status);
+        }
+      }
+    }
+    if (verdict.action !== 'save') {
+      emitNetload('rejected:' + (verdict.reason || 'rejected'));
+      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest candidate rejected (${verdict.reason}) — trying the remaining main-page candidates`, 'warn');
+      return 'rejected';
+    }
+    try {
+      cap.claimMainpageVideo(entry.url, { key: captureKey || null, label: String(n) });
+    } catch (e) {}
+    task.completedVideoUrl = entry.url;
+    const ok = await this._saveBufferForTask(task, downloadFolder, settings, buf, entry.url, 'mainpage-harvest');
+    // v2.48.50 (item 7): race me jeet DUSRE raste ki
+    // ho (mera save 'route-race' par ruka ho, ya
+    // mediaSaved usi ke save se true hua ho aur dawa
+    // usi ke naam ho) to ye jeet is raste ki NAHI hai
+    // — 'rejected' hi wapsi hai, warna
+    // via=mainpage-harvest ki jhooti line banti.
+    const raceLostMp = !!(task._raceActive && task._raceWonBy && task._raceWonBy !== 'mainpage-harvest');
+    if ((ok || task.mediaSaved) && task._saveRejectedReason !== 'route-race' && !raceLostMp) {
+      emitNetload('saved');
+      const g = ctx.gapSec();
+      try { if (typeof cap.mainpageMarkWindowDone === 'function') cap.mainpageMarkWindowDone(captureKey); } catch (e) {}
+      this.log(`[ROOT] via=mainpage-harvest gap=${g}s`, 'success');
+      try {
+        const audit = saveGuard.mainpageAuditOf({
+          host: networkCapture.hostOf(entry.url), bytes: buf.length,
+          src: entry.src === 'googlevideo' ? 'googlevideo' : 'flow-content',
+          decision: 'promoted', reason: 'ok',
+          bindReason: ctx.bindReason || 'none', claimedBy: String(n)
+        });
+        this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${ctx.timingBucket()}`, 'info');
+      } catch (e) {}
+      attempts.push({ strategy: 'mainpage-harvest', ok: true, note: `the file was captured from the main project page's own stream (${entry.src}), bound to this video by ${ctx.bindReason || 'binding'}, and completed with a full fetch inside that same page — no editor opened anywhere, no click, no menu; render→save gap ${g}s` });
+      return 'saved';
+    }
+    attempts.push({ strategy: 'mainpage-harvest', ok: false, note: `the main-page stream for this video did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'})` });
+    emitNetload('rejected:' + (task._saveRejectedReason || 'save-failed'));
+    // v2.48.46: body mili, faisla save tha, lekin save
+    // ki jaanch nakam — bulane wale ke liye ye bhi
+    // 'rejected' hi hai (URL triedUrls me rehta hai;
+    // zeher-khatma sirf 'no-body' par hota hai).
+    return 'rejected';
+  }
+
+  /**
+   * v2.48.47 (CDP COOKIE TRANSFER — ZEROCLICK14):
+   * headless session ka DARWAZA. Do raste, ek hi
+   * manzil — probe + editor harvest bulane wale
+   * (_tryHeadlessHarvest) ke paas rehte hain; ye
+   * function sirf LAUNCH deta hai:
+   *   ASAL rasta — CDP COOKIE TRANSFER
+   *     (_headlessLaunchTransferred): isi worker ke
+   *     LIVE browser se CDP 'Network.getAllCookies'
+   *     se cookies uthao, headless browser ko bilkul
+   *     TAAZI temp userDataDir par kholo aur
+   *     navigation se PEHLE 'Network.setCookies' se
+   *     cookies bitha do. Wajah: run ke dauraan asal
+   *     profile ki 'Default\Network\Cookies' file
+   *     generation Chrome ke lock me EBUSY rehti hai
+   *     (ZEROCLICK14 ki clone line saboot hai) —
+   *     file-copy us pal kabhi jeet hi nahi sakta;
+   *     CDP transfer par koi file lock hai hi nahi.
+   *   CHAARA — purana FILE-CLONE rasta bilkul waisa
+   *     hi (_headlessLaunchCloned): live handle na
+   *     ho, cookies 0 aayen, ya transfer nakam ho —
+   *     teeno haal me clone hi chalta hai, aur us ki
+   *     nakami ki wajeh / strategy note bilkul aaj
+   *     jaisi rehti hai.
+   * PARTNER TASK 1 (Issue #1, 2026-11-05): .47 tak
+   * CDP transfer ki nakami bilkul chup rehti thi —
+   * ZEROCLICK15 me saare attempts me sirf clone ka
+   * EBUSY bola aur transfer kabhi aazmaya bhi gaya
+   * tha ya nahi, ye log se nahi nikal saka. Ab
+   * dispatcher rasta chunne se pehle ek
+   * 'headless-session path=' line aur transfer nakam
+   * ho to us ki wajah ke saath ek 'headless-transfer
+   * failed' line deta hai; baaki sab (success line,
+   * probe, clone, strategy note) bilkul waisa hi.
+   * Safal = { browser, page, capture, cloneDir }
+   * (cloneDir dono raaston me wohi temp dir hai jo
+   * _headlessCloseSession mitata hai); clone raste
+   * ki nakami = us ka throw.
+   */
+  async _headlessLaunch(account) {
+    let cookies = null;
+    const liveHandle = !!(this.browser || (this.page && !this.page.isClosed()));
+    if (liveHandle) {
+      try { cookies = await this._headlessReadLiveCookies(); } catch (e) { cookies = null; }
+    }
+    const cookieCount = Array.isArray(cookies) ? cookies.length : 0;
+    const sessionPath = headlessHarvest.decideSessionPath({ liveHandle, cookieCount });
+    // PARTNER TASK 1 (Issue #1, MK tasking + amendment,
+    // 2026-11-05): dispatcher khud EK dafa bolta hai —
+    // rasta chunne se PEHLE. Is ek line se ek hi live
+    // run me teenon haal alag ho jate hain: transfer
+    // kabhi aazmaya hi nahi (path=clone), live read ne
+    // 0 cookies diye (cookies=0), ya transfer aazmaya
+    // gaya aur nakam hua (neeche wali failed line us
+    // ki wajah naam se degi). ZEROCLICK15 me ye farq
+    // log se nikal hi nahi saka tha.
+    // v2.48.49: live handle hote hue read BILKUL nakam
+    // (null) ho to line 'cookies=null' bolti hai —
+    // khaali read ke 'cookies=0' se alag (ZEROCLICK16
+    // me dono haal ek ho jate the). Handle hi na ho
+    // to purani shakal (cookies=0) hi rehti hai.
+    const cookiesLabel = liveHandle && !Array.isArray(cookies) ? 'null' : String(cookieCount);
+    try { this.log(`[ROOT] headless-session path=${sessionPath} liveHandle=${liveHandle} cookies=${cookiesLabel}`); } catch (e) {}
+    if (sessionPath === 'cdp') {
+      const session = await this._headlessLaunchTransferred(cookies);
+      if (session) return session;
+      // PARTNER TASK 1: transfer ki nakami ab chup
+      // nahi rehti — _headlessLaunchTransferred ne
+      // wajah this._lastTransferFailure me rakhi hai;
+      // clone par girne se pehle EK line me wahi wajah
+      // (whitespace dabaa kar, zyada se zyada 160
+      // harf). Safal transfer par ye line kabhi nahi
+      // banti; clone raste ki apni lines / strategy
+      // note bilkul waisi hi rehti hain.
+      const rawReason = this._lastTransferFailure ? String(this._lastTransferFailure) : 'unknown reason';
+      const reason = rawReason.replace(/\s+/g, ' ').trim().slice(0, 160) || 'unknown reason';
+      try { this.log(`[ROOT] headless-transfer failed (${reason}) — clone fallback will run`); } catch (e) {}
+    }
+    return this._headlessLaunchCloned(account);
+  }
+
+  /**
+   * v2.48.47: LIVE browser se is account ki cookies
+   * CDP par uthao. v2.48.49 (COOKIE-READ V2 —
+   * ZEROCLICK16): akela tareeqa ('Network.getAllCookies'
+   * browser-level par) live browser par 0 deta tha —
+   * ya chup-chaap nakam hota tha; .48 ki dispatcher
+   * line dono haal 'cookies=0' me mila deti thi aur
+   * CDP transfer kabhi chuna hi nahi gaya (zc16:
+   * 6/6 attempts 'path=clone liveHandle=true
+   * cookies=0'). Ab paanch tareeqe TARTIB se
+   * aazmaye jate hain (headlessHarvest.
+   * COOKIE_READ_METHODS): browser-level CDP
+   * 'Storage.getCookies', browser-level
+   * 'Network.getAllCookies', page-level CDP
+   * 'Storage.getCookies', page-level
+   * 'Network.getAllCookies', aakhir me Puppeteer ka
+   * page.cookies() API (teen Google/Flow pate).
+   * Pehla count>0 wala tareeqa jeet-ta hai; ek
+   * tareeqe ki nakami baaki ko nahi rokti; har
+   * session finally me detach hota hai. Har read ke
+   * baad EK '[ROOT] headless-cookieread …' line
+   * (har tareeqe ka count ya 'err', chosen, total).
+   * Wapsi: jeeta hua array; koi >0 nahi lekin kam az
+   * kam ek tareeqa chal gaya to [] (khaali read);
+   * paanchon nakam to null (asal nakami —
+   * dispatcher 'cookies=null' bolta hai).
+   */
+  async _headlessReadLiveCookies() {
+    const results = {};
+    const noteErr = (key, e) => {
+      const raw = e && e.message ? String(e.message) : String(e == null ? 'unknown error' : e);
+      results[key] = { error: raw.replace(/\s+/g, ' ').trim().slice(0, 60) || 'unknown error' };
+    };
+    const noteRes = (key, res) => {
+      results[key] = { cookies: res && Array.isArray(res.cookies) ? res.cookies : [] };
+    };
+    // (a)+(b) BROWSER-level CDP session ke dono
+    // tareeqe — session bane to dono usi par, har
+    // haal me detach.
+    let bSession = null;
+    let bErr = null;
+    try {
+      if (this.browser && typeof this.browser.target === 'function') {
+        bSession = await this.browser.target().createCDPSession();
+      }
+    } catch (e) { bErr = e; }
+    if (bSession) {
+      try { noteRes('bStorage', await bSession.send('Storage.getCookies')); } catch (e) { noteErr('bStorage', e); }
+      try { noteRes('bNetwork', await bSession.send('Network.getAllCookies')); } catch (e) { noteErr('bNetwork', e); }
+      try { if (typeof bSession.detach === 'function') await bSession.detach(); } catch (e) {}
+    } else {
+      noteErr('bStorage', bErr || new Error('no browser CDP session'));
+      noteErr('bNetwork', bErr || new Error('no browser CDP session'));
+    }
+    // (c)+(d) PAGE-level CDP session ke dono
+    // tareeqe (createCDPSession ya page.target()) —
+    // wahi usool: bane to dono, phir detach.
+    const pg = this.page;
+    let pSession = null;
+    let pErr = null;
+    try {
+      if (pg && !pg.isClosed()) {
+        if (typeof pg.createCDPSession === 'function') pSession = await pg.createCDPSession();
+        else if (pg.target && typeof pg.target === 'function') pSession = await pg.target().createCDPSession();
+      }
+    } catch (e) { pErr = e; }
+    if (pSession) {
+      try { noteRes('pStorage', await pSession.send('Storage.getCookies')); } catch (e) { noteErr('pStorage', e); }
+      try { noteRes('pNetwork', await pSession.send('Network.getAllCookies')); } catch (e) { noteErr('pNetwork', e); }
+      try { if (typeof pSession.detach === 'function') await pSession.detach(); } catch (e) {}
+    } else {
+      noteErr('pStorage', pErr || new Error('no page CDP session'));
+      noteErr('pNetwork', pErr || new Error('no page CDP session'));
+    }
+    // (e) Puppeteer ka apna page.cookies() — CDP
+    // raaston se alag satah (Puppeteer-shakal ke
+    // cookie objects; mapCookiesForSetCookies unhe
+    // bhi sambhalta hai).
+    try {
+      if (pg && !pg.isClosed() && typeof pg.cookies === 'function') {
+        const arr = await pg.cookies('https://flow.google.com/', 'https://www.google.com/', 'https://accounts.google.com/');
+        results.pageApi = { cookies: Array.isArray(arr) ? arr : [] };
+      } else {
+        noteErr('pageApi', new Error('page.cookies unavailable'));
+      }
+    } catch (e) { noteErr('pageApi', e); }
+    const agg = headlessHarvest.aggregateCookieRead(results);
+    try { this.log(headlessHarvest.cookieReadLogLine(agg)); } catch (e) {}
+    return agg.cookies;
+  }
+
+  /**
+   * v2.48.47: headless browser TAAZI temp userDataDir
+   * par kholo (koi profile clone NAHI) aur cookies
+   * CDP 'Network.setCookies' se navigation se pehle
+   * bitha do. Launch ke usool clone raste wale hi:
+   * wahi HEADLESS_MODE, wahi executable, wahi args,
+   * wahi windowless guard (guard nakam = haar —
+   * clone rasta apni baari me wahi pinned
+   * HEADLESS_NOT_WINDOWLESS error phainkega, taaki
+   * note ki shakal na badle). Safal par
+   * '[ROOT] headless-transfer cookies=<n> via=cdp'
+   * line. Koi bhi nakami = browser band + temp dir
+   * mita + null (bulane wala clone par jata hai) —
+   * PARTNER TASK 1 ke baad nakami ki wajah
+   * this._lastTransferFailure me bhi rehti hai,
+   * jise dispatcher ek line me bolta hai.
+   */
+  async _headlessLaunchTransferred(cookies, userDirOverride) {
+    // PARTNER TASK 1 (Issue #1, 2026-11-05): nakami
+    // ki wajah ab gum nahi hoti — har nakam wapsi
+    // this._lastTransferFailure me apni wajah rakhti
+    // hai (dispatcher use 'headless-transfer failed'
+    // line me bolta hai). Safal wapsi (session) ki
+    // shakal bilkul waisi hi hai.
+    // v2.48.50 (Part B — COMBO): userDirOverride diya
+    // ho to session USI dir (tolerant clone) par
+    // khulta hai; us surat me dir ki malkiyat bulane
+    // wale ki hai — nakami par yahan se NAHI mitaya
+    // jata (combo khud saaf karta hai); session band
+    // hone par aam cloneDir safai hi use mitayegi.
+    this._lastTransferFailure = null;
+    const fail = (reason) => {
+      try { this._lastTransferFailure = reason; } catch (e) {}
+      return null;
+    };
+    const mapped = headlessHarvest.mapCookiesForSetCookies(cookies);
+    if (!mapped.length) {
+      return fail(`zero mapped cookies (live read returned ${Array.isArray(cookies) ? cookies.length : 0})`);
+    }
+    let userDir = null;
+    let ownsDir = true;
+    let browser = null;
+    try {
+      if (userDirOverride) { userDir = userDirOverride; ownsDir = false; }
+      else userDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-headless-'));
+      const launchOpts = {
+        executablePath: getChromeExecutablePath(),
+        headless: headlessHarvest.HEADLESS_MODE,
+        userDataDir: userDir,
+        defaultViewport: { width: 1366, height: 900 },
+        args: [
+          '--no-first-run',
+          '--no-default-browser-check',
+          '--disable-session-crashed-bubble',
+          '--hide-crash-restore-bubble',
+          '--disable-dev-shm-usage',
+          '--disable-blink-features=AutomationControlled',
+          '--disable-notifications',
+          '--deny-permission-prompts',
+          '--disable-popup-blocking',
+          '--disable-features=NotificationTriggers,PushMessaging',
+          '--mute-audio',
+          '--disk-cache-size=104857600'
+        ],
+        ignoreDefaultArgs: ['--enable-automation']
+      };
+      if (!headlessHarvest.launchIsWindowless(launchOpts)) {
+        if (ownsDir) await headlessHarvest.removeHeadlessClone(userDir);
+        return fail('a windowless (headless) launch is not guaranteed on this platform');
+      }
+      browser = await puppeteer.launch(launchOpts);
+      const pages = await browser.pages();
+      const page = pages.length > 0 ? pages[0] : await browser.newPage();
+      // Taaki 'navigator.webdriver' na dikhe — clone
+      // raste wali hi safai.
+      try {
+        await page.evaluateOnNewDocument(() => {
+          try { delete Object.getPrototypeOf(navigator).webdriver; } catch (e) {}
+          Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+        });
+      } catch (e) {}
+      // Cookies navigation se PEHLE bithao.
+      let cdp = null;
+      try {
+        if (typeof page.createCDPSession === 'function') cdp = await page.createCDPSession();
+        else cdp = await page.target().createCDPSession();
+      } catch (e) { cdp = null; }
+      if (!cdp) throw new Error('no CDP session on the invisible browser page');
+      try { await cdp.send('Network.enable'); } catch (e) {}
+      await cdp.send('Network.setCookies', { cookies: mapped });
+      try { await cdp.detach(); } catch (e) {}
+      // v2.48.50 (Part B): line me ab cookie ke SIRF
+      // NAAM bhi (sorted, hadd 300 harf) — qeematein
+      // kabhi nahi. Combo ki dobara transfer par bhi
+      // yahi line banti hai (wo bhi ek asal transfer
+      // hai).
+      try { this.log(`[ROOT] headless-transfer cookies=${mapped.length} via=cdp names=${headlessHarvest.cookieNamesForLog(mapped)}`); } catch (e) {}
+      const capture = new networkCapture.NetworkCapture({});
+      try { capture.attach(page); } catch (e) {}
+      // v2.48.50: session par apna rasta + live cookies
+      // darj — combo ka trigger (headlessComboApplies)
+      // aur us ka setCookies inhi par bandha hai.
+      return { browser, page, capture, cloneDir: userDir, via: 'cdp', liveCookies: Array.isArray(cookies) ? cookies : [] };
+    } catch (e) {
+      try { if (browser) await browser.close(); } catch (ignored) {}
+      try { if (userDir && ownsDir) await headlessHarvest.removeHeadlessClone(userDir); } catch (ignored) {}
+      // Launch ki nakami, CDP session ki ghair-
+      // maujoodgi, setCookies ka inkaar — teeno yahin
+      // aate hain; wajah launchFailureReason ki
+      // shakal me (message + code) darj hoti hai.
+      return fail(headlessHarvest.launchFailureReason(e));
+    }
+  }
+
+  /**
+   * v2.48.44 (HEADLESS HARVEST PACK — OPTION 2): profile
+   * ki throwaway COPY par BILKUL BINA-WINDOW Chrome
+   * chalao — clone sirf session ke buniyadi hisse leta
+   * hai (engine/headlessHarvest), asal profile sirf
+   * PADHA jata hai (kabhi khola/likha nahi jata). Launch
+   * se pehle windowless darwaza (launchIsWindowless)
+   * fail ho to browser banta hi nahi — visible window
+   * par girne ka khatra kabhi nahi liya jata.
+   * Lautta hai: { browser, page, capture, cloneDir }.
+   * v2.48.47: ye ab CHAARA (fallback) hai —
+   * _headlessLaunch pehle CDP cookie transfer aazmata
+   * hai; ye rasta bilkul waisa hi chalta hai jab
+   * transfer mayassar na ho ya nakam ho jaye.
+   */
+  async _headlessLaunchCloned(account) {
+    const profileRoot = getAccountProfilePath(account.id);
+    // v2.48.45: launch fail ho to EK dafa taza clone ke
+    // saath dobara koshish (neeche loop) — aur har
+    // koshish ki asal wajah log/note me (ZEROCLICK12 ka
+    // diagnostic gap band).
+    for (let launchAttempt = 1; ; launchAttempt++) {
+    const cloneDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-headless-'));
+    let clone = null;
+    try {
+      clone = await headlessHarvest.buildHeadlessClone(profileRoot, cloneDir);
+    } catch (e) {
+      // v2.48.46: clone FAIL par bhi us ka hisaab log
+      // hota hai — throw ke saath chipka cloneReport
+      // (ZEROCLICK13 me ye line sirf kamyabi par banti
+      // thi, is liye missing-vs-copy-fail ka farq live
+      // run me dikha hi nahi).
+      if (e && e.cloneReport) {
+        try { this.log(headlessHarvest.cloneLogLine(e.cloneReport)); } catch (ignored) {}
+        if (e.cloneReport.cookiesRel) {
+          try { this.log(`[ROOT] headless-clone cookies-found-at=${e.cloneReport.cookiesRel}`); } catch (ignored) {}
+        }
+      }
+      await headlessHarvest.removeHeadlessClone(cloneDir);
+      throw e;
+    }
+    // v2.48.45: clone ka hisaab ek line me — copy
+    // warnings ab kahin gum nahi hoti.
+    try { this.log(headlessHarvest.cloneLogLine(clone)); } catch (e) {}
+    // v2.48.46: scan se mili ghair-mamooli Cookies
+    // jagah bhi naam se darj.
+    if (clone && clone.cookiesRel) {
+      try { this.log(`[ROOT] headless-clone cookies-found-at=${clone.cookiesRel}`); } catch (e) {}
+    }
+    const launchOpts = {
+      executablePath: getChromeExecutablePath(),
+      headless: headlessHarvest.HEADLESS_MODE,
+      userDataDir: cloneDir,
+      defaultViewport: { width: 1366, height: 900 },
+      args: [
+        '--no-first-run',
+        '--no-default-browser-check',
+        '--disable-session-crashed-bubble',
+        '--hide-crash-restore-bubble',
+        '--disable-dev-shm-usage',
+        '--disable-blink-features=AutomationControlled',
+        '--disable-notifications',
+        '--deny-permission-prompts',
+        '--disable-popup-blocking',
+        '--disable-features=NotificationTriggers,PushMessaging',
+        '--mute-audio',
+        '--disk-cache-size=104857600'
+      ],
+      ignoreDefaultArgs: ['--enable-automation']
+    };
+    if (!headlessHarvest.launchIsWindowless(launchOpts)) {
+      await headlessHarvest.removeHeadlessClone(cloneDir);
+      this.log('[ROOT] headless-harvest aborted — a windowless launch is not guaranteed here, so no browser was started at all', 'warn');
+      const err = new Error('a windowless (headless) launch is not guaranteed on this platform');
+      err.code = 'HEADLESS_NOT_WINDOWLESS';
+      throw err;
+    }
+    let browser = null;
+    try {
+      browser = await puppeteer.launch(launchOpts);
+    } catch (e) {
+      await headlessHarvest.removeHeadlessClone(cloneDir);
+      if (launchAttempt === 1) {
+        // v2.48.45: pehli launch ki wajah hamesha log
+        // hoti hai; phir taza clone ke saath ek retry.
+        this.log(`[ROOT] headless-harvest: launch failed (${headlessHarvest.launchFailureReason(e)}) — retrying once with a fresh copy of the session`, 'warn');
+        continue;
+      }
+      throw e;
+    }
+    const pages = await browser.pages();
+    const page = pages.length > 0 ? pages[0] : await browser.newPage();
+    try {
+      await page.evaluateOnNewDocument(() => {
+        try { delete Object.getPrototypeOf(navigator).webdriver; } catch (e) {}
+        Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
+      });
+    } catch (e) {}
+    const capture = new networkCapture.NetworkCapture({});
+    try { capture.attach(page); } catch (e) {}
+    // v2.48.50: rasta darj — combo sirf 'cdp' par
+    // lagta hai, clone raste par kabhi nahi.
+    return { browser, page, capture, cloneDir, via: 'clone' };
+    }
+  }
+
+  /** Headless session band karo + clone mita do (hamesha, har surat me). */
+  async _headlessCloseSession(session) {
+    if (!session) return;
+    try { if (session.capture) session.capture.detach(); } catch (e) {}
+    try { if (session.browser) await session.browser.close(); } catch (e) {}
+    try { await headlessHarvest.removeHeadlessClone(session.cloneDir); } catch (e) {}
+  }
+
+  /** Headless page ke DOM se probe ke nishan (ek nazar). */
+  async _headlessReadProbeDom(page) {
+    try {
+      return await page.evaluate(() => {
+        const vis = (el) => { try { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; } catch (e) { return false; } };
+        const anyVis = (sel) => Array.from(document.querySelectorAll(sel)).some(vis);
+        const hasPromptBox = anyVis('.ProseMirror, div[contenteditable="true"], div[role="textbox"]');
+        const hasTiles = document.querySelectorAll('flow-grid-tile-container').length > 0;
+        const hasAvatar = anyVis('[data-testid*="avatar"], img[alt*="ccount"]');
+        let hasSignIn = false;
+        for (const el of Array.from(document.querySelectorAll('a, button'))) {
+          const t = (el.textContent || '').trim().toLowerCase();
+          const href = (el.getAttribute && el.getAttribute('href')) || '';
+          if (href.includes('accounts.google.com')) { hasSignIn = true; break; }
+          if ((t === 'sign in' || t === 'log in') && vis(el)) { hasSignIn = true; break; }
+        }
+        const hasCaptcha = !!document.querySelector('iframe[src*="recaptcha"], .g-recaptcha, [data-sitekey]');
+        const text = ((document.body && document.body.innerText) || '').slice(0, 6000);
+        return { url: window.location.href, hasPromptBox, hasTiles, hasAvatar, hasSignIn, hasCaptcha, text };
+      });
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * PROBE ka asal kaam: headless page Flow ke home par
+   * jata hai, nishaanon ka chhota intezaar karta hai,
+   * aur snapshot ka faisla headlessHarvest ke khalis
+   * hisaab se hota hai. Tests _headlessProbeSnapshot
+   * ko stub karke asal classifier chalate hain.
+   */
+  /** Nishaanon ka chhota intezaar — koi nishan dikhe to foran wapsi. */
+  async _headlessProbeWait(page, waitMs) {
+    const deadline = Date.now() + Math.max(0, waitMs || 0);
+    let snap = null;
+    for (;;) {
+      snap = await this._headlessReadProbeDom(page);
+      if (!snap) break;
+      if (snap.hasPromptBox || snap.hasTiles || snap.hasAvatar || snap.hasSignIn || snap.hasCaptcha) break;
+      if (Date.now() >= deadline || this.isStopping) break;
+      await sleep(500);
+    }
+    return snap;
+  }
+
+  async _headlessProbeSnapshot(page) {
+    try {
+      await page.goto('https://flow.google.com/', { waitUntil: 'domcontentloaded', timeout: this.headlessNavTimeoutMs || 45000 });
+    } catch (e) {}
+    // v2.48.50 (item 13 — PROBE PATIENCE): 'logged-out'
+    // ka faisla ab jaldi nahi hota. Pehli nazar me koi
+    // pakka nishan na mile (aur haal 'blocked' bhi na
+    // ho — wo deewaar foran wapas hoti hai) to:
+    // koshish 2 = network ke thaharne ka intezaar +
+    // taaza nazar; koshish 3 = EK reload + taaza
+    // nazar. Kul ~10s ki hadd me. Session kabhi kabhi
+    // der se jaagta hai (ZEROCLICK17 ke baad ye sabr
+    // asal farq ban sakta hai); 'logged-in'/'blocked'
+    // pehli nazar par hi pakke hain, un par sabr
+    // kabhi nahi lagta.
+    let snap = await this._headlessProbeWait(page, 4000);
+    if (!snap) return snap;
+    const classify = (s) => headlessHarvest.classifyProbeSnapshot(s);
+    if (classify(snap) !== 'logged-out' || this.isStopping) return snap;
+    try {
+      if (page && typeof page.waitForNetworkIdle === 'function') {
+        await page.waitForNetworkIdle({ timeout: 3000 });
+      }
+    } catch (e) {}
+    await sleep(500);
+    const snap2 = await this._headlessProbeWait(page, 2000);
+    if (snap2) snap = snap2;
+    if (classify(snap) !== 'logged-out' || this.isStopping) return snap;
+    try {
+      if (page && typeof page.reload === 'function') {
+        await page.reload({ waitUntil: 'domcontentloaded', timeout: this.headlessNavTimeoutMs || 45000 });
+      }
+    } catch (e) {}
+    const snap3 = await this._headlessProbeWait(page, 3000);
+    if (snap3) snap = snap3;
+    return snap;
+  }
+
+  /** Probe: snapshot lo aur faisla wapas karo ('logged-in' sirf pakke nishan par). */
+  async _headlessProbeOnce(account, page) {
+    const snap = await this._headlessProbeSnapshot(page);
+    // v2.48.50 (Part B): aakhri snapshot engine par
+    // rakho — probe ki log line url + nishan usi se
+    // bharti hai (classify wale hi fields).
+    try { this._lastHeadlessProbeSnap = snap || null; } catch (e) {}
+    if (!snap) return 'logged-out';
+    return headlessHarvest.classifyProbeSnapshot(snap);
+  }
+
+  /**
+   * Is task ka editor ADRISHYA browser me kholo: pehle
+   * wahi project (visible page ka pata), phir
+   * fingerprint se tile, phir tile click — bilkul wahi
+   * tareeqa jo visible editor kholne ka hai, lekin ye
+   * page ek bina-window browser me hai: screen par kuch
+   * aa hi nahi sakta. Lautta hai: true (editor khula).
+   */
+  async _headlessOpenTaskEditor(hpage, task, tileIndexHint) {
+    let projectUrl = null;
+    try {
+      const u = this.page && !this.page.isClosed() ? (this.page.url() || '') : '';
+      if (u.includes('/project/')) projectUrl = u.split('/edit/')[0];
+    } catch (e) {}
+    if (!projectUrl) return false;
+    try {
+      await hpage.goto(projectUrl, { waitUntil: 'domcontentloaded', timeout: this.headlessNavTimeoutMs || 45000 });
+    } catch (e) {}
+    const deadline = Date.now() + 15000;
+    let tileCount = 0;
+    for (;;) {
+      try { tileCount = await hpage.evaluate(() => document.querySelectorAll('flow-grid-tile-container').length); } catch (e) { tileCount = 0; }
+      if (tileCount > 0) break;
+      if (Date.now() >= deadline || this.isStopping) return false;
+      await sleep(500);
+    }
+    const idx = await this._resolveTileIndexForTask(task, tileIndexHint, hpage);
+    if (!Number.isFinite(idx) || idx < 0) return false;
+    const coords = await this._tileCenterCoords(idx, hpage);
+    if (!coords || !coords.found) return false;
+    for (let clickTry = 0; clickTry < 2; clickTry++) {
+      try { await hpage.mouse.click(coords.x, coords.y); } catch (e) {}
+      await sleep(1500);
+      if (await this._inEditorView(hpage)) return true;
+    }
+    return await this._inEditorView(hpage);
+  }
+
+  /**
+   * v2.48.50 (Part B — CLONE+INJECT COMBO): transfer
+   * session ke 'logged-out' aane par dusra mauqa:
+   *   1. profile ka TOLERANT clone (sirf Cookies ki
+   *      kamzori qubool — baaqi har essential ki
+   *      nakami par haar, strict wali wajah ke saath);
+   *   2. clone ke andar live cookies se bani SYNTHETIC
+   *      Cookies DB (item 11) — clone ab 'mukammal'
+   *      hai, EBUSY wali kami DB se bhari;
+   *   3. wahi CDP transfer (setCookies, navigation se
+   *      pehle) lekin userDataDir = CLONE DIR — session
+   *      ab profile ki asal haalat (Local State /
+   *      storage) ke saath khulta hai;
+   *   4. probe2 — us ka faisla lautta hai.
+   * Safal par { session, verdict }; kisi bhi qadam ki
+   * nakami par { reason } (bulane wala 'headless-combo
+   * skipped' line banata hai) — kabhi throw nahi, aur
+   * nakami par apna banaya hua sab saaf.
+   */
+  async _headlessComboSession(account, oldSession) {
+    const cookies = oldSession && Array.isArray(oldSession.liveCookies) ? oldSession.liveCookies : null;
+    if (!cookies || !cookies.length) return { reason: 'no-live-cookies' };
+    const profileRoot = getAccountProfilePath(account.id);
+    const comboDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-headless-'));
+    let clone = null;
+    try {
+      clone = await headlessHarvest.buildHeadlessClone(profileRoot, comboDir, { tolerantCookiesOnly: true });
+    } catch (e) {
+      if (e && e.cloneReport) {
+        try { this.log(headlessHarvest.cloneLogLine(e.cloneReport)); } catch (ignored) {}
+        if (e.cloneReport.cookiesRel) {
+          try { this.log(`[ROOT] headless-clone cookies-found-at=${e.cloneReport.cookiesRel}`); } catch (ignored) {}
+        }
+      }
+      await headlessHarvest.removeHeadlessClone(comboDir);
+      return { reason: 'clone-build-failed' };
+    }
+    try { this.log(headlessHarvest.cloneLogLine(clone)); } catch (e) {}
+    if (clone && clone.cookiesRel) {
+      try { this.log(`[ROOT] headless-clone cookies-found-at=${clone.cookiesRel}`); } catch (e) {}
+    }
+    // Item 11: synthetic Cookies DB clone ke andar —
+    // parkhi hui (read-back validated) file hi likhi
+    // jati hai.
+    // v2.48.51 (item 2): DB na bane to combo YAHIN
+    // rukta hai — bulane wala '[ROOT] headless-combo
+    // skipped reason=cookiesdb-failed' likhta hai aur
+    // strategy aaj ki tarah khatam hoti hai.
+    // (ZEROCLICK18: DB line aayi hi nahi aur pata hi
+    // nahi chala combo chala ya nahi — ab combo chale
+    // to 'headless-cookiesdb built' line LAZMI hai.)
+    let dbBuilt = false;
+    try {
+      const dbRes = await cookiesDb.buildCookiesDbFile(cookies, clone, comboDir);
+      if (dbRes && dbRes.built) {
+        dbBuilt = true;
+        this.log(`[ROOT] headless-cookiesdb built cookies=${dbRes.count}`);
+      }
+    } catch (e) {
+      dbBuilt = false;
+    }
+    if (!dbBuilt) {
+      await headlessHarvest.removeHeadlessClone(comboDir);
+      return { reason: 'cookiesdb-failed' };
+    }
+    let session2 = null;
+    try { session2 = await this._headlessLaunchTransferred(cookies, comboDir); } catch (e) { session2 = null; }
+    if (!session2) {
+      await headlessHarvest.removeHeadlessClone(comboDir);
+      return { reason: 'combo-launch-failed' };
+    }
+    let verdict2 = 'logged-out';
+    try { verdict2 = await this._headlessProbeOnce(account, session2.page); } catch (e) { verdict2 = 'logged-out'; }
+    return { session: session2, verdict: verdict2 };
+  }
+
+  /**
+   * v2.48.44 (HEADLESS HARVEST PACK — OPTION 2): VIDEO
+   * download ka NAYA PEHLA rasta. Tarteeb:
+   *   0. per-run probe cache me is account ka reject
+   *      pehle se ho to launch/probe dobara NAHI —
+   *      wahi thahra hua strategy note, foran aage;
+   *      v2.48.51 (item 2): probe2 ne is run me is
+   *      account ko clone+inject se 'logged-in' diya
+   *      ho to combo-yaad seedha combo session banati
+   *      hai (bare transfer probe skip);
+   *   1. profile ki copy par bina-window Chrome +
+   *      PROBE (ek run me ek account ka ek hi probe):
+   *      '[ROOT] headless-probe state=<...> account=<...>';
+   *      qubool na ho to PROBE_REJECT_NOTE ke saath
+   *      haar — editor khulta hi nahi;
+   *   2. qubool ho to usi adrishya browser me is task
+   *      ka editor, aur editor ki apni playback stream
+   *      capture kitab se (mukammal body pehle; bandha
+   *      address ho to editor page ke andar poora
+   *      fetch) — saveGuard darwaze (teacher-url yahan,
+   *      quality gate + content-hash duplicate
+   *      _saveBufferForTask ke andar) guzar kar save.
+   * Jeet: '[ROOT] via=headless-harvest gap=<X>s'.
+   * Session har surat me band + clone mita hua.
+   * Prompt yahan KABHI dobara submit nahi hota.
+   */
+  async _tryHeadlessHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint) {
+    const n = task.promptIndex + 1;
+    if (!task || task.mediaSaved) return false;
+    const account = this.currentAccount;
+    const fail = (note) => {
+      attempts.push({ strategy: 'headless-harvest', ok: false, note });
+      return false;
+    };
+    if (!account || !account.id) {
+      return fail('no account session is attached to this worker, so the invisible-browser harvest could not run — the main-page routes ran next');
+    }
+    const label = account.name || account.id;
+    const cached = this._headlessProbeCache ? this._headlessProbeCache.get(account.id) : null;
+    if (cached && cached !== 'logged-in') {
+      return fail(headlessHarvest.PROBE_REJECT_NOTE);
+    }
+    let session = null;
+    // v2.48.51 (item 2 — combo yaad ka rasta): is
+    // account ke liye probe2 is RUN me pehle hi
+    // 'logged-in' de chuka hai to bare transfer probe
+    // dobara NAHI — seedha combo session banao (live
+    // cookies uthao, clone+inject, probe2). Probe2 is
+    // dafa reject kare to yaad mita do aur rejection
+    // probe cache me darj — baad ke attempts cached
+    // rejection se hi rukte hain, combo dobara nahi
+    // banta. Combo build hi na bane to skipped line +
+    // wahi thahri hui haar.
+    let presetVerdict = null;
+    if (this._headlessComboAccounts && this._headlessComboAccounts.has(account.id)) {
+      let liveCookies = null;
+      try { liveCookies = await this._headlessReadLiveCookies(); } catch (e) { liveCookies = null; }
+      const combo = await this._headlessComboSession(account, { liveCookies: liveCookies || [] }).catch(() => null);
+      if (combo && combo.session) {
+        session = combo.session;
+        presetVerdict = combo.verdict;
+        try { task._headlessProbeState = presetVerdict; } catch (e) {}
+        const snapM = this._lastHeadlessProbeSnap;
+        const blockReasonM = headlessHarvest.probeBlockReason(snapM);
+        this.log(headlessHarvest.probe2LogLine({
+          state: presetVerdict,
+          hasCaptcha: blockReasonM.captcha,
+          marker: blockReasonM.marker
+        }), presetVerdict === 'logged-in' ? 'success' : 'warn');
+        try { if (this._headlessProbeCache) this._headlessProbeCache.set(account.id, presetVerdict); } catch (e) {}
+        if (presetVerdict !== 'logged-in') {
+          try { this._headlessComboAccounts.delete(account.id); } catch (e) {}
+          await this._headlessCloseSession(session);
+          return fail(headlessHarvest.PROBE_REJECT_NOTE);
+        }
+      } else {
+        this.log(`[ROOT] headless-combo skipped reason=${combo && combo.reason ? combo.reason : 'combo-failed'}`, 'warn');
+        return fail(headlessHarvest.PROBE_REJECT_NOTE);
+      }
+    }
+    if (!session) {
+      try {
+        session = await this._headlessLaunch(account);
+      } catch (e) {
+        // v2.48.45: asal wajah (exception message + code)
+        // log AUR strategy note dono me — ZEROCLICK12 me
+        // launch fail ki wajah kahin record nahi hoti thi.
+        this.log(`[ROOT] [Prompt #${n}] headless-harvest: launch failed (${headlessHarvest.launchFailureReason(e)}) — the main-page routes will run`, 'warn');
+        return fail(headlessHarvest.launchFailNote(e));
+      }
+    }
+    try {
+      let hcap = session.capture;
+      let hpage = session.page;
+      const setupCapture = () => {
+        try { if (hcap) hcap.harvestFloorBytes = downloadFetch.minBytesForDuration(settings && settings.duration); } catch (e) {}
+        try { if (hcap) hcap.beginSubmission(captureKey, Date.now()); } catch (e) {}
+      };
+      setupCapture();
+      // v2.48.51 (item 2): combo-yaad wale raste par
+      // faisla pehle se tay hai (presetVerdict) — probe
+      // dobara nahi, cache me wahi combo faisla darj
+      // (upar prelude me set ho chuka hai).
+      let verdict = presetVerdict || cached;
+      if (!verdict) {
+        verdict = await this._headlessProbeOnce(account, hpage);
+        try { task._headlessProbeState = verdict; } catch (e) {}
+        // v2.48.50 (Part B): probe line ab url + nishan
+        // ke saath (probeLogLine — snapshot ke wahi
+        // fields jo classifier khata hai).
+        // v2.48.51 (item 2): captcha + marker ki
+        // tafseel bhi (probeBlockReason — classifier
+        // ke faisle se alag, sirf log ke liye).
+        const snap = this._lastHeadlessProbeSnap;
+        const blockReason = headlessHarvest.probeBlockReason(snap);
+        this.log(headlessHarvest.probeLogLine({
+          state: verdict, account: label,
+          url: snap && snap.url,
+          hasSignIn: !!(snap && snap.hasSignIn),
+          hasAvatar: !!(snap && snap.hasAvatar),
+          hasPromptBox: !!(snap && snap.hasPromptBox),
+          hasCaptcha: blockReason.captcha,
+          marker: blockReason.marker
+        }), verdict === 'logged-in' ? 'success' : 'warn');
+        // v2.48.50 (Part B — CLONE+INJECT COMBO, DBSC
+        // discriminator): transfer session 'logged-out'
+        // aaya ho to EK dusra mauqa — tolerant clone
+        // (sirf Cookies ki kamzori qubool) ke UPDir par
+        // wahi transferred session, andar synthetic
+        // Cookies DB ke saath; probe2 ka faisla hi is
+        // attempt ka faisla banta hai. Combo na bane to
+        // 'headless-combo skipped' line + aaj wali haar.
+        // Probe cache ka set is ke BAAD hai — cache me
+        // hamesha aakhri faisla jata hai.
+        // v2.48.51 (item 2): trigger ab blocked par bhi
+        // (headlessComboApplies), probe2 line me
+        // captcha/marker tafseel, aur probe2 'logged-in'
+        // de to is RUN ke liye account ki combo-yaad
+        // set — baad ke attempts seedha combo banate
+        // hain (neeche wala memory rasta).
+        if (headlessHarvest.headlessComboApplies({ via: session && session.via, verdict, tried: false })) {
+          const combo = await this._headlessComboSession(account, session).catch(() => null);
+          if (combo && combo.session) {
+            await this._headlessCloseSession(session);
+            session = combo.session;
+            hcap = session.capture;
+            hpage = session.page;
+            setupCapture();
+            verdict = combo.verdict;
+            try { task._headlessProbeState = verdict; } catch (e) {}
+            const snap2 = this._lastHeadlessProbeSnap;
+            const blockReason2 = headlessHarvest.probeBlockReason(snap2);
+            this.log(headlessHarvest.probe2LogLine({
+              state: verdict,
+              hasCaptcha: blockReason2.captcha,
+              marker: blockReason2.marker
+            }), verdict === 'logged-in' ? 'success' : 'warn');
+            if (verdict === 'logged-in' && this._headlessComboAccounts && !this._headlessComboAccounts.has(account.id)) {
+              this._headlessComboAccounts.add(account.id);
+              this.log(`[ROOT] headless-mode account=${label} mode=clone-inject (probe2)`);
+            }
+          } else {
+            this.log(`[ROOT] headless-combo skipped reason=${combo && combo.reason ? combo.reason : 'combo-failed'}`, 'warn');
+          }
+        }
+        try { if (this._headlessProbeCache) this._headlessProbeCache.set(account.id, verdict); } catch (e) {}
+      }
+      if (verdict !== 'logged-in') {
+        return fail(headlessHarvest.PROBE_REJECT_NOTE);
+      }
+      try { if (hcap) hcap.setDownloadAttempt(captureKey); } catch (e) {}
+      let editorOpen = false;
+      try { editorOpen = await this._headlessOpenTaskEditor(hpage, task, tileIndexHint); } catch (e) { editorOpen = false; }
+      if (!editorOpen) {
+        this.log(`[ROOT] [Prompt #${n}] headless-harvest: this video's editor did not open in the invisible browser — the main-page routes will run`, 'warn');
+        return fail('the copied session was accepted, but this video\'s editor did not open in the invisible browser — the main-page routes ran next');
+      }
+      let teacherUrl = null;
+      try { teacherUrl = this.netCapture ? this.netCapture.teacherMintUrlForTemplate(null) : null; } catch (e) { teacherUrl = null; }
+      const gapSec = () => Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+      const win = () => {
+        const g = gapSec();
+        this.log(`[ROOT] via=headless-harvest gap=${g}s`, 'success');
+        attempts.push({ strategy: 'headless-harvest', ok: true, note: `the file was captured from this video's own editor playback stream inside a window-less copy of the account's browser — nothing was opened or shown anywhere; render→save gap ${g}s` });
+        return true;
+      };
+      const saveFromHeadless = async (url, buffer) => {
+        if (teacherUrl && url === teacherUrl) {
+          this.log(`[ROOT] [Prompt #${n}] headless-harvest: the captured stream address is the previous task's (teacher) — not saving it`, 'warn');
+          return 'teacher';
+        }
+        try { if (hcap) hcap.claimFlowContentVideo(url); } catch (e) {}
+        try { if (this.netCapture) this.netCapture.claimFlowContentVideo(url); } catch (e) {}
+        task.completedVideoUrl = url;
+        const ok = await this._saveBufferForTask(task, downloadFolder, settings, buffer, url, 'headless-harvest');
+        // v2.48.50 (item 7): race ki jeet mainpage ki
+        // ho to ye save jeet NAHI hai — 'rejected'.
+        const raceLostHh = !!(task._raceActive && task._raceWonBy && task._raceWonBy !== 'headless-harvest');
+        return ((ok || task.mediaSaved) && task._saveRejectedReason !== 'route-race' && !raceLostHh) ? 'saved' : 'rejected';
+      };
+      const waitMs = Math.max(1000, this.headlessHarvestWaitMs || 30000);
+      const deadline = Date.now() + waitMs;
+      const triedFetchUrls = new Set();
+      for (;;) {
+        if (task.mediaSaved) return true;
+        let entry = null;
+        try { entry = hcap ? hcap.harvestForKey(captureKey) : null; } catch (e) { entry = null; }
+        if (entry && entry.buffer && entry.buffer.length > 0) {
+          try { hcap.evictHarvest(captureKey); } catch (e) {}
+          const r = await saveFromHeadless(entry.url, entry.buffer);
+          if (r === 'saved') return win();
+          if (r === 'teacher') {
+            return fail('the stream captured in the invisible browser was the previous task\'s file address (teacher) and was not saved — the main-page routes ran next');
+          }
+          return fail(`the stream captured in the invisible browser did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the main-page routes ran next`);
+        }
+        let boundUrl = null;
+        try { const b = hcap ? hcap.urlForKey(captureKey) : null; if (b && b.url) boundUrl = b.url; } catch (e) {}
+        if (!boundUrl) {
+          try {
+            const rec = hcap ? hcap.recentFlowContentVideos(Date.now() - waitMs - 60000) : [];
+            if (rec && rec.length) boundUrl = rec[rec.length - 1].url;
+          } catch (e) {}
+        }
+        if (boundUrl && !triedFetchUrls.has(boundUrl)) {
+          triedFetchUrls.add(boundUrl);
+          const fetched = await this._fetchMainpageFullInPage(boundUrl, hpage);
+          if (fetched && fetched.buf && fetched.buf.length > 0 && fetched.status !== 206 && downloadFetch.looksLikeVideoBuffer(fetched.buf)) {
+            const r = await saveFromHeadless(boundUrl, fetched.buf);
+            if (r === 'saved') return win();
+            if (r === 'teacher') {
+              return fail('the stream captured in the invisible browser was the previous task\'s file address (teacher) and was not saved — the main-page routes ran next');
+            }
+            return fail(`the stream captured in the invisible browser did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the main-page routes ran next`);
+          }
+        }
+        if (Date.now() >= deadline || this.isStopping) break;
+        await sleep(300);
+      }
+      this.log(`[ROOT] [Prompt #${n}] headless-harvest: no complete editor stream arrived in the invisible browser within ${Math.round(waitMs / 1000)}s — the main-page routes will run`, 'warn');
+      return fail('the copied session was accepted, but the editor playback stream did not complete in the invisible browser in time — the main-page routes ran next');
+    } catch (e) {
+      return fail('the invisible-browser harvest hit a problem — the main-page routes ran next');
+    } finally {
+      try { if (session && session.capture) session.capture.clearDownloadAttempt(captureKey); } catch (e) {}
+      await this._headlessCloseSession(session);
+    }
+  }
+
+  /**
+   * v2.48.41 (MAIN-PAGE HARVEST PACK — OWNER ORDER
+   * 2026-11-04): VIDEO download ka PEHLA aur asal rasta.
+   * Download SIRF usi project/grid page se hota hai jis
+   * par video bani hai — editor kahin bhi nahi khulta
+   * (na main tab, na dusra tab, na background page), koi
+   * button/menu click nahi hota.
+   *
+   * v2.48.42 (MAIN-PAGE BINDING PACK): ZEROCLICK9 ne
+   * sabit kiya ke streams main page par aate hain —
+   * rukawat BANDHAN tha (do unbound stream, koi bandha
+   * nahi, engine ne durust inkaar kiya). Ab bandhan
+   * QAAIDE se hota hai (saveGuard.mainpageBindingPlan +
+   * capture ki khidki/claim kitab):
+   *   (a) kitab me is task ke naam pehle se MUKAMMAL
+   *       body ho to wohi save (_tryHarvestSave);
+   *   (b) tile ki apni <video> alamat ki audit — grid par
+   *       is task ki tile me <video> hai kya, us ka src
+   *       kis host ka hai ('[ROOT] mainpage-audit …
+   *       reason=tile-video-src'); tile-src / urlByKey
+   *       wale MAZBOOT bandhe hue ummeedwaar pehle;
+   *   (c) BINDING PLAN — v2.48.43 me TARTEEB
+   *       (ORDER): ummeedwaaron ki kataar pehli-nazar
+   *       + capture tartib se, baqi downloads ki
+   *       kataar render-complete ki tartib se; meri
+   *       jodi kataar me meri jagah wala ummeedwaar
+   *       hai (order); akela bacha unclaimed + akela
+   *       baqi download = exclusion (purana fallback);
+   *       meri jodi par ASAL bandh-ganth (ek hi pal,
+   *       capture tartib bhi alag na kar sake) =
+   *       AMBIGUOUS inkaar (koi fetch nahi — ghalat
+   *       video miss se bura hai, ZEROCLICK2 sabak).
+   *       Ummeedwaar wahi hai jo capture ke darwaze
+   *       (kul size >= 500,000, warna video-type) se
+   *       guzra ho;
+   *   (d) koi bandhne wala na ho to HOVER + PATIENCE
+   *       WATCH: tile scrollIntoView se nazar me
+   *       (level=scroll), waqt par synthetic mouse
+   *       ishare (level=synthetic), phir asal pointer
+   *       tile par roke hue (level=pointer) — aur
+   *       intezaar render-complete se
+   *       mainpagePatienceMs (~60s) tak; intezaar me
+   *       bandha stream 'viewport-trigger' kehlata
+   *       hai. Kuch khulta nahi, click kabhi nahi —
+   *       hover hi wahid naya ishara hai;
+   *   (e) bandha ummeedwaar
+   *       _mainpageCompleteCandidate se mukammal hota
+   *       hai (kitab body ya usi page ke andar poora
+   *       fetch; saveGuard darwaze barkarar).
+   * Jeet par: '[ROOT] via=mainpage-harvest gap=<X>s' +
+   * mainpage-audit 'promoted' line (bindReason +
+   * claimedBy ke saath). Kuch na mile to false —
+   * attempt EMAANDARI se aage badhta hai (grid-replay),
+   * aur wahan bhi na bane to FAIL. Prompt yahan KABHI
+   * dobara submit nahi hota.
+   */
+  async _tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint) {
+    const n = task.promptIndex + 1;
+    const cap = this.netCapture;
+    if (!cap || !task || task.mediaSaved) return false;
+    if (typeof cap.mainpageEntries !== 'function') return false;
+    const floorBytes = cap.harvestFloorBytes || downloadFetch.minBytesForDuration(settings && settings.duration);
+    const gapSec = () => Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+    const timingBucket = () => (typeof cap._mainpageTimingBucket === 'function' ? cap._mainpageTimingBucket() : 'download-attempt');
+    const attemptStart = Date.now();
+    const windowStart = (Number.isFinite(task.renderCompletedAt) && task.renderCompletedAt > 0)
+      ? task.renderCompletedAt : attemptStart;
+    // Meri khidki darj karo — render-watch ne pehle hi
+    // darj ki ho to sab se pehla aaghaz barkarar rehta
+    // hai; retry round khidki aage nahi dhakelta.
+    try { if (typeof cap.mainpageNoteWindow === 'function') cap.mainpageNoteWindow(captureKey, windowStart); } catch (e) {}
+    let teacherUrl = null;
+    try { teacherUrl = cap.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
+    let teacherHash = null;
+    // (b) tile alamat ki audit — sirf ek dafa.
+    let tileSrcUrl = null;
+    let tileSrcKind = null;
+    try {
+      const st = await this._readTileMediaState(task, tileIndexHint);
+      const raw = st && st.url ? st.url : null;
+      if (raw && flowContent.isFlowContentVideoUrl(raw)) { tileSrcKind = 'flow-content'; tileSrcUrl = raw; }
+      else if (raw && networkCapture.isGooglevideoPlaybackUrl(raw)) { tileSrcKind = 'googlevideo'; tileSrcUrl = raw; }
+      const audit = tileSrcUrl
+        ? saveGuard.mainpageAuditOf({ host: networkCapture.hostOf(tileSrcUrl), bytes: 0, src: tileSrcKind, decision: 'captured', reason: 'tile-video-src', bindReason: 'none', claimedBy: 'none' })
+        : saveGuard.mainpageAuditOf({ host: 'none', bytes: 0, src: 'none', decision: 'ignored', reason: raw ? 'tile-src-not-video-stream' : 'no-tile-video', bindReason: 'none', claimedBy: 'none' });
+      this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${timingBucket()}`, 'info');
+    } catch (e) {}
+    const triedUrls = new Set();
+    const failOut = () => {
+      // v2.48.50 (item 7): race me dusra rasta jeet
+      // chuka ho to ye haar ki line/note jhooti hogi —
+      // khamoshi se jeet ki wapsi.
+      if (task.mediaSaved) return true;
+      attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'no usable stream for this video was seen on the main project page (see the mainpage-audit lines) — grid replay ran next; nothing was opened or clicked' });
+      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: no usable stream for this video on the main project page — grid replay will run`, 'warn');
+      return false;
+    };
+    // v2.48.45 (BINDCHECK — ZEROCLICK12 addendum):
+    // poori-size (>= is duration ki hadd) stream bandhan
+    // ke liye parkha jaye aur bandhe NAHI to ek
+    // diagnostic line — kis darwaze par ruka, wajah ke
+    // saath. ZEROCLICK12 #1: 1,225,554B ki stream apni
+    // hi hover watch me aayi, kitab me 'captured' darj
+    // hui, phir bhi kabhi bandhi nahi aur wajah kahin
+    // record nahi hui — agli live run me ye line asal
+    // wajah NAAM se degi. Ek attempt me ek URL+wajah
+    // ki jodi sirf ek dafa (watch har 250ms plan
+    // dobara banata hai — line baadh nahi banegi).
+    // Ye SIRF mushahida hai — bandhan ka vyavhaar
+    // bilkul nahi badalta.
+    const bindcheckSeen = new Set();
+    const logBindcheck = (info) => {
+      try {
+        if (!info || !info.url || !info.why) return;
+        const total = Math.max(0, Math.floor(info.total || 0));
+        if (total < floorBytes) return;
+        const dedupeKey = `${info.url}|${info.why}`;
+        if (bindcheckSeen.has(dedupeKey)) return;
+        bindcheckSeen.add(dedupeKey);
+        const firstSeen = Number.isFinite(info.firstSeenAt) ? Math.floor(info.firstSeenAt) : 0;
+        this.log(`[ROOT] mainpage-bindcheck total=${total} firstSeen=${firstSeen} renderDone=${Math.floor(windowStart)} decision=${info.decision || 'unbound'} why=${info.why}`, 'info');
+      } catch (e) {}
+    };
+    const entryTotal = (e) => Math.max(e.bytes || 0, e.declared || 0, e.knownTotal || 0);
+    // Ummeedwaar ikatthe karo — kitab se (teacher /
+    // claimed / doosri task ke naam hue / pehle aazmaye
+    // hue bahar) + tile-src wala mazboot ummeedwaar.
+    const buildCandidates = () => {
+      let boundUrl = null;
+      try {
+        const b = cap.urlForKey(captureKey);
+        if (b && b.url) boundUrl = b.url;
+      } catch (e) {}
+      const annotated = [];
+      const seenUrls = new Set();
+      // v2.48.50 (item 9): tile ki apni stream (ya
+      // render-time pre-bound stream) ke liye fetch ke
+      // tried-zeher se chhoot — sirf tab jab pichhla
+      // completion nateeja 'no-body' raha ho aur is
+      // attempt ke element-drive cycles baqi hon.
+      // Fetch ke apne usool bilkul nahi badalte; ye
+      // sirf ELEMENT-drive wale raste ko dobara mauqa
+      // deta hai.
+      const tileTriedExempt = (url) => {
+        if (!url) return false;
+        const isTileEntry = (!!tileSrcUrl && url === tileSrcUrl)
+          || (!!task._preboundMainpageUrl && url === task._preboundMainpageUrl);
+        return isTileEntry
+          && lastOutcomeByUrl.get(url) === 'no-body'
+          && (task._mpCompleteCycles || 0) < 4;
+      };
+      const pushEntry = (e, bound) => {
+        if (!e || !e.url || seenUrls.has(e.url)) return;
+        if (triedUrls.has(e.url) && !tileTriedExempt(e.url)) return;
+        seenUrls.add(e.url);
+        annotated.push({
+          url: e.url,
+          src: e.src || 'flow-content',
+          byteLength: Math.max(e.bytes || 0, e.bodyBytes || 0),
+          headerOk: true,
+          partial: e.partial !== false && e.src === 'googlevideo' ? true : !!e.partial,
+          status: e.status || 0,
+          contentRange: e.contentRange || '',
+          declaredLength: e.declared || 0,
+          // v2.48.52 (gate fix): capture ka maloom kul
+          // size bhi entry ke saath — completion ka
+          // partial faisla isi par hoga.
+          knownTotal: Number.isFinite(e.knownTotal) ? e.knownTotal : null,
+          duplicate: false,
+          hash: null,
+          teacherHash,
+          bound: !!bound,
+          bodyBytes: e.bodyBytes || 0,
+          at: e.at || 0,
+          firstSeenAt: Number.isFinite(e.firstSeenAt) ? e.firstSeenAt : (e.at || 0),
+          seq: Number.isFinite(e.seq) ? e.seq : null,
+          claimedBy: e.claimedBy || null
+        });
+      };
+      for (const e of cap.mainpageEntries()) {
+        if (!e || !e.url) continue;
+        // v2.48.43: ummeedwaar darwaze se bahar wali
+        // entry (chhoti stream / video-type na ho)
+        // bandhan ke liye kabhi nahi uth ti.
+        if (e.candidate === false) continue;
+        // v2.48.45 (BINDCHECK): poori-size stream jo
+        // kisi darwaze par ruke — wajah line me darj
+        // (vyavhaar wahi; sirf naam milta hai).
+        if (teacherUrl && e.url === teacherUrl) {
+          logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: e.firstSeenAt, why: 'teacher-url' });
+          continue;
+        }
+        let claimed = false;
+        try { claimed = cap.isMainpageClaimed(e.url); } catch (err) { claimed = false; }
+        if (claimed) {
+          logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: e.firstSeenAt, why: 'already-claimed' });
+          continue;
+        }
+        if (this._urlClaimedByOtherTask(e.url, captureKey)) {
+          logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: e.firstSeenAt, why: 'claimed-by-other-task' });
+          continue;
+        }
+        if (triedUrls.has(e.url) && !tileTriedExempt(e.url)) {
+          logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: e.firstSeenAt, why: 'already-tried-this-attempt' });
+          continue;
+        }
+        const isBound = !!boundUrl && e.url === boundUrl;
+        // v2.48.50 (item 5): render ke dauraan pehle se
+        // bandha (pre-bound) ummeedwaar bhi tile jaisa
+        // mazboot hai — completion usi par foran shuru
+        // hota hai, nayi hover watch ka intezaar nahi.
+        const isTile = (!!tileSrcUrl && e.url === tileSrcUrl)
+          || (!!task._preboundMainpageUrl && e.url === task._preboundMainpageUrl);
+        if (!isBound && !isTile) {
+          // timing bandish: meri PEHLI nazar mere render
+          // se pehle ki hai to ye stream mera nahi ho
+          // sakta (kisi aur ki khidki ka hai ya purana).
+          const seenAt = Number.isFinite(e.firstSeenAt) ? e.firstSeenAt : (e.at || 0);
+          if ((task.startTime || 0) > 0 && seenAt > 0 && seenAt < task.startTime) {
+            logBindcheck({ url: e.url, total: entryTotal(e), firstSeenAt: seenAt, why: 'seen-before-task-start' });
+            continue;
+          }
+        }
+        pushEntry(e, isBound || isTile);
+      }
+      if (tileSrcUrl && !seenUrls.has(tileSrcUrl) && !triedUrls.has(tileSrcUrl)
+        && !(teacherUrl && tileSrcUrl === teacherUrl)) {
+        // tile ke src ki kitab me entry na ho to bhi wo
+        // ummeedwaar hai — bandish tile khud hai.
+        pushEntry({
+          url: tileSrcUrl, src: tileSrcKind, bytes: 0, bodyBytes: 0,
+          status: 0, contentRange: '', declared: 0, partial: true,
+          at: Date.now(), firstSeenAt: Date.now()
+        }, true);
+      }
+      return annotated;
+    };
+    const completeWith = (entry, bindReason) => this._mainpageCompleteCandidate(
+      task, downloadFolder, settings, attempts, entry,
+      // v2.48.50 (item 1): tileIndexHint completion tak
+      // jata hai — media-load tile element wahi se
+      // dhoondta hai.
+      { captureKey, bindReason, floorBytes, teacherUrl, teacherHash, timingBucket, gapSec, tileIndexHint }
+    );
+    // v2.48.46 (TRIED-URLS POISONING FIX — ZEROCLICK13):
+    // pehle har bandha URL completion se PEHLE
+    // triedUrls me daal diya jata tha aur 'no-body'
+    // nakami par wahan ZEHER ban kar reh jata tha —
+    // wahi mukammal-size stream (jo plan ne durust
+    // bandha tha) poori koshish ke liye bahar ho jati
+    // thi ('already-tried-this-attempt'). Ab hisaab
+    // completionTries me rehta hai: 'no-body' par URL
+    // triedUrls se NIKAL jata hai taaki watch use ek
+    // dafa aur parkh sake; dusri 'no-body' par (ginti
+    // 2) triedUrls me rehta hai. 'rejected' / 'saved'
+    // par purana vyavhaar hi hai.
+    const completionTries = new Map();
+    // v2.48.50 (item 9): har URL ka pichhla completion
+    // nateeja — tile-element ki tried-list chhoot isi
+    // par bandhi hai (sirf 'no-body' ke baad).
+    const lastOutcomeByUrl = new Map();
+    const completeTracked = async (entry, bindReason) => {
+      triedUrls.add(entry.url);
+      const count = (completionTries.get(entry.url) || 0) + 1;
+      completionTries.set(entry.url, count);
+      // v2.48.50 (item 4): completion cycles ab 2 ki
+      // jagah 4 — dobara koshish se pehle ~1.5s ka
+      // waqfa (stream ko aane ka waqt bhi, aur cycles
+      // ki spacing bhi). Pehli koshish par koi waqfa
+      // nahi.
+      if (count >= 2) await sleep(1500);
+      const outcome = await completeWith(entry, bindReason);
+      lastOutcomeByUrl.set(entry.url, outcome);
+      if (outcome === 'no-body' && count < 4) triedUrls.delete(entry.url);
+      return outcome;
+    };
+    // Binding plan ek dafa chalao (maujooda kitab par):
+    // 'saved' | 'ambiguous' | 'none'. v2.48.43: plan
+    // ab TARTEEB par hai (saveGuard.mainpageBindingPlan)
+    // — ummeedwaaron ki kataar pehli-nazar + capture
+    // tartib se, baqi downloads ki kataar render-
+    // complete ki tartib se. opts.watchStart diya ho
+    // to us pal ke BAAD pehli baar dikha stream bandhe
+    // to wajah 'viewport-trigger' kehlata hai (wo
+    // MERE hover intezaar me aaya — jodi meri hi hai).
+    const tryBindingPlan = async (opts) => {
+      const live = buildCandidates().filter(a => !a.bound);
+      if (live.length === 0) return 'none';
+      const pendingOrder = typeof cap.mainpagePendingOrder === 'function'
+        ? cap.mainpagePendingOrder()
+        : (typeof cap.mainpageWindowsList === 'function'
+          ? cap.mainpageWindowsList().filter(w => !w.done).map(w => ({ key: w.key, start: w.start }))
+          : []);
+      const pendingOthers = typeof cap.mainpagePendingOthers === 'function' ? cap.mainpagePendingOthers(captureKey) : 0;
+      const plan = saveGuard.mainpageBindingPlan({
+        candidates: live.map(a => ({ url: a.url, firstSeenAt: a.firstSeenAt, seq: a.seq })),
+        ownKey: captureKey,
+        ownStart: windowStart,
+        pendingOrder,
+        pendingOthers
+      });
+      // v2.48.45 (BINDCHECK): plan ne jo poori-size
+      // ummeedwaar NAHI bandha, us ki wajah naam se —
+      // kataar me us ki jagah (plan wali hi tartib:
+      // firstSeenAt, phir seq) aur meri jagah (myIdx)
+      // ke muqable se. Bandha hua ummeedwaar is hisse
+      // ko chhuta hi nahi.
+      try {
+        const sorted = live.slice().sort((a, b) => {
+          if (a.firstSeenAt !== b.firstSeenAt) return a.firstSeenAt - b.firstSeenAt;
+          const sa = Number.isFinite(a.seq) ? a.seq : null;
+          const sb = Number.isFinite(b.seq) ? b.seq : null;
+          if (sa !== null && sb !== null) return sa - sb;
+          return 0;
+        });
+        sorted.forEach((a, pos) => {
+          const total = Math.max(a.byteLength || 0, a.declaredLength || 0);
+          if (plan.bind && plan.url === a.url) return;
+          let why = null;
+          let decision = 'unbound';
+          if (plan.reason === 'ambiguous') { why = 'ambiguous-tie'; decision = 'refused'; }
+          else if (plan.bind) why = 'ordinal-pair-was-another-stream';
+          else if (Number.isFinite(plan.myIdx) && pos < plan.myIdx) why = 'reserved-for-earlier-pending';
+          else if (pendingOthers > 0) why = 'exclusion-blocked-by-pending-download';
+          else why = 'no-pair-at-my-position';
+          if (why) logBindcheck({ url: a.url, total, firstSeenAt: a.firstSeenAt, decision, why });
+        });
+      } catch (e) {}
+      if (plan.reason === 'ambiguous') {
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: ${plan.count} unbound streams seen on the main page and none is bound to this video — not fetching any of them (a wrong video is worse than a miss)`, 'warn');
+        return 'ambiguous';
+      }
+      if (plan.bind && plan.url) {
+        const entry = live.find(a => a.url === plan.url);
+        if (entry) {
+          let bindReason = plan.reason;
+          if (opts && Number.isFinite(opts.watchStart) && entry.firstSeenAt >= opts.watchStart) {
+            bindReason = 'viewport-trigger';
+          }
+          const outcome = await completeTracked(entry, bindReason);
+          if (outcome === 'saved' || task.mediaSaved) return 'saved';
+        }
+      }
+      return 'none';
+    };
+    if (this.isStopping) return false;
+    // (a) mukammal bandhi hui body — sab se tez jeet.
+    try {
+      const okBody = await this._tryHarvestSave(task, downloadFolder, settings, attempts);
+      if (okBody || task.mediaSaved) return true;
+    } catch (e) {}
+    // (b) mazboot bandhe hue (urlByKey / tile-src) pehle.
+    {
+      const strong = buildCandidates().filter(a => a.bound);
+      if (strong.length > 0) {
+        const pickRes = saveGuard.mainpageEntryPick({ entries: strong, teacherUrl, floorBytes });
+        if (pickRes.pick && pickRes.url) {
+          const entry = strong[pickRes.index];
+          const outcome = await completeTracked(entry, 'bound');
+          if (outcome === 'saved' || task.mediaSaved) return true;
+        }
+      }
+    }
+    // (c) binding plan — first-appearance / exclusion.
+    {
+      const r = await tryBindingPlan();
+      if (r === 'saved') return true;
+      if (r === 'ambiguous') return failOut();
+    }
+    // (d) HOVER + PATIENCE WATCH (v2.48.43) —
+    // ZEROCLICK10 ka saboot: sirf scroll se Flow ka
+    // grid preview loader 9s me NAHI jaagta; streams
+    // render ke ~15–45s baad apni marzi se aate hain.
+    // Ab koshish SABR ke saath chalti hai: tile nazar
+    // me (level=scroll), phir synthetic mouse ishare
+    // (level=synthetic), phir asal pointer tile par
+    // roke hue (level=pointer) — aur poora intezaar
+    // render-complete se mainpagePatienceMs tak.
+    // Intezaar ke dauraan har pal plan dobara banta
+    // hai; MERI jodi wala ummeedwaar dikhte hi foran
+    // bandhta hai (mere intezaar me pehli baar dikha
+    // ho to wajah 'viewport-trigger', warna plan ki
+    // 'order'/'exclusion'). Kuch khulta nahi, click
+    // kabhi nahi hota — hover hi wahid naya ishara
+    // hai.
+    const patienceMs = Number.isFinite(this.mainpagePatienceMs) && this.mainpagePatienceMs > 0
+      ? this.mainpagePatienceMs : 60000;
+    const floorMs = Number.isFinite(this.mainpageViewportWaitMs) && this.mainpageViewportWaitMs > 0
+      ? this.mainpageViewportWaitMs : 9000;
+    const hoverGraceMs = Number.isFinite(this.mainpageHoverGraceMs) && this.mainpageHoverGraceMs > 0
+      ? this.mainpageHoverGraceMs : 4000;
+    const pointerGraceMs = Number.isFinite(this.mainpagePointerGraceMs) && this.mainpagePointerGraceMs > 0
+      ? this.mainpagePointerGraceMs : 4000;
+    const watchStart = Date.now();
+    let watchDeadline = windowStart + patienceMs;
+    if (watchDeadline < watchStart + floorMs) watchDeadline = watchStart + floorMs;
+    // v2.48.53 (CLEAN HOVER-EXIT): is task ki watch
+    // se pehle pichhli tile se saaf exit (pause +
+    // pointer bahar + saans) — §5.5 rank 2.
+    // v2.48.54 (RPC-BODY FEED — bandha hua helper):
+    // .53 me ye mauqa sirf hover watch ke BAAD milta
+    // tha; ab wahi mauqa watch se PEHLE bhi ek dafa
+    // milta hai — batchexecute jawab me pata pehle se
+    // maujood ho to UI trigger ka intezaar hi khatam.
+    // Shartein bilkul wahi sakht hain (saveGuard.
+    // mainpageRpcBodyPick): khidki + akela ummeedwaar
+    // + koi aur pending download nahi + claimed/tried/
+    // teacher na ho; shart tootne par sirf 'skipped'
+    // line. Lautta hai: true (save ho gaya) | false.
+    const tryRpcFeed = async (deadline) => {
+      try {
+        const rpcSightings = typeof cap.mainpageRpcBodySightings === 'function'
+          ? cap.mainpageRpcBodySightings() : [];
+        if (rpcSightings.length && !this.isStopping && !task.mediaSaved) {
+          const pendingOthersRpc = typeof cap.mainpagePendingOthers === 'function'
+            ? cap.mainpagePendingOthers(captureKey) : 0;
+          // v2.48.54 (fix 1 ka dusra hissa): jo pate
+          // pehle hi kisi task ke naam claimed hain wo
+          // ummeedwaar hi nahi — pick ko un ki fehrist
+          // bhi do (claim par kitab me consumed darj
+          // hona is ke saath dusri hifazat hai).
+          const claimedUrls = new Set();
+          try {
+            if (typeof cap.isMainpageClaimed === 'function') {
+              for (const sg of rpcSightings) {
+                if (sg && sg.url && cap.isMainpageClaimed(sg.url)) claimedUrls.add(sg.url);
+              }
+            }
+          } catch (e) {}
+          const rpcPick = saveGuard.mainpageRpcBodyPick({
+            sightings: rpcSightings,
+            triedUrls,
+            claimedUrls,
+            teacherUrl,
+            renderDoneAt: Number.isFinite(task.renderCompletedAt) ? task.renderCompletedAt : null,
+            attemptDeadline: deadline,
+            pendingOthers: pendingOthersRpc
+          });
+          if (rpcPick && rpcPick.skip) {
+            this.log(`[ROOT] [Prompt #${n}] mainpage-rpcfeed skipped reason=${rpcPick.skip}`, 'warn');
+            return false;
+          }
+          if (rpcPick && rpcPick.url) {
+            try { if (typeof cap.mainpageMarkRpcBodyConsumed === 'function') cap.mainpageMarkRpcBodyConsumed(rpcPick.url, captureKey || task.captureKey || task.videoId || null); } catch (e) {}
+            this.log(`[ROOT] [Prompt #${n}] mainpage-rpcfeed host=${networkCapture.hostOf(rpcPick.url) || ''} clen=${rpcPick.clen}`, 'info');
+            const rpcRes = await this._netloadMainpageFull(task, rpcPick.url);
+            if (rpcRes && rpcRes.buf && !task.mediaSaved) {
+              const rpcEntry = {
+                url: rpcPick.url,
+                src: 'googlevideo',
+                byteLength: rpcRes.buf.length,
+                headerOk: true,
+                partial: true,
+                status: rpcRes.status || 0,
+                contentRange: '',
+                declaredLength: 0,
+                knownTotal: rpcPick.clen,
+                duplicate: false,
+                hash: null,
+                teacherHash,
+                bound: true,
+                bodyBytes: rpcRes.buf.length,
+                at: Date.now(),
+                firstSeenAt: rpcPick.firstSeenAt,
+                seq: null,
+                claimedBy: null,
+                _netloadBody: rpcRes.buf,
+                _netloadMeta: rpcRes,
+                _noInPageFetch: true
+              };
+              const rpcOutcome = await completeTracked(rpcEntry, 'rpc-body-netload');
+              if (rpcOutcome === 'saved' || task.mediaSaved) return true;
+            }
+          }
+        }
+      } catch (e) {}
+      return false;
+    };
+    // Watch se PEHLE wala mauqa — pata pehle se kitab
+    // me ho to hover ka intezaar hi nahi.
+    try { if (await tryRpcFeed(watchDeadline)) return true; } catch (e) {}
+    try { await this._exitPrevMainpageHover(task); } catch (e) {}
+    const scrolled = await this._scrollMainpageTileIntoView(task, tileIndexHint);
+    this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=scroll (this video's tile ${scrolled ? 'was scrolled' : 'could not be scrolled'} into view on the main page; nothing opened, nothing clicked); watching up to ${Math.max(1, Math.round((watchDeadline - watchStart) / 1000))}s for its stream`, 'info');
+    let level = 'scroll';
+    const syntheticAt = watchStart + hoverGraceMs;
+    const pointerAt = syntheticAt + pointerGraceMs;
+    for (;;) {
+      if (this.isStopping || task.mediaSaved) break;
+      const r = await tryBindingPlan({ watchStart });
+      if (r === 'saved') return true;
+      if (r === 'ambiguous') return failOut();
+      const nowT = Date.now();
+      if (nowT >= watchDeadline) break;
+      if (level === 'scroll' && nowT >= syntheticAt && syntheticAt < watchDeadline) {
+        level = 'synthetic';
+        const sent = await this._syntheticHoverMainpageTile(task, tileIndexHint);
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=synthetic (mouseover/mouseenter ${sent ? 'sent to' : 'could not be sent to'} this video's tile; nothing opened, nothing clicked)`, 'info');
+        continue;
+      }
+      if (level === 'synthetic' && nowT >= pointerAt && pointerAt < watchDeadline) {
+        level = 'pointer';
+        const held = await this._pointerHoverMainpageTile(task, tileIndexHint);
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=pointer (pointer ${held ? 'held over' : 'could not be held over'} this video's tile; nothing opened, nothing clicked)`, 'info');
+        continue;
+      }
+      await sleep(250);
+    }
+    let newCount = 0;
+    try {
+      for (const e of cap.mainpageEntries()) {
+        if (e && e.url && e.candidate !== false && Number.isFinite(e.firstSeenAt) && e.firstSeenAt >= watchStart) newCount++;
+      }
+    } catch (e) {}
+    this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover watch finished — ${newCount} new stream(s) first seen during the watch`, 'info');
+    // Intezaar ke dauraan kitab badal sakti hai —
+    // bandhi body ka ek aur mauqa, phir plan dobara
+    // (exclusion ab laagu ho sakta hai).
+    try {
+      const okBody = await this._tryHarvestSave(task, downloadFolder, settings, attempts);
+      if (okBody || task.mediaSaved) return true;
+    } catch (e) {}
+    {
+      const r = await tryBindingPlan({ watchStart });
+      if (r === 'saved') return true;
+      if (r === 'ambiguous') return failOut();
+    }
+    // v2.48.54: rpc-feed mauqa ab bandha hua helper
+    // (tryRpcFeed, upar) hai — watch ke baad ki ye
+    // jagah barkarar hai, waisa hi mauqa watch se
+    // PEHLE bhi milta hai.
+    try { if (await tryRpcFeed(watchDeadline)) return true; } catch (e) {}
+
+    // v2.48.49 (TOO-SMALL MEDIA-LOAD MAUQA —
+    // ZEROCLICK16): bandhan tak kuch pahuncha hi
+    // nahi, lekin is attempt ki khidki me is task ki
+    // tile ki ek googlevideo stream SIRF
+    // 'stream-too-small' par ruki thi (chhota preview
+    // encode — 85,725B / 110,290B) to failOut se
+    // pehle usi URL par media-load ko EK mauqa do:
+    // adrishya element us pate ko load kare to media
+    // stack poori file ke range jawab kheench sakta
+    // hai aur .48 ki assembly unhe jod sakti hai.
+    // Us ke baad kitab dobara parhi jati hai
+    // (mainpageBodyForUrl + mediaBodyState) — body
+    // 'complete' ho to wahi bandhi-entry wali
+    // completion (saveGuard ke saare darwaze bilkul
+    // waisa hi faisla karte hain); warna attempt aaj
+    // ki tarah hi khatam hota hai. Trigger ka faisla
+    // khalis hai (saveGuard.mainpageTooSmallMediaPick)
+    // — bandhan/claim/tried-URL ke usool nahi badle;
+    // ye mauqa is attempt me sirf EK dafa chalta hai.
+    try {
+      const sightings = typeof cap.mainpageTooSmallSightings === 'function'
+        ? cap.mainpageTooSmallSightings() : [];
+      // v2.48.51 (item 3): pick ab task ki nishani
+      // (captureKey + render waqt + attempt ki hadd)
+      // ke saath — dusri task ki nazar nahi uthti
+      // (ZEROCLICK18 ki rr5 galti); jo nazar uthi wo
+      // is task ke naam consumed darj hoti hai.
+      const pick = saveGuard.mainpageTooSmallMediaPick({
+        sightings,
+        taskStart: task.startTime || 0,
+        teacherUrl,
+        triedUrls,
+        captureKey: captureKey || task.captureKey || task.videoId || null,
+        renderDoneAt: Number.isFinite(task.renderCompletedAt) ? task.renderCompletedAt : null,
+        attemptDeadline: watchDeadline
+      });
+      if (pick && pick.url && !this.isStopping && !task.mediaSaved) {
+        try { if (typeof cap.mainpageMarkTooSmallConsumed === 'function') cap.mainpageMarkTooSmallConsumed(pick.url, captureKey || task.captureKey || task.videoId || null); } catch (e) {}
+        // v2.48.52 (ROUTE 1A PACK — too-small par 1A
+        // PEHLE): ye nazar ab is task ki pukhta
+        // nishani par uthi hai (.51 attribution) —
+        // media-load se pehle usi pate par NETLOAD
+        // seedha bulaya jata hai: range param hata
+        // kar poori file CDP se uthao. Body mil jaye
+        // to wo bandhi entry ki shakal me wahi
+        // completion leti hai (body haath me di
+        // jati hai — _netloadBody; andar kitab /
+        // media / fetch dobara nahi ghumte, aur
+        // _noInPageFetch is pate par in-page fetch
+        // hamesha ke liye rokta hai — .51 ki
+        // 'chhota pata kabhi fetch nahi' hifazat
+        // barkarar). Body darwaze par ruk jaye
+        // ('rejected') to neeche wala media-load
+        // mauqa usi file ko dobara nahi ghumayega;
+        // netload se body hi na mile to wo mauqa
+        // bilkul .51 jaisa chalta hai.
+        let nlBodyRejected = false;
+        if (!task.mediaSaved) {
+          const nlRes = await this._netloadMainpageFull(task, pick.url);
+          if (nlRes && nlRes.buf && !task.mediaSaved) {
+            const bookEntry0 = typeof cap.mainpageEntries === 'function'
+              ? cap.mainpageEntries().find(e => e && e.url === pick.url) : null;
+            const nlEntry = {
+              url: pick.url,
+              src: 'googlevideo',
+              byteLength: nlRes.buf.length,
+              headerOk: true,
+              partial: true,
+              status: nlRes.status || 0,
+              contentRange: bookEntry0 && bookEntry0.contentRange ? bookEntry0.contentRange : '',
+              declaredLength: bookEntry0 && Number.isFinite(bookEntry0.declared) ? bookEntry0.declared : 0,
+              knownTotal: bookEntry0 && Number.isFinite(bookEntry0.knownTotal) ? bookEntry0.knownTotal : null,
+              duplicate: false,
+              hash: null,
+              teacherHash,
+              bound: true,
+              bodyBytes: nlRes.buf.length,
+              at: bookEntry0 && Number.isFinite(bookEntry0.at) ? bookEntry0.at : Date.now(),
+              firstSeenAt: bookEntry0 && Number.isFinite(bookEntry0.firstSeenAt) ? bookEntry0.firstSeenAt : pick.firstSeenAt,
+              seq: bookEntry0 && Number.isFinite(bookEntry0.seq) ? bookEntry0.seq : null,
+              claimedBy: null,
+              _netloadBody: nlRes.buf,
+              _netloadMeta: nlRes,
+              _noInPageFetch: true
+            };
+            const nlOutcome = await completeTracked(nlEntry, 'too-small-netload');
+            if (nlOutcome === 'saved' || task.mediaSaved) return true;
+            if (nlOutcome === 'rejected') nlBodyRejected = true;
+          }
+        }
+        if (!nlBodyRejected) {
+        // v2.48.50 (item 1): ye mauqa bhi usi shared
+        // completion se — pehle TILE element, hidden
+        // chaara; lekin hadd EK drive ki hi rehti hai
+        // (singleDrive — ye aakhri chaara hai, cycle
+        // budget ka hissa ginata hai, item 4).
+        await this._loadMainpageFullViaMedia(pick.url, { task, tileIndexHint, singleDrive: true });
+        const bookEntry = typeof cap.mainpageEntries === 'function'
+          ? cap.mainpageEntries().find(e => e && e.url === pick.url) : null;
+        const held = typeof cap.mainpageBodyForUrl === 'function'
+          ? cap.mainpageBodyForUrl(pick.url) : null;
+        if (!task.mediaSaved && mediaBodyState(bookEntry, held) === 'complete' && held && held.buffer && held.buffer.length > 0) {
+          // Jodi hui mukammal body ab bandhi entry ki
+          // shakal me wahi completion leti hai —
+          // partial=false / status=200 is liye ke body
+          // asal me mukammal hai (mediaBodyState ne
+          // 'complete' kaha hai); andar ke saare
+          // darwaze (floor / header / teacher / hash /
+          // duplicate) bilkul waisa hi faisla karte
+          // hain.
+          const entry = {
+            url: pick.url,
+            src: 'googlevideo',
+            byteLength: held.buffer.length,
+            headerOk: true,
+            partial: false,
+            status: 200,
+            contentRange: bookEntry && bookEntry.contentRange ? bookEntry.contentRange : '',
+            declaredLength: bookEntry && Number.isFinite(bookEntry.declared) ? bookEntry.declared : 0,
+            duplicate: false,
+            hash: null,
+            teacherHash,
+            bound: true,
+            bodyBytes: held.buffer.length,
+            at: bookEntry && Number.isFinite(bookEntry.at) ? bookEntry.at : Date.now(),
+            firstSeenAt: bookEntry && Number.isFinite(bookEntry.firstSeenAt) ? bookEntry.firstSeenAt : pick.firstSeenAt,
+            seq: bookEntry && Number.isFinite(bookEntry.seq) ? bookEntry.seq : null,
+            claimedBy: null
+          };
+          const outcome = await completeTracked(entry, 'too-small-media-load');
+          if (outcome === 'saved' || task.mediaSaved) return true;
+        }
+        }
+      }
+    } catch (e) {}
+    return failOut();
+  }
+  /**
+   * v2.48.31 (MINT): ek download round ki render→save khidki
+   * ke liye enhanced capture chalu karo — capture har request
+   * ki saaf shakal darj karega aur file-address le jaane wale
+   * jawab [MINT] khabar denge. Tracker isi engine ka hai (har
+   * worker ka apna capture + apna tracker). Band round ke
+   * aakhir me hota hai (bulane wale ke finally me _mintEndWatch).
+   */
+  _mintBeginWatch(taskKey) {
+    try {
+      this._mintTracker = mintWindow.createMintWindow({ cap: mintWindow.DEFAULT_WINDOW_CAP });
+      if (this.netCapture && typeof this.netCapture.setMintWatch === 'function') {
+        // v2.48.33 (ZEROCLICK): round ka task bhi saath —
+        // mint template isi task ke naam seekha jayega.
+        this.netCapture.setMintWatch(true, taskKey || null);
+      }
+    } catch (e) {}
+  }
+
+  _mintEndWatch() {
+    try {
+      if (this.netCapture && typeof this.netCapture.setMintWatch === 'function') {
+        this.netCapture.setMintWatch(false);
+      }
+    } catch (e) {}
+    this._mintTracker = null;
+  }
+
+  /**
+   * v2.48.31 (MINT-WINDOW): resolution click ke pal khidki
+   * kholo. Click aur is pal ke beech guzri requests capture ki
+   * ring se backfill hoti hain (un par bhi [MINT] req lines
+   * banti hain, cap ke andar); us ke baad ki requests
+   * onMintRequest callback se seedha aati hain.
+   */
+  _mintOpenWindow(clickAtMs) {
+    try {
+      const tr = this._mintTracker;
+      if (!tr || !Number.isFinite(clickAtMs) || clickAtMs <= 0) return;
+      tr.open(clickAtMs);
+      const back = (this.netCapture && typeof this.netCapture.mintRequestsSince === 'function')
+        ? this.netCapture.mintRequestsSince(clickAtMs)
+        : [];
+      for (const e of back) {
+        const r = tr.noteRequest(e);
+        if (r === 'cap') {
+          this.log(`[MINT] req … (mint-window log cap ${mintWindow.DEFAULT_WINDOW_CAP} reached — further requests in this window are counted, not listed)`, 'info');
+          break;
+        }
+        if (r) this.log(`[MINT] req method=${r.method} host=${r.host} path=${r.path}`, 'info');
+      }
+    } catch (e) {}
+  }
+
+  /** v2.48.31 (MINT-WINDOW): pehli flow-content sighting ka khulasa — beech me kitni requests gayin. */
+  _mintNoteSighting(atMs) {
+    try {
+      const tr = this._mintTracker;
+      if (!tr) return;
+      const s = tr.noteSighting(atMs);
+      if (s) {
+        this.log(`[MINT] first flow-content sighting after ${s.requestsBefore} request(s) in the mint window (click→sighting ${((s.sightingAt - s.clickAt) / 1000).toFixed(1)}s)`, 'info');
+      }
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — B/C ki buniyad): seekhi hui mint
+   * call ko HU-BAHU (verbatim — koi tabdeeli nahi; badalne
+   * ko id hai hi nahi, ZEROCLICK2 sabit) page ke andar se
+   * ek dafa bhejna. Hadd ~8s. Kabhi throw nahi karta:
+   * natija { status, buf } — nakami par status 'error'
+   * aur khaali buf. Jawab se yahan kuch save/claim NAHI
+   * hota — faisla bulane wale ka hai.
+   */
+  async _fireMintReplay(tpl, pageOverride) {
+    // v2.48.40: pageOverride diya jaye to replay usi
+    // page ke andar se, warna asal page. (v2.48.41:
+    // background page khatam — replay hamesha asal
+    // main page se hota hai.)
+    const pg = pageOverride || this.page;
+    try {
+      if (!tpl || !tpl.url || !tpl.body || !pg || pg.isClosed()) {
+        return { status: 'error', buf: Buffer.alloc(0) };
+      }
+      const res = await downloadGuard.withTimeout(
+        pg.evaluate(async (u, m, h, b64) => {
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const r = await fetch(u, { method: m || 'POST', headers: h, body: bytes, credentials: 'include' });
+          const rbuf = await r.arrayBuffer();
+          const u8 = new Uint8Array(rbuf);
+          let s = '';
+          for (let i = 0; i < u8.length; i += 8192) {
+            s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+          }
+          return { status: r.status, b64: btoa(s) };
+        }, tpl.url, tpl.method || 'POST', tpl.headers, tpl.body.toString('base64')),
+        8000, 'mint replay');
+      if (!res) return { status: 'error', buf: Buffer.alloc(0) };
+      let buf = Buffer.alloc(0);
+      try { buf = res.b64 ? Buffer.from(res.b64, 'base64') : Buffer.alloc(0); } catch (e) { buf = Buffer.alloc(0); }
+      return { status: res.status, buf };
+    } catch (e) {
+      return { status: 'error', buf: Buffer.alloc(0) };
+    }
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK): ek batchexecute jawab ke buffer
+   * se asal flow-content video address nikaalna — sirf
+   * andarooni istemal (muqabla/claim/fetch ke liye); ye
+   * address kabhi log nahi hote.
+   */
+  _replayResponseUrls(buf) {
+    try {
+      if (!buf || buf.length === 0) return [];
+      const cap = this.netCapture;
+      const scan = networkCapture.scanBatchExecuteBody(buf, cap ? cap.patterns : undefined);
+      return (scan.allUrls || []).filter(u => flowContent.isFlowContentVideoUrl(u));
+    } catch (e) { return []; }
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — B/C ka mushtarak aakhri qadam):
+   * verbatim replay ke jawab ke URLs ka faisla aur (jaiz
+   * ho to) verified server-fetch save. Usool sakht:
+   *   - jawab capture pipeline se bhi guzarta hai (bandish
+   *     ki kitab taaza rehti hai — zero-click wala usool);
+   *   - faisla saveGuard.replayUrlVerdict (khalis) se:
+   *     teacher ka address aaya ho to FETCH KABHI NAHI —
+   *     wo is task ki file ho hi nahi sakti;
+   *   - akela naya unclaimed address hi claim + fetch
+   *     hota hai, aur save ki har jaanch (_serverFetchSave
+   *     → content gate + hash guard + ffprobe) barkarar.
+   * Natija: { outcome: 'saved'|'teacher'|'none'|
+   * 'ambiguous'|'claimed'|'fetch-failed', gapSec? }.
+   */
+  async _saveFromReplayUrls(task, downloadFolder, settings, urls, via, buf, replayUrl) {
+    const cap = this.netCapture;
+    const captureKey = task.captureKey || task.videoId || null;
+    try {
+      if (buf && buf.length > 0 && cap && typeof cap.ingestResponse === 'function') {
+        cap.ingestResponse({ url: replayUrl, contentType: 'application/json', bodyBuffer: buf, at: Date.now() });
+      }
+    } catch (e) {}
+    // v2.48.37: muqable ka template ab asar-daar wala
+    // (learned warna candidate) — teacher langar usi se.
+    const tpl = (cap && typeof cap.replayTemplate === 'function')
+      ? cap.replayTemplate().template
+      : (cap && cap.mintTemplate ? cap.mintTemplate : null);
+    const teacherUrl = cap && typeof cap.teacherMintUrlForTemplate === 'function'
+      ? cap.teacherMintUrlForTemplate(tpl) : null;
+    const verdict = saveGuard.replayUrlVerdict({
+      urls,
+      teacherUrl,
+      isClaimed: (u) => {
+        try {
+          return !!((cap && cap.isFlowContentClaimed(u)) || this._urlClaimedByOtherTask(u, captureKey));
+        } catch (e) { return false; }
+      }
+    });
+    if (verdict.action !== 'save') {
+      return { outcome: verdict.action === 'teacher' ? 'teacher' : verdict.action };
+    }
+    // v2.48.41: v2.48.39 wala 'replay-fetch skipped' wala
+    // shortcut gaya — wo editor-harvest ki promoted body
+    // par tha, aur editor-harvest ab hai hi nahi. Grid
+    // replay ka address ab hamesha apni verified
+    // server-fetch se save hota hai.
+    let okFetch = false;
+    try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: verdict.url, via }); } catch (e) { okFetch = false; }
+    if (okFetch || task.mediaSaved) {
+      const gapBase = task.renderCompletedAt || task.startTime || Date.now();
+      const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
+      return { outcome: 'saved', gapSec };
+    }
+    return { outcome: 'fetch-failed' };
+  }
+
+  async _verbatimReplayProbe(task, captureKey) {
+    try {
+      const cap = this.netCapture;
+      if (!cap || cap._verbatimProbeDone) return;
+      // v2.48.37: probe bhi asar-daar template par (learned
+      // warna candidate) — jaal ab chauda hai.
+      const tpl = (typeof cap.replayTemplate === 'function')
+        ? cap.replayTemplate().template
+        : (cap.mintTemplate ? cap.mintTemplate : null);
+      if (!tpl || !tpl.body || !tpl.url) return; // template hi nahi — pehla task khud teacher bane ga
+      if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return; // teacher khud hai
+      if (!this.page || this.page.isClosed()) return;
+      cap._verbatimProbeDone = true; // nishaan PEHLE — ek session, ek probe
+      // v2.48.36: firing ab mushtarak helper se hai (rawaaN
+      // bilkul waisa hi — hu-bahu call, ~8s hadd, page ka
+      // apna session).
+      const { status, buf } = await this._fireMintReplay(tpl);
+      let verdict = { carriesUrl: false, urlVsTeacher: 'n/a' };
+      try {
+        const carries = buf.length > 0 && mintWindow.responseCarriesFileUrl({ bodyText: buf });
+        let urls = [];
+        let teacherUrl = null;
+        if (carries) {
+          urls = this._replayResponseUrls(buf);
+          // v2.48.36 (ROOT PACK — E): teacher ka address ab
+          // capture ki asal kitab se aata hai (seekhne ke
+          // pal darj hua mint address) — muqabla tab hi
+          // 'n/a' rahega jab wo asal me kabhi darj hi na
+          // hua ho (v2.48.35 me bandhe link par nirbhar
+          // tha, jo aksar khaali milta tha).
+          try {
+            teacherUrl = (typeof cap.teacherMintUrlForTemplate === 'function')
+              ? cap.teacherMintUrlForTemplate(tpl) : null;
+          } catch (e) { teacherUrl = null; }
+        }
+        verdict = mintReplay.classifyVerbatimProbe({ carriesUrl: carries, urls, teacherUrl });
+      } catch (e) {}
+      this.log(`[ZEROCLICK] verbatim-probe status=${status} carriesUrl=${verdict.carriesUrl ? 'yes' : 'no'} urlVsTeacher=${verdict.urlVsTeacher}`, 'info');
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.33 (ZEROCLICK — PROBE, abhi LIVE PROVEN NAHI):
+   * seekhi hui mint-call ko bina kisi UI click ke replay
+   * karna. Tasalsul: is session ke kisi PEHLE task ke download
+   * me jo batchexecute darkhwast file-address le aayi thi,
+   * capture ne use template bana kar rakha hai (asal URL +
+   * headers + body; teacher task ke ID ki jaghein darj hain).
+   * Is task ke render-complete par, direct-viewer se PEHLE:
+   * teacher ke ID ki har jagah IS task ka workflowId rakh kar
+   * wahi darkhwast page ke andar se (page.evaluate fetch —
+   * session page ka apna hai, app cookies kabhi nahi chhuta)
+   * bhej do, aur jawab ko wahi pehchan-darwazon se guzaaro.
+   *
+   * Teen natije, teeno log hote hain (yehi is probe ka saboot
+   * hai — H1 banam H2 ka faisla live run se hoga):
+   *   (a) jawab me is task ke qabil flow-content address →
+   *       verified server-fetch se save, koi UI download
+   *       interaction NAHI hua. [ZEROCLICK] replay SUCCESS
+   *   (b) jawab aaya lekin file-address nahi → H2 saboot
+   *       (call sirf click ke baad hi address laati hai) —
+   *       aam direct-viewer rasta chalega.
+   *   (c) replay error/timeout (hadd ~8s) → aam rasta.
+   * Replay har task par HAD EK dafa; nakami fallback ko 8s
+   * se zyada nahi rokti. Download-stage ki haar par prompt
+   * dobara KABHI nahi bheja jata (sacred rule barkarar).
+   *
+   * v2.48.34 (URL reach): pehle live test me template ke
+   * body me teacher ki id mili hi nahi (idsInBody=0) — is
+   * liye tabdeeli ab body AUR URL dono par alag-alag laagu
+   * hoti hai (urlPrimaryId capture seekhne ke pal URL se
+   * darj karta hai), aur replay sirf tab rukta hai jab dono
+   * jagah kuch na mile. SUCCESS aur skip lines par loc=
+   * body|url|both (skip-none par loc=none) yahi batata hai
+   * ke id asal me kahan safar karta hai. Tartib, 8s cap,
+   * ek-dafa-hadd aur fallback sab bilkul pehle jaise hain.
+   */
+  async _tryZeroClickReplay(task, downloadFolder, settings, attempts, captureKey) {
+    const n = task.promptIndex + 1;
+    if (task._zeroClickTried) return false;
+    task._zeroClickTried = true;
+    if (this.isStopping || task.mediaSaved) return false;
+    const cap = this.netCapture;
+    const tpl = cap && cap.mintTemplate ? cap.mintTemplate : null;
+    if (!tpl || !tpl.body) return false; // pehla task — seekhne wala koi nahi, khamosh aage
+    if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return false; // apna hi template — ye task khud teacher hai
+    if (!this.page || this.page.isClosed()) return false;
+    // v2.48.34 (URL reach): tabdeeli ki jodi ab body ke
+    // primaryId se bhi ban sakti hai aur URL ke urlPrimaryId
+    // se bhi — dono jagah alag-alag laagu hoti hain, aur
+    // replay sirf tab rukta hai jab DONO jagah kuch na mile.
+    // loc wahi batata hai: tabdeeli kahan hui (body|url|both),
+    // skip par kahan ho sakti thi (ya none).
+    const hasBodyId = !!tpl.primaryId;
+    const hasUrlId = !!tpl.urlPrimaryId;
+    const locTried = hasBodyId && hasUrlId ? 'both' : hasBodyId ? 'body' : hasUrlId ? 'url' : 'none';
+    if (!hasBodyId && !hasUrlId) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — the learned mint call carries none of its own task's ids in the body or the url (idsInBody was 0, idsInUrl was 0), so there is nothing to substitute for this task loc=none`, 'info');
+      attempts.push({ strategy: 'zero-click', ok: false, note: 'the learned mint-call template carries no substitutable task id — the replay was skipped and the normal routes ran' });
+      return false;
+    }
+    let thisId = null;
+    try { thisId = (cap && typeof cap.workflowIdForKey === 'function') ? cap.workflowIdForKey(captureKey) : null; } catch (e) { thisId = null; }
+    if (!thisId && task.videoId) thisId = task.videoId;
+    if (!thisId) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — this task's workflow id is not known yet loc=${locTried}`, 'info');
+      attempts.push({ strategy: 'zero-click', ok: false, note: 'this task\'s workflow id was not known at render-complete — the replay was skipped and the normal routes ran' });
+      return false;
+    }
+    const bodySub = hasBodyId ? mintReplay.substituteIds(tpl.body, [[tpl.primaryId, thisId]]) : null;
+    const urlSub = hasUrlId ? mintReplay.substituteIdsInUrl(tpl.url, [[tpl.urlPrimaryId, thisId]]) : null;
+    const bodyReps = bodySub ? bodySub.replacements : 0;
+    const urlReps = urlSub ? urlSub.replacements : 0;
+    if (bodyReps === 0 && urlReps === 0) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay skipped — the learned template holds no replaceable occurrence of its task's id in the body or the url loc=${locTried}`, 'info');
+      attempts.push({ strategy: 'zero-click', ok: false, note: 'the learned template held no substitutable id occurrence — the replay was skipped and the normal routes ran' });
+      return false;
+    }
+    const loc = bodyReps > 0 && urlReps > 0 ? 'both' : bodyReps > 0 ? 'body' : 'url';
+    const replayUrl = urlSub && urlReps > 0 ? urlSub.url : tpl.url;
+    const replayBody = bodySub && bodyReps > 0 ? bodySub.body : tpl.body;
+    const gapBase = task.renderCompletedAt || task.startTime || Date.now();
+    let res = null;
+    let failReason = '';
+    try {
+      res = await downloadGuard.withTimeout(
+        this.page.evaluate(async (u, m, h, b64) => {
+          const bin = atob(b64);
+          const bytes = new Uint8Array(bin.length);
+          for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+          const r = await fetch(u, { method: m || 'POST', headers: h, body: bytes, credentials: 'include' });
+          const buf = await r.arrayBuffer();
+          const u8 = new Uint8Array(buf);
+          let s = '';
+          for (let i = 0; i < u8.length; i += 8192) {
+            s += String.fromCharCode.apply(null, u8.subarray(i, i + 8192));
+          }
+          return { status: r.status, b64: btoa(s) };
+        }, replayUrl, tpl.method || 'POST', tpl.headers, replayBody.toString('base64')),
+        8000, 'zero-click replay');
+    } catch (e) {
+      failReason = e && e.message ? String(e.message).slice(0, 80) : 'no response';
+      res = null;
+    }
+    if (!res) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay failed ${failReason || 'no response'} — falling back to the viewer route`, 'warn');
+      attempts.push({ strategy: 'zero-click', ok: false, note: `the zero-click replay did not answer (${failReason || 'no response'}) — the normal routes ran as fallback` });
+      return false;
+    }
+    if (res.status >= 400) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay failed http-${res.status} — falling back to the viewer route`, 'warn');
+      attempts.push({ strategy: 'zero-click', ok: false, note: `the zero-click replay was answered http-${res.status} — the normal routes ran as fallback` });
+      return false;
+    }
+    let buf = null;
+    try { buf = res.b64 ? Buffer.from(res.b64, 'base64') : Buffer.alloc(0); } catch (e) { buf = Buffer.alloc(0); }
+    // Jawab ko maujood capture pipeline se bhi guzaaro
+    // (direct-API poll wali hi tarz) — is me bandhe hue
+    // koi bhi link aam pehchan-usoolon se hi bandhta hai.
+    try {
+      if (buf.length > 0 && cap && typeof cap.ingestResponse === 'function') {
+        cap.ingestResponse({ url: replayUrl, contentType: 'application/json', bodyBuffer: buf, at: Date.now() });
+      }
+    } catch (e) {}
+    const carries = mintWindow.responseCarriesFileUrl({ bodyText: buf });
+    if (!carries) {
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay answered without file url (H2 evidence) status=${res.status} bodyBytes=${buf.length}`, 'warn');
+      attempts.push({ strategy: 'zero-click', ok: false, note: 'the zero-click replay was answered but carried no file address (H2 evidence — the mint call may only carry the address after a click) — the normal routes ran as fallback' });
+      return false;
+    }
+    // Address jawab ke andar hai — ummeedwaar nikalo aur
+    // post-click race wale pehchan-darwaze (taaza / claimed
+    // nahi / apna) lagao.
+    let candUrls = [];
+    try {
+      const scan = networkCapture.scanBatchExecuteBody(buf, cap.patterns);
+      candUrls = (scan.allUrls || []).filter(u => flowContent.isFlowContentVideoUrl(u));
+    } catch (e) { candUrls = []; }
+    const entries = candUrls.map(u => ({ url: u, type: '', at: Date.now() }));
+    const pick = flowContent.pickRaceFlowContentUrl(entries, {
+      sinceMs: gapBase,
+      isClaimed: (u) => {
+        // v2.48.35: claimed-set ke saath kisi AUR task ke
+        // naam bandha URL bhi rukawat hai (wahi discipline).
+        try { return !!((cap && cap.isFlowContentClaimed(u)) || this._urlClaimedByOtherTask(u, captureKey)); } catch (e) { return false; }
+      },
+      isOwnUrl: (u) => this._isTaskOwnUrl(task, u)
+    });
+    if (!pick || !pick.url) {
+      const why = pick && pick.ambiguous ? `${pick.count} fresh candidates appeared and none could be proven to be this task's own` : 'no usable own address could be picked from it';
+      this.log(`[ZEROCLICK] [Prompt #${n}] replay response carried the file address host but ${why} — falling back to the viewer route`, 'warn');
+      attempts.push({ strategy: 'zero-click', ok: false, note: 'the zero-click replay response carried the file-address host but no single address could be proven to be this task\'s own — the normal routes ran as fallback' });
+      return false;
+    }
+    let okFetch = false;
+    try { okFetch = await this._serverFetchSave(task, downloadFolder, settings, { url: pick.url, via: 'zero-click' }); } catch (e) { okFetch = false; }
+    if (okFetch || task.mediaSaved) {
+      const gapSec = Math.max(0, (Date.now() - gapBase) / 1000).toFixed(1);
+      this.log(`[ZEROCLICK] replay SUCCESS via=zero-click gap=${gapSec}s loc=${loc}`, 'success');
+      attempts.push({ strategy: 'zero-click', ok: true, note: `the file was fetched straight from Flow's server after the app replayed the learned mint call itself — no UI download click happened for this video; render→save gap ${gapSec}s` });
+      return true;
+    }
+    attempts.push({ strategy: 'zero-click', ok: false, note: 'the zero-click replay produced this task\'s server address but the verified fetch did not save the file — the normal routes ran as fallback' });
+    return false;
+  }
+
+  /**
+   * v2.48.32 (SWITCH — .31 ka DIRECT-PROBE ab PRIMARY rasta):
+   * ⋮ menu ke baghair, tile ke bare view (viewer — is app me
+   * tile click se khulne wala editor view) ke apne "Download
+   * media" button se file ka server address mint karke app ki
+   * apni verified server-fetch (_serverFetchSave: quality
+   * gate + ffprobe + mediaSaved bachav) se save.
+   *
+   * LIVE SABOOT (DIRECTTEST1, v2.48.31, 2026-11-03, owner ke
+   * PC par engine log): render-complete → viewer khula →
+   * button mila ("download media") → click ke ~1.4s baad
+   * [MINT] batchexecute jawab file ka address le aaya →
+   * app ki parallel fetch ne file save ki; ⋮ menu kabhi
+   * khula hi nahi, koi resolution-overlay click nahi hua,
+   * koi browser blob download nahi hua. Gap 15.3s tha, jisme
+   * ~4.2s probe ki dheeli tartib (pehle 3.5s passive poll,
+   * phir ek-shot button scan) me gaya — .32 wahi tartib
+   * kas-ta hai:
+   *   1. Viewer confirm khula → FORAN button scan (har
+   *      ~150ms, kul ~2.5s tak); button milte hi click —
+   *      passive poll button se PEHLE nahi chalta.
+   *   2. Click ke baad address ka intezaar kul ~6s (poll
+   *      ~175ms). ~2.5s par address na aaya ho aur
+   *      resolution overlay khula dikhe to us ka Original
+   *      entry ek dafa (detour — ⚠️ UNPROVEN, neeche dekho),
+   *      phir baaki intezaar jaari.
+   *   3. Button ~2.5s me na mile tab hi passive poll (3.5s)
+   *      — sirf kholne se address aaye to via=viewer-open.
+   * Sub-timing lines (download-attempt ke aaghaz se):
+   *   [DIRECT] editor-open at +<s>s · button-clicked at +<s>s
+   *   · url-seen at +<s>s — aur aakhir me wahi
+   *   [DIRECT] via=<...> gap=<s>s (render→save).
+   * Kuch na bane to viewer saaf band karke (Escape + grid
+   * wapsi) menu wala rasta (fallback #2) bilkul pehle ki
+   * tarah chalta hai. Download-stage ki haar par prompt
+   * KABHI dobara nahi bheja jata (sacred rule barkarar).
+   */
+  /**
+   * v2.48.36 (ROOT PACK — B ki seedhi): is task ki tile ko
+   * page ki selected/focused state me lana — editor khole
+   * BAGHAIR. Tartib: hover (tile ke controls jaagte hain)
+   * → tile ke andar koi selection affordance (checkbox /
+   * role=checkbox / 'select' naam wala control) ho to
+   * wahi click → warna keyboard focus (tile ya us ke
+   * pehle focusable ko focus(); click NAHI, is liye
+   * editor nahi khulta). Affordance ke click se editor
+   * khul jaye to wo khabar alag lautti hai (openedEditor)
+   * — bulane wala use route C ke hawale kar deta hai.
+   * Koi mehfooz tareeqa na mile to { attempted:false } —
+   * bulane wala log karke route chhod deta hai.
+   * Natija: { attempted, method?, openedEditor? }.
+   */
+  async _selectTileWithoutOpening(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return { attempted: false };
+      let editorAlready = false;
+      try { editorAlready = await this._inEditorView(); } catch (e) { editorAlready = false; }
+      if (editorAlready) return { attempted: false, openedEditor: true };
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      const coords = idx >= 0 ? await this._tileCenterCoords(idx) : { found: false };
+      if (!coords.found) return { attempted: false };
+      try { await this.page.mouse.move(coords.x, coords.y); } catch (e) {}
+      await sleep(350);
+      const act = await this.page.evaluate(({ idx }) => {
+        const tiles = Array.from(document.querySelectorAll('flow-grid-tile-container'));
+        const tile = tiles[idx];
+        if (!tile) return { method: 'none' };
+        const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const norm = (s) => String(s || '').toLowerCase().replace(/\s+/g, ' ').trim();
+        const cands = Array.from(tile.querySelectorAll('input[type="checkbox"], [role="checkbox"], button, [role="button"]'));
+        for (const el of cands) {
+          if (!visible(el)) continue;
+          const isCheckbox = (el.getAttribute && el.getAttribute('type') === 'checkbox')
+            || (el.getAttribute && el.getAttribute('role') === 'checkbox');
+          const label = norm(el.getAttribute && el.getAttribute('aria-label'));
+          if (isCheckbox || /select/.test(label)) {
+            const r = el.getBoundingClientRect();
+            return { method: 'affordance', x: r.x + r.width / 2, y: r.y + r.height / 2 };
+          }
+        }
+        // Keyboard focus: tile ya us ke andar ke pehle
+        // focusable ko focus — click nahi, editor nahi.
+        try {
+          const focusable = tile.querySelector('a[href], button, [tabindex]') || tile;
+          if (focusable) {
+            if (focusable.setAttribute && !(focusable.hasAttribute && focusable.hasAttribute('tabindex'))) {
+              try { focusable.setAttribute('tabindex', '-1'); } catch (e) {}
+            }
+            focusable.focus();
+            const active = document.activeElement;
+            if (active && (active === tile || tile.contains(active))) return { method: 'focus' };
+          }
+        } catch (e) {}
+        return { method: 'none' };
+      }, { idx });
+      if (!act || act.method === 'none') return { attempted: false };
+      if (act.method === 'affordance') {
+        try { await this.page.mouse.click(act.x, act.y); } catch (e) {}
+        await sleep(250);
+        let opened = false;
+        try { opened = await this._inEditorView(); } catch (e) { opened = false; }
+        if (opened) return { attempted: true, method: 'affordance', openedEditor: true };
+      }
+      return { attempted: true, method: act.method };
+    } catch (e) {
+      return { attempted: false };
+    }
+  }
+
+  /**
+   * v2.48.50 (MEGA PACK item 6 — PIPELINING): is task ki
+   * completion ke dauraan AGLI pending task ki tile ko
+   * viewport me la kar us ke preview element ko muted
+   * play karo — bilkul waisa hi in-place playback jo
+   * page khud hover par karta hai. Is se agle task ki
+   * stream peeche (background) aati rehti hai aur us ki
+   * completion apni baari par taaza stream se shuru
+   * hoti hai. Bandhan ki hifazat (reserved-for-earlier-
+   * pending) bilkul nahi badalti — ye sirf tile ko
+   * nazar me rakhna hai, koi bandhan/claim nahi. Run
+   * me ek dafa (har naye browser session par nishan
+   * taaza hota hai); safal ho to EK line:
+   * '[ROOT] mainpage-pipeline task=next-pending'.
+   * Best-effort — nakami khamosh hai.
+   */
+  async _primeNextPendingTile(task) {
+    if (this._pipelinePrimedRun) return false;
+    const pg = this.page;
+    if (!pg || pg.isClosed() || typeof pg.evaluate !== 'function') return false;
+    let next = null;
+    try {
+      for (const t of this._captureTasks.values()) {
+        if (t && t !== task && !t.mediaSaved && !t.completed) { next = t; break; }
+      }
+    } catch (e) {}
+    if (!next) return false;
+    const idx = await this._resolveTileIndexForTask(next, undefined);
+    if (!Number.isInteger(idx) || idx < 0) return false;
+    let primed = false;
+    try {
+      primed = await pg.evaluate((i) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const tile = tiles && tiles[i];
+          if (!tile) return false;
+          try { tile.scrollIntoView({ block: 'center' }); } catch (e) {}
+          const vid = tile.querySelector('video');
+          // v2.48.55 (Gemini ZIP-fix se liya): <video>
+          // abhi bana hi nahi to prime bekaar hai —
+          // false lautao taaki one-shot flag is pal par
+          // zaya na ho; agli task ke download ke dauraan
+          // ye phir bulaya jayega (finishVideoAttempt).
+          if (!vid) return false;
+          try { vid.muted = true; } catch (e) {}
+          const p = vid.play();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
+          return true;
+        } catch (e) { return false; }
+      }, idx);
+    } catch (e) { primed = false; }
+    if (primed) {
+      this._pipelinePrimedRun = true;
+      try { this.log('[ROOT] mainpage-pipeline task=next-pending', 'info'); } catch (e) {}
+    }
+    return !!primed;
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — B: GRID-SELECTION REPLAY):
+   * editor khole baghair, sirf tile ko selected/focused
+   * karke seekhi hui mint call hu-bahu chalana. Theory
+   * (ZEROCLICK3 ke saboot par): call session ke
+   * "current" media ka address deti hai — tile ki
+   * selection hi wo current state grid par bana sakti
+   * hai. Jawab ka address TEACHER ke address jaisa ho
+   * to FETCH KABHI NAHI (wo is task ki file nahi) —
+   * wahi line is theory ka faisla hai:
+   *   [ROOT] grid-replay returned teacher url — context
+   *   is not tile-selection
+   * Alag address aaye to claim + verified server-fetch:
+   *   [ROOT] via=grid-replay gap=<N>s
+   * Template na ho (pehla task) ya ye task khud teacher
+   * ho to khamoshi se skip — viewer route wahi seekhta
+   * hai jo aaj seekhta hai.
+   * Natija: { done, editorOpen }.
+   */
+  async _tryGridReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint) {
+    const n = task.promptIndex + 1;
+    if (task._gridReplayTried) return { done: false, editorOpen: false };
+    task._gridReplayTried = true;
+    const cap = this.netCapture;
+    // v2.48.37: route ab candidate template par bhi
+    // chalta hai (learned hamesha pehle) — jawab ka
+    // URL + teacher-muqabla + hash guard hi exactness
+    // ka darwaza hai, template ka darja nahi.
+    const tpl = (cap && typeof cap.replayTemplate === 'function')
+      ? cap.replayTemplate().template
+      : (cap && cap.mintTemplate ? cap.mintTemplate : null);
+    if (!tpl || !tpl.body || !tpl.url) return { done: false, editorOpen: false }; // pehla task — seekhne wala koi nahi
+    if (tpl.taskKey && captureKey && tpl.taskKey === captureKey) return { done: false, editorOpen: false }; // apna hi template — ye task khud teacher hai
+    if (!this.page || this.page.isClosed() || this.isStopping || task.mediaSaved) return { done: false, editorOpen: false };
+
+    const sel = await this._selectTileWithoutOpening(task, tileIndexHint);
+    if (!sel || !sel.attempted) {
+      this.log(`[ROOT] [Prompt #${n}] grid-replay skipped — no safe way to select this tile without opening the editor was found`, 'info');
+      attempts.push({ strategy: 'grid-replay', ok: false, note: 'no safe way to select this task\'s tile without opening the editor was found — the grid replay was skipped and the normal routes ran' });
+      return { done: false, editorOpen: false };
+    }
+    if (sel.openedEditor) {
+      this.log(`[ROOT] [Prompt #${n}] grid-replay selection opened the editor instead — the replay will be tried from the editor context`, 'info');
+      attempts.push({ strategy: 'grid-replay', ok: false, note: 'selecting the tile opened its editor instead — the replay continues from the editor context route' });
+      return { done: false, editorOpen: true };
+    }
+    const { status, buf } = await this._fireMintReplay(tpl);
+    if (status === 'error' || (typeof status === 'number' && status >= 400)) {
+      attempts.push({ strategy: 'grid-replay', ok: false, note: `the grid-selection replay was not answered (${status === 'error' ? 'no response' : `http-${status}`}) — the normal routes ran as fallback` });
+      return { done: false, editorOpen: false };
+    }
+    const urls = this._replayResponseUrls(buf);
+    if (!(buf.length > 0 && mintWindow.responseCarriesFileUrl({ bodyText: buf })) || urls.length === 0) {
+      this.log(`[ROOT] [Prompt #${n}] grid-replay answered without file url`, 'info');
+      attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid-selection replay was answered but carried no file address — the normal routes ran as fallback' });
+      return { done: false, editorOpen: false };
+    }
+    const res = await this._saveFromReplayUrls(task, downloadFolder, settings, urls, 'grid-replay', buf, tpl.url);
+    if (res.outcome === 'teacher') {
+      this.log(`[ROOT] grid-replay returned teacher url — context is not tile-selection`, 'warn');
+      attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid-selection replay returned the previous task\'s file address — tile selection does not set the download context, and the address was NOT fetched' });
+      return { done: false, editorOpen: false };
+    }
+    if (res.outcome === 'saved') {
+      this.log(`[ROOT] via=grid-replay gap=${res.gapSec}s`, 'success');
+      attempts.push({ strategy: 'grid-replay', ok: true, note: `the file was fetched straight from Flow's server after selecting this video's tile on the grid and replaying the learned mint call — no editor, no download-button click, no menu; render→save gap ${res.gapSec}s` });
+      return { done: true, editorOpen: false };
+    }
+    attempts.push({ strategy: 'grid-replay', ok: false, note: `the grid-selection replay produced an address that could not be saved (${res.outcome}) — the normal routes ran as fallback` });
+    return { done: false, editorOpen: false };
+  }
+
   async _downloadTaskMediaInner(task, downloadFolder, settings, tileIndexHint) {
     const attempts = [];
     task.downloadAttempts = attempts;
     const n = task.promptIndex + 1;
     const isImage = !!(settings && settings.type === 'Image');
     const captureKey = task.captureKey || task.videoId || null;
+    // v2.48.32 (SWITCH): is download attempt ka aaghaz —
+    // direct route ki sub-timing lines ([DIRECT] … at +<s>s)
+    // isi pal se gini jati hain.
+    const attemptStartedAt = Date.now();
+
+    // v2.48.31 (MINT): is round ki render→save khidki ke liye
+    // enhanced capture chalu (sirf video) — band bulane wale
+    // ke finally me hota hai (_mintEndWatch).
+    // v2.48.33 (ZEROCLICK): captureKey bhi saath — mint
+    // template is task ke naam seekha jayega.
+    if (!isImage) this._mintBeginWatch(captureKey);
+
+    // v2.48.37 (TEMPLATE-STATE LINE): har attempt ke
+    // aaghaz par ek line — is pal replay routes (B/C) ke
+    // liye template maujood hai ya nahi (learned /
+    // candidate / none) aur teacher langar maloom hai
+    // ya nahi. ZEROCLICK4 me ROOT routes khamoshi se
+    // skip ho gaye the; ab log khud wajah batayega.
+    if (!isImage) {
+      try {
+        const cap = this.netCapture;
+        if (cap && typeof cap.templateState === 'function') {
+          const st = cap.templateState();
+          this.log(`[ROOT] [Prompt #${n}] template-state template=${st.template} teacherUrl=${st.teacherUrl}`, 'info');
+        }
+      } catch (e) {}
+    }
 
     if (!fs.existsSync(downloadFolder)) {
       try { fs.mkdirSync(downloadFolder, { recursive: true }); } catch (e) {}
     }
 
-    // v2.41.0 (Fix list C, item 4): MEDIA READINESS first — on a busy
+    // Ranneeti-tartib ka ek-matra sach (tests wahi jaanchte hain):
+    task.downloadRouteOrder = downloadRouteOrder.DOWNLOAD_ROUTE_ORDER.slice();
+
+    // --- v2.48.35 (VERBATIM PROBE — OBSERVE-ONLY): quick-
+    // check se bhi PEHLE, session me had ek dafa, sirf tab
+    // jab template maujood ho aur ye task teacher na ho.
+    // Seekhi hui mint-call hu-bahu bhejna hai (koi tabdeeli
+    // nahi — ZEROCLICK2 ne sabit kiya badalne ko id hai hi
+    // nahi); jawab se kuch save/claim NAHI hota, sirf ek
+    // [ZEROCLICK] verbatim-probe line banti hai. Andar se
+    // har nakami nigal li jati hai — tartib nahi rukti. ---
+    if (!isImage) {
+      try { await this._verbatimReplayProbe(task, captureKey); } catch (e) {}
+    }
+
+    // --- v2.48.41 (MAIN-PAGE HARVEST PACK) →
+    // v2.48.44 (HEADLESS HARVEST PACK — OWNER SEQUENCE
+    // 2026-11-04): VIDEO ki tartib ab teen qadam hai:
+    //   1. headless-harvest — profile ki copy par
+    //      BILKUL BINA-WINDOW Chrome me is task ka
+    //      editor + us ki playback stream (probe-first:
+    //      copied session qubool na ho to editor khule
+    //      baghair haar; screen par kuch aa hi nahi
+    //      sakta kyunki window banti hi nahi);
+    //   2. mainpage-harvest — main page ki apni stream
+    //      kitab se is task ki file: pehle se pakdi hui
+    //      mukammal body, warna usi page ke apne JS
+    //      context se poora fetch (range jawab ko bhi
+    //      wahi poora karta hai);
+    //   3. grid-replay — seekhi hui mint call ka hu-bahu
+    //      (verbatim) replay grid page se; teacher ka
+    //      address aaye to fetch kabhi nahi.
+    // Teeno haar jayein to attempt EMAANDARI se FAIL
+    // hota hai — editor-harvest (visible + background),
+    // replay-context, direct-viewer, ⋮ menu, blob-
+    // harvest, backend-fetch aur tile-src sab video ke
+    // attempt path se HAMESHA ke liye bahar hain; koi
+    // fallback kuch nahi dikhata. Retry rounds phir yahi
+    // teen raaste aazmate hain. Prompt dobara KABHI
+    // submit nahi hota (sacred rule barkarar).
+    // IMAGE tasks is hisse ko chhute hi nahi — un ki
+    // purani tartib (backend → kram-bandhan → readiness
+    // → tile-src → native UI) neeche bilkul waisi hi
+    // chalti hai. ---
+    if (!isImage) {
+      // v2.48.50 (MEGA PACK): is attempt ke hisaab ki
+      // safaai — completion cycles / element outcomes /
+      // probe haal / race dawa har attempt me taaza.
+      task._mpCompleteCycles = 0;
+      task._mediaElOutcomes = {};
+      task._headlessProbeState = null;
+      task._raceActive = false;
+      task._raceWonBy = null;
+      task._raceSavedUrl = null;
+      // v2.48.52 (ROUTE 1A PACK): netload ka hisaab
+      // bhi har attempt me taaza — koshish-ginti
+      // (budget 2), protocol-nakam URLon ki fehrist
+      // (usi attempt me dobara nahi), aur summary ke
+      // liye darj anjaam.
+      task._mpNetloadCount = 0;
+      task._mpNetloadProtoFailed = new Set();
+      task._mpNetloadOutcome = null;
+      // Items 16 + 4: attempt ka aakhri hisaab EK jagah
+      // se — census line, cycles line (sirf jab cycles
+      // chale hon), aur attempt-summary line. Har
+      // video wapsi (jeet ya haar) yahi se guzregi.
+      const finishVideoAttempt = (result) => {
+        try {
+          this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
+        } catch (e) {}
+        try {
+          if ((task._mpCompleteCycles || 0) > 0) {
+            this.log(`[ROOT] mainpage-complete cycles=${task._mpCompleteCycles}`, 'info');
+          }
+        } catch (e) {}
+        try {
+          let best = 0;
+          let bestUrl = null;
+          const capNow = this.netCapture;
+          if (capNow && typeof capNow.mainpageEntries === 'function') {
+            for (const e of capNow.mainpageEntries()) {
+              if (!e || !e.url) continue;
+              const t = Math.max(e.bytes || 0, e.declared || 0, e.knownTotal || 0);
+              if (t > best) { best = t; bestUrl = e.url; }
+            }
+          }
+          let assembled = 0;
+          if (bestUrl && capNow && typeof capNow.mainpageBodyForUrl === 'function') {
+            const held = capNow.mainpageBodyForUrl(bestUrl);
+            if (held && held.buffer) assembled = held.buffer.length;
+          }
+          const outcomes = task._mediaElOutcomes || {};
+          this.log(attemptSummaryLogLine({
+            task: task.promptIndex,
+            best,
+            assembled,
+            mediaTile: outcomes.tile,
+            mediaHidden: outcomes.hidden,
+            probe: task._headlessProbeState,
+            race: task._raceWonBy || null,
+            // v2.48.52 (ROUTE 1A PACK): is attempt ke
+            // netload anjaam ki ek-jhalak.
+            netload: task._mpNetloadOutcome || null,
+            saved: !!task.mediaSaved
+          }), 'info');
+        } catch (e) {}
+        return result;
+      };
+      // Item 6 (PIPELINING): is task ki completion ke
+      // dauraan agli pending task ki tile viewport me
+      // chalti rahe — us ki stream peeche se aati
+      // rahegi (run me ek dafa, best-effort).
+      try { await this._primeNextPendingTile(task); } catch (e) {}
+      // v2.48.50 (item 7 — ROUTE RACE): headless aur
+      // mainpage ab EK SAATH chalte hain (pehle
+      // tartib thi: headless, phir mainpage). Jo rasta
+      // pehle saveGuard-passing save kare wahi jeet-ta
+      // hai — dawa (claim) _saveBufferForTask ke race
+      // darwaze par bandhta hai, is liye dusri copy
+      // kabhi nahi banti; haarne wala saaf rukta hai
+      // (headless session finally me band hota hai,
+      // media drives mediaSaved par poll rok deti
+      // hain, watch loop bhi wahi dekhta hai). Route
+      // ORDER ka dawa (downloadRouteOrder) nahi badla
+      // — ye sirf intezaar ka overlap hai, dawa hamesha
+      // sequential save par bandhta hai. Grid-replay
+      // dono ke baad hi aata hai, pehle jaisa.
+      task._raceActive = true;
+      const hhRun = (async () => {
+        try { return await this._tryHeadlessHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint); }
+        catch (e) {
+          attempts.push({ strategy: 'headless-harvest', ok: false, note: 'the invisible-browser harvest hit a problem — the main-page routes ran next' });
+          return false;
+        }
+      })();
+      const mpRun = (async () => {
+        try { return await this._tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint); }
+        catch (e) {
+          attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'the main-page harvest hit a problem — grid replay ran next' });
+          return false;
+        }
+        // v2.48.54 (fix 5 — hissa): mainpage marhala
+        // khatam — is task ka hover isi pal chhodo.
+        finally { try { await this._exitOwnMainpageHover(task); } catch (e) {} }
+      })();
+      await Promise.all([hhRun, mpRun]);
+      task._raceActive = false;
+      try {
+        this.log(`[ROOT] route-race winner=${task.mediaSaved ? (task._raceWonBy || 'none') : 'none'}`, task.mediaSaved ? 'success' : 'info');
+      } catch (e) {}
+      if (task.mediaSaved) {
+        // Jeetne wale save ka URL hi asal hai (haarne
+        // wale ne apna URL completedVideoUrl par pehle
+        // rakha ho sakta hai).
+        if (task._raceSavedUrl) task.completedVideoUrl = task._raceSavedUrl;
+        const won = attempts.filter(a => a.ok).pop();
+        return finishVideoAttempt({ ok: true, strategy: won ? won.strategy : (task._raceWonBy || 'mainpage-harvest'), attempts });
+      }
+      try {
+        const g = await this._tryGridReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
+        if (g && g.done) {
+          // v2.48.42: is task ka download mukammal —
+          // bandhan khidki band (exclusion hisaab ke
+          // liye ye task ab 'baqi' nahi).
+          try { if (typeof this.netCapture.mainpageMarkWindowDone === 'function') this.netCapture.mainpageMarkWindowDone(captureKey); } catch (e) {}
+          return finishVideoAttempt({ ok: true, strategy: 'grid-replay', attempts });
+        }
+      } catch (e) {
+        attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid replay hit a problem' });
+      }
+      // EMAANDAR FAIL: is ke baad koi rasta nahi bacha.
+      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: the invisible-browser harvest did not produce this video's file, no usable stream for this video was seen on the main project page, and grid replay did not produce its file. Nothing was opened or clicked anywhere; the prompt was NOT resubmitted.`, 'warn');
+      return finishVideoAttempt({ ok: false, attempts });
+    }
+
+    // --- IMAGE tasks ki purani tartib (v2.48.41 me
+    // bilkul barkarar): backend pehle, phir kram-
+    // bandhan, readiness, tile-src, native UI. Video
+    // yahan kabhi nahi pahunchta (upar wapas ja chuka
+    // hota hai), is liye menuFirstTried hamesha false
+    // hai — image ka menu roop native UI ke andar apni
+    // purani jagah chalta hai. ---
+    let menuFirstTried = false;
+
+    try {
+      const okBackend = await this._tryBackendDownload(task, downloadFolder, settings, attempts);
+      if (okBackend) return { ok: true, strategy: 'backend-fetch', attempts };
+    } catch (e) {
+      attempts.push({ strategy: 'backend-fetch', ok: false, note: 'a problem came up in the backend route — the remaining routes will be tried' });
+    }
+    if (task.mediaSaved) return { ok: true, strategy: 'backend-fetch', attempts };
+
+    // --- backend KRAM se bandhan (v2.48.15 se yahan, pehle) ---
+    if (captureKey) {
+      let ord = null;
+      try { ord = this.netCapture.claimByOrder(captureKey, Date.now()); } catch (e) { ord = null; }
+      if (ord && ord.url) {
+        task.backendVideoUrl = ord.url;
+        task.backendUrlVia = 'order';
+        this._captureTasks.set(captureKey, task);
+        task._backendCtx = { downloadFolder, settings };
+        const ok = await this._kickBackendFetch(task, task._backendCtx);
+        attempts.push({ strategy: 'backend-fetch', ok: !!ok, note: ok ? 'the unbound link found on the backend was treated as this task\'s by sequence order and saved' : `the backend link bound by sequence could not be fetched${this._fetchSummary(task) ? ` — ${this._fetchSummary(task)}` : ''}` });
+        if (ok) return { ok: true, strategy: 'backend-fetch', attempts };
+      }
+    }
+
+    // v2.41.0 (Fix list C, item 4): MEDIA READINESS — on a busy
     // multi-task page the tile's media may not have loaded yet, and
     // every strategy below then fails for that one reason (proven
     // from the 2026-10-27 Activity records). Bounded (~25s) inside
     // this round's 150s guard; skipped entirely when a captured URL
-    // already exists; never fails the round.
+    // already exists; never fails the round. (v2.48.15: ab ye
+    // backend raaston ke BAAD chalti hai — upar dekho.)
     const readiness = await this._awaitTileMediaReady(task, tileIndexHint, isImage, captureKey, n);
+
+    // --- v2.48.21: READINESS KE BAAD BACKEND EK AUR BAAR ---
+    // TEST498 (v2.48.20, log-sabit): render-complete wala
+    // batchexecute jawab attempt shuru hone ke ~1 second BAAD
+    // mukammal hota hai — attempt ke pehle backend check ko
+    // 'koi link nahi' milta hai, phir tile-readiness usi
+    // bandhan par ~1s me bahar aati hai ('the backend link was
+    // bound'), lekin tartib aage badh kar tile/menu par chali
+    // jati thi aur bandha hua link kabhi fetch hi nahi hota
+    // tha. Ab readiness ke foran baad backend wala rasta ek
+    // aur baar chalega — bandha link hoga to wahi fetch hoga,
+    // tile/menu sirf tab jab ye bhi na bane.
+    if (!task.mediaSaved && captureKey) {
+      let boundNow = null;
+      try { boundNow = this.netCapture.urlForKey(captureKey); } catch (e) { boundNow = null; }
+      if (boundNow && boundNow.url) {
+        try {
+          const okBackend2 = await this._tryBackendDownload(task, downloadFolder, settings, attempts);
+          if (okBackend2) return { ok: true, strategy: 'backend-fetch', attempts };
+        } catch (e) {
+          attempts.push({ strategy: 'backend-fetch', ok: false, note: 'the backend route retried after the tile wait hit a problem — the remaining routes will be tried' });
+        }
+        if (task.mediaSaved) return { ok: true, strategy: 'backend-fetch', attempts };
+      }
+    }
 
     // --- v2.47.4 FAST PATH (owner-approved): ye sirf ek IZAAFA ---
     // pehli koshish hai, purani tartib ki JAGAH nahi. Readiness
@@ -4424,16 +9357,9 @@ class FlowAutomationEngine {
       }
     }
 
-    // --- Ranneeti 1 (v2.8.0): BACKEND — network se bandha link ---
-    try {
-      const okBackend = await this._tryBackendDownload(task, downloadFolder, settings, attempts);
-      if (okBackend) return { ok: true, strategy: 'backend-fetch', attempts };
-    } catch (e) {
-      attempts.push({ strategy: 'backend-fetch', ok: false, note: 'a problem came up in the backend route — the remaining routes will be tried' });
-    }
-    if (task.mediaSaved) return { ok: true, strategy: 'backend-fetch', attempts };
-
     // --- Ranneeti 2: apni stream / tile ka src ---
+    // (Ranneeti 1 — backend — v2.48.15 se is function ke AAGHAZ
+    // me chalti hai, tile-readiness se bhi pehle.)
     let url = (task.completedVideoUrl && task.completedVideoUrl !== task.backendVideoUrl && this._isTaskOwnUrl(task, task.completedVideoUrl))
       ? task.completedVideoUrl : null;
     let via = url ? 'stream found earlier' : null;
@@ -4474,25 +9400,18 @@ class FlowAutomationEngine {
       attempts.push({ strategy: 'tile-src', ok: false, note: 'no media URL was found on the tile' });
     }
 
-    // --- Ranneeti 3 (v2.8.0): backend KRAM se bandhan ---
-    if (captureKey) {
-      let ord = null;
-      try { ord = this.netCapture.claimByOrder(captureKey, Date.now()); } catch (e) { ord = null; }
-      if (ord && ord.url) {
-        task.backendVideoUrl = ord.url;
-        task.backendUrlVia = 'order';
-        this._captureTasks.set(captureKey, task);
-        task._backendCtx = { downloadFolder, settings };
-        const ok = await this._kickBackendFetch(task, task._backendCtx);
-        attempts.push({ strategy: 'backend-fetch', ok: !!ok, note: ok ? 'the unbound link found on the backend was treated as this task\'s by sequence order and saved' : `the backend link bound by sequence could not be fetched${this._fetchSummary(task) ? ` — ${this._fetchSummary(task)}` : ''}` });
-        if (ok) return { ok: true, strategy: 'backend-fetch', attempts };
-      }
-    }
-
-    // --- Ranneeti 4: native UI ke do roop (⋮ menu → editor) ---
-    const okNative = await this._downloadViaNativeUi(task, downloadFolder, settings, tileIndexHint, attempts);
+    // --- Ranneeti 4: native UI (ab sirf editor roop — ⋮ menu
+    // v2.48.27 se round ke aaghaz me menu-first ho chuka hai;
+    // image tasks par menu roop yahin purani tartib se chalta hai) ---
+    // (Kram-bandhan bhi v2.48.15 se aaghaz me chalta hai.)
+    const okNative = await this._downloadViaNativeUi(task, downloadFolder, settings, tileIndexHint, attempts, { skipMenuForm: menuFirstTried });
     if (okNative) {
       const won = attempts.filter(a => a.ok).pop();
+      // v2.48.24: file UI raaste se aayi — poori run ke media
+      // responses ki ginti is pal sahi hai (asal download sameet).
+      try {
+        this.log(`[Prompt #${n}] Download census (whole run): ${JSON.stringify(this.netCapture.downloadCensusSummary()).slice(0, 400)}`, 'info');
+      } catch (e) {}
       return { ok: true, strategy: won ? won.strategy : 'native', attempts };
     }
     return { ok: false, attempts };
@@ -4517,7 +9436,19 @@ class FlowAutomationEngine {
     this.registerBackendTask(task, downloadFolder, settings);
     const backendAttempts = [];
     let backendOk = false;
-    try { backendOk = await this._tryBackendDownload(task, downloadFolder, settings, backendAttempts); } catch (e) { backendOk = false; }
+    // v2.48.41 (MAIN-PAGE HARVEST PACK): VIDEO ke liye
+    // backend-first qadam bhi gaya — bandha hua backend
+    // link (lh3 wala, hamesha HTML poision sabit hua)
+    // fetch karna video ke raaston me nahi raha; video
+    // ki retry wahi tartib chalati hai jo cascade ki hai
+    // (v2.48.44 se: headless-harvest + mainpage-harvest
+    // + grid-replay — neeche downloadTaskMedia se). Register
+    // barkarar hai — bandhan ki kitab mainpage-harvest
+    // ke ummeedwaaron ko bandhti hai. IMAGE ke liye
+    // backend-first bilkul pehle jaisa hai.
+    if (isImage) {
+      try { backendOk = await this._tryBackendDownload(task, downloadFolder, settings, backendAttempts); } catch (e) { backendOk = false; }
+    }
     if (backendOk || task.mediaSaved) {
       task.downloadAttempts = (task.downloadAttempts || []).concat(backendAttempts);
       return { status: 'downloaded', attempts: task.downloadAttempts };
@@ -5362,12 +10293,55 @@ class FlowAutomationEngine {
                   elapsedSec: elapsedSec
                 });
               }
+              // v2.48.50 (item 5 — RENDER-TIME PRE-BIND):
+              // tile ki apni stream render ke dauraan hi
+              // is duration ke floor tak pahunch jaye to
+              // use is task ke naam pehle se bandha
+              // (pre-bound) darj kar do — render-complete
+              // par completion usi par foran shuru hoga,
+              // nayi hover watch ke intezaar ke baghair.
+              // Ye sirf ek NISHAN hai
+              // (task._preboundMainpageUrl) — claim,
+              // bandhan ka faisla aur saveGuard ke
+              // darwaze bilkul nahi badalte; buildCandidates
+              // use tile-jaisa mazboot ummeedwaar manta
+              // hai. Ek task par sirf ek dafa.
+              if (!task._preboundMainpageUrl && !task.mediaSaved) {
+                try {
+                  const tileUrl = bestTile.mediaUrl || bestTile.videoSrc || null;
+                  if (tileUrl && networkCapture.isGooglevideoPlaybackUrl(tileUrl)
+                    && this.netCapture && typeof this.netCapture.mainpageEntries === 'function') {
+                    const ent = this.netCapture.mainpageEntries().find(e => e && e.url === tileUrl);
+                    const tot = ent ? Math.max(ent.bytes || 0, ent.declared || 0, ent.knownTotal || 0) : 0;
+                    const floor = downloadFetch.minBytesForDuration(settings && settings.duration);
+                    if (ent && tot >= floor) {
+                      task._preboundMainpageUrl = tileUrl;
+                      this.log(`[ROOT] mainpage-prebind total=${Math.floor(tot)}`, 'info');
+                    }
+                  }
+                } catch (e) {}
+              }
             }
 
             // True completion: percentage gone AND a video/badge is present,
             // and the task was observed generating or 25s+ elapsed.
             if (bestTile.isReady && (task.wasObservedGenerating || elapsedSec >= 25)) {
               task.completed = true;
+              // v2.48.26 (FAST-DL): the render→save gap is measured
+              // from THIS moment, and the blob harvest anchors its
+              // freshness on it (see blobHarvest.freshnessCutoff).
+              if (!task.renderCompletedAt) {
+                task.renderCompletedAt = Date.now();
+                // v2.48.37: capture ko render-poora khabar —
+                // session watch me round ke bahar seekha gaya
+                // template isi task ke naam hoga (nisbat ka
+                // sab se taza langar).
+                try {
+                  if (this.netCapture && typeof this.netCapture.noteRenderCompleted === 'function') {
+                    this.netCapture.noteRenderCompleted(task.captureKey || task.videoId || null);
+                  }
+                } catch (e) {}
+              }
               this.onVideoProgress({
                 id: task.videoId,
                 state: 'downloading',
@@ -5547,4 +10521,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream };

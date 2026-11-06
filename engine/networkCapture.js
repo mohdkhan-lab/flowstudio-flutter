@@ -1,5 +1,11 @@
 'use strict';
 
+const flowContent = require('./flowContent');
+const mintWindow = require('./mintWindow');
+const mintReplay = require('./mintReplay');
+const saveGuard = require('./saveGuard');
+const downloadFetch = require('./downloadFetch');
+
 /**
  * FlowStudio Lite — NETWORK CAPTURE LAYER (v2.8.0).
  *
@@ -61,6 +67,25 @@ const CAPTURE_PATTERNS = {
   idFieldNames: ['workflowId', 'workflow_id', 'workflowID'],
   // --- Generic (Flow-specific nahi; har jagah ke media links) ---
   mediaExtensions: ['.mp4', '.webm', '.mov'],
+  // --- v2.48.13: ACTIVE DIRECT-API POLL ke patterns ---
+  // Page khud haal jaanne ke liye jo status-shaped calls karta hai
+  // (GetWorkflow / List* / Search* / BatchGet*), unhi ka ASAL
+  // request (URL + headers + body) capture yaad rakhta hai; engine
+  // phir usi request ko page ke andar se baar-baar replay karke
+  // backend ko SEEDHA poochhta hai — tile/DOM ka intezaar nahi.
+  // Generate wali call (StreamGenerateContent) template KABHI nahi
+  // banti (use replay karna doosri generation fire kar dega).
+  statusMethodHints: ['getworkflow', 'getsceneworkflow', 'batchget', 'listworkflows', 'listuserworkflows', 'listprojectworkflows', 'searchprojectworkflows', 'searchuserworkflows', 'searchworkflows'],
+  generateMethodHints: ['streamgeneratecontent'],
+  // Replay me sirf yahi headers bheje jate hain (cookie page ke
+  // fetch par credentials:'include' se khud lagti hai).
+  replayHeaderNames: ['content-type', 'x-grpc-web', 'x-user-agent', 'authorization', 'x-goog-api-key', 'x-goog-authuser'],
+  maxTemplateBodyBytes: 256 * 1024,
+  // Latest-template fallback kitni purani ho sakti hai (project
+  // khulne ki List call aur submit ke beech settings ka waqt
+  // lagta hai; request ki shakal itni der me nahi badalti —
+  // auth cookies me hoti hai, body me nahi).
+  templateMaxAgeMs: 120000,
   // --- Haddein ---
   idMinLength: 6,
   maxBodyScanBytes: 8 * 1024 * 1024,
@@ -69,8 +94,245 @@ const CAPTURE_PATTERNS = {
   bindSlackMs: 5000
 };
 
+function urlPathLower(url) {
+  try { return new URL(String(url || '')).pathname.toLowerCase(); } catch (e) { return String(url || '').toLowerCase(); }
+}
+
+/** Generation fire karne wali API call hai kya (template ke liye HARAM). */
+function isGenerateApiUrl(url, patterns = CAPTURE_PATTERNS) {
+  if (!isApiUrl(url, patterns)) return false;
+  const p = urlPathLower(url);
+  return patterns.generateMethodHints.some(h => p.includes(h));
+}
+
+/**
+ * Haal-jaanch (status) wali API call hai kya — GetWorkflow, List,
+ * Search ya BatchGet wali me se koi; generate wali kabhi nahi.
+ */
+function isStatusApiUrl(url, patterns = CAPTURE_PATTERNS) {
+  if (!isApiUrl(url, patterns)) return false;
+  if (isGenerateApiUrl(url, patterns)) return false;
+  const p = urlPathLower(url);
+  return patterns.statusMethodHints.some(h => p.includes(h));
+}
+
+/** Replay ke liye sirf whitelist headers (chhote naam, string values). */
+function pickReplayHeaders(headers, patterns = CAPTURE_PATTERNS) {
+  const out = {};
+  if (!headers || typeof headers !== 'object') return out;
+  const want = new Set(patterns.replayHeaderNames.map(s => s.toLowerCase()));
+  for (const [k, v] of Object.entries(headers)) {
+    const lk = String(k).toLowerCase();
+    if (want.has(lk) && typeof v === 'string' && v) out[lk] = v;
+  }
+  return out;
+}
+
+/**
+ * v2.48.16 DIAGNOSTIC: ek WebSocket frame ke payload me media
+ * URL ya workflow ID ka nishan hai kya? Payload string ya Buffer
+ * ho sakta hai; sirf pehle 256KB dekhe jate hain, asal data
+ * kahin save nahi hota — natija sirf do haan/na.
+ */
+function scanFramePayload(payload, patterns) {
+  let text = '';
+  try {
+    if (typeof payload === 'string') text = payload.slice(0, 256 * 1024);
+    else if (payload && typeof payload === 'object' && typeof payload.length === 'number') {
+      text = Buffer.from(payload).toString('utf8', 0, 256 * 1024);
+    }
+  } catch (e) { return { hasMedia: false, hasWorkflow: false }; }
+  if (!text) return { hasMedia: false, hasWorkflow: false };
+  const urls = extractUrlsFromText(text, patterns || CAPTURE_PATTERNS);
+  const hasMedia = urls.some(u => isMediaUrl(u, patterns || CAPTURE_PATTERNS));
+  const hasWorkflow = extractWorkflowIdsFromText(text, patterns || CAPTURE_PATTERNS).length > 0;
+  return { hasMedia, hasWorkflow };
+}
+
+/**
+ * v2.48.17 DIAGNOSTIC-2: ek URL ki pehchan sirf host+path se
+ * (query kabhi nahi — us me pehchan/token ho sakte hain).
+ * Request paths ki ginti ke liye: kaun sa endpoint asal me
+ * bulaya gaya, yehi sawal hai.
+ */
+function pathKeyOf(url) {
+  try {
+    const u = new URL(url);
+    return u.hostname + u.pathname;
+  } catch (e) { return null; }
+}
+
+/**
+ * v2.48.18 DIAGNOSTIC-3: Flow ki maujooda web app apni saari
+ * generation baat-cheet EK hi darwaze se karti hai —
+ * flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute
+ * (TEST495 me ek chhoti run me 36 calls; purani aisandbox API
+ * par 0). Ye helper usi darwaze ko pehchanta hai.
+ */
+const BATCHEXECUTE_PATH = 'flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute';
+function isBatchExecuteUrl(url) {
+  return pathKeyOf(url) === BATCHEXECUTE_PATH;
+}
+
+/**
+ * v2.48.19: JSON ke band-lipte (escaped) text ki ek parat kholo.
+ * batchexecute ke jawab dohari lipat me aate hain — andar ka
+ * payload ek JSON string hota hai jiske andar ke quotes/slashes
+ * escaped hote hain. Purana extractor is lipat ko padh hi nahi
+ * sakta tha (local test se sabit: envelope/escaped bodies me
+ * use NA id mili NA media URL).
+ */
+function unescapeJsonText(text) {
+  return String(text)
+    .replace(/\\u([0-9a-fA-F]{4})/g, (m, h) => String.fromCharCode(parseInt(h, 16)))
+    .replace(/\\\//g, '/')
+    .replace(/\\"/g, '"')
+    .replace(/\\\\/g, '\\');
+}
+
+const BARE_UUID_RE = /[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi;
+
+/**
+ * v2.48.19: batchexecute body ka khaas scan — har parat par
+ * aam scan + URL/ID extraction + bare-UUID pehchan, phir ek
+ * parat khol kar dobara. adhiktam 4 paratein.
+ */
+function scanBatchExecuteBody(buf, patterns = CAPTURE_PATTERNS) {
+  const ids = new Set();
+  const mediaUrls = new Set();
+  const allUrls = new Set();
+  let text = Buffer.isBuffer(buf) ? buf.toString('latin1') : String(buf || '');
+  for (let pass = 0; pass < 4; pass++) {
+    try {
+      const found = scanBodyForCapture(Buffer.from(text, 'latin1'), patterns);
+      for (const id of found.ids) ids.add(id);
+      for (const u of found.mediaUrls) mediaUrls.add(u);
+    } catch (e) {}
+    for (const u of extractUrlsFromText(text, patterns)) {
+      allUrls.add(u);
+      if (isMediaUrl(u, patterns)) mediaUrls.add(u);
+    }
+    for (const id of extractWorkflowIdsFromText(text, patterns)) ids.add(id);
+    for (const m of (text.match(BARE_UUID_RE) || [])) ids.add(m);
+    const next = unescapeJsonText(text);
+    if (next === text) break;
+    text = next;
+  }
+  return { ids: [...ids], mediaUrls: [...mediaUrls], allUrls: [...allUrls] };
+}
+
+/**
+ * v2.48.22: ek URL ki SAFE shakal — host + aam rasta; lambe/
+ * token-numa hisse '*' ban jate hain, query (signature) kabhi
+ * shamil nahi. Sirf pehchan/ginti ke liye — asal link kabhi
+ * log nahi hota.
+ */
+function urlShape(url) {
+  try {
+    const u = new URL(String(url || ''));
+    const segs = u.pathname.split('/').filter(Boolean).map((s) => {
+      let d = s;
+      try { d = decodeURIComponent(s); } catch (e) {}
+      if (d.length > 14 || (/[0-9]/.test(d) && /[a-zA-Z]/.test(d) && d.length > 8)) return '*';
+      return d;
+    });
+    return u.hostname + '/' + segs.join('/');
+  } catch (e) { return 'unparsable'; }
+}
+
+/**
+ * v2.48.19: CDP Network.getResponseBody ka jawab asal Buffer me.
+ */
+function decodeCdpBody(body, base64Encoded) {
+  if (typeof body !== 'string' || !body) return null;
+  try {
+    return base64Encoded ? Buffer.from(body, 'base64') : Buffer.from(body, 'utf8');
+  } catch (e) { return null; }
+}
+
+/**
+ * batchexecute URL ke query se rpcids (kaunsi backend function
+ * bulayi gayi — ye function ke NAAM hain, koi raaz nahi).
+ */
+function rpcidsOf(url) {
+  try {
+    const raw = new URL(url).searchParams.get('rpcids');
+    if (!raw) return [];
+    return raw.split(',').map(s => s.trim()).filter(Boolean).slice(0, 8);
+  } catch (e) { return []; }
+}
+
 function hostOf(url) {
   try { return new URL(String(url || '')).hostname.toLowerCase(); } catch (e) { return ''; }
+}
+
+/**
+ * v2.48.41 (MAIN-PAGE HARVEST PACK): googlevideo
+ * videoplayback wale jawab ki pehchan — host
+ * googlevideo.com ho ya us ka koi subdomain
+ * (rr<N>---sn-*.googlevideo.com waghera), aur path
+ * '/videoplayback' se shuru ho. Ye wohi stream hai
+ * jo tile/editor playback ke liye aati hai; main page
+ * par dikhe to mainpage kitab me darj hoti hai.
+ */
+function isGooglevideoPlaybackUrl(url) {
+  try {
+    const u = new URL(String(url || ''));
+    const h = u.hostname.toLowerCase();
+    if (h !== 'googlevideo.com' && !h.endsWith('.googlevideo.com')) return false;
+    return u.pathname.startsWith('/videoplayback');
+  } catch (e) { return false; }
+}
+
+/**
+ * v2.48.27 (NET-BIG): bade jawabon ki pehchan — file ke bytes click
+ * ke baad asal me KIS channel se aate hain, ye shikar isi se hoga.
+ * Usool: encoded (wire) size YA declared content-length, jo bhi
+ * 200 KB ki hadd tak pahunche — ek bhi kaafi hai, kyunki kabhi
+ * content-length ghayab hota hai aur kabhi transfer beech me
+ * rukta hai (encoded chhota reh jata hai lekin irada bada tha).
+ */
+const NET_BIG_THRESHOLD_BYTES = 200000;
+
+function isNetBigResponse(encodedBytes, declaredBytes) {
+  const enc = Number(encodedBytes);
+  const dec = Number(declaredBytes);
+  if (Number.isFinite(enc) && enc >= NET_BIG_THRESHOLD_BYTES) return true;
+  if (Number.isFinite(dec) && dec >= NET_BIG_THRESHOLD_BYTES) return true;
+  return false;
+}
+
+/** CDP headers object se case-bekhabar header ki qeemat. */
+function headerValueOf(headers, name) {
+  if (!headers || typeof headers !== 'object') return '';
+  const want = String(name || '').toLowerCase();
+  for (const k of Object.keys(headers)) {
+    if (String(k).toLowerCase() === want) return String(headers[k] || '');
+  }
+  return '';
+}
+
+/**
+ * v2.48.27 (NET-BIG window): ek waqt-khidki (sinceMs se aage) ke
+ * andar har host ke KUL bytes, ghate kram (descending) me —
+ * 'host=bytes host=bytes …'. Render→save khidki par ye lagane se
+ * wo host sab se upar aata hai jis se file ke asal bytes aaye
+ * honge — wahi Flow-server channel hai jis ka shikar hai.
+ * Khidki khaali ho to '' (koi line nahi banti).
+ */
+function summarizeNetBigWindow(entries, sinceMs) {
+  const totals = new Map();
+  if (Array.isArray(entries)) {
+    for (const e of entries) {
+      if (!e || !e.host || !(e.bytes > 0)) continue;
+      if (Number.isFinite(sinceMs) && e.at < sinceMs) continue;
+      totals.set(e.host, (totals.get(e.host) || 0) + e.bytes);
+    }
+  }
+  return Array.from(totals.entries())
+    .sort((a, b) => b[1] - a[1])
+    .map(([h, b]) => `${h}=${b}`)
+    .join(' ');
 }
 
 function hostMatches(host, suffix) {
@@ -201,10 +463,258 @@ function scanBodyForCapture(bodyBuffer, patterns = CAPTURE_PATTERNS) {
   return out;
 }
 
+/**
+ * v2.48.48 (CHUNK STORE + ASSEMBLY): Content-Range
+ * ('bytes <start>-<end>/<total>') se tukde ka offset
+ * nikalo (khalis). Range na ho ya shakal na mile to
+ * 0 — bina-range jawab tanha body hota hai, us ka
+ * offset hamesha 0 hota hai.
+ */
+function parseContentRangeOffset(contentRange) {
+  try {
+    if (typeof contentRange !== 'string' || !contentRange) return 0;
+    const m = contentRange.match(/^\s*bytes\s+(\d+)\s*-/i);
+    if (!m) return 0;
+    const n = parseInt(m[1], 10);
+    return Number.isFinite(n) && n > 0 ? n : 0;
+  } catch (e) { return 0; }
+}
+
+/**
+ * v2.48.48: [offset, offset+len) ke woh hisse jo
+ * maujuda chunks se DHAKE hue nahi hain (khalis).
+ * Natija: [{ offset, buffer }] — buffer asal body ke
+ * subarray hain; khaali list = poora hissa pehle se
+ * rakha hua hai (dobara nazar cap nahi khaati).
+ */
+function uncoveredChunkPieces(offset, buffer, chunks) {
+  if (!buffer || !buffer.length) return [];
+  const start = Number.isFinite(offset) && offset > 0 ? Math.floor(offset) : 0;
+  let pieces = [[start, start + buffer.length]];
+  const list = Array.isArray(chunks) ? chunks : [];
+  for (const c of list) {
+    if (!c || !c.buffer || !c.buffer.length) continue;
+    const cs = Number.isFinite(c.offset) && c.offset > 0 ? Math.floor(c.offset) : 0;
+    const ce = cs + c.buffer.length;
+    const next = [];
+    for (const [s, e] of pieces) {
+      if (ce <= s || cs >= e) { next.push([s, e]); continue; }
+      if (cs > s) next.push([s, Math.min(cs, e)]);
+      if (ce < e) next.push([Math.max(ce, s), e]);
+    }
+    pieces = next;
+    if (!pieces.length) break;
+  }
+  return pieces.map(([s, e]) => ({ offset: s, buffer: buffer.subarray(s - start, e - start) }));
+}
+
+/**
+ * v2.48.48: chunks (rakhne ki tartib me) se offset 0
+ * se shuru sab se lambi lagi-hui (contiguous) dod
+ * banao (khalis). Overlap par PEHLE rakha gaya hissa
+ * jeet-ta hai (pehle-darj, pehle-jeet — tay-shuda).
+ * Offset 0 se dod hi na bane to null.
+ */
+function assembleMainpageChunks(chunks) {
+  const list = Array.isArray(chunks) ? chunks : [];
+  const placed = []; // { start, end, buffer } — disjoint
+  for (const c of list) {
+    if (!c || !c.buffer || !c.buffer.length) continue;
+    const asChunks = placed.map(p => ({ offset: p.start, buffer: p.buffer }));
+    for (const piece of uncoveredChunkPieces(c.offset, c.buffer, asChunks)) {
+      placed.push({ start: piece.offset, end: piece.offset + piece.buffer.length, buffer: piece.buffer });
+    }
+  }
+  if (!placed.length) return null;
+  placed.sort((a, b) => a.start - b.start);
+  if (placed[0].start !== 0) return null;
+  const parts = [placed[0].buffer];
+  let runEnd = placed[0].end;
+  for (let i = 1; i < placed.length; i++) {
+    if (placed[i].start !== runEnd) break;
+    parts.push(placed[i].buffer);
+    runEnd = placed[i].end;
+  }
+  return parts.length === 1 ? parts[0] : Buffer.concat(parts);
+}
+
+/**
+ * v2.48.50 (item 18 — SEGMENT ASSEMBLY): ek googlevideo
+ * URL ki LOGICAL STREAM kunji (khalis). Do URL tab hi
+ * ek logical stream hain jab: dono googlevideo
+ * videoplayback hon, un ka rasta (pathname) ek ho, aur
+ * query ka media pehchan-wala 'id' ek ho — itag bhi
+ * kunji me hai (alag encode ek dusri file hai). 'id'
+ * na ho to kunji NAHI banti (null) — andaze se jod
+ * kabhi nahi. Host kunji me NAHI hai (rr<N> host badal
+ * sakta hai, file wahi rehti hai).
+ */
+function segmentKeyOf(url) {
+  try {
+    if (!isGooglevideoPlaybackUrl(url)) return null;
+    const u = new URL(String(url || ''));
+    const id = u.searchParams.get('id');
+    if (!id) return null;
+    const itag = u.searchParams.get('itag') || '';
+    return `${u.pathname}|${id}|${itag}`;
+  } catch (e) { return null; }
+}
+
+/**
+ * v2.48.53 (RPC-BODY SCAN): ek googlevideo videoplayback
+ * URL ke query se us ki pehchan (khalis): clen = server
+ * ka elaan-shuda kul size (bytes), itag = encode ki
+ * pehchan. googlevideo URL na ho to null. clen maujood
+ * na ho / parkha na ja sake to clen null rehta hai —
+ * andaze se size kabhi nahi banta.
+ */
+function rpcVideoUrlInfo(url) {
+  try {
+    if (!isGooglevideoPlaybackUrl(url)) return null;
+    const u = new URL(String(url || ''));
+    const rawClen = u.searchParams.get('clen');
+    let clen = null;
+    if (rawClen !== null && rawClen !== '') {
+      const parsed = Number(rawClen);
+      if (Number.isFinite(parsed) && parsed > 0) clen = Math.floor(parsed);
+    }
+    return { clen, itag: u.searchParams.get('itag') || '' };
+  } catch (e) { return null; }
+}
+
+/**
+ * v2.48.52 (ROUTE 1A PACK): googlevideo URL se range
+ * mehdood karne wale query hisse (range / rn / rbuf)
+ * hatao (khalis). Google ke media player aksar HTTP
+ * Range header ki jagah URL me '&range=0-105369'
+ * bhejte hain — server use dekh kar SIRF wahi tukda
+ * (200 + chhoti Content-Length) deta hai, poori file
+ * nahi. Hissa hata kar maango to wahi pata poori file
+ * ka banta hai. Baaki saare params (dastakhat sameet)
+ * aur un ki tartib bilkul waisi hi rehti hai; URL
+ * parkhi na ja sake to asal hi wapas (stripped khaali).
+ * Natija: { url, stripped: [naam...] } — stripped me
+ * hataye gaye params ke naam (range, rn, rbuf ki
+ * tartib me).
+ */
+const RANGE_STRIP_PARAMS = ['range', 'rn', 'rbuf'];
+function rangeStripOf(url) {
+  const raw = typeof url === 'string' && url ? url : null;
+  if (!raw) return { url: raw, stripped: [] };
+  try {
+    const u = new URL(raw);
+    const stripped = [];
+    for (const p of RANGE_STRIP_PARAMS) {
+      if (u.searchParams.has(p)) { u.searchParams.delete(p); stripped.push(p); }
+    }
+    if (!stripped.length) return { url: raw, stripped };
+    return { url: u.toString(), stripped };
+  } catch (e) { return { url: raw, stripped: [] }; }
+}
+
+/**
+ * v2.48.52 (ROUTE 1B — FETCH-RANGE-REWRITE): ek ruki
+ * hui (paused) googlevideo videoplayback darkhwast ka
+ * naya roop (khalis) — URL se range param hatao aur
+ * 'Range: bytes=0-' header lagao, taaki server ek hi
+ * jawab me POORI file bheje aur wo jawab aam capture
+ * pipeline (store + assembly) se guzre. Darkhwast
+ * googlevideo playback na ho, ya koi badlaav hi darkaar
+ * na ho (range param bhi nahi, Range pehle se
+ * 'bytes=0-'), to null — bulane wala darkhwast ko
+ * bilkul waisi hi continue karega.
+ * headers input CDP ki shakal (object map) me aata
+ * hai; natija Fetch.continueRequest ki shakal
+ * ([{ name, value }]) me hai. Asal Range header
+ * (kisi bhi case me) hat-ta hai — do Range kabhi nahi.
+ */
+function fetchRwRewrite(url, headers) {
+  try {
+    if (!isGooglevideoPlaybackUrl(url)) return null;
+    const prep = rangeStripOf(url);
+    const src = headers && typeof headers === 'object' ? headers : {};
+    const out = [];
+    let oldRange = null;
+    for (const name of Object.keys(src)) {
+      if (String(name).toLowerCase() === 'range') { oldRange = String(src[name]); continue; }
+      out.push({ name: String(name), value: String(src[name]) });
+    }
+    if (!prep.stripped.length && oldRange === 'bytes=0-') return null;
+    out.push({ name: 'Range', value: 'bytes=0-' });
+    return { url: prep.url, headers: out };
+  } catch (e) { return null; }
+}
+
 class NetworkCapture {
   constructor(opts = {}) {
     this.patterns = opts.patterns || CAPTURE_PATTERNS;
     this.onMediaBound = typeof opts.onMediaBound === 'function' ? opts.onMediaBound : (() => {});
+    // v2.48.27 (NET-BIG): bade (≥200KB) jawabon ki khabar engine ko
+    // — engine use [NET-BIG] line me badalta hai. Callback na ho
+    // to shikar khamoshi se band rehta hai (koi vyavhaar-badal nahi).
+    this.onNetBig = typeof opts.onNetBig === 'function' ? opts.onNetBig : null;
+    // v2.48.31 (MINT): mint watch ke callbacks — engine inhe
+    // [MINT] lines me badalta hai. Na hon to watch khamosh hai.
+    this.onMintRequest = typeof opts.onMintRequest === 'function' ? opts.onMintRequest : null;
+    this.onMintCarriesUrl = typeof opts.onMintCarriesUrl === 'function' ? opts.onMintCarriesUrl : null;
+    // v2.48.33 (ZEROCLICK): mint-call ka replay template seekh
+    // lene ki khabar — engine use [ZEROCLICK] line me badalta
+    // hai (sirf shakal: rpcids + body size + ID ginti; asal
+    // URL/ID/body kabhi callback se bahar nahi jata).
+    this.onMintTemplate = typeof opts.onMintTemplate === 'function' ? opts.onMintTemplate : null;
+    // v2.48.38 (EDITOR-HARVEST PACK): harvest-audit ki khabar
+    // — engine use [ROOT] harvest-audit line me badalta hai
+    // (sirf hisaab: bytes/body/hash-8/vsTeacher/faisla/wajah;
+    // asal URL ya poora hash kabhi bahar nahi jata). Callback
+    // na ho to audit khamosh hai (vyavhaar nahi badalta).
+    this.onHarvestAudit = typeof opts.onHarvestAudit === 'function' ? opts.onHarvestAudit : null;
+    // v2.48.41 (MAIN-PAGE HARVEST PACK): mainpage-audit ki
+    // khabar — engine use [ROOT] mainpage-audit line me
+    // badalta hai (sirf hisaab: host/bytes/src-qisam/
+    // faisla/wajah/timing-bucket; asal URL kabhi bahar
+    // nahi jata). Callback na ho to audit khamosh hai.
+    this.onMainpageAudit = typeof opts.onMainpageAudit === 'function' ? opts.onMainpageAudit : null;
+    // v2.48.50 (MEGA PACK item 18 — SEGMENT ASSEMBLY):
+    // ek logical stream ke >1 URL hone ki khabar —
+    // engine use '[ROOT] mainpage-segments' line me
+    // badalta hai. Callback na ho to khabar khamosh hai.
+    this.onSegmentNote = typeof opts.onSegmentNote === 'function' ? opts.onSegmentNote : null;
+    // v2.48.52 (ROUTE 1B — FETCH-RANGE-REWRITE): roke
+    // jaane wala (Fetch-domain) range-rewrite apni
+    // pehli nakami par khud band ho jaye to khabar
+    // engine ko — engine use '[ROOT] mainpage-fetchrw
+    // disabled' line me badalta hai. Callback na ho to
+    // band hona khamosh hai (vyavhaar wahi rehta hai:
+    // darkhwastein bina badlaav continue hoti hain).
+    this.onFetchRwDisabled = typeof opts.onFetchRwDisabled === 'function' ? opts.onFetchRwDisabled : null;
+    // v2.48.53 (RPC-BODY SCAN): batchexecute jawab ke
+    // andar pehli dafa dikha googlevideo address —
+    // engine use '[ROOT] rpc-video-urls' line me
+    // badalta hai (sirf host/clen/itag bahar jata hai;
+    // asal URL kabhi nahi). Callback na ho to khabar
+    // khamosh hai.
+    this.onRpcVideoUrls = typeof opts.onRpcVideoUrls === 'function' ? opts.onRpcVideoUrls : null;
+    // v2.48.53 (ROUTE 1B SABOOT): Fetch rewrite asal
+    // me kisi darkhwast ko badle to us ki khabar —
+    // engine '[ROOT] mainpage-fetchrw rewritten' line
+    // banata hai. Ginti ki hadd (20) is liye ke line
+    // saboot hai, shor nahi.
+    this.onFetchRwRewrite = typeof opts.onFetchRwRewrite === 'function' ? opts.onFetchRwRewrite : null;
+    this._fetchRwLogCount = 0;
+    // v2.48.53 (FOCUS EMULATION): page ke CDP client
+    // par focus-emulation lagne ki khabar — engine
+    // '[ROOT] focus-emulation enabled/failed' line
+    // banata hai. Har client par sirf ek dafa koshish.
+    this.onFocusEmulation = typeof opts.onFocusEmulation === 'function' ? opts.onFocusEmulation : null;
+    this._focusEmuClient = null;
+    // Rewrite ki haalat: _fetchRwDisabled ek dafa
+    // band to is capture (poore session) ke liye band
+    // — reset() use saaf NAHI karta (band hona run-
+    // bhar ka faisla hai); _fetchRwClient woh CDP
+    // client hai jis par rewrite is pal chalu hai.
+    this._fetchRwDisabled = false;
+    this._fetchRwClient = null;
+    this._fetchRwWatchdogMs = 2500;
     this._page = null;
     this._reqHandler = null;
     this._resHandler = null;
@@ -218,6 +728,9 @@ class NetworkCapture {
     this.urlByKey = new Map();    // taskKey -> { url, via, at }
     this.keyByUrl = new Map();    // url -> taskKey
     this.sightings = new Map();   // url -> { firstSeenAt, source, claimedBy }
+    // v2.48.13: status-request templates (direct-API poll ke liye)
+    this.statusTemplates = new Map(); // workflowId -> { url, method, headers, body, at }
+    this.latestStatusTemplate = null; // sabse taza status template (koi bhi ID)
     // v2.10.0: diagnostics — listener zinda hai ya andha, iska
     // saboot. Owner ke v2.8.0 PC run me mediaUrlsSeen poori run 0
     // raha, lekin ye pata hi nahi chala ki listener ne jawab dekhe
@@ -230,6 +743,210 @@ class NetworkCapture {
       mediaUrlsSeen: 0, idsSeen: 0,
       boundById: 0, boundByCurrentSrc: 0, boundByOrder: 0
     };
+    // v2.48.16 DIAGNOSTIC: TEST493 (2026-11-01) me pure run ke
+    // dauraan API responses = 0 mile — Flow ka data shayad ek
+    // lambi streaming line (WebSocket / webchannel) se aata hai
+    // jise ye engine sunta hi nahi tha. Ab: (a) API REQUESTS bhi
+    // gine jate hain (sirf jawab nahi), (b) har WebSocket ka
+    // khulna, uske frames ki ginti, aur frames ke ANDAR media
+    // URL / workflow ID ke nishan gine jate hain (frame ka asal
+    // data kabhi save nahi hota — sirf haan/na aur size).
+    this.apiRequestCounts = new Map(); // method -> count (API hosts par)
+    this.wsStats = {
+      sockets: 0, urls: [], framesIn: 0, framesOut: 0,
+      bytesIn: 0, mediaFrames: 0, workflowFrames: 0
+    };
+    // v2.48.17 DIAGNOSTIC-2: har request ka host+path hisaab
+    // (query nahi) aur flow.google.com ke apne jawabon ke andar
+    // ki substring talash. Pehla batayega ke generation ki calls
+    // asal me kin endpoints par gayin (same-host RPC? webchannel?);
+    // dusra batayega ke link un bodies me chhupa to nahi tha.
+    this.pathCounts = new Map(); // host+path -> count
+    this.flowBodyStats = { scanned: 0, mediaHostHits: 0, workflowHits: 0, aisandboxHits: 0 };
+    this._cdpClient = null;
+    // v2.48.18 DIAGNOSTIC-3: sirf batchexecute darwaze ka hisaab —
+    // kitni requests gayin (kis rpcid ke saath), kitne jawab aaye,
+    // unke bodies kitne padhe gaye aur kitne kyun chhoote, aur
+    // padhe gaye bodies me kin alfaz ke nishan mile.
+    this.batchStats = {
+      requests: 0, rpcids: {}, responses: 0, bodiesFetched: 0,
+      skipContentType: 0, skipTooBig: 0, skipBuffer: 0, contentTypes: {},
+      withMediaHost: 0, withVideoplayback: 0, withWorkflow: 0,
+      withFife: 0, withDownloadWord: 0, cdpBodies: 0,
+      streamChunks: 0, streamBound: 0, urlShapes: {}
+    };
+    this._cdpBatch = new Map(); // CDP requestId -> { rpcids, at, text, bound }
+    this.downloadCensus = new Map(); // v2.48.24: shape -> { n, bytes } (media-host / asb responses, poori run)
+    this._cdpDlShape = new Map(); // CDP requestId -> shape
+    this._cdpBigShape = new Map(); // v2.48.27: CDP requestId -> { shape, host, type, declared } (NET-BIG shikar)
+    this.netBigWindow = []; // v2.48.27: [{ host, bytes, at }] — har mukammal jawab ka behtareen size (window summary ke liye)
+    // v2.48.28 (SERVER-FIRST): flow-content.google ke asal video
+    // jawab — poora URL sirf YAAD me rehta hai (sightings ki
+    // tarah; log me kabhi nahi — wahan sirf shakal jati hai),
+    // taaki engine use isi attempt me seedha server se fetch kar
+    // sake. claimed = kisi task ne le liya (doosra phir nahi lega).
+    this.flowContentVideos = []; // [{ url, type, at }] — taaza peeche, hadd 50
+    this.flowContentClaimed = new Set(); // url -> kisi task ke naam ho chuka
+    // v2.48.31 (MINT): mint watch — sirf download round ke
+    // dauraan chalu (engine setMintWatch bulata hai). mintRequests
+    // me har request ki saaf shakal (method/host/path — query ki
+    // sirf keys) rehti hai, hadd 600; _mintCarriesSeen ek watch
+    // ke andar ek hi (method|host|path) ki carries-khabar ko
+    // dobara nahi ugne deta.
+    this.mintWatch = false;
+    this.mintRequests = []; // [{ method, host, path, at }]
+    this._mintCarriesSeen = new Set();
+    // v2.48.33 (ZEROCLICK): seekha hua mint-call template —
+    // status templates (v2.48.13) wali hi hifazat: asal URL
+    // (query sameet) + method + whitelist headers + raw body
+    // bytes SIRF is object me rehte hain (log me kabhi nahi),
+    // taaki engine agle task par usi darkhwast ko is task ke
+    // ID ke saath replay kar sake. _mintTaskKey woh task hai
+    // jis ke download round me watch chalu hai (seekhne wale
+    // task ki pehchan). Template roundon ke paar rehta hai —
+    // sirf reset() (naya session) use saaf karta hai.
+    this.mintTemplate = null; // { url, method, headers, body, at, taskKey, primaryId, ids, idOccurrences, urlPrimaryId, urlIds, urlIdOccurrences, teacherUrl, learnContext }
+    this._mintTaskKey = null;
+    // v2.48.37 (SESSION-WIDE MINT WATCH): watch ke ab DO
+    // maalik hain — SESSION (worker ka page tayyar hote hi
+    // engine setMintSessionWatch(true) bulata hai; account
+    // chhodne / run khatam par band) aur ROUND (ek download
+    // round ki khidki — setMintWatch ka purana istemal).
+    // this.mintWatch ASAR-daar haalat hai (dono me se koi
+    // ek bhi chalu to watch chalu). ZEROCLICK4 ki seekh:
+    // template sirf round ke andar seekha jata tha, aur
+    // pehle download karne wale task ke round me kabhi
+    // kabhi koi mint jawab aata hi nahi (Flow ke page ke
+    // paas us media ka address pehle se hota hai) — to
+    // template us pal tak ghayab rehta tha jab tak koi
+    // agla task bacha hi nahi hota tha.
+    this._mintSessionOn = false;
+    this._mintRoundOn = false;
+    // Round ke bahar seekhne par template ki nisbat: sab
+    // se aakhir me render-poora hua task (engine
+    // noteRenderCompleted se khabar deta hai); wo bhi na
+    // ho to sab se taza monitored (submitted) task.
+    this._mintLastRenderKey = null;
+    // v2.48.37 (CANDIDATE TEMPLATE): sab se taza
+    // batchexecute darkhwast jis ke rpcids me 'as29s'
+    // hai — jawab file-address le aaya ho ya NAHI, ye
+    // darkhwast kitab me rehti hai. Carrying-jawab wala
+    // seekha template (mintTemplate) hamesha is par
+    // bhaari hai; candidate sirf tab kaam aata hai jab
+    // seekha template abhi bana hi na ho. Hifazat wahi
+    // (whitelist headers, body size hadd, asal data
+    // sirf is object me — log me kabhi nahi).
+    this.mintCandidateTemplate = null; // { url, method, headers, body, at, taskKey: null, source: 'candidate' }
+    // v2.48.36 (ROOT PACK — E): teacher task ka ASAL mint
+    // hua flow-content URL — sirf is capture ki yaad me
+    // rehta hai (kabhi log nahi), taaki verbatim replay ke
+    // jawab ka same/different muqabla hamesha ho sake
+    // (v2.48.35 me teacher ka URL capture ke paas maujood
+    // hote hue bhi muqabla 'n/a' nikal sakta tha kyunke
+    // probe bandhe hue link ko hi dhoondta tha — mint ke
+    // pal ka address wahan darj hi nahi hota tha).
+    this.mintTeacherUrl = null;
+    // v2.48.36 (ROOT PACK — D): PAGE-FETCH HARVEST — page
+    // khud (editor preview/playback par) asal server file
+    // ke bytes khinchta hai; wohi bytes CDP getResponseBody
+    // se yaad rakh liye jate hain, lekin SIRF tab jab
+    // saveGuard ke darwaze (bandhan + size floor + MP4
+    // header) guzar jayen. Ek task ke naam ek hi body,
+    // hadd ~8MB; task ke round ke aakhir par evict.
+    this.harvestBodies = new Map(); // captureKey -> { url, buffer, at }
+    this._harvestByUrl = new Map(); // url -> { buffer, at } (bandhan se pehle aayi body; hadd 2)
+    this._harvestPending = new Map(); // CDP requestId -> { url, declared, status, contentRange }
+    // _downloadAttemptKey = stage-lock tale chal raha
+    // download attempt (engine round ke aaghaz/aakhir par
+    // khabar deta hai) — harvest-audit sirf is khidki me
+    // chalta hai (v2.48.41: editor-khidki khatam hai,
+    // kyunke editor ab kabhi khulta hi nahi).
+    this._downloadAttemptKey = null;
+    // v2.48.40 (INVISIBLE HARVEST PACK): CASCADE kitab —
+    // har media address ki SAB SE PEHLI nazar (pal +
+    // qisam: project-data | mint-response | stream-get;
+    // sirf pehli nazar rehti hai, baad wali use badal
+    // nahi sakti). Sirf mushahida hai — koi faisla is
+    // par nahi chalta. v2.48.41: editor kabhi khulta
+    // nahi, is liye cascade ka editorOpenedAt hamesha
+    // null rehta hai.
+    this._urlFirstSeen = new Map(); // url -> { at, kind } (hadd 300)
+    // v2.48.41 (MAIN-PAGE HARVEST PACK): MAIN PAGE ki
+    // video kitab — asal worker page par dekhe gaye har
+    // video-jese jawab (flow-content.google video jawab
+    // + *.googlevideo.com/videoplayback) ki ek entry:
+    // { url, src, host, bytes, at, timing, status,
+    //   contentRange, declared, partial }. Asal URL sirf
+    // yaad me rehta hai (log me kabhi nahi — wahan host/
+    // bytes/qisam hi jata hai). googlevideo ke tukde
+    // (range jawab) _mainpageBodies me rehte hain (hadd
+    // 2, ~8MB tak); flow-content ki mukammal body
+    // purani harvest kitab (harvestBodies/_harvestByUrl)
+    // me hi rehti hai. mainpageClaimed = kisi task ke
+    // naam ho chuka address (doosra phir nahi lega).
+    this.mainpageVideos = []; // taaza peeche, hadd 50
+    this.mainpageClaimed = new Set(); // url
+    // v2.48.42 (MAIN-PAGE BINDING PACK): bandhan ki
+    // kitab — kaun sa address KIS task ke naam hua
+    // (key = captureKey, label = log wala task#), aur
+    // har task ki apni khidki (render-complete ka pal)
+    // jis ke andar pehli baar dikha stream usi ka
+    // bandhta hai. Dono run ke andar attempts aur
+    // download-retry rounds ke paar rehte hain.
+    this.mainpageClaimedBy = new Map(); // url -> { key, label }
+    // v2.48.43: mainpage kitab ki capture tartib —
+    // har NAYI entry ko ek badhta number (seq) milta
+    // hai; pehli-nazar ke ek hi pal par bhi asal
+    // pakadne ki tarteeb is se rehti hai (tarteeb
+    // bandhan ka faisla-kun).
+    this._mainpageSeq = 0;
+    this.mainpageWindows = new Map(); // captureKey -> { start, done }
+    this._mainpagePending = new Map(); // CDP requestId -> { url, src, declared, status, contentRange }
+    // v2.48.48: googlevideo bodies ab URL ke hisaab se
+    // TUKDON (chunks) me rehte hain — har nazar apna
+    // { offset, buffer } deti hai; mainpageBodyForUrl
+    // unhe jod (assemble) kar lautata hai. bytes =
+    // rakhe hue kul (unique) bytes, cap wahi
+    // HARVEST_MAX_BYTES fi-URL.
+    this._mainpageBodies = new Map(); // url -> { chunks: [{ offset, buffer }], bytes, at }
+    // v2.48.49 (TOO-SMALL MEDIA-LOAD MAUQA): ummeedwaar
+    // darwaze par 'stream-too-small' se ruki nazaron ki
+    // halki yaad — { url, src, reason, bytes,
+    // firstSeenAt, at }, hadd 50, URL par ek hi entry
+    // (pehli nazar barkarar). Ye kitab mainpageVideos
+    // se ALAG hai: wahan entry/umeedwaar yahan bhi
+    // NAHI banta, bandhan/claim bilkul nahi badalta —
+    // sirf engine ko failOut se pehle us URL par
+    // media-load ka EK mauqa dene ka pata milta hai
+    // (ZEROCLICK16: sirf chhote previews aaye the aur
+    // completion kabhi engage hi nahi hua tha).
+    this._mainpageTooSmall = [];
+    // v2.48.53 (RPC-BODY SCAN): batchexecute jawabon
+    // ke andar mile googlevideo addresses ki kitab —
+    // { url, clen, itag, firstSeenAt, consumedBy },
+    // hadd 50, URL par ek hi entry (pehli nazar
+    // barkarar). _rpcVideoSeen wahi URL dobara darj
+    // hone se rokta hai (status-poll jawab har chand
+    // second me wahi pate dohrate hain — khabar sirf
+    // PEHLI nazar ki hai). Bandhan/claim is kitab se
+    // NAHI banta — engine ka rpc-feed mauqa sakht
+    // attribution par inhe sirf netload tak le jata
+    // hai (saveGuard.mainpageRpcBodyPick).
+    this._rpcVideoSightings = [];
+    this._rpcVideoSeen = new Set();
+    // v2.48.50 (item 18 — SEGMENT ASSEMBLY): logical
+    // stream key -> us ke URLs ka Set. Do googlevideo
+    // URL jo sirf query me alag hon lekin rasta (path)
+    // aur media id (query ka 'id') ek rakhe hon, EK hi
+    // file ke tukde hain — un ke chunks assembly ke
+    // liye ek kitab me jod sakte hain (bandhan / claim
+    // / faisla bilkul nahi badalta — faisla hamesha
+    // bandhe ummeedwaar ki JODI hui body par hota hai).
+    this._mainpageSegments = new Map();
+    // Engine har download round me apni duration ka size
+    // floor yahan rakh deta hai (downloadFetch wala hisaab);
+    // 0 = floor nahi (aam darwaze hi laagu).
+    this.harvestFloorBytes = 0;
   }
 
   arm() { this.armed = true; }
@@ -247,11 +964,80 @@ class NetworkCapture {
     if (!page || typeof page.on !== 'function') return false;
     this._page = page;
     this._reqHandler = (req) => {
-      if (!this.armed) return;
+      // v2.48.16 DIAGNOSTIC: API requests ki ginti armed hone se
+      // pehle bhi (sirf host+method ka hisaab, koi data nahi) —
+      // TEST493 me API responses 0 the; ab ye bhi pata chalega
+      // ke API requests gaye bhi the ya nahi.
+      try {
+        if (isApiUrl(req.url(), this.patterns)) {
+          const m = req.method() || 'GET';
+          this.apiRequestCounts.set(m, (this.apiRequestCounts.get(m) || 0) + 1);
+        }
+      } catch (e) {}
+      // v2.48.17 DIAGNOSTIC-2: har request ka host+path hisaab.
+      try {
+        const k = pathKeyOf(req.url());
+        if (k) this.pathCounts.set(k, (this.pathCounts.get(k) || 0) + 1);
+      } catch (e) {}
+      // v2.48.31 (MINT): mint watch chalu ho to is request ki
+      // saaf shakal bhi darj karo (armed se pehle bhi — download
+      // round ke dauraan capture armed hi hota hai, lekin mint
+      // ginati click ke pal se pakki honi chahiye).
+      try {
+        let m = 'GET';
+        try { m = req.method() || 'GET'; } catch (e) {}
+        this._noteMintRequest({ method: m, url: req.url(), at: Date.now() });
+      } catch (e) {}
+      // v2.48.18 DIAGNOSTIC-3: batchexecute requests + rpcid naam.
+      try {
+        if (isBatchExecuteUrl(req.url())) {
+          this.batchStats.requests++;
+          for (const r of rpcidsOf(req.url())) {
+            this.batchStats.rpcids[r] = (this.batchStats.rpcids[r] || 0) + 1;
+          }
+          // v2.48.23: REQUEST ke andar ka payload bhi scan karo
+          // (TEST500: jawab-bodies ki link-shapes ginti khaali
+          // aayi, lekin bandhan kahin se to hua — darkhwast ke
+          // payload ek aur jagah hai jahan pehchan ke nishan
+          // ho sakte hain). Sirf armed par; nishan wahi pipeline.
+          if (this.armed) {
+            let post = null;
+            try { post = req.postData() || null; } catch (e) {}
+            if (post) {
+              const extra = scanBatchExecuteBody(Buffer.from(post, 'utf8'), this.patterns);
+              const at = Date.now();
+              for (const id of extra.ids) this._bindId(id, at);
+              for (const u of extra.mediaUrls) this._sightUrl(u, 'api-body', at, extra.ids);
+              for (const u of (extra.allUrls || [])) {
+                const shape = urlShape(u);
+                if (this.batchStats.urlShapes[shape] !== undefined || Object.keys(this.batchStats.urlShapes).length < 24) {
+                  this.batchStats.urlShapes[shape] = (this.batchStats.urlShapes[shape] || 0) + 1;
+                }
+              }
+            }
+          }
+        }
+      } catch (e) {}
+      // v2.48.15: status-shaped API requests ka TEMPLATE armed
+      // hone se pehle bhi record hota hai (project khulte hi page
+      // List/Search calls bhejta hai — wahi direct-API poll ka
+      // beej hain; pehchan ki bandish templates par nahi, URL
+      // bandhne par lagti hai, is liye ye mehfooz hai). Baaki
+      // saari ingestion pehle ki tarah sirf armed par.
+      if (!this.armed && !isStatusApiUrl(req.url(), this.patterns)) return;
       try {
         let post = null;
         try { post = req.postData() || null; } catch (e) {}
-        this.ingestRequest({ url: req.url(), postDataText: post, at: Date.now() });
+        // v2.48.13: asal body bytes (protobuf/binary ke liye
+        // postDataBuffer; na mile to text roop ka Buffer).
+        let postBuf = null;
+        try { postBuf = typeof req.postDataBuffer === 'function' ? req.postDataBuffer() : null; } catch (e) {}
+        if (!postBuf && post) { try { postBuf = Buffer.from(post, 'utf8'); } catch (e) {} }
+        let method = 'GET';
+        try { method = req.method() || 'GET'; } catch (e) {}
+        let headers = {};
+        try { headers = req.headers() || {}; } catch (e) {}
+        this.ingestRequest({ url: req.url(), postDataText: post, postDataBuffer: postBuf, method, headers, at: Date.now() });
       } catch (e) {}
     };
     this._resHandler = async (res) => {
@@ -273,6 +1059,13 @@ class NetworkCapture {
         let headers = {};
         try { headers = res.headers() || {}; } catch (e) {}
         const ct = String(headers['content-type'] || '').toLowerCase();
+        // v2.48.31 (MINT): is jawab ka method (carries-khabar ke
+        // liye) aur redirect Location me file-address ki jaanch.
+        let resMethod = 'GET';
+        try { const rq = res.request(); if (rq) resMethod = rq.method() || 'GET'; } catch (e) {}
+        try {
+          if (this.mintWatch) this._checkMintCarries(resMethod, url, headers['location'], null);
+        } catch (e) {}
         const api = isApiUrl(url, this.patterns);
         // Media response (page ne khud file khinchi — tile playback
         // adi): URL ki sighting note karo, body NAHI padho (badi
@@ -280,18 +1073,570 @@ class NetworkCapture {
         if (isMediaUrl(url, this.patterns)) {
           this.ingestResponse({ url, contentType: ct, bodyBuffer: null, at: Date.now() });
         }
-        if (!api && !ct.includes('json')) return;
+        // v2.48.17 DIAGNOSTIC-2: flow.google.com ke gRPC/protobuf
+        // type jawabon ke bodies bhi padho — agar generation ka
+        // data same-host gRPC-web se aata hai to uska body JSON
+        // nahi hota, aur purani shart use hamesha chhod deti thi.
+        const isFlowRpc = hostOf(url) === 'flow.google.com'
+          && /(grpc|protobuf|octet-stream|text\/plain)/.test(ct);
+        // v2.48.18 DIAGNOSTIC-3: batchexecute ke jawab har haal
+        // me padho (content-type jo bhi ho) — aur jo na padha
+        // jaye uski wajah bhi gin lo.
+        const batch = isBatchExecuteUrl(url);
+        if (batch) {
+          this.batchStats.responses++;
+          const ctKey = (ct.split(';')[0] || '(none)').trim();
+          this.batchStats.contentTypes[ctKey] = (this.batchStats.contentTypes[ctKey] || 0) + 1;
+        }
+        if (!api && !ct.includes('json') && !isFlowRpc && !batch) return;
         const declared = parseInt(headers['content-length'] || '', 10);
-        if (Number.isFinite(declared) && declared > this.patterns.maxBodyScanBytes) return;
+        if (Number.isFinite(declared) && declared > this.patterns.maxBodyScanBytes) {
+          if (batch) this.batchStats.skipTooBig++;
+          return;
+        }
         let buf = null;
-        try { buf = await res.buffer(); } catch (e) { return; }
-        if (!buf || buf.length === 0 || buf.length > this.patterns.maxBodyScanBytes) return;
+        try { buf = await res.buffer(); } catch (e) { if (batch) this.batchStats.skipBuffer++; return; }
+        if (!buf || buf.length === 0 || buf.length > this.patterns.maxBodyScanBytes) {
+          if (batch) this.batchStats.skipBuffer++;
+          return;
+        }
+        if (batch) this.batchStats.bodiesFetched++;
+        // v2.48.31 (MINT): padhe gaye body me file ke server
+        // address ka nishan hai kya (sirf haan/na darj hota hai).
+        // v2.48.33 (ZEROCLICK): batchexecute jawab ho to asal
+        // darkhwast (is response ka apna request) ka template
+        // bhi banao — carries sabit hone par wahi seekha
+        // jayega. Body bytes wahi tareeka jo ingestRequest ka
+        // hai (postDataBuffer pehle, warna text ka Buffer);
+        // headers sirf whitelist wale.
+        try {
+          if (this.mintWatch) {
+            let reqTemplate = null;
+            if (batch) {
+              try {
+                const rq = res.request();
+                if (rq) {
+                  let postBuf = null;
+                  try { postBuf = typeof rq.postDataBuffer === 'function' ? rq.postDataBuffer() : null; } catch (e2) {}
+                  if (!postBuf) {
+                    try { const pd = rq.postData(); if (pd) postBuf = Buffer.from(pd, 'utf8'); } catch (e2) {}
+                  }
+                  let hdrs = {};
+                  try { hdrs = rq.headers() || {}; } catch (e2) {}
+                  reqTemplate = { url, method: resMethod, headers: pickReplayHeaders(hdrs, this.patterns), body: postBuf };
+                }
+              } catch (e2) { reqTemplate = null; }
+            }
+            this._checkMintCarries(resMethod, url, null, buf, reqTemplate);
+          }
+        } catch (e) {}
         this.ingestResponse({ url, contentType: ct, bodyBuffer: buf, at: Date.now() });
       } catch (e) {}
     };
     page.on('request', this._reqHandler);
     page.on('response', this._resHandler);
+    // v2.48.17 DIAGNOSTIC-2: WebSocket nigrani CDP se. (v2.48.16
+    // wala page.on('websocket') Playwright ka tareeka tha —
+    // engine Puppeteer hai, wo listener kabhi chal hi nahi
+    // sakta tha; uska '0 sockets' natija bekaar tha. CDP ke
+    // Network.webSocket* events Puppeteer me asal tareeka hain.)
+    this._attachCdpWebSockets(page);
     return true;
+  }
+
+  /**
+   * CDP session se WebSocket ka khulna aur frames ginna.
+   * Best-effort: session na bane to baaki capture pehle ki
+   * tarah chalta hai. Frame ka asal data save nahi hota —
+   * sirf scanFramePayload ke haan/na nishan.
+   */
+  async _attachCdpWebSockets(page) {
+    try {
+      const client = await page.target().createCDPSession();
+      await client.send('Network.enable');
+      this._cdpClient = client;
+      client.on('Network.webSocketCreated', (e) => {
+        try {
+          this.wsStats.sockets++;
+          const k = pathKeyOf(e && e.url);
+          if (k && this.wsStats.urls.length < 5 && !this.wsStats.urls.includes(k)) {
+            this.wsStats.urls.push(k);
+          }
+        } catch (err) {}
+      });
+      client.on('Network.webSocketFrameReceived', (e) => {
+        try {
+          this.wsStats.framesIn++;
+          const resp = e && e.response;
+          const data = resp && resp.payloadData;
+          if (typeof data === 'string' && data) {
+            this.wsStats.bytesIn += data.length;
+            const payload = resp.opcode === 2 ? Buffer.from(data, 'base64') : data;
+            const scan = scanFramePayload(payload, this.patterns);
+            if (scan.hasMedia) this.wsStats.mediaFrames++;
+            if (scan.hasWorkflow) this.wsStats.workflowFrames++;
+          }
+        } catch (err) {}
+      });
+      client.on('Network.webSocketFrameSent', () => {
+        try { this.wsStats.framesOut++; } catch (err) {}
+      });
+      // v2.48.19: batchexecute bodies CDP se — Puppeteer ka
+      // res.buffer() streaming/long-poll jawabon par fail hota
+      // hai (TEST496: 2 buffer-fail, kai jawab in-flight reh
+      // gaye). CDP ka Network.getResponseBody loadingFinished
+      // ke baad har jawab ka body de deta hai. Body wahi purani
+      // ingest pipeline me jata hai (pehchan ke usool same).
+      client.on('Network.requestWillBeSent', (e) => {
+        try {
+          if (e && e.request && isBatchExecuteUrl(e.request.url)) {
+            this._cdpBatch.set(e.requestId, {
+              rpcids: rpcidsOf(e.request.url), at: Date.now(), method: e.request.method || 'GET',
+              // v2.48.33 (ZEROCLICK): asal darkhwast ki shakal
+              // bhi yaad rakho — is request ka jawab file-address
+              // le aaye to yahi mint template banta hai (headers
+              // sirf whitelist wale, status-template wali tarz;
+              // cookie CDP se kabhi nahi uthayi jati — replay
+              // page ke apne session se hota hai).
+              reqUrl: e.request.url,
+              reqHeaders: pickReplayHeaders(e.request.headers || {}, this.patterns),
+              reqPostData: typeof e.request.postData === 'string' ? e.request.postData : null
+            });
+            // v2.48.37 (CANDIDATE TEMPLATE): jawab ka
+            // intezaar kiye baghair — rpcids me as29s
+            // wali darkhwast usi pal candidate ban jati
+            // hai (ZEROCLICK4 me carrying jawab aaya hi
+            // nahi tha, lekin darkhwast zaroor gayi thi).
+            try { this._noteMintCandidate(this._reqTemplateFromCdpMeta(this._cdpBatch.get(e.requestId))); } catch (err) {}
+          }
+        } catch (err) {}
+      });
+      client.on('Network.loadingFailed', (e) => {
+        try { if (e) { this._cdpBatch.delete(e.requestId); this._cdpDlShape.delete(e.requestId); this._cdpBigShape.delete(e.requestId); this._harvestPending.delete(e.requestId); this._mainpagePending.delete(e.requestId); } } catch (err) {}
+      });
+      // v2.48.24: DOWNLOAD CENSUS — media-host / asb wale tamam
+      // responses ki shakal + kul size, poori run (menu wale
+      // download sameet). Asal download link kis khandan ka
+      // hai, yehi batayega.
+      client.on('Network.responseReceived', (e) => {
+        try {
+          if (!e || !e.response || !e.response.url) return;
+          const u = e.response.url;
+          // v2.48.50 (item 15 — CENSUS): googlevideo
+          // jawab bhi census me — lekin host har stream
+          // ka alag (rr<N>---sn-*) hota hai, is liye
+          // rollup shakal ek thahri 'googlevideo.com/
+          // videoplayback' hai (lh3/asb wali tarz).
+          if (isMediaHostUrl(u) || u.includes('/asb/') || isGooglevideoPlaybackUrl(u)) {
+            this._cdpDlShape.set(e.requestId, isGooglevideoPlaybackUrl(u) ? 'googlevideo.com/videoplayback' : urlShape(u));
+          }
+          // v2.48.27 (NET-BIG): HAR jawab ki shakal/nau/declared
+          // size note karo — loadingFinished par encoded size ke
+          // saath mila kar ≥200KB walon ki ek line engine ko
+          // jayegi, aur har jawab window hisaab me bhi jayega.
+          // Map had me rahe: purane adhoore hisse girte rahen
+          // (loadingFinished/Failed par saaf to hota hi hai).
+          {
+            if (this._cdpBigShape.size > 2000) {
+              const firstKey = this._cdpBigShape.keys().next().value;
+              this._cdpBigShape.delete(firstKey);
+            }
+            const rawType = headerValueOf(e.response.headers, 'content-type');
+            const declared = parseInt(headerValueOf(e.response.headers, 'content-length') || '', 10);
+            this._cdpBigShape.set(e.requestId, {
+              shape: urlShape(u),
+              host: hostOf(u),
+              type: (rawType.split(';')[0] || '').trim().toLowerCase(),
+              declared: Number.isFinite(declared) ? declared : 0
+            });
+            // v2.48.28 (SERVER-FIRST): asal server wala video
+            // jawab (flow-content.google, video/*) poore URL ke
+            // saath yaad rakho — engine ka server-first rasta
+            // isi attempt me use seedha fetch karega. Pehchan
+            // flowContent ke exact-host matcher se hi hoti hai.
+            if (flowContent.isFlowContentVideoUrl(u, rawType)) {
+              this._recordFlowContentVideo(u, (rawType.split(';')[0] || '').trim().toLowerCase(), Date.now());
+              // v2.48.40 (CASCADE): stream wala jawab khud
+              // — 'stream-get' wali pehli nazar.
+              this._noteUrlFirstSeen(u, 'stream-get', Date.now());
+              // v2.48.36 (ROOT PACK — D): harvest ummeedwaar —
+              // loadingFinished par is jawab ka body CDP se
+              // uthaya jayega (best-effort). Map had me rahe.
+              if (this._harvestPending.size > 20) {
+                const firstKey = this._harvestPending.keys().next().value;
+                this._harvestPending.delete(firstKey);
+              }
+              this._harvestPending.set(e.requestId, {
+                url: u,
+                declared: Number.isFinite(declared) ? declared : 0,
+                // v2.48.38: adhoore (partial) jawab ki pehchan
+                // ke nishan — status (206) aur Content-Range.
+                status: Number.isFinite(e.response.status) ? e.response.status : 0,
+                contentRange: headerValueOf(e.response.headers, 'content-range') || ''
+              });
+              // v2.48.41 (MAIN-PAGE HARVEST PACK): wahi jawab
+              // main page ki kitab me bhi darj hoga —
+              // loadingFinished par wahi body jo harvest
+              // pipeline uthayegi.
+              if (this._mainpagePending.size > 20) {
+                const firstKey = this._mainpagePending.keys().next().value;
+                this._mainpagePending.delete(firstKey);
+              }
+              this._mainpagePending.set(e.requestId, {
+                url: u,
+                src: 'flow-content',
+                declared: Number.isFinite(declared) ? declared : 0,
+                status: Number.isFinite(e.response.status) ? e.response.status : 0,
+                contentRange: headerValueOf(e.response.headers, 'content-range') || '',
+                // v2.48.43: ummeedwaar darwaze ke liye
+                // jawab ki asal type.
+                contentType: (rawType.split(';')[0] || '').trim().toLowerCase()
+              });
+            }
+            // v2.48.41 (MAIN-PAGE HARVEST PACK): googlevideo
+            // videoplayback jawab bhi MAIN page ki kitab me —
+            // ye aksar range (adhoora) jawab hota hai; body
+            // loadingFinished par tukde ki shakal me uthaya
+            // jayega. ZEROCLICK8 ka saboot: download attempt
+            // ke dauraan main page par 224,692 bytes ka aisa
+            // hi ek jawab aaya tha, kisi editor ke khulne se
+            // pehle.
+            if (isGooglevideoPlaybackUrl(u)) {
+              this._noteUrlFirstSeen(u, 'stream-get', Date.now());
+              if (this._mainpagePending.size > 20) {
+                const firstKey = this._mainpagePending.keys().next().value;
+                this._mainpagePending.delete(firstKey);
+              }
+              const gdeclared = parseInt(headerValueOf(e.response.headers, 'content-length') || '', 10);
+              this._mainpagePending.set(e.requestId, {
+                url: u,
+                src: 'googlevideo',
+                declared: Number.isFinite(gdeclared) ? gdeclared : 0,
+                status: Number.isFinite(e.response.status) ? e.response.status : 0,
+                contentRange: headerValueOf(e.response.headers, 'content-range') || '',
+                // v2.48.43: ummeedwaar darwaze ke liye
+                // jawab ki asal type.
+                contentType: (rawType.split(';')[0] || '').trim().toLowerCase(),
+                // v2.48.50 (item 3 — CACHE STORE): jawab
+                // disk/prefetch cache se aaya ho to nishan
+                // — loadingFinished par body khaali aaye
+                // to ek dobara koshish hogi, aur nazar
+                // entry par fromCache darj hoga. Store ka
+                // rasta/cache ke baghair wala bilkul ek
+                // hai (wahi header darwaza offset 0 par).
+                fromCache: !!(e.response.fromDiskCache || e.response.fromPrefetchCache)
+              });
+            }
+          }
+        } catch (err) {}
+      });
+      // v2.48.20: STREAMING jawab ko beech me se padho.
+      // TEST496/497 ka saboot: 31 batchexecute requests ke
+      // muqable sirf 7 jawab 'complete' hote hain — asal status
+      // data ek aise jawab me behta hai jo run ke dauraan kabhi
+      // khatam hi nahi hota, is liye na res.buffer() use pakad
+      // sakta hai na getResponseBody. Network.dataReceived har
+      // tukda (chunk) aate hi de deta hai — usi par scan chalega.
+      client.on('Network.dataReceived', (e) => {
+        try {
+          if (!e || !this._cdpBatch.has(e.requestId) || typeof e.data !== 'string' || !e.data) return;
+          const buf = Buffer.from(e.data, 'base64');
+          if (buf.length) this._ingestStreamChunk(e.requestId, buf, Date.now());
+        } catch (err) {}
+      });
+      client.on('Network.loadingFinished', async (e) => {
+        let bigInfo = null;
+        let encBytes = 0;
+        let bodyBytes = 0;
+        try {
+          if (e && this._cdpDlShape.has(e.requestId)) {
+            this.recordDownloadResponse(this._cdpDlShape.get(e.requestId), e.encodedDataLength || 0);
+            this._cdpDlShape.delete(e.requestId);
+          }
+          if (e && this._cdpBigShape.has(e.requestId)) {
+            bigInfo = this._cdpBigShape.get(e.requestId);
+            this._cdpBigShape.delete(e.requestId);
+            encBytes = e.encodedDataLength || 0;
+          }
+          if (e && this._cdpBatch.has(e.requestId)) {
+            const batchMeta = this._cdpBatch.get(e.requestId);
+            this._cdpBatch.delete(e.requestId);
+            if (this.armed) {
+              const res = await client.send('Network.getResponseBody', { requestId: e.requestId });
+              const buf = decodeCdpBody(res && res.body, res && res.base64Encoded);
+              if (buf && buf.length > 0 && buf.length <= this.patterns.maxBodyScanBytes * 4) {
+                bodyBytes = buf.length;
+                this.batchStats.cdpBodies++;
+                // v2.48.31 (MINT): CDP se mile batchexecute body
+                // me bhi file-address ki jaanch (wahi darwaza jo
+                // [MINT] sawal ka markaz hai).
+                // v2.48.33 (ZEROCLICK): asal darkhwast ka template
+                // bhi saath do — carries sabit ho to wahi seekha
+                // jayega.
+                try {
+                  if (this.mintWatch) {
+                    this._checkMintCarries((batchMeta && batchMeta.method) || 'POST', 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute', null, buf, this._reqTemplateFromCdpMeta(batchMeta));
+                  }
+                } catch (err) {}
+                // v2.48.54 (GEMINI ZIP-REVIEW fix 4): asal
+                // darkhwast ka URL do (us me ?rpcids= hota
+                // hai) — warna is raaste ke jawabon par
+                // rpcidsOf hamesha khali aur rpc-video-urls
+                // line me rpcid=- chhapta tha.
+                this.ingestResponse({
+                  url: (batchMeta && batchMeta.reqUrl) || 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute',
+                  contentType: 'application/json',
+                  bodyBuffer: buf,
+                  at: Date.now()
+                });
+              }
+            }
+          }
+          // v2.48.36 (ROOT PACK — D): PAGE-FETCH HARVEST —
+          // page ne khud jo flow-content jawab khincha tha,
+          // us ka body ab CDP se uthao (best-effort: na mile
+          // to koi candidate nahi, kabhi blocker nahi, kabhi
+          // error nahi). Rakha sirf saveGuard ke darwazon se
+          // guzarne par jata hai (_retainHarvestBody).
+          let mainpageFcBody = null;
+          if (e && this._harvestPending.has(e.requestId)) {
+            const pend = this._harvestPending.get(e.requestId);
+            this._harvestPending.delete(e.requestId);
+            let hbuf = null;
+            try {
+              const hres = await client.send('Network.getResponseBody', { requestId: e.requestId });
+              hbuf = decodeCdpBody(hres && hres.body, hres && hres.base64Encoded);
+            } catch (herr) { hbuf = null; }
+            mainpageFcBody = hbuf;
+            let retained = false;
+            if (hbuf && hbuf.length > 0) {
+              retained = this._retainHarvestBody(pend.url, hbuf, Date.now());
+            }
+            // HARVEST-AUDIT (v2.48.38; v2.48.41 me khidki
+            // sirf download attempt ki hai): har mukammal
+            // flow-content jawab par ek line — promotion
+            // asal me hua ya nahi, aur kyun nahi. Koi
+            // vyavhaar-badal nahi — sirf hisaab/khabar.
+            try { this._emitHarvestAudit(pend, hbuf, retained); } catch (herr) {}
+          }
+          // v2.48.41 (MAIN-PAGE HARVEST PACK): MAIN page ke
+          // video-jese jawab ki kitab + MAINPAGE-AUDIT.
+          // flow-content ke liye body upar wali harvest
+          // pipeline se guzar chuka hai (wahi hbuf);
+          // googlevideo ke liye tukda yahin uthaya jata hai
+          // (asal file aksar range jawab me aati hai —
+          // tukda kitab me rehta hai, poora fetch engine
+          // main page ke andar se karega).
+          if (e && this._mainpagePending.has(e.requestId)) {
+            const mpend = this._mainpagePending.get(e.requestId);
+            this._mainpagePending.delete(e.requestId);
+            let mbuf = null;
+            if (mpend.src === 'googlevideo') {
+              try {
+                const mres = await client.send('Network.getResponseBody', { requestId: e.requestId });
+                mbuf = decodeCdpBody(mres && mres.body, mres && mres.base64Encoded);
+              } catch (merr) { mbuf = null; }
+              // v2.48.50 (item 3): cache se aaya jawab
+              // pehli getResponseBody par aksar khaali
+              // deta hai (body cache se serve hoti hai,
+              // CDP use foran nahi uthata) — ek chhota
+              // waqfa de kar EK dobara koshish; phir jo
+              // mile wahi nazar me jayega aur store ka
+              // rasta aam wala hi rahega.
+              if ((!mbuf || mbuf.length === 0) && mpend.fromCache) {
+                try {
+                  await new Promise(r => setTimeout(r, 200));
+                  const mres2 = await client.send('Network.getResponseBody', { requestId: e.requestId });
+                  const mbuf2 = decodeCdpBody(mres2 && mres2.body, mres2 && mres2.base64Encoded);
+                  if (mbuf2 && mbuf2.length > 0) mbuf = mbuf2;
+                } catch (merr) {}
+              }
+            } else {
+              mbuf = mainpageFcBody;
+            }
+            try { this._recordMainpageSighting(mpend, mbuf, e.encodedDataLength || 0, Date.now()); } catch (merr) {}
+          }
+        } catch (err) {}
+        // v2.48.27 (NET-BIG): faisla + khidki-hisaab — size ki
+        // tarjeeh: asal body (jo uplabdh ho) > declared
+        // content-length > encoded wire size. Bada jawab ho to
+        // engine ko EK line; HAR jawab (chhota bhi) khidki me
+        // jama hota hai, taaki download ke aakhir me render→save
+        // khidki ka host-wise kul nikal sake. Koi vyavhaar-badal
+        // nahi — sirf shikar.
+        try {
+          if (bigInfo) {
+            const bestBytes = bodyBytes > 0 ? bodyBytes
+              : (bigInfo.declared > 0 ? bigInfo.declared : encBytes);
+            if (bestBytes > 0) this._recordNetBigWindow(bigInfo.host, bestBytes, Date.now());
+            if (this.onNetBig && isNetBigResponse(Math.max(encBytes, bodyBytes), bigInfo.declared)) {
+              this.onNetBig({
+                host: bigInfo.host,
+                shape: bigInfo.shape,
+                type: bigInfo.type,
+                bytes: Math.max(encBytes, bodyBytes, bigInfo.declared || 0),
+                encodedBytes: encBytes,
+                declaredBytes: bigInfo.declared || 0,
+                at: Date.now()
+              });
+            }
+          }
+        } catch (err) {}
+      });
+      // v2.48.52 (ROUTE 1B — FETCH-RANGE-REWRITE):
+      // isi CDP client par Fetch-domain ka range-
+      // rewrite bhi lagao (best-effort: na lage to
+      // capture bilkul aaj ki tarah chalta hai aur
+      // disabled wali khabar engine tak jati hai).
+      try { await this._armFetchRw(client); } catch (err) {}
+      // v2.48.53 (FOCUS EMULATION): isi client par
+      // focus-emulation bhi lagao (best-effort) —
+      // background window me Blink media/hover
+      // throttling ka ilaaj (Gemini brief-2 §5.5
+      // rank 1; ZEROCLICK16/18/19 ki run-variance).
+      try { await this._armFocusEmulation(client); } catch (err) {}
+    } catch (err) {}
+  }
+
+  /**
+   * v2.48.53 (FOCUS EMULATION): is page ke CDP client
+   * par Emulation.setFocusEmulationEnabled(true) —
+   * har client par sirf EK dafa. Page hamesha
+   * 'foreground focus' wala bartav karti hai, chahe
+   * asal window peeche hi kyon na ho. Nakami par
+   * sirf khabar — capture bilkul aaj ki tarah chalta
+   * hai. Ye function kabhi throw nahi karta.
+   */
+  async _armFocusEmulation(client) {
+    try {
+      if (!client || typeof client.send !== 'function') return;
+      if (this._focusEmuClient === client) return;
+      this._focusEmuClient = client;
+      await client.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+      try {
+        if (typeof this.onFocusEmulation === 'function') this.onFocusEmulation({ ok: true });
+      } catch (e) {}
+    } catch (e) {
+      try {
+        if (typeof this.onFocusEmulation === 'function') this.onFocusEmulation({ ok: false });
+      } catch (e2) {}
+    }
+  }
+
+  /**
+   * v2.48.52 (ROUTE 1B): Fetch-domain interception
+   * chalu karo — pattern SIRF googlevideo
+   * videoplayback darkhwaston par, Request stage
+   * par. Ruki darkhwast ka roop fetchRwRewrite
+   * (khalis) badalta hai (range param hatao + Range:
+   * bytes=0-), jawab phir aam Network pipeline se
+   * guzar kar capture store/assembly me jata hai.
+   * HIFAZAT (is pack ki shart):
+   *   - har ruki darkhwast EK hi dafa continue hoti
+   *     hai — settled nishan + finally wala continue
+   *     + watchdog (handler ka hisaab atak jaye to
+   *     bhi waqt par seedha continue); latki hui
+   *     darkhwast mumkin hi nahi;
+   *   - pehli hi nakami (enable / rewrite / continue)
+   *     par interception poore session ke liye band
+   *     (_disableFetchRw) aur EK khabar engine ko —
+   *     run is ke baghair bilkul waisa hi chalta hai.
+   */
+  async _armFetchRw(client) {
+    try {
+      if (!client || typeof client.send !== 'function' || typeof client.on !== 'function') return;
+      if (this._fetchRwDisabled) return;
+      if (this._fetchRwClient === client) return;
+      this._fetchRwClient = client;
+      client.on('Fetch.requestPaused', (ev) => { this._fetchRwOnPaused(client, ev); });
+      await client.send('Fetch.enable', {
+        patterns: [{ urlPattern: '*googlevideo.com/videoplayback*', requestStage: 'Request' }]
+      });
+    } catch (e) {
+      this._disableFetchRw('enable-failed');
+    }
+  }
+
+  /** v2.48.52 (ROUTE 1B): ek ruki darkhwast ka hisaab — hamesha EK continue. */
+  _fetchRwOnPaused(client, ev) {
+    const requestId = ev && ev.requestId;
+    if (!requestId) return;
+    let invoked = false;
+    let settled = false;
+    const cont = (params) => {
+      invoked = true;
+      if (settled) return Promise.resolve();
+      settled = true;
+      try { clearTimeout(wd); } catch (e) {}
+      return Promise.resolve()
+        .then(() => client.send('Fetch.continueRequest', params))
+        .catch(() => { this._disableFetchRw('continue-failed'); });
+    };
+    // Watchdog: rewrite ka hisaab kisi wajah se atak
+    // jaye to bhi darkhwast waqt par bina badlaav
+    // continue ho — latakna mumkin nahi.
+    const wd = setTimeout(() => { if (!invoked) cont({ requestId }); }, this._fetchRwWatchdogMs || 2500);
+    try { if (wd && typeof wd.unref === 'function') wd.unref(); } catch (e) {}
+    (async () => {
+      try {
+        if (this._fetchRwDisabled) { await cont({ requestId }); return; }
+        const req = (ev && ev.request) || {};
+        const rw = fetchRwRewrite(req.url, req.headers);
+        if (!rw) { await cont({ requestId }); return; }
+        // v2.48.53 (ROUTE 1B SABOOT): rewrite asal me
+        // laga — engine ko khabar (hadd 20 linein) taaki
+        // agle run ke log se pakka ho ki kis darkhwast
+        // ka range badla gaya (ZEROCLICK21 me ye khabar
+        // ghayab thi, attribution andaza reh gaya tha).
+        try {
+          if (typeof this.onFetchRwRewrite === 'function' && this._fetchRwLogCount < 20) {
+            this._fetchRwLogCount++;
+            let origRange = null;
+            const hdrs = req.headers && typeof req.headers === 'object' ? req.headers : {};
+            for (const name of Object.keys(hdrs)) {
+              if (String(name).toLowerCase() === 'range') { origRange = String(hdrs[name]); break; }
+            }
+            this.onFetchRwRewrite({
+              host: hostOf(req.url) || '',
+              origRange,
+              stripped: rangeStripOf(req.url).stripped
+            });
+          }
+        } catch (e) {}
+        await cont({ requestId, url: rw.url, headers: rw.headers });
+      } catch (e) {
+        // Rewrite ka hisaab bigda — darkhwast bina
+        // badlaav continue (finally wala usool yahi
+        // hai: continue har haal me), aur rewrite
+        // is session ke liye band.
+        try { await cont({ requestId }); } catch (e2) {}
+        this._disableFetchRw('rewrite-error');
+      }
+    })();
+  }
+
+  /**
+   * v2.48.52 (ROUTE 1B): interception band karo —
+   * EK dafa, is capture ki poori umar ke liye.
+   * Fetch.disable best-effort hai; khabar engine ko
+   * sirf pehli dafa jati hai.
+   */
+  _disableFetchRw(reason) {
+    if (this._fetchRwDisabled) return;
+    this._fetchRwDisabled = true;
+    const client = this._fetchRwClient;
+    this._fetchRwClient = null;
+    try {
+      if (client && typeof client.send === 'function') {
+        const p = client.send('Fetch.disable');
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      }
+    } catch (e) {}
+    try {
+      if (typeof this.onFetchRwDisabled === 'function') {
+        this.onFetchRwDisabled({ reason: String(reason || 'error').replace(/\s+/g, ' ').trim().slice(0, 60) || 'error' });
+      }
+    } catch (e) {}
   }
 
   /** Listeners saaf band karo — koi leak nahi (har session ke saath). */
@@ -300,6 +1645,21 @@ class NetworkCapture {
       try { if (this._reqHandler) this._page.removeListener('request', this._reqHandler); } catch (e) {}
       try { if (this._resHandler) this._page.removeListener('response', this._resHandler); } catch (e) {}
     }
+    // v2.48.52 (ROUTE 1B): is page ke client par
+    // Fetch rewrite chalu ho to use bhi band karo
+    // (session khatam — koi ruki darkhwast peeche
+    // na rahe). Band hone ki khabar (disabled line)
+    // is se NAHI banti — ye aam band hai, nakami nahi.
+    try {
+      const rwClient = this._fetchRwClient;
+      if (rwClient && !this._fetchRwDisabled) {
+        this._fetchRwClient = null;
+        const p = rwClient.send('Fetch.disable');
+        if (p && typeof p.catch === 'function') p.catch(() => {});
+      } else {
+        this._fetchRwClient = null;
+      }
+    } catch (e) {}
     this._page = null;
     this._reqHandler = null;
     this._resHandler = null;
@@ -346,6 +1706,26 @@ class NetworkCapture {
     if (sub && sight && sight.firstSeenAt < sub.at - this.patterns.bindSlackMs) return false;
     this.urlByKey.set(key, { url, via, at: Number.isFinite(at) ? at : Date.now() });
     this.keyByUrl.set(url, key);
+    // v2.48.36 (ROOT PACK — E): teacher task ka asal
+    // flow-content address bandhan ke pal bhi pakad lo —
+    // seekhne ke pal jawab ke andar se na mila ho to yahi
+    // uski jagah lega, taaki replay muqabla kabhi 'n/a'
+    // na bane jab address asal me maloom hai.
+    // v2.48.37: langar ab TEMPLATE KE BAGHAIR bhi bandhta
+    // hai — kisi bhi task ka flow-content address bandhte
+    // hi wo session ka sab se taza mint kehlata hai
+    // (last-wins). Wajah: ZEROCLICK4 me template aakhir
+    // tak ghayab raha, lekin bandhe hue address maujood
+    // the — muqable ko langar phir bhi milna chahiye tha.
+    try {
+      if (flowContent.isFlowContentVideoUrl(url)) {
+        this.mintTeacherUrl = url;
+        if (this.mintTemplate && this.mintTemplate.taskKey === key
+          && !this.mintTemplate.teacherUrl) {
+          this.mintTemplate.teacherUrl = url;
+        }
+      }
+    } catch (e) {}
     if (sight) sight.claimedBy = key;
     if (via === 'workflow-id') this.stats.boundById++;
     else if (via === 'currentSrc') this.stats.boundByCurrentSrc++;
@@ -357,6 +1737,11 @@ class NetworkCapture {
   _sightUrl(url, source, at, coIds) {
     if (!url || !isMediaUrl(url, this.patterns)) return;
     const t = Number.isFinite(at) ? at : Date.now();
+    // v2.48.40 (CASCADE): API/project jawab ke ANDAR
+    // aaya address — 'project-data' wali pehli nazar.
+    if (source === 'api-body' || source === 'json-body') {
+      this._noteUrlFirstSeen(url, 'project-data', t);
+    }
     if (!this.sightings.has(url)) {
       this.sightings.set(url, { firstSeenAt: t, source, claimedBy: null });
       this.stats.mediaUrlsSeen++;
@@ -381,8 +1766,1422 @@ class NetworkCapture {
         if (isMediaUrl(u, this.patterns)) this._sightUrl(u, 'request', at, [...ids]);
       }
     }
+    // Binary body (protobuf) ka latin1 roop — ID text wahan bhi
+    // aksar plain dikh jata hai.
+    if (evt.postDataBuffer && evt.postDataBuffer.length > 0) {
+      const bodyText = evt.postDataBuffer.toString('latin1');
+      for (const id of extractWorkflowIdsFromText(bodyText, this.patterns)) ids.add(id);
+    }
     for (const id of ids) { this.stats.idsSeen++; this._bindId(id, at); }
-    return { ids: [...ids] };
+    // v2.48.37 (CANDIDATE TEMPLATE): Puppeteer wale
+    // raste se bhi wahi darj — CDP session na bane to
+    // bhi candidate kitab na ruke (headers whitelist
+    // se guzar kar; asal faisla _noteMintCandidate ka).
+    if (evt.postDataBuffer && evt.postDataBuffer.length > 0 && isBatchExecuteUrl(evt.url)) {
+      this._noteMintCandidate({
+        url: evt.url,
+        method: String(evt.method || 'POST').toUpperCase(),
+        headers: pickReplayHeaders(evt.headers, this.patterns),
+        body: evt.postDataBuffer
+      });
+    }
+    // v2.48.13: STATUS TEMPLATE yaad rakho — status-shaped API
+    // request (asal URL + whitelist headers + asal body bytes).
+    // Engine isay replay karke backend ko seedha poochhta hai.
+    // Generate wali call isStatusApiUrl se khud-bakhud bahar hai.
+    const templateIds = [];
+    if (evt.postDataBuffer && evt.postDataBuffer.length > 0
+      && evt.postDataBuffer.length <= this.patterns.maxTemplateBodyBytes
+      && isStatusApiUrl(evt.url, this.patterns)) {
+      const tpl = {
+        url: evt.url,
+        method: String(evt.method || 'POST').toUpperCase(),
+        headers: pickReplayHeaders(evt.headers, this.patterns),
+        body: Buffer.from(evt.postDataBuffer),
+        at
+      };
+      this.latestStatusTemplate = tpl;
+      for (const id of ids) { this.statusTemplates.set(id, tpl); templateIds.push(id); }
+    }
+    return { ids: [...ids], templateIds };
+  }
+
+  /**
+   * v2.48.13: is task ke liye replay template — pehle usi ke apne
+   * workflowId wala (sabse pakka), warna is submission ke baad ka
+   * sabse taza status template (project ki list-wali call bhi is
+   * task ki video ka link apne jawab me la sakti hai; bandish hamesha
+   * maujood pehchan ke usoolon se hi hoti hai — galat task ko URL
+   * kabhi nahi milta).
+   */
+  templateForKey(key) {
+    const sub = this._submissionForKey(key);
+    if (!sub) return null;
+    if (sub.id && this.statusTemplates.has(sub.id)) return this.statusTemplates.get(sub.id);
+    if (this.latestStatusTemplate
+      && this.latestStatusTemplate.at >= sub.at - (this.patterns.templateMaxAgeMs || 120000)) {
+      return this.latestStatusTemplate;
+    }
+    return null;
+  }
+
+  /** v2.48.24: download census me ek response ka entry. */
+  recordDownloadResponse(shape, bytes) {
+    if (!shape) return;
+    const cur = this.downloadCensus.get(shape) || { n: 0, bytes: 0 };
+    cur.n++;
+    cur.bytes += Math.max(0, bytes | 0);
+    this.downloadCensus.set(shape, cur);
+  }
+
+  /** v2.48.24: census ka chhota khulasa (log ke liye). */
+  downloadCensusSummary() {
+    const out = {};
+    for (const [shape, v] of this.downloadCensus.entries()) out[shape] = `${v.n}x/${v.bytes}B`;
+    return out;
+  }
+
+  /** v2.48.27 (NET-BIG): ek mukammal jawab ka behtareen size khidki me darj karo. */
+  _recordNetBigWindow(host, bytes, at) {
+    if (!host || !(bytes > 0)) return;
+    this.netBigWindow.push({ host, bytes, at: Number.isFinite(at) ? at : Date.now() });
+    if (this.netBigWindow.length > 5000) {
+      this.netBigWindow.splice(0, this.netBigWindow.length - 5000);
+    }
+  }
+
+  /**
+   * v2.48.27 (NET-BIG): `sinceMs` (aam taur par render-complete)
+   * se is pal tak har host ke kul bytes, descending —
+   * 'host=bytes host=bytes …'. Khaali ho to ''.
+   */
+  netBigWindowSummary(sinceMs) {
+    return summarizeNetBigWindow(this.netBigWindow, sinceMs);
+  }
+
+  /**
+   * v2.48.28 (SERVER-FIRST): ek asal server video jawab yaad
+   * rakho. Pehchan yahan dobara bhi hoti hai (matcher) — galat
+   * shakal ka URL is fehrist me ghus hi nahi sakta. Ek hi URL
+   * dobara dikhe to uska waqt taaza ho jata hai (nayi entry nahi).
+   */
+  _recordFlowContentVideo(url, type, at) {
+    if (!flowContent.isFlowContentVideoUrl(url, type)) return;
+    const t = Number.isFinite(at) ? at : Date.now();
+    const normType = String(type || '').split(';')[0].trim().toLowerCase();
+    const existing = this.flowContentVideos.find(e => e.url === url);
+    if (existing) { existing.at = t; if (normType) existing.type = normType; return; }
+    this.flowContentVideos.push({ url, type: normType, at: t });
+    if (this.flowContentVideos.length > 50) {
+      this.flowContentVideos.splice(0, this.flowContentVideos.length - 50);
+    }
+  }
+
+  /**
+   * v2.48.28 (SERVER-FIRST): `sinceMs` se is pal tak dekhe gaye
+   * woh server video jawab jo abhi kisi task ke naam nahi hue —
+   * purane se naye ki taraf. Engine in par apne pehchan-darwaze
+   * (task ka apna hona) laga kar hi koi URL chunta hai.
+   */
+  recentFlowContentVideos(sinceMs) {
+    const since = Number.isFinite(sinceMs) ? sinceMs : 0;
+    return this.flowContentVideos
+      .filter(e => e.at >= since && !this.flowContentClaimed.has(e.url))
+      .sort((a, b) => a.at - b.at)
+      .map(e => ({ url: e.url, type: e.type, at: e.at }));
+  }
+
+  /** v2.48.28: is URL ko ek task ke naam kar do (doosra nahi lega). */
+  claimFlowContentVideo(url) {
+    if (!url || this.flowContentClaimed.has(url)) return false;
+    this.flowContentClaimed.add(url);
+    return true;
+  }
+
+  /** v2.48.28: URL pehle hi kisi task ke naam ho chuka hai kya? */
+  isFlowContentClaimed(url) {
+    return !!url && this.flowContentClaimed.has(url);
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — D): page ke khinche hue ek
+   * flow-content jawab ke body ko harvest kitab me rakho.
+   * Darwaze saveGuard ke khalis hisaab se hain:
+   *   - URL pehle se kisi task ke naam bandha ho to bandhan
+   *     ke saath poora faisla (harvestCandidateVerdict) —
+   *     pass ho to us task ke naam ek body (pehli wali hi
+   *     rehti hai);
+   *   - bandhan abhi na hua ho to aam darwaze
+   *     (harvestGenericGates) guzarne par body URL ke naam
+   *     pakdi rehti hai (hadd 2) — bandhan bante hi
+   *     harvestForKey use asal task ke naam kar deta hai,
+   *     wahan faisla dobara poora chalta hai.
+   * Koi bhi nakami = koi candidate nahi (khamoshi se).
+   */
+  _retainHarvestBody(url, buffer, at) {
+    try {
+      if (!url || !Buffer.isBuffer(buffer) || buffer.length === 0) return false;
+      const t = Number.isFinite(at) ? at : Date.now();
+      const headerOk = downloadFetch.looksLikeVideoBuffer(buffer);
+      const floor = this.harvestFloorBytes || 0;
+      const key = this.keyByUrl.get(url) || null;
+      if (key) {
+        const v = saveGuard.harvestCandidateVerdict({
+          bound: true, byteLength: buffer.length, floorBytes: floor, headerOk
+        });
+        if (!v.accept) return false;
+        if (!this.harvestBodies.has(key)) {
+          this.harvestBodies.set(key, { url, buffer, at: t });
+        }
+        return true;
+      }
+      const g = saveGuard.harvestGenericGates({
+        byteLength: buffer.length, floorBytes: floor, headerOk
+      });
+      if (!g.ok) return false;
+      if (!this._harvestByUrl.has(url) && this._harvestByUrl.size >= 2) {
+        const firstKey = this._harvestByUrl.keys().next().value;
+        this._harvestByUrl.delete(firstKey);
+      }
+      if (!this._harvestByUrl.has(url)) {
+        this._harvestByUrl.set(url, { buffer, at: t });
+      }
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — D): is task ke liye rakha hua
+   * page-fetch body ({ url, buffer, at }) ya null. URL ke
+   * naam pakdi body bandhan banne par yahin task ke naam
+   * ho jati hai (faisla dobara poora chalta hai — bandhan
+   * ke baghair kabhi nahi milti).
+   */
+  harvestForKey(key) {
+    try {
+      if (!key) return null;
+      if (this.harvestBodies.has(key)) return this.harvestBodies.get(key);
+      const bound = this.urlByKey.get(key);
+      if (!bound || !bound.url) return null;
+      const held = this._harvestByUrl.get(bound.url);
+      if (!held) return null;
+      this._harvestByUrl.delete(bound.url);
+      const v = saveGuard.harvestCandidateVerdict({
+        bound: true,
+        byteLength: held.buffer.length,
+        floorBytes: this.harvestFloorBytes || 0,
+        headerOk: downloadFetch.looksLikeVideoBuffer(held.buffer)
+      });
+      if (!v.accept) return null;
+      const entry = { url: bound.url, buffer: held.buffer, at: held.at };
+      this.harvestBodies.set(key, entry);
+      return entry;
+    } catch (e) { return null; }
+  }
+
+  /** v2.48.36 (ROOT PACK — D): task ka harvest saaf karo (round ke aakhir par engine bulata hai). */
+  evictHarvest(key) {
+    try { if (key) this.harvestBodies.delete(key); } catch (e) {}
+  }
+
+  /**
+   * v2.48.38 (EDITOR-HARVEST PACK): engine ki khabar — ek
+   * download attempt (stage-lock holder) shuru / khatam.
+   * Harvest-audit sirf is khidki me chalta hai: kisi task
+   * ka download attempt chal raha ho. (v2.48.41: editor-
+   * khidki khatam — editor ab kabhi khulta hi nahi.)
+   */
+  setDownloadAttempt(key) {
+    try {
+      this._downloadAttemptKey = key || null;
+    } catch (e) {}
+  }
+
+  /** v2.48.38: download attempt khatam — audit ki khidki band. */
+  clearDownloadAttempt(key) {
+    try {
+      if (!key || this._downloadAttemptKey === key) this._downloadAttemptKey = null;
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.40 (INVISIBLE HARVEST PACK — CASCADE): ek
+   * address ki sab se pehli nazar darj karo. Sirf PEHLI
+   * nazar rehti hai — baad ki nazar use badal nahi
+   * sakti (warna 'sab se pehle kahan' ka matlab hi
+   * khatam ho jayega). kind: 'project-data' |
+   * 'mint-response' | 'stream-get'. Asal address sirf
+   * is kitab ki kunji hai — log me kabhi nahi jata.
+   */
+  _noteUrlFirstSeen(url, kind, at) {
+    try {
+      if (!url || typeof kind !== 'string' || !kind) return;
+      if (this._urlFirstSeen.has(url)) return;
+      if (this._urlFirstSeen.size >= 300) {
+        const firstKey = this._urlFirstSeen.keys().next().value;
+        this._urlFirstSeen.delete(firstKey);
+      }
+      this._urlFirstSeen.set(url, { at: Number.isFinite(at) ? at : Date.now(), kind });
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.40 (CASCADE): is task/address ka cascade
+   * faisla — faisla saveGuard.cascadeVerdict (khalis)
+   * se; yahan sirf kitab se khabar ikatthi hoti hai.
+   * Address na mila ho to bhi ek saaf jawab ('none').
+   */
+  cascadeForKey(key, url) {
+    try {
+      const obs = url ? (this._urlFirstSeen.get(url) || null) : null;
+      // v2.48.41: editor kabhi khulta hi nahi — editorAt
+      // hamesha null (firstSeen kabhi 'editor-open' nahi
+      // banta; preEditorUrl address dikhne par 'yes').
+      return saveGuard.cascadeVerdict({ observation: obs, editorOpenedAt: null });
+    } catch (e) {
+      return { firstSeen: 'none', preEditorUrl: 'no' };
+    }
+  }
+
+  /**
+   * v2.48.38 (EDITOR-HARVEST PACK): harvest-audit ki ek
+   * khabar engine ko — sirf tab jab audit ki khidki khuli
+   * ho (download attempt chal raha ho; v2.48.41 se
+   * editor-khidki khatam hai). Faisla
+   * saveGuard.harvestAuditOf (khalis) se: promotion asal
+   * _retainHarvestBody darj se aata hai; inkaar ki wajah
+   * gates ke hisaab se dobara gin kar di jati hai
+   * (body-fail sab se pehle).
+   */
+  _emitHarvestAudit(pend, buffer, promoted) {
+    try {
+      if (!this.onHarvestAudit) return;
+      if (!this._downloadAttemptKey) return;
+      const bodyOk = !!(buffer && buffer.length > 0);
+      let reason = 'ok';
+      if (!bodyOk) reason = 'body-fail';
+      else if (!promoted) {
+        let teacherUrl = null;
+        try { teacherUrl = this.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
+        if (teacherUrl && pend && pend.url === teacherUrl) reason = 'teacher-url';
+        else {
+          const g = saveGuard.harvestGenericGates({
+            byteLength: buffer.length,
+            floorBytes: this.harvestFloorBytes || 0,
+            headerOk: downloadFetch.looksLikeVideoBuffer(buffer)
+          });
+          reason = g.ok ? 'unbound' : g.reason;
+        }
+      }
+      let teacherUrl = null;
+      try { teacherUrl = this.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
+      const audit = saveGuard.harvestAuditOf({
+        byteLength: bodyOk ? buffer.length : 0,
+        bodyOk,
+        hash: bodyOk ? saveGuard.contentHash(buffer) : null,
+        url: pend ? pend.url : null,
+        teacherUrl,
+        promoted: !!promoted,
+        reason
+      });
+      try { this.onHarvestAudit(audit); } catch (e) {}
+    } catch (e) {}
+  }
+
+  /** v2.48.41: is pal ka timing bucket — attempt chal raha ho to 'download-attempt', warna 'render-watch'. */
+  _mainpageTimingBucket() {
+    return this._downloadAttemptKey ? 'download-attempt' : 'render-watch';
+  }
+
+  /**
+   * v2.48.41 (MAIN-PAGE HARVEST PACK): MAIN page par
+   * mukammal hue ek video-jese jawab ko mainpage kitab
+   * me darj karo + MAINPAGE-AUDIT ki khabar do. Audit
+   * sirf render-watch / download-attempt ki khidkiyon
+   * me chalti hai (armed ho ya attempt chal raha ho) —
+   * un ke bahar jawab kitab me bhi nahi jata (purane
+   * projects ki streams kitab gandi na karen).
+   * Faisla (decision):
+   *   - 'captured' — jawab kitab me pakda gaya:
+   *     flow-content ki mukammal body harvest kitab me
+   *     hai (reason 'ok'); googlevideo ka tukda kitab
+   *     me hai (reason 'partial-stream' — poora fetch
+   *     engine main page ke andar se karega);
+   *   - 'ignored' — teacher-url (teacher ka address
+   *     kitab me KABHI nahi jata — wo pichhli file
+   *     hai), body-fail (CDP body mili hi nahi — entry
+   *     phir bhi rehti hai taaki engine page-context
+   *     fetch aazma sake), already-claimed (kisi aur
+   *     task ke naam ho chuka).
+   * Entry: { url, src, host, bytes, bodyBytes, at,
+   *   timing, status, contentRange, declared, partial }
+   * — bytes behtareen kul size hai (body / content-
+   * range kul / declared / encoded me se sab se bada);
+   * asal URL sirf yaad me, log me kabhi nahi.
+   */
+  _recordMainpageSighting(pend, buffer, encodedBytes, at) {
+    try {
+      if (!pend || !pend.url) return;
+      if (!this.armed && !this._downloadAttemptKey) return;
+      const now = Number.isFinite(at) ? at : Date.now();
+      const bucket = this._mainpageTimingBucket();
+      const bodyLen = buffer && buffer.length ? buffer.length : 0;
+      const cr = typeof pend.contentRange === 'string' ? pend.contentRange : '';
+      let total = 0;
+      const m = cr.match(/\/(\d+)\s*$/);
+      if (m) total = parseInt(m[1], 10) || 0;
+      const bytes = Math.max(bodyLen, total, pend.declared || 0, encodedBytes || 0);
+      const partial = saveGuard.isPartialHarvestResponse({
+        status: pend.status, contentRange: cr,
+        byteLength: bodyLen > 0 ? bodyLen : bytes,
+        declaredLength: total > 0 ? total : (pend.declared || 0),
+        floorBytes: this.harvestFloorBytes || 0
+      });
+      // v2.48.48 (STORE-OUTCOME): googlevideo body ke
+      // store ka nateeja — store wale hisse me bharta
+      // hai, audit line ke aakhir me 'stored=' ban kar
+      // aata hai (iss se pehle store khamoshi se skip
+      // kar sakta tha aur audit phir bhi 'captured'
+      // kehta tha).
+      let bodyStored = null;
+      let bodyStoreReason = null;
+      const emit = (decision, reason) => {
+        if (!this.onMainpageAudit) return;
+        try {
+          const a = saveGuard.mainpageAuditOf({
+            host: hostOf(pend.url), bytes, src: pend.src, decision, reason,
+            // v2.48.42: kitab me darj ke pal bandhan ka
+            // haal — pakda gaya stream abhi kisi ka nahi
+            // bandha (bindReason=none); naam ho chuka ho
+            // to us task ka label.
+            bindReason: 'none',
+            claimedBy: this.mainpageClaimedByLabel(pend.url) || 'none',
+            // v2.48.48: store ka nateeja sirf googlevideo
+            // nazar par (aur sirf jab store aazmaya gaya
+            // ho — entry banne se pehle wale emits par
+            // bodyStored abhi null rehta hai).
+            ...(pend.src === 'googlevideo' && bodyStored
+              ? { bodyStored, bodyStoreReason }
+              : {})
+          });
+          a.timing = bucket;
+          a.partial = partial;
+          this.onMainpageAudit(a);
+        } catch (e) {}
+      };
+      let teacherUrl = null;
+      try { teacherUrl = this.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
+      if (teacherUrl && pend.url === teacherUrl) { emit('ignored', 'teacher-url'); return; }
+      // v2.48.43 (HOVER + PATIENCE PACK): UMMEEDWAAR
+      // DARWAZA — kul size ka behtareen pata: Content-
+      // Range ka kul, warna mukammal (na-adhoore) jawab
+      // ki asal body hi kul hai. Us ke baghair kul na
+      // maloom. Darwaza (saveGuard.mainpageCandidateGate):
+      // maloom kul hadd se chhota ho to ye stream
+      // ummeedwaar KABHI nahi banta — kitab me darj hi
+      // nahi hota, audit 'ignored / stream-too-small'
+      // (ZEROCLICK10 ki 87,478-byte wali hit isi me
+      // rukti hai).
+      const knownTotal = total > 0 ? total : (bodyLen > 0 && !partial ? bodyLen : null);
+      const gate = saveGuard.mainpageCandidateGate({
+        knownTotal,
+        src: pend.src === 'googlevideo' ? 'googlevideo' : 'flow-content',
+        contentType: typeof pend.contentType === 'string' && pend.contentType ? pend.contentType : null,
+        // v2.48.52 (gate fix): asal me aaye bytes bhi
+        // darwaze ko do — kul na maloom ho aur aaye
+        // bytes chhote hon to googlevideo nazar ab
+        // ummeedwaar nahi, too-small hai (1A wahan
+        // netload se parkhega).
+        bytes: bodyLen
+      });
+      if (!gate.candidate && gate.reason === 'stream-too-small') {
+        // v2.48.49: nazar kitab me to nahi jati (entry
+        // bilkul nahi banti — bandhan/umeedwaar ka
+        // vyavhaar waisa hi), lekin us ka URL halki
+        // too-small yaad me darj hota hai taaki engine
+        // failOut se pehle us par media-load ko EK
+        // mauqa de sake (saveGuard.
+        // mainpageTooSmallMediaPick wahi yaad parhta
+        // hai).
+        try { this._noteMainpageTooSmall(pend, bytes, now); } catch (e) {}
+        emit('ignored', 'stream-too-small'); return;
+      }
+      // v2.48.42: PEHLI nazar ka pal — dobara dikhne par
+      // entry taaza hoti hai (at aage badhta hai) lekin
+      // firstSeenAt sab se pehle wala hi rehta hai;
+      // bandhan ka faisla isi par hota hai. v2.48.43:
+      // capture tartib (seq) bhi pehli nazar ki hi
+      // rehti hai.
+      const prevIdx = this.mainpageVideos.findIndex(e => e.url === pend.url);
+      const prevEntry = prevIdx >= 0 ? this.mainpageVideos[prevIdx] : null;
+      const entry = {
+        url: pend.url,
+        src: pend.src === 'googlevideo' ? 'googlevideo' : 'flow-content',
+        host: hostOf(pend.url),
+        bytes,
+        bodyBytes: bodyLen,
+        at: now,
+        firstSeenAt: prevEntry ? (Number.isFinite(prevEntry.firstSeenAt) ? prevEntry.firstSeenAt : prevEntry.at) : now,
+        seq: prevEntry && Number.isFinite(prevEntry.seq) ? prevEntry.seq : ++this._mainpageSeq,
+        claimedBy: this.mainpageClaimedByLabel(pend.url) || null,
+        timing: bucket,
+        status: Number.isFinite(pend.status) ? pend.status : 0,
+        contentRange: cr,
+        declared: total > 0 ? total : (pend.declared || 0),
+        knownTotal,
+        contentType: typeof pend.contentType === 'string' && pend.contentType ? pend.contentType : null,
+        candidate: gate.candidate,
+        partial,
+        // v2.48.50 (item 3): ye nazar cache-served
+        // jawab ki hai kya (CDP fromDiskCache /
+        // fromPrefetchCache) — store usi raste se hua
+        // hai; ye nishan sirf hisaab ke liye hai.
+        fromCache: pend.fromCache === true,
+        // v2.48.48: googlevideo body-store ka nateeja
+        // (neeche wala hissa bharta hai) — 'yes' | 'no',
+        // na-rakhne ki wajah ke saath; flow-content par
+        // null (wahan store is kitab me hota hi nahi).
+        bodyStored: null,
+        bodyStoreReason: null
+      };
+      if (prevIdx >= 0) this.mainpageVideos.splice(prevIdx, 1);
+      this.mainpageVideos.push(entry);
+      while (this.mainpageVideos.length > 50) this.mainpageVideos.shift();
+      // v2.48.48 (CHUNK STORE + STORE-OUTCOME):
+      // googlevideo body ab TUKDON me rakhi jati hai —
+      // har nazar apne Content-Range offset ke saath
+      // ek chunk deti hai, aur mainpageBodyForUrl unhe
+      // jod kar deta hai. Is se pehle kitab fi-URL
+      // SIRF EK body rakhti thi aur header darwaza
+      // har woh tukda gira deta tha jo file ke header
+      // se shuru nahi hota tha — yani offset>0 wale
+      // range tukde KABHI rakhe hi nahi jate the aur
+      // jod (assembly) mumkin hi nahi tha
+      // (ZEROCLICK15: poori-size stream aayi, bandhi,
+      // lekin completion ke paas hamesha sirf adhoora
+      // prefix tha). Usool ab:
+      //   - header darwaza (looksLikeVideoBuffer) sirf
+      //     offset===0 wale tukde par (bina-range body
+      //     bhi offset 0 hi hai);
+      //   - fi-URL kul rakhe bytes ki hadd wahi
+      //     HARVEST_MAX_BYTES; URL ki hadd wahi 2
+      //     (poora URL nikalta hai, tukda nahi);
+      //   - pehle se dhaake hue hisse dobara nahi
+      //     rakhe jate (dobara nazar cap nahi khaati).
+      // Nateeja entry par + audit ke liye local me
+      // darj hota hai (bodyStored/bodyStoreReason).
+      if (entry.src === 'googlevideo') {
+        const offset = parseContentRangeOffset(cr);
+        if (bodyLen === 0) {
+          bodyStored = 'no'; bodyStoreReason = 'empty';
+        } else if (bodyLen > saveGuard.HARVEST_MAX_BYTES) {
+          bodyStored = 'no'; bodyStoreReason = 'size';
+        } else if (offset === 0 && !downloadFetch.looksLikeVideoBuffer(buffer)) {
+          bodyStored = 'no'; bodyStoreReason = 'header';
+        } else {
+          let rec = this._mainpageBodies.get(pend.url) || null;
+          const pieces = uncoveredChunkPieces(offset, buffer, rec ? rec.chunks : []);
+          const newBytes = pieces.reduce((s, p) => s + p.buffer.length, 0);
+          if (pieces.length > 0 && (rec ? rec.bytes : 0) + newBytes > saveGuard.HARVEST_MAX_BYTES) {
+            bodyStored = 'no'; bodyStoreReason = 'size';
+          } else {
+            // pieces khaali = poora hissa pehle se
+            // rakha hua — woh bhi 'yes' hai (body
+            // kitab me maujood hai).
+            bodyStored = 'yes';
+            if (pieces.length > 0) {
+              if (!rec) {
+                if (this._mainpageBodies.size >= 2) {
+                  const firstKey = this._mainpageBodies.keys().next().value;
+                  this._mainpageBodies.delete(firstKey);
+                }
+                rec = { chunks: [], bytes: 0, at: now };
+                this._mainpageBodies.set(pend.url, rec);
+              }
+              for (const piece of pieces) rec.chunks.push(piece);
+              rec.bytes += newBytes;
+              rec.at = now;
+            }
+          }
+        }
+        entry.bodyStored = bodyStored;
+        entry.bodyStoreReason = bodyStored === 'yes' ? null : bodyStoreReason;
+        // v2.48.50 (item 18 — SEGMENT ASSEMBLY): is
+        // URL ko us ki logical-stream group me darj
+        // karo — sirf tab jab kuch asal me store hua
+        // ho (assembly rakhe chunks se hi banti hai).
+        // Group pehli dafa 2 URL ka ho to engine ko
+        // khabar jati hai (wahan '[ROOT]
+        // mainpage-segments' line banti hai).
+        if (bodyStored === 'yes') {
+          try {
+            const segKey = segmentKeyOf(pend.url);
+            if (segKey) {
+              let segSet = this._mainpageSegments.get(segKey);
+              if (!segSet) { segSet = new Set(); this._mainpageSegments.set(segKey, segSet); }
+              const beforeSeg = segSet.size;
+              segSet.add(pend.url);
+              if (beforeSeg === 1 && segSet.size === 2 && typeof this.onSegmentNote === 'function') {
+                try { this.onSegmentNote({ key: segKey, urls: segSet.size }); } catch (e) {}
+              }
+              while (this._mainpageSegments.size > 20) {
+                this._mainpageSegments.delete(this._mainpageSegments.keys().next().value);
+              }
+            }
+          } catch (e) {}
+        }
+      }
+      // v2.48.43: darwaza na pass karne wali entry
+      // kitab me rehti hai (dobara nazar ka hisaab)
+      // lekin ummeedwaar nahi — audit 'ignored'.
+      if (!gate.candidate) { emit('ignored', gate.reason); return; }
+      if (this.isMainpageClaimed(pend.url)) { emit('ignored', 'already-claimed'); return; }
+      if (bodyLen === 0) { emit('ignored', 'body-fail'); return; }
+      emit('captured', partial ? 'partial-stream' : 'ok');
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.51 (item 3): waqt `t` par kis task ki
+   * render-khidki khuli thi — khuli khidkiyon (start
+   * <= t, done nahi) me sab se TAAZA shuru hui wali.
+   * Khidki khuli hi na ho to null. (ZEROCLICK18 ki
+   * seekh: dusri task ki khidki khulne ke baad purani
+   * nazar purani task ki nahi rehti — is liye sab se
+   * taaza khidki hi malik hai.)
+   */
+  _mainpageWindowKeyAt(t) {
+    try {
+      let bestKey = null;
+      let bestStart = -Infinity;
+      for (const [key, w] of this.mainpageWindows) {
+        if (!w || w.done) continue;
+        const st = Number.isFinite(w.start) ? w.start : 0;
+        if (st > 0 && st <= t && st >= bestStart) { bestStart = st; bestKey = key; }
+      }
+      return bestKey;
+    } catch (e) { return null; }
+  }
+
+  /**
+   * v2.48.49: 'stream-too-small' par ruki ek nazar ko
+   * halki yaad me darj karo. URL pehle se ho to sirf
+   * `at` aur sab se bade `bytes` taaza hote hain —
+   * firstSeenAt sab se pehli nazar ka hi rehta hai
+   * (bandhan wali timing bandish isi par chalti hai).
+   * Hadd 50 (sab se purani entry nikalti hai).
+   * v2.48.51 (item 3): nayi nazar par us pal khuli
+   * render-khidki ka captureKey bhi darj hota hai
+   * (task ki nishani — saveGuard ka pick isi se
+   * pehchanta hai ke nazar kis task ki hai); dobara
+   * nazar par pehli nishani hi rehti hai, bilkul
+   * firstSeenAt ki tarah. consumedBy = kis task ke
+   * pick ne ye nazar istemal kar li (null = abhi
+   * tak kisi ne nahi).
+   */
+  _noteMainpageTooSmall(pend, bytes, now) {
+    if (!pend || !pend.url) return;
+    const src = pend.src === 'googlevideo' ? 'googlevideo' : 'flow-content';
+    const prev = this._mainpageTooSmall.find(e => e.url === pend.url);
+    if (prev) {
+      prev.at = now;
+      if (Number.isFinite(bytes) && bytes > prev.bytes) prev.bytes = bytes;
+      return;
+    }
+    this._mainpageTooSmall.push({
+      url: pend.url, src, reason: 'stream-too-small',
+      bytes: Number.isFinite(bytes) ? bytes : 0,
+      firstSeenAt: now, at: now,
+      captureKey: this._mainpageWindowKeyAt(now),
+      consumedBy: null
+    });
+    while (this._mainpageTooSmall.length > 50) this._mainpageTooSmall.shift();
+  }
+
+  /** v2.48.49: too-small yaad ki nakal (engine ka media-load trigger isi par chalta hai). */
+  mainpageTooSmallSightings() {
+    try {
+      return this._mainpageTooSmall.map(e => ({ ...e }));
+    } catch (e) { return []; }
+  }
+
+  /**
+   * v2.48.51 (item 3): ek nazar ko kisi task ke pick
+   * ke naam darj karo — dusri task ka pick use dobara
+   * nahi utha sakta (ZEROCLICK18: #2 ke completion ne
+   * #1 ki rr5 nazar utha li thi).
+   */
+  mainpageMarkTooSmallConsumed(url, captureKey) {
+    try {
+      if (!url || !captureKey) return;
+      const e = this._mainpageTooSmall.find(x => x.url === url);
+      if (e) e.consumedBy = captureKey;
+    } catch (err) {}
+  }
+
+  /**
+   * v2.48.53 (RPC-BODY SCAN): batchexecute jawab ke
+   * andar mile URLs me se googlevideo addresses darj
+   * karo. Sirf PEHLI nazar darj + khabar hoti hai —
+   * wahi pata dobara aaye to khamoshi (poll jawab
+   * dohrate rehte hain). Lautta hai: naye darj hue
+   * addresses ki ginti. Ye function kabhi throw nahi
+   * karta.
+   */
+  _noteRpcVideoUrls(urls, rpcids, at) {
+    let added = 0;
+    try {
+      const list = Array.isArray(urls) ? urls : [];
+      const now = Number.isFinite(at) ? at : Date.now();
+      const fresh = [];
+      for (const u of list) {
+        if (typeof u !== 'string' || !u) continue;
+        const info = rpcVideoUrlInfo(u);
+        if (!info) continue;
+        if (this._rpcVideoSeen.has(u)) {
+          // v2.48.54 (GEMINI ZIP-REVIEW fix 2): dobara
+          // nazar — nayi entry nahi, lekin maujooda
+          // entry ki lastSeenAt taza karo (pick ki
+          // khidki isi par chalti hai; warna render se
+          // pehle dikha pata hamesha ke liye bahar ho
+          // jata tha).
+          const prev = this._rpcVideoSightings.find(x => x.url === u);
+          if (prev) {
+            prev.lastSeenAt = now;
+            // v2.48.55 (Gemini ZIP-fix se liya): nazar
+            // kis task ki khidki me aayi thi, us ki
+            // mohar — pehli nazar par na lagi ho to
+            // dobara nazar par laga do (aayinda ke
+            // saboot/attribution ke liye; pick ki
+            // sakht shartein is par nahi badalti).
+            if (!prev.captureKey) {
+              try { prev.captureKey = this._mainpageWindowKeyAt(now); } catch (e) {}
+            }
+          }
+          continue;
+        }
+        this._rpcVideoSeen.add(u);
+        const entry = {
+          url: u, clen: info.clen, itag: info.itag,
+          firstSeenAt: now, lastSeenAt: now,
+          captureKey: this._mainpageWindowKeyAt(now),
+          consumedBy: null
+        };
+        this._rpcVideoSightings.push(entry);
+        while (this._rpcVideoSightings.length > 50) this._rpcVideoSightings.shift();
+        fresh.push({ host: hostOf(u) || '', clen: info.clen, itag: info.itag });
+        added++;
+      }
+      if (fresh.length && typeof this.onRpcVideoUrls === 'function') {
+        try {
+          this.onRpcVideoUrls({
+            rpcids: Array.isArray(rpcids) ? rpcids.slice(0, 4) : [],
+            items: fresh
+          });
+        } catch (e) {}
+      }
+    } catch (e) {}
+    return added;
+  }
+
+  /** v2.48.53: rpc-body kitab ki nakal (engine ka rpc-feed pick isi par chalta hai). */
+  mainpageRpcBodySightings() {
+    try {
+      return this._rpcVideoSightings.map(e => ({ ...e }));
+    } catch (e) { return []; }
+  }
+
+  /** v2.48.53: ek rpc-body nazar ko kisi task ke pick ke naam darj karo (dobara pick nahi hogi). */
+  mainpageMarkRpcBodyConsumed(url, captureKey) {
+    try {
+      if (!url || !captureKey) return;
+      const e = this._rpcVideoSightings.find(x => x.url === url);
+      if (e) e.consumedBy = captureKey;
+    } catch (err) {}
+  }
+
+  /** v2.48.41: mainpage kitab ki nakal (purane se naye ki taraf; buffer kabhi andar nahi). */
+  mainpageEntries() {
+    try {
+      // v2.48.42: claimedBy hamesha taza — entry darj
+      // hone ke BAAD naam hua ho to bhi dikhe.
+      return this.mainpageVideos.map(e => ({
+        ...e,
+        firstSeenAt: Number.isFinite(e.firstSeenAt) ? e.firstSeenAt : e.at,
+        claimedBy: this.mainpageClaimedByLabel(e.url) || e.claimedBy || null
+      }));
+    } catch (e) { return []; }
+  }
+
+  /**
+   * v2.48.41: kisi mainpage address ke liye pehle se
+   * pakdi hui body/tukda — googlevideo ke liye
+   * _mainpageBodies se, flow-content ke liye purani
+   * harvest kitab (_harvestByUrl) se. Kuch na ho to
+   * null. Natija: { buffer, at }.
+   * v2.48.48: googlevideo taraf ab JODI HUI (assembled)
+   * body lautti hai — rakhe hue chunks ko offset 0 se
+   * sab se lambi lagi-hui dod me jod kar
+   * (assembleMainpageChunks); tanha bina-range body
+   * wahi ek-chunk wali dod hai. Bulane walon ke liye
+   * shakal bilkul wahi { buffer, at }.
+   */
+  mainpageBodyForUrl(url) {
+    try {
+      if (!url) return null;
+      const held = this._mainpageBodies.get(url);
+      let best = null;
+      if (held && Array.isArray(held.chunks) && held.chunks.length) {
+        const assembled = assembleMainpageChunks(held.chunks);
+        if (assembled && assembled.length > 0) best = { buffer: assembled, at: held.at };
+      }
+      // v2.48.50 (item 18 — SEGMENT ASSEMBLY): is URL
+      // ki logical stream ke BAAQI URLs ke rakhe
+      // chunks bhi jod kar dekho — union ki dod apni
+      // wali se lambi ho to wahi asal body hai (chunks
+      // apne Content-Range offsets par hi judte hain;
+      // bandhan/claim/faisla is se nahi badalta —
+      // faisla hamesha is bandhe URL ki jodi body par
+      // hota hai, jo ab segment-poori ho sakti hai).
+      try {
+        const segKey = segmentKeyOf(url);
+        if (segKey) {
+          const segSet = this._mainpageSegments.get(segKey);
+          if (segSet && segSet.size > 1) {
+            const allChunks = [];
+            let segAt = 0;
+            for (const segUrl of segSet) {
+              const segHeld = this._mainpageBodies.get(segUrl);
+              if (segHeld && Array.isArray(segHeld.chunks)) {
+                for (const ch of segHeld.chunks) allChunks.push(ch);
+                if (Number.isFinite(segHeld.at) && segHeld.at > segAt) segAt = segHeld.at;
+              }
+            }
+            if (allChunks.length) {
+              const union = assembleMainpageChunks(allChunks);
+              if (union && union.length > 0 && (!best || union.length > best.buffer.length)) {
+                best = { buffer: union, at: segAt || (held ? held.at : Date.now()) };
+              }
+            }
+          }
+        }
+      } catch (e) {}
+      if (best) return best;
+      const byUrl = this._harvestByUrl.get(url);
+      if (byUrl && byUrl.buffer && byUrl.buffer.length > 0) return byUrl;
+      return null;
+    } catch (e) { return null; }
+  }
+
+  /**
+   * v2.48.41: mainpage address kisi task ke naam karo (flow-content wali purani kitab me bhi nishaan).
+   * v2.48.42: claim = { key, label } diya jaye to naam
+   * kis task ka hai wo bhi darj hota hai (claim-once:
+   * pehla naam hi rehta hai, doosra kabhi nahi chadhta).
+   */
+  claimMainpageVideo(url, claim) {
+    try {
+      if (!url) return;
+      this.mainpageClaimed.add(url);
+      this.flowContentClaimed.add(url);
+      if (claim && (claim.key != null || claim.label != null) && !this.mainpageClaimedBy.has(url)) {
+        this.mainpageClaimedBy.set(url, {
+          key: claim.key != null ? String(claim.key) : null,
+          label: claim.label != null ? String(claim.label) : null
+        });
+      }
+      // v2.48.54 (GEMINI ZIP-REVIEW fix 1): ye pata ab
+      // kisi task ke naam bandh gaya — rpc-body kitab
+      // me bhi use consumed darj karo, warna agli task
+      // ka rpcfeed pick use phir ummeedwaar samajh kar
+      // 'ambiguous' ho sakta tha (ya duplicate utha
+      // sakta tha).
+      try {
+        const rpcEntry = this._rpcVideoSightings.find(x => x.url === url);
+        if (rpcEntry && !rpcEntry.consumedBy) {
+          rpcEntry.consumedBy = (typeof claim === 'string' && claim) ? claim
+            : (claim && claim.key != null ? String(claim.key) : 'claimed');
+        }
+      } catch (e2) {}
+    } catch (e) {}
+  }
+
+  /** v2.48.42: is address ko kis task ke key ne naam kiya (nahi to null). */
+  mainpageClaimedKey(url) {
+    try {
+      const info = url ? this.mainpageClaimedBy.get(url) : null;
+      return info && info.key ? info.key : null;
+    } catch (e) { return null; }
+  }
+
+  /** v2.48.42: is address ke naam ka log-label (task#) — nahi to null. */
+  mainpageClaimedByLabel(url) {
+    try {
+      const info = url ? this.mainpageClaimedBy.get(url) : null;
+      return info && info.label ? info.label : null;
+    } catch (e) { return null; }
+  }
+
+  /**
+   * v2.48.42: ek task ki khidki darj karo (us ke
+   * render-complete ka pal). Sab se pehle wala aaghaz
+   * hi rehta hai — retry round khidki ko aage nahi
+   * dhakelta. Purani khidkiyan (6 ghante se zyada)
+   * saaf hoti rehti hain taaki kitab na bhare.
+   */
+  mainpageNoteWindow(key, start) {
+    try {
+      if (!key) return;
+      const t = Number.isFinite(start) ? start : Date.now();
+      const prev = this.mainpageWindows.get(key);
+      if (!prev) this.mainpageWindows.set(key, { start: t, done: false });
+      else {
+        if (t < prev.start) prev.start = t;
+        // v2.48.54 (fix 3 ka saathi): band khidki wali
+        // task dobara koshish par aaye (Resume/sweep) to
+        // khidki phir khul jati hai — band hona sirf us
+        // marhale ke settle par tha, hamesha ke liye
+        // nahi.
+        if (prev.done) prev.done = false;
+      }
+      for (const [k, w] of this.mainpageWindows) {
+        if (k !== key && Number.isFinite(w.start) && t - w.start > 6 * 60 * 60 * 1000) {
+          this.mainpageWindows.delete(k);
+        }
+      }
+      while (this.mainpageWindows.size > 100) {
+        this.mainpageWindows.delete(this.mainpageWindows.keys().next().value);
+      }
+    } catch (e) {}
+  }
+
+  /** v2.48.42: is task ka download mukammal — khidki band. */
+  mainpageMarkWindowDone(key) {
+    try {
+      if (!key) return;
+      const w = this.mainpageWindows.get(key);
+      if (w) w.done = true;
+      else this.mainpageWindows.set(key, { start: 0, done: true });
+    } catch (e) {}
+  }
+
+  /** v2.48.42: saari darj khidkiyon ki nakal: [{ key, start, done }] (aaghaz ki tartib me). */
+  mainpageWindowsList() {
+    try {
+      return Array.from(this.mainpageWindows.entries())
+        .map(([key, w]) => ({ key, start: w.start, done: !!w.done }))
+        .sort((a, b) => a.start - b.start);
+    } catch (e) { return []; }
+  }
+
+  /**
+   * v2.48.43: TARTEEB bandhan ke liye baqi downloads
+   * ki kataar — jo khidkiyan abhi mukammal (done)
+   * nahi, un ke render-complete (start) ki tartib
+   * me: [{ key, start }]. Pehla = sab se pehle
+   * render hua baqi download.
+   */
+  mainpagePendingOrder() {
+    try {
+      return Array.from(this.mainpageWindows.entries())
+        .filter(([, w]) => w && !w.done)
+        .map(([key, w]) => ({ key, start: w.start }))
+        .sort((a, b) => a.start - b.start);
+    } catch (e) { return []; }
+  }
+
+  /**
+   * v2.48.42: MERI khidki ke alawa aur kitni khidkiyan
+   * abhi unbound (koi stream un ke naam nahi) aur
+   * na-mukammal (download baqi) hain — exclusion
+   * bandhan ki shart ka hisaab.
+   */
+  mainpagePendingOthers(ownKey) {
+    try {
+      let count = 0;
+      for (const [key, w] of this.mainpageWindows) {
+        if (key === ownKey || w.done) continue;
+        let bound = false;
+        for (const info of this.mainpageClaimedBy.values()) {
+          if (info && info.key === key) { bound = true; break; }
+        }
+        if (!bound) count++;
+      }
+      return count;
+    } catch (e) { return 0; }
+  }
+
+  /** v2.48.41: ye mainpage address pehle se kisi ke naam hai kya? */
+  isMainpageClaimed(url) {
+    try {
+      return !!url && (this.mainpageClaimed.has(url) || this.flowContentClaimed.has(url));
+    } catch (e) { return false; }
+  }
+
+  /**
+   * v2.48.36 (ROOT PACK — E): is template ke TEACHER task
+   * ka asal mint hua flow-content URL — pehle template par
+   * seekhne ke pal darj hua, warna task ke bandhe hue link
+   * se, warna capture ki apni kitab (mintTeacherUrl) se.
+   * Teeno na hon to hi null — yani same/different muqabla
+   * ab sirf tab 'n/a' hoga jab teacher ka address asal me
+   * kabhi darj hi na hua ho. URL kabhi log nahi hota.
+   */
+  teacherMintUrlForTemplate(tpl) {
+    try {
+      const t = tpl || this.mintTemplate;
+      if (t && t.teacherUrl) return t.teacherUrl;
+      if (t && t.taskKey) {
+        const bound = this.urlByKey.get(t.taskKey);
+        if (bound && bound.url && flowContent.isFlowContentVideoUrl(bound.url)) return bound.url;
+      }
+      return this.mintTeacherUrl || null;
+    } catch (e) { return null; }
+  }
+
+  /**
+   * v2.48.31 (MINT): mint watch chalu/band — v2.48.37 se
+   * ye ROUND wali kamaan hai. Round chalu karne par ring
+   * aur carries-dedupe saaf hote hain (har download round
+   * apni taaza khidki rakhta hai). Round band hone par
+   * watch sirf tab band hoti hai jab SESSION wali kamaan
+   * bhi band ho — warna session bhar jaari rehti hai
+   * (yahi ZEROCLICK4 ka asal fix hai: seekhna ab kisi ek
+   * round ki qismat par nahi chhoda gaya). Watch (asar-
+   * daar) band ho to na koi request darj hoti hai, na
+   * carries-khabar — baaki capture bilkul pehle ki tarah.
+   */
+  setMintWatch(on, taskKey) {
+    const v = !!on;
+    if (v) {
+      if (!this._mintRoundOn) {
+        // Naye round ki kitab taaza (ring + dedupe) —
+        // session watch pehle se chalu ho tab bhi round
+        // ki khidki apni saaf shuruaat rakhti hai.
+        this.mintRequests = [];
+        this._mintCarriesSeen = new Set();
+      }
+      this._mintRoundOn = true;
+      // v2.48.33 (ZEROCLICK): is round ka task — carries wala
+      // jawab aaye to mint template ISI task ke naam seekha
+      // jata hai (us ke apne ID body me dhoondhe jate hain).
+      this._mintTaskKey = taskKey || null;
+      this.mintWatch = true;
+    } else {
+      this._mintRoundOn = false;
+      // Pehchan saaf (template rehta hai — wo session bhar
+      // ke liye seekha gaya hai).
+      this._mintTaskKey = null;
+      this.mintWatch = !!this._mintSessionOn;
+    }
+  }
+
+  /**
+   * v2.48.37 (SESSION-WIDE MINT WATCH): session wali
+   * kamaan. Engine worker ka page tayyar hote hi (capture
+   * attach hone par) chalu karta hai aur account chhodne
+   * / run khatam hone par band. Is se mint template kisi
+   * bhi pal seekha ja sakta hai — round ke andar ho ya
+   * bahar. Band karne par asal watch sirf tab band hoti
+   * hai jab koi round bhi na chal raha ho.
+   */
+  setMintSessionWatch(on) {
+    const v = !!on;
+    this._mintSessionOn = v;
+    if (v) {
+      this.mintWatch = true;
+    } else {
+      this.mintWatch = !!this._mintRoundOn;
+    }
+  }
+
+  /**
+   * v2.48.37: engine ka khabar-naama — is page par is
+   * task ka render poora hua. Round ke bahar seekha gaya
+   * template isi task ke naam hota hai (sab se aakhri
+   * render-poora task hi wo media hai jis ka mint jawab
+   * is pal aana sab se zyada maqool hai).
+   */
+  noteRenderCompleted(key) {
+    if (key) {
+      this._mintLastRenderKey = key;
+      // v2.48.42: yahi pal is task ki bandhan-khidki ka
+      // aaghaz hai (engine task.renderCompletedAt yahi
+      // pal rakhta hai — dono ek hi ghari).
+      this.mainpageNoteWindow(key, Date.now());
+    }
+  }
+
+  /**
+   * v2.48.37: is pal seekha jane wala template kis task
+   * ke naam hoga — pehle round ka task (sab se pakka),
+   * warna sab se aakhri render-poora task, warna sab se
+   * taza monitored (submitted) task, warna koi nahi.
+   */
+  _mintAttributionKey() {
+    if (this._mintTaskKey) return this._mintTaskKey;
+    if (this._mintLastRenderKey) return this._mintLastRenderKey;
+    if (Array.isArray(this.submissions) && this.submissions.length) {
+      return this.submissions[this.submissions.length - 1].key || null;
+    }
+    return null;
+  }
+
+  /** v2.48.31 (MINT): `sinceMs` ke baad darj requests (mint khidki ke backfill ke liye). */
+  mintRequestsSince(sinceMs) {
+    const since = Number.isFinite(sinceMs) ? sinceMs : 0;
+    return this.mintRequests.filter(e => e.at >= since);
+  }
+
+  /**
+   * v2.48.31 (MINT): ek request ki saaf shakal darj karo —
+   * sirf watch chalu ho tab. Asal URL/query values kabhi save
+   * nahi hote (sanitizeRequestEntry sirf keys rakhta hai).
+   */
+  _noteMintRequest(reqLike) {
+    if (!this.mintWatch) return;
+    try {
+      const entry = mintWindow.sanitizeRequestEntry(reqLike);
+      if (!entry) return;
+      this.mintRequests.push(entry);
+      if (this.mintRequests.length > 600) {
+        this.mintRequests.splice(0, this.mintRequests.length - 600);
+      }
+      if (this.onMintRequest) { try { this.onMintRequest(entry); } catch (e) {} }
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.31 (MINT): ek jawab file ke server address ko le
+   * ja raha tha — engine ko khabar do, lekin ek watch me ek
+   * (method|host|path) sirf EK baar (wahi API baar-baar jawab
+   * de to log na bhare).
+   */
+  _noteMintCarries(info) {
+    if (!this.mintWatch || !info) return;
+    try {
+      const key = `${info.method}|${info.host}|${info.path}`;
+      if (this._mintCarriesSeen.has(key)) return;
+      this._mintCarriesSeen.add(key);
+      if (this.onMintCarriesUrl) { try { this.onMintCarriesUrl(info); } catch (e) {} }
+    } catch (e) {}
+  }
+
+  /** v2.48.31 (MINT): ek jawab ki Location/body jaanch — file-address mile to carries-khabar. */
+  _checkMintCarries(method, url, location, bodyText, reqTemplate) {
+    if (!this.mintWatch) return;
+    try {
+      if (!mintWindow.responseCarriesFileUrl({ location, bodyText })) return;
+      // v2.48.40 (CASCADE): ye jawab ek MINT jawab hai —
+      // us ke le aaya address 'mint-response' wali pehli
+      // nazar hai (Location wali surat me wahi address).
+      try {
+        if (location && flowContent.isFlowContentVideoUrl(location)) {
+          this._noteUrlFirstSeen(location, 'mint-response', Date.now());
+        }
+      } catch (e) {}
+      const entry = mintWindow.sanitizeRequestEntry({ method, url, at: Date.now() });
+      if (entry) this._noteMintCarries({ method: entry.method, host: entry.host, path: entry.path });
+      // v2.48.33 (ZEROCLICK): yahi woh darkhwast hai jis ka
+      // jawab file-address le aaya — use replay template ke
+      // roop me seekh lo (asal darkhwast saath aayi ho tab hi;
+      // Location-wali khabar par template nahi banta).
+      if (reqTemplate) {
+        // v2.48.36 (ROOT PACK — E): is jawab ke andar ke
+        // asal flow-content address bhi template ke saath
+        // darj karo (sirf yaad me — kabhi log nahi) —
+        // teacher ka yahi address aage ke har replay
+        // muqable ka langar hai.
+        try {
+          let carriedUrls = [];
+          if (bodyText) {
+            const buf = Buffer.isBuffer(bodyText) ? bodyText : Buffer.from(String(bodyText), 'latin1');
+            const scan = scanBatchExecuteBody(buf, this.patterns);
+            carriedUrls = (scan.allUrls || []).filter(u => flowContent.isFlowContentVideoUrl(u));
+          }
+          reqTemplate.carriedUrls = carriedUrls;
+        } catch (e) { reqTemplate.carriedUrls = []; }
+        // v2.48.40 (CASCADE): is mint jawab ke le aaye
+        // har address ki 'mint-response' pehli nazar.
+        try {
+          for (const cu of (reqTemplate.carriedUrls || [])) {
+            this._noteUrlFirstSeen(cu, 'mint-response', Date.now());
+          }
+        } catch (e) {}
+        this._learnMintTemplate(reqTemplate);
+      }
+    } catch (e) {}
+  }
+
+  /** v2.48.33 (ZEROCLICK): CDP meta (requestWillBeSent) se replay template ki shakal. */
+  _reqTemplateFromCdpMeta(meta) {
+    if (!meta || !meta.reqUrl) return null;
+    return {
+      url: meta.reqUrl,
+      method: meta.method || 'POST',
+      headers: meta.reqHeaders || {},
+      body: meta.reqPostData ? Buffer.from(meta.reqPostData, 'utf8') : null
+    };
+  }
+
+  /**
+   * v2.48.33 (ZEROCLICK): mint-call ko replay template ke roop
+   * me seekhna — status templates (v2.48.13) wali hi hifazat:
+   *   - sirf batchexecute darkhwast; body size ki hadd wahi
+   *     (patterns.maxTemplateBodyBytes) jo status templates
+   *     ki hai;
+   *   - is round ke task (_mintTaskKey) ke jaane hue ID(s)
+   *     body me dhoondhe jate hain (mintReplay ke khalis
+   *     hisaab se) — offsets aur primaryId (pehla mila ID)
+   *     darj hote hain, taaki replay ke pal teacher ke ID ki
+   *     jagah agle task ka ID rakha ja sake;
+   *   - v2.48.34: wohi ID(s) ab darkhwast ke poore URL me
+   *     bhi dhoondhe jate hain — urlIdOccurrences aur
+   *     urlPrimaryId (URL me pehla mila ID) alag darj hote
+   *     hain. ZEROCLICK live test (2026-11-03) me body me
+   *     koi id NAHI mili thi (170-byte body, idsInBody=0);
+   *     id asal me kahan safar karta hai, yehi agli jaanch
+   *     hai — is liye URL ki ginti (idsInUrl) bhi khabar me
+   *     jati hai, shakal hi, id ki qeemat kabhi nahi;
+   *   - ID body me na mile to bhi template banta hai lekin
+   *     primaryId null rehta hai — idsInBody=0 wali khabar
+   *     khud ek saboot hai (call shayad per-media replayable
+   *     nahi), aur replay us haal me khud ruk jayega;
+   *   - bilkul waisa hi template (wahi task + wahi body)
+   *     dobara aaye to khabar dobara nahi (round ke andar
+   *     wahi call kai baar jawab de sakti hai).
+   * Callback me sirf shakal jati hai — rpcids (function ke
+   * naam), body ki size, aur ID occurrences ki GINTI. Asal
+   * URL/headers/body/ID kabhi bahar nahi jate.
+   */
+  _learnMintTemplate(reqTemplate) {
+    try {
+      if (!reqTemplate || !reqTemplate.url || !Buffer.isBuffer(reqTemplate.body)) return;
+      if (!isBatchExecuteUrl(reqTemplate.url)) return;
+      const body = reqTemplate.body;
+      if (body.length === 0 || body.length > this.patterns.maxTemplateBodyBytes) return;
+      // v2.48.37: nisbat ab _mintAttributionKey se — round
+      // ke andar round ka task, round ke bahar sab se
+      // aakhri render-poora (ya monitored) task. Session
+      // watch ki wajah se seekhna ab kisi bhi pal ho
+      // sakta hai; learnContext wahi farq darj rakhta
+      // hai (andarooni kitab — log me nahi jata).
+      const inRound = !!this._mintTaskKey;
+      const key = this._mintAttributionKey();
+      // Is task ke jaane hue ID(s): submission par bandha
+      // workflowId sab se pehle, phir keyById me is key ke
+      // naam ke baaki IDs. Sirf idMinLength se lambe wale.
+      const ids = [];
+      if (key) {
+        const sub = this._submissionForKey(key);
+        if (sub && sub.id) ids.push(sub.id);
+        for (const [id, k] of this.keyById) {
+          if (k === key && !ids.includes(id)) ids.push(id);
+        }
+      }
+      const usableIds = ids.filter(id => typeof id === 'string' && id.length >= this.patterns.idMinLength);
+      const occurrences = mintReplay.findIdOccurrences(body, usableIds);
+      const primaryId = occurrences.length ? occurrences[0].id : null;
+      // v2.48.34: wohi jaane hue ID(s) ab darkhwast ke poore
+      // URL string me bhi — body me id na milne ki surat me
+      // replay ka dusra (aur shayad asal) rasta yahi hai.
+      const urlOccurrences = mintReplay.findIdOccurrencesInText(String(reqTemplate.url || ''), usableIds);
+      const urlPrimaryId = urlOccurrences.length ? urlOccurrences[0].id : null;
+      // v2.48.36 (ROOT PACK — E): teacher ka asal mint hua
+      // address — pehle is jawab ke andar se (carriedUrls),
+      // warna is task ke bandhe hue link se. Sirf yaad me
+      // rehta hai, kabhi log nahi hota.
+      let teacherUrl = null;
+      if (Array.isArray(reqTemplate.carriedUrls)) {
+        const fc = reqTemplate.carriedUrls.filter(u => flowContent.isFlowContentVideoUrl(u));
+        if (fc.length) teacherUrl = fc[0];
+      }
+      if (!teacherUrl && key) {
+        const bound = this.urlByKey.get(key);
+        if (bound && bound.url && flowContent.isFlowContentVideoUrl(bound.url)) teacherUrl = bound.url;
+      }
+      if (this.mintTemplate && this.mintTemplate.taskKey === key
+        && Buffer.isBuffer(this.mintTemplate.body) && this.mintTemplate.body.equals(body)) {
+        // Wahi template pehle se hai — khabar dobara nahi,
+        // lekin teacher ka address is dafa mila ho aur
+        // pehle ghayab raha ho to kitab poori kar do.
+        // v2.48.37: session langar (mintTeacherUrl) ab
+        // sab se TAZA mint par rehta hai (last-wins) —
+        // muqabla hamesha sab se haaliya purani video se
+        // hona chahiye, sab se pehli se nahi.
+        if (teacherUrl) {
+          if (!this.mintTemplate.teacherUrl) this.mintTemplate.teacherUrl = teacherUrl;
+          this.mintTeacherUrl = teacherUrl;
+        }
+        return;
+      }
+      this.mintTemplate = {
+        url: reqTemplate.url,
+        method: String(reqTemplate.method || 'POST').toUpperCase(),
+        headers: reqTemplate.headers || {},
+        body: Buffer.from(body),
+        at: Date.now(),
+        taskKey: key,
+        primaryId,
+        ids: occurrences.map(o => o.id),
+        idOccurrences: occurrences,
+        urlPrimaryId,
+        urlIds: urlOccurrences.map(o => o.id),
+        urlIdOccurrences: urlOccurrences,
+        teacherUrl,
+        learnContext: inRound ? 'round' : 'session'
+      };
+      // v2.48.37: session langar sab se taza mint par (last-wins).
+      if (teacherUrl) this.mintTeacherUrl = teacherUrl;
+      if (this.onMintTemplate) {
+        try {
+          this.onMintTemplate({
+            taskKey: key,
+            rpcids: rpcidsOf(reqTemplate.url),
+            bodyBytes: body.length,
+            idsInBody: mintReplay.countOccurrences(occurrences),
+            idsInUrl: mintReplay.countOccurrences(urlOccurrences)
+          });
+        } catch (e) {}
+      }
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.37 (CANDIDATE TEMPLATE): ek batchexecute
+   * darkhwast ko candidate template ke roop me darj
+   * karo — sirf tab jab us ke rpcids me 'as29s' ho (har
+   * dekhi gayi mint darkhwast me yahi rpcid raha hai).
+   * Jawab ka intezaar NAHI hota: darkhwast dikhte hi
+   * kitab me aa jati hai, sab se taza wali hi rehti hai
+   * (latest wins). Hifazat seekhe template wali hi hai:
+   * batchexecute URL, body size ki wahi hadd, asal URL/
+   * headers/body sirf is object me (log me kabhi nahi).
+   * Watch ki haalat se is ka koi lena-dena nahi — ye
+   * session bhar ka safety-net hai, is liye hi woh pal
+   * bhi pakad leta hai jab carrying jawab kabhi aaya
+   * hi na ho (ZEROCLICK4).
+   */
+  _noteMintCandidate(tpl) {
+    try {
+      if (!tpl || !tpl.url || !Buffer.isBuffer(tpl.body)) return false;
+      if (!isBatchExecuteUrl(tpl.url)) return false;
+      if (!rpcidsOf(tpl.url).includes('as29s')) return false;
+      if (tpl.body.length === 0 || tpl.body.length > this.patterns.maxTemplateBodyBytes) return false;
+      this.mintCandidateTemplate = {
+        url: tpl.url,
+        method: String(tpl.method || 'POST').toUpperCase(),
+        headers: tpl.headers || {},
+        body: Buffer.from(tpl.body),
+        at: Date.now(),
+        taskKey: null,
+        source: 'candidate'
+      };
+      return true;
+    } catch (e) { return false; }
+  }
+
+  /** v2.48.37: is pal ka template darja — 'learned' | 'candidate' | 'none'. */
+  mintTemplateSource() {
+    if (this.mintTemplate) return 'learned';
+    if (this.mintCandidateTemplate) return 'candidate';
+    return 'none';
+  }
+
+  /**
+   * v2.48.37: replay routes (B/C + verbatim probe) ke
+   * liye qabil template — seekha hua hamesha pehle,
+   * warna candidate. Natija { template, source }.
+   */
+  replayTemplate() {
+    return {
+      template: this.mintTemplate || this.mintCandidateTemplate || null,
+      source: this.mintTemplateSource()
+    };
+  }
+
+  /**
+   * v2.48.37: [ROOT] template-state line ka hisaab
+   * (saveGuard.templateStateOf — khalis). Teacher
+   * address ki maujoodgi teacherMintUrlForTemplate se
+   * aati hai (template ke baghair bhi bandha/langar
+   * wala address gina jata hai).
+   */
+  templateState() {
+    let teacherUrl = null;
+    try { teacherUrl = this.teacherMintUrlForTemplate(null); } catch (e) { teacherUrl = null; }
+    return saveGuard.templateStateOf({
+      learned: !!this.mintTemplate,
+      candidate: !!this.mintCandidateTemplate,
+      teacherUrl
+    });
+  }
+
+  /**
+   * v2.48.37: engine ki khabar — is task ka download
+   * kamyaab hua; us ke bandhe hue flow-content address
+   * ko session ka taza teacher langar bana do (template
+   * seekha gaya ho ya na ho). Address sirf yaad me
+   * rehta hai, kabhi log nahi hota.
+   */
+  noteTeacherUrlForKey(key) {
+    try {
+      if (!key) return;
+      const bound = this.urlByKey.get(key);
+      if (bound && bound.url && flowContent.isFlowContentVideoUrl(bound.url)) {
+        this.mintTeacherUrl = bound.url;
+      }
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.33 (ZEROCLICK): is task (captureKey) ka bandha hua
+   * workflowId — replay ke pal agle task ki pehchan yahi se
+   * aati hai. Na bandha ho to null (replay ruk jata hai).
+   */
+  workflowIdForKey(key) {
+    if (!key) return null;
+    const sub = this._submissionForKey(key);
+    return sub && sub.id ? sub.id : null;
+  }
+
+  /**
+   * v2.48.20: streaming batchexecute jawab ka ek tukda.
+   * Poora jama-shuda text har tukde par dobara scan hota hai
+   * taaki tukdon ki sarhad par kata URL bhi mil jaye. Pehchan
+   * ke nishan backend ke sach ('api-body') gine jate hain.
+   */
+  _ingestStreamChunk(requestId, chunkBuf, at) {
+    const meta = this._cdpBatch.get(requestId);
+    if (!meta) return [];
+    this.batchStats.streamChunks++;
+    meta.text = (meta.text || '') + chunkBuf.toString('latin1');
+    if (meta.text.length > 2 * 1024 * 1024) meta.text = meta.text.slice(-1024 * 1024);
+    // v2.48.31 (MINT): behta (streaming) jawab kabhi khatam hi
+    // nahi hota — uske jama-shuda text me file-address dikhe to
+    // wahi carries-khabar hai (dedupe ki wajah se ek hi baar).
+    // v2.48.33 (ZEROCLICK): is darkhwast ka template bhi saath.
+    try {
+      if (this.mintWatch) {
+        this._checkMintCarries(meta.method || 'POST', 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute', null, meta.text, this._reqTemplateFromCdpMeta(meta));
+      }
+    } catch (e) {}
+    if (!this.armed) return [];
+    const found = scanBatchExecuteBody(Buffer.from(meta.text, 'latin1'), this.patterns);
+    // v2.48.53 (RPC-BODY SCAN): behti (streaming)
+    // batchexecute jawab ke jama text me googlevideo
+    // address dikhe to rpc-body kitab me darj karo
+    // (dedupe URL par hai — har tukda dobara scan
+    // hota hai, khabar sirf pehli nazar ki).
+    try { this._noteRpcVideoUrls(found.allUrls || [], rpcidsOf(meta.reqUrl || ''), at); } catch (e) {}
+    const newly = [];
+    for (const id of found.ids) { const b = this._bindId(id, at); if (b) newly.push(b); }
+    for (const u of found.mediaUrls) {
+      const b = this._sightUrl(u, 'api-body', at, found.ids);
+      if (b) newly.push(b);
+    }
+    if (newly.length && !meta.bound) { meta.bound = true; this.batchStats.streamBound++; }
+    return [...new Set(newly)];
   }
 
   /** Ek response ki khabar: URL + (jab mile) body buffer. */
@@ -397,10 +3196,72 @@ class NetworkCapture {
     let found = { ids: [], mediaUrls: [] };
     if (evt.bodyBuffer && evt.bodyBuffer.length > 0) {
       this.stats.bodiesScanned++;
+      // v2.48.17 DIAGNOSTIC-2: flow.google.com ke jawabon ke
+      // andar ki substring talash (sirf ginti; data save nahi).
+      if (hostOf(evt.url) === 'flow.google.com') {
+        try {
+          const text = evt.bodyBuffer.toString('latin1');
+          this.flowBodyStats.scanned++;
+          if (text.includes('googleusercontent')) this.flowBodyStats.mediaHostHits++;
+          if (text.includes('workflowId') || text.includes('workflow_id')) this.flowBodyStats.workflowHits++;
+          if (text.includes('aisandbox')) this.flowBodyStats.aisandboxHits++;
+          // v2.48.18 DIAGNOSTIC-3: batchexecute bodies ki alag
+          // ginti — link kis roop me aata hai, yehi sawal hai.
+          if (isBatchExecuteUrl(evt.url)) {
+            if (text.includes('googleusercontent')) this.batchStats.withMediaHost++;
+            if (text.includes('videoplayback')) this.batchStats.withVideoplayback++;
+            if (text.toLowerCase().includes('workflow')) this.batchStats.withWorkflow++;
+            if (text.toLowerCase().includes('fife')) this.batchStats.withFife++;
+            if (text.toLowerCase().includes('download')) this.batchStats.withDownloadWord++;
+          }
+        } catch (e) {}
+      }
       found = scanBodyForCapture(evt.bodyBuffer, this.patterns);
+      // v2.48.19: batchexecute bodies par khaas lipat-khol scan
+      // bhi — aam scan un par andha hai (upar scanBatchExecuteBody
+      // dekho). Is se mile nishan backend ke sach maane jate hain
+      // ('api-body') kyunke ye Flow ke apne backend jawab hain.
+      if (isBatchExecuteUrl(evt.url)) {
+        try {
+          const extra = scanBatchExecuteBody(evt.bodyBuffer, this.patterns);
+          for (const id of extra.ids) if (!found.ids.includes(id)) found.ids.push(id);
+          for (const u of extra.mediaUrls) if (!found.mediaUrls.includes(u)) found.mediaUrls.push(u);
+          // v2.48.22: jawab ke ANDAR ke saaray links ki shaklon
+          // ki ginti (asal link kabhi record nahi) — asal video
+          // URL kis shakal me aata hai, ye census batayega.
+          for (const u of (extra.allUrls || [])) {
+            const shape = urlShape(u);
+            if (this.batchStats.urlShapes[shape] !== undefined || Object.keys(this.batchStats.urlShapes).length < 24) {
+              this.batchStats.urlShapes[shape] = (this.batchStats.urlShapes[shape] || 0) + 1;
+            }
+          }
+          // v2.48.53 (RPC-BODY SCAN): inhi nikle hue
+          // addresses me googlevideo ho to rpc-body
+          // kitab me darj + pehli-nazar ki khabar —
+          // Gemini brief-2 §5.1 ka sawal (kya poori
+          // file ka pata page ki darkhwast se PEHLE
+          // backend jawab me aa jata hai?) isi se
+          // pakka hoga.
+          try { this._noteRpcVideoUrls(extra.allUrls || [], rpcidsOf(evt.url), at); } catch (e) {}
+        } catch (e) {}
+      }
+      // v2.48.23: baaki (non-batchexecute) bodies ke links ki
+      // shaklon ki ginti bhi — TEST500 ka bandhan kisi aisi hi
+      // body se hua lagta hai (batchexecute census khaali thi).
+      if (!isBatchExecuteUrl(evt.url)) {
+        try {
+          const rawText = evt.bodyBuffer.toString('latin1');
+          for (const u of extractUrlsFromText(rawText, this.patterns)) {
+            const shape = urlShape(u);
+            if (this.batchStats.urlShapes[shape] !== undefined || Object.keys(this.batchStats.urlShapes).length < 24) {
+              this.batchStats.urlShapes[shape] = (this.batchStats.urlShapes[shape] || 0) + 1;
+            }
+          }
+        } catch (e) {}
+      }
       for (const id of found.ids) { this.stats.idsSeen++; this._bindId(id, at); }
       for (const u of found.mediaUrls) {
-        this._sightUrl(u, api ? 'api-body' : 'json-body', at, found.ids);
+        this._sightUrl(u, (api || isBatchExecuteUrl(evt.url)) ? 'api-body' : 'json-body', at, found.ids);
       }
     }
     return found;
@@ -450,6 +3311,16 @@ class NetworkCapture {
     for (const [url, sight] of this.sightings.entries()) {
       if (sight.claimedBy || this.keyByUrl.has(url)) continue;
       if (sight.firstSeenAt < sub.at - this.patterns.bindSlackMs) continue;
+      // v2.48.15: SIRF backend ke jawab ke ANDAR aaye URLs —
+      // 'api-body'/'json-body' wale. Page ke apne media responses
+      // ('response-url') is liye bahar hain: un me tile ke POSTER /
+      // thumbnail images bhi googleusercontent par hi aate hain,
+      // aur TEST492 (2026-11-01) me kram-bandish ne teeno tasks ko
+      // asal video ke bajaye wahi poster-type URLs de diye — fetch
+      // har baar save-verify (ffprobe) par mara, asal file phir
+      // ⋮ menu se aayi. Backend-body wala URL asal media link
+      // hone ka kagzi saboot rakhta hai; poster nahi rakhta.
+      if (sight.source !== 'api-body' && sight.source !== 'json-body') continue;
       if (!best || sight.firstSeenAt < best.sight.firstSeenAt) best = { url, sight };
     }
     if (!best) return null;
@@ -463,8 +3334,29 @@ class NetworkCapture {
       .slice(0, 5)
       .map(([h, c]) => `${h}×${c}`)
       .join(', ');
-    return { ...this.stats, topHosts, submissions: this.submissions.length, bound: this.urlByKey.size, unclaimed: [...this.sightings.values()].filter(s => !s.claimedBy).length };
+    const allHosts = [...this.hostCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .map(([h, c]) => `${h}×${c}`)
+      .join(', ');
+    const topPaths = [...this.pathCounts.entries()]
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 15)
+      .map(([h, c]) => `${h}×${c}`)
+      .join(', ');
+    return {
+      ...this.stats, topHosts, allHosts, topPaths,
+      apiRequests: Object.fromEntries(this.apiRequestCounts),
+      flowBodies: { ...this.flowBodyStats },
+      batch: {
+        ...this.batchStats,
+        rpcids: { ...this.batchStats.rpcids },
+        contentTypes: { ...this.batchStats.contentTypes }
+      },
+      ws: { ...this.wsStats, urls: [...this.wsStats.urls] },
+      submissions: this.submissions.length, bound: this.urlByKey.size,
+      unclaimed: [...this.sightings.values()].filter(s => !s.claimedBy).length
+    };
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, isApiUrl, isMediaHostUrl, isMediaUrl, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo };

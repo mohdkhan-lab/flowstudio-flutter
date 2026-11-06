@@ -13,7 +13,14 @@ class ActivityProvider with ChangeNotifier {
     // — whether or not the engine had actually connected. Only the plain
     // start line is honest; engine state is logged by the accounts
     // provider after a real health check.
-    addLog('FlowStudio Lite v2.30.3 started');
+    // The version used to be a hard-coded 'v2.30.3' literal here —
+    // frozen since that release and never part of the version-bump
+    // list, so EVERY later build kept announcing 'v2.30.3 started'
+    // in the log even though the app itself was current (the owner
+    // uninstalled/reinstalled/restarted chasing a ghost). Now it
+    // reads the one true version constant, so it can never freeze
+    // again.
+    addLog('FlowStudio Lite v${AutomationBridge.appVersion} started');
 
     // v2.29.0: the bridge's DETAIL flag now flows end-to-end into
     // addLog(isDetail:) — before this, no log was ever marked

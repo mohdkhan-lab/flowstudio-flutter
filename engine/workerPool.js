@@ -14,6 +14,8 @@ const stallWatch = require('./stallWatch');
 const downloadGuard = require('./downloadGuard');
 const tagNaming = require('./tagNaming');
 const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
 const sequenceReport = require('./sequenceReport');
 const browserMode = require('./browserMode');
 const windowStyle = require('./windowStyle');
@@ -489,8 +491,23 @@ class WorkerPool {
    * stay pending + flagged for a later Resume.
    * Returns the set of task ids this run must NOT process normally
    * (resolved rows AND rows left for a later resume).
+   *
+   * v2.48.51 (item 1 — SWEEP MODE): opts.sweepMode
+   * SIRF run-end Resume-All sweep (v2.48.50 item 14)
+   * ke liye hai. Sweep mode me ek parked row KABHI
+   * fail nahi hoti: tile na mile ya account hi na
+   * mile to row pending + needs_check hi rehti hai
+   * (parked — owner ke discard tak). ZEROCLICK18 me
+   * sweep ne isi function ke restart-wale not-found
+   * fail se 20 me se 16 parked rows FAILED kar di
+   * thin — sweep asal me tasks ke ASAL projects ki
+   * jagah account ke LATEST project me dhoondti hai,
+   * is liye 'na mila' wahan 'nahi hai' ka saboot
+   * nahi hai. Restart-recovery wala bulawa (bina
+   * opts ke) bilkul aaj jaisa hi rehta hai.
    */
-  async _reconcileNeedsCheck(checkRows, downloadFolder, settings) {
+  async _reconcileNeedsCheck(checkRows, downloadFolder, settings, opts = {}) {
+    const sweepMode = !!(opts && opts.sweepMode);
     const handled = new Set();
     const byAccount = new Map();
     for (const row of checkRows) {
@@ -503,6 +520,13 @@ class WorkerPool {
       const account = accountId ? dbService.getAccount(accountId) : null;
       if (!account) {
         for (const row of group) {
+          // v2.48.51 (item 1): sweep mode me account
+          // ghayab hona bhi fail ki wajah NAHI — row
+          // parked hi rehti hai (kept).
+          if (sweepMode) {
+            handled.add(row.id);
+            continue;
+          }
           const reason = 'Recovered after restart, but the account it was running on no longer exists. It was NOT re-submitted.';
           try { dbService.failTask(row.id, reason); } catch (e) {}
           try { dbService.setTaskNeedsCheck(row.id, 0); } catch (e) {}
@@ -589,6 +613,21 @@ class WorkerPool {
             try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
             this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
             this.log(`Recovery: Prompt #${row.prompt_index + 1}'s tile was found in the project, but its download did not complete this time. Kept pending (check-only) for a download-only retry on the next Resume — NOT failed, NOT resubmitted.`, 'warn');
+          } else if (sweepMode) {
+            // v2.48.51 (item 1): sweep mode me tile
+            // NA milna fail NAHI hai — sweep account
+            // ke LATEST project me dekhti hai, parked
+            // task ka asal project koi aur ho sakta
+            // hai (ZEROCLICK18: 16 parked rows isi
+            // galti se FAILED ho gayi thin). Row
+            // pending + needs_check (parked) hi rehti
+            // hai — upar wala unconditional
+            // setTaskNeedsCheck(0) yahan wapas 1 kar
+            // diya jata hai. failTask KABHI nahi.
+            const reason = 'End-of-run sweep: no matching video was found in the account\'s latest Flow project (this task may belong to an older project), so it stays pending (check-only / parked) for a later Resume. It was NOT failed and NOT re-submitted.';
+            try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
+            this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
+            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in the latest project during the sweep. Kept parked (pending, check-only) — NOT failed, NOT resubmitted.`, 'warn');
           } else {
             const reason = 'Interrupted by an app close. No matching video was found in the account\'s latest Flow project, so it was NOT auto-resubmitted (that could double-charge credits). Use Retry to run it again.';
             try { dbService.failTask(row.id, reason); } catch (e) {}
@@ -611,6 +650,24 @@ class WorkerPool {
     this.queuePromise = new Promise(resolve => { queueResolver = resolve; });
 
     try {
+      // v2.48.50 (item 17 — ROOT-LOG AUTO-EXPORT): is
+      // run ki tamam [ROOT] lines ek jagah jama karo —
+      // run ke aakhir me (finally) wo download folder
+      // me file ki shakal me utregi, taaki owner ko
+      // engine log haath se ikattha na karna pade.
+      // onLog ki ye lipti shakal SIRF is run ke liye
+      // hai; finally me asal onLog wapas lag jata hai.
+      const prevOnLog = this.onLog;
+      const rootLogLines = [];
+      this.onLog = (entry) => {
+        try {
+          if (entry && typeof entry.message === 'string' && entry.message.includes('[ROOT]')) {
+            rootLogLines.push(entry.message);
+          }
+        } catch (e) {}
+        return prevOnLog(entry);
+      };
+      this._rootLogExport = { lines: rootLogLines, prevOnLog, downloadFolder };
       // v2.48.3: prevent Windows sleep/idle during entire generation run
       sleepBlocker.acquire();
       this.isStopping = false;
@@ -2154,6 +2211,42 @@ class WorkerPool {
         } catch (e) {}
       }
 
+      // v2.48.50 (item 14 — RESUME-ALL SWEEP): run ke
+      // aakhir me, is run ke apne tasks ke ilawa jo
+      // PARKED (pending + needs_check) tasks reh gaye
+      // hain — purane runs ke, jin ki videos Flow me
+      // bani hui hain lekin download baqi hai — unhe
+      // bhi EK download-only mauqa milta hai: wohi
+      // check-only reconcile machinery jo run ke
+      // aaghaz me chalti hai (koi parallel system
+      // nahi), sab se purane pehle, hadd 20 tasks.
+      // Prompt KABHI dobara submit nahi hota — ye
+      // sirf download ki koshish hai (sacred rule).
+      if (!this.isStopping) {
+        try {
+          const ownIds = new Set(pendingTasks.map(t => t.id));
+          const parked = (dbService.getNeedsCheckTasks() || [])
+            .filter(r => r && r.id && !ownIds.has(r.id))
+            .slice(0, 20);
+          let saved = 0;
+          let kept = 0;
+          if (parked.length > 0) {
+            // v2.48.51 (item 1): sweep HAMESHA sweep
+            // mode me — parked row fail kabhi nahi
+            // hoti; jo save na ho wo kept (parked) hai.
+            await this._reconcileNeedsCheck(parked, downloadFolder, settings, { sweepMode: true });
+            for (const r of parked) {
+              try {
+                const row = dbService.getTask(r.id);
+                if (row && row.status === 'completed') saved++;
+                else kept++;
+              } catch (e) { kept++; }
+            }
+          }
+          this.log(`[ROOT] resume-sweep tasks=${parked.length} saved=${saved} kept=${kept}`, saved > 0 ? 'success' : 'info');
+        } catch (e) {}
+      }
+
       // v2.45.0 (honest totals — Fix List E item 3 ka dusra hissa):
       // run ke dauraan har submission ke baad balance padhne ki
       // koshish hoti hai, lekin Flow apna kata-hua number kabhi
@@ -2227,13 +2320,31 @@ class WorkerPool {
         }
         const report = sequenceReport.buildSequenceReport(allRows, {
           exists: (p) => fs.existsSync(p),
+          // v2.48.35 (GUARD): byte-identical jodiyon ki jaanch
+          // ke liye asal file ka hash — hash khud kabhi log
+          // nahi hota, sirf jodi ki khabar jati hai.
+          hashOf: (p) => {
+            try { return crypto.createHash('sha256').update(fs.readFileSync(p)).digest('hex'); } catch (e) { return null; }
+          },
           namingMode: (settings && settings.namingPattern === 'tag') ? 'tag' : 'other'
         });
         this.lastRunReport = report;
         if (report.total > 0) {
-          if (report.missing.length === 0 && report.wrongName.length === 0) {
+          // v2.48.35 (GUARD): do scenes ki files byte-identical
+          // hon to run INCOMPLETE hai — kamyaabi wali line
+          // kabhi nahi (ZEROCLICK2 ki jhooti "all 2 saved"
+          // dobara na ho).
+          if (Array.isArray(report.duplicateContent) && report.duplicateContent.length > 0) {
+            for (const pair of report.duplicateContent) {
+              const guardMsg = `[GUARD] sequence check: Prompt #${(pair.a.promptIndex || 0) + 1} and Prompt #${(pair.b.promptIndex || 0) + 1} saved identical bytes — treating the run as INCOMPLETE`;
+              this.log(guardMsg, 'error');
+              recordActivity({ category: 'generation', level: 'error', message: guardMsg });
+            }
+          }
+          if (report.missing.length === 0 && report.wrongName.length === 0
+            && (!Array.isArray(report.duplicateContent) || report.duplicateContent.length === 0)) {
             this.log(`Sequence check: all ${report.total} scene(s) are saved — nothing is missing.`, 'success');
-          } else {
+          } else if (report.missing.length > 0 || report.wrongName.length > 0) {
             let msg = `Sequence check: ${report.presentCount} of ${report.total} scene(s) saved`;
             if (report.missing.length > 0) {
               msg += ` — MISSING: ${report.missing.map(mn => mn.tag).join(', ')}`;
@@ -2323,6 +2434,24 @@ class WorkerPool {
         }
       }
     } finally {
+      // v2.48.50 (item 17): root-log ki file likho —
+      // best-effort, run ko kabhi fail nahi karti.
+      // Pehle onLog asal par wapas, phir 'Root log
+      // saved' wali aam (non-ROOT) line.
+      try {
+        const exp = this._rootLogExport;
+        if (exp) {
+          this.onLog = exp.prevOnLog;
+          if (exp.lines.length > 0 && exp.downloadFolder) {
+            const tag = this.currentBatchId || `run-${Date.now()}`;
+            const filePath = path.join(exp.downloadFolder, `fs-run-${tag}-rootlog.txt`);
+            try { fs.mkdirSync(exp.downloadFolder, { recursive: true }); } catch (e) {}
+            fs.writeFileSync(filePath, exp.lines.join('\n') + '\n');
+            this.log(`Root log saved: ${filePath}`, 'info');
+          }
+        }
+      } catch (e) {}
+      this._rootLogExport = null;
       sleepBlocker.release();
       if (queueResolver) queueResolver();
       this.queuePromise = null;

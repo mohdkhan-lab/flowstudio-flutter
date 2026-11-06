@@ -110,6 +110,134 @@ function resolveUserAgent(pageUA) {
  * output is capped so a note never becomes a paragraph.
  * Example: "node-fetch HTTP 403 · node-fetch HTTP 403 · page-fetch: Failed to fetch"
  */
+/**
+ * v2.48.15 — CONTENT GATE: buffer asal video container hai kya?
+ * TEST492 (2026-11-01) me backend se bandha link asal me tile ka
+ * poster/image nikla — fetch ne use khushi se "video" samajh kar
+ * save kiya aur har file save-verify (ffprobe) par mari (har
+ * koshish ~4s zaaya). Ab save se PEHLE sirf magic bytes dekhe
+ * jate hain: MP4/MOV par offset 4 par 'ftyp', WebM par EBML
+ * header. Image (JPEG/PNG/WebP/GIF) ya koi aur data ho to buffer
+ * wahi reject — save/ffprobe ka cycle hi nahi chalta, aur step
+ * note me wajah saaf likhi jati hai.
+ */
+function looksLikeVideoBuffer(buf) {
+  if (!buf || buf.length < 12) return false;
+  // MP4 / MOV / M4V: size(4) + 'ftyp'
+  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return true;
+  // WebM / Matroska: EBML header 1A 45 DF A3
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return true;
+  return false;
+}
+
+/**
+ * v2.48.22: buffer ke pehle bytes se asal format ka naam —
+ * sirf pehchan ke liye (log me), koi data save nahi hota.
+ */
+function classifyBufferMagic(buf) {
+  if (!buf || buf.length < 4) return 'too-small';
+  if (buf[4] === 0x66 && buf[5] === 0x74 && buf[6] === 0x79 && buf[7] === 0x70) return 'mp4';
+  if (buf[0] === 0x1a && buf[1] === 0x45 && buf[2] === 0xdf && buf[3] === 0xa3) return 'webm';
+  if (buf[0] === 0xff && buf[1] === 0xd8 && buf[2] === 0xff) return 'jpeg';
+  if (buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4e && buf[3] === 0x47) return 'png';
+  if (buf.length >= 12 && buf.toString('latin1', 0, 4) === 'RIFF' && buf.toString('latin1', 8, 12) === 'WEBP') return 'webp';
+  if (buf.toString('latin1', 0, 4) === 'GIF8') return 'gif';
+  return 'unknown';
+}
+
+/**
+ * v2.48.23: MP4 box census — mashhoor box naamon ki pehli
+ * maujoodgi ka offset (na mile to -1). Ek buffer ke andar
+ * video lipte hue hai ya tukdon (segments) me hai, ye batata
+ * hai — bina asal data save kiye.
+ */
+function findBoxOffsets(buf) {
+  const out = {};
+  const names = ['ftyp', 'styp', 'moof', 'mdat', 'moov'];
+  if (!buf || buf.length < 8) { for (const n of names) out[n] = -1; return out; }
+  const text = buf.toString('latin1');
+  for (const n of names) out[n] = text.indexOf(n);
+  return out;
+}
+
+/**
+ * v2.48.29: buffer HTML page hai kya? FASTTEST3 (2026-11-02,
+ * owner ke PC par sabit): backend se bandha ek hi asb link
+ * chaar dafa fetch hua aur har dafa wahi ~1.25MB ka HTML page
+ * (`<!doctype html`) aaya — content gate ne har dafa roka,
+ * lekin koi yaad nahi rakhi gayi ke ye link ZEHER hai. HTML ki
+ * pehchan yahan hoti hai taaki engine use run bhar ke liye
+ * poison kar sake. Sirf aaghaz ke bytes dekhe jate hain
+ * (whitespace / BOM ke baad `<!doctype`, `<html` ya `<head`).
+ */
+function looksLikeHtmlBuffer(buf) {
+  if (!buf || buf.length < 4) return false;
+  const head = buf.subarray(0, Math.min(buf.length, 512)).toString('latin1').replace(/^\uFEFF/, '').trimStart().toLowerCase();
+  return head.startsWith('<!doctype') || head.startsWith('<html') || head.startsWith('<head');
+}
+
+/**
+ * v2.48.29 (HTML-POISON): ek run ke liye chhota sa guard —
+ * jis URL ne ek dafa HTML diya, wo is run me dobara fetch
+ * NAHI hoga. Engine instance par rehta hai, capture state ke
+ * saath saaf hota hai. Pure/guarded is liye hai taaki "dusri
+ * fetch par network call NAHI hoti" wali baat bina browser ke
+ * test ho sake: bulane wala pehle isPoisoned() poochhta hai,
+ * zeher wala URL wahi ruk jata hai.
+ */
+function createPoisonGuard() {
+  const poisoned = new Set();
+  return {
+    poison(url) { if (url && typeof url === 'string') poisoned.add(url); },
+    isPoisoned(url) { return !!url && poisoned.has(url); },
+    clear() { poisoned.clear(); },
+    size() { return poisoned.size; }
+  };
+}
+
+/**
+ * v2.48.29 (QUALITY GATE): duration ke hisaab se asal
+ * "Original" file ka kam-az-kam size. FASTTEST3 me tile-src
+ * (googlevideo) wala rasta tile ki PREVIEW encode utha laya:
+ * 80,843 bytes / 3.97s ≈ 163 kbps — duration aur resolution
+ * theek, lekin asal 360p Original (flow-content.google) se
+ * ~15 guna halka (4s ≈ 1.2 MB, 10s ≈ 2.0–2.5 MB, yani
+ * ~300 KB/s). Floor jaan-boojh kar us se kahin neeche rakha
+ * hai: 60 KB/s (4s → 240 KB, 10s → 600 KB) — asal Original
+ * hamesha aaram se upar, preview hamesha neeche. Duration
+ * samajh na aaye to flat 200 KB.
+ * KHATRA (jaana-boojha trade-off): kal ko koi model/quality
+ * asal me is se chhoti Original dene lage to floor use bhi
+ * rok dega — lekin tab [QUALITY-GATE] wali log line wajah
+ * saaf dikhayegi aur task park hoga, khamoshi nahi hogi.
+ */
+const QUALITY_BYTES_PER_SECOND = 60 * 1024;
+const QUALITY_FLAT_FLOOR_BYTES = 200 * 1024;
+
+/** '4s' / '10s' / '10' / 10 → seconds (number), warna null. */
+function parseDurationSeconds(durationStr) {
+  if (typeof durationStr === 'number' && Number.isFinite(durationStr)) {
+    return durationStr > 0 && durationStr <= 3600 ? durationStr : null;
+  }
+  if (typeof durationStr !== 'string') return null;
+  const m = durationStr.trim().toLowerCase().match(/^(\d+(?:\.\d+)?)\s*s?$/);
+  if (!m) return null;
+  const sec = parseFloat(m[1]);
+  return sec > 0 && sec <= 3600 ? sec : null;
+}
+
+/** Is duration ki asal file ka kam-az-kam size (bytes). */
+function minBytesForDuration(durationStr) {
+  const sec = parseDurationSeconds(durationStr);
+  return sec ? Math.round(sec * QUALITY_BYTES_PER_SECOND) : QUALITY_FLAT_FLOOR_BYTES;
+}
+
+/** Buffer ka size us duration ki asal file jaisa hai kya? */
+function isPlausibleOriginalSize(bytes, durationStr) {
+  const n = Math.floor(Number(bytes) || 0);
+  return n >= minBytesForDuration(durationStr);
+}
+
 function summarizeFetchSteps(steps) {
   if (!Array.isArray(steps) || steps.length === 0) return '';
   const parts = [];
@@ -214,6 +342,16 @@ module.exports = {
   FALLBACK_USER_AGENT,
   resolveUserAgent,
   summarizeFetchSteps,
+  looksLikeVideoBuffer,
+  looksLikeHtmlBuffer,
+  createPoisonGuard,
+  QUALITY_BYTES_PER_SECOND,
+  QUALITY_FLAT_FLOOR_BYTES,
+  parseDurationSeconds,
+  minBytesForDuration,
+  isPlausibleOriginalSize,
+  classifyBufferMagic,
+  findBoxOffsets,
   fastFetchUrl,
   MONITOR_ROUND_CAP,
   DRAIN_ROUND_CAP,

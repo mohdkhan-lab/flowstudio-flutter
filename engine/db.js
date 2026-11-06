@@ -433,6 +433,15 @@ const dbService = {
   // ---------- Queue tasks ----------
   createBatchTasks(batchId, prompts, settings) {
     const now = Date.now();
+    // v2.48.62 (ZC30 TEST FLAG): skipFirstTaskDownload sirf
+    // ZINDA run ki settings me rehta hai — DB me bachti
+    // settings_json copy se hata do. Wajah: Resume apni
+    // settings kisi task ki settings_json se dobara banata
+    // hai; flag wahan bach jaye to us batch ka pehla task
+    // phir kabhi download na ho sake.
+    const persistedSettings = { ...(settings || {}) };
+    delete persistedSettings.skipFirstTaskDownload;
+    const settingsJson = JSON.stringify(persistedSettings);
     (Array.isArray(prompts) ? prompts : []).forEach((p, idx) => {
       // v2.3.0: a prompt item may be a plain string (old callers) or
       // { text, tag, index } from the smart parser / missing-retry.
@@ -459,7 +468,7 @@ const dbService = {
         item.text,
         promptIndex,
         item.tag.slice(0, 60),
-        JSON.stringify(settings || {}),
+        settingsJson,
         (settings && settings.duration) || '6s',
         (settings && settings.aspectRatio) || '9:16',
         (settings && settings.model) || 'Omni Flash',

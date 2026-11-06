@@ -23,7 +23,7 @@ const { usableCreditsTotal, storedCreditsTotal } = require('./engine/usableCredi
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.48.61';
+const SERVER_VERSION = '2.48.62';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -257,6 +257,7 @@ const TOOLS = [
         prompts: { type: 'array', items: { type: 'string' }, description: 'One prompt per video' },
         tag: { type: 'string', description: 'Optional tag — becomes the app\'s selected TAG (used as the file name)' },
         project: { type: 'string', description: 'Optional project name — becomes the app\'s current Project field value before the run starts' },
+        skipFirstTaskDownload: { type: 'boolean', description: 'TEST FLAG (v2.48.62, ZC30): when true, the FIRST prompt of this run is generated as usual but its download step is deliberately skipped — the task stays parked (pending + needs_check) for a later download-only Resume, no download attempt is counted and the prompt is never resubmitted. Exists to separate first-vs-latest-render effects in the download investigation; leave unset for normal runs.' },
       },
       required: ['prompts'],
     },
@@ -266,6 +267,7 @@ const TOOLS = [
       const body = { prompts };
       if (typeof args.tag === 'string' && args.tag) body.tag = args.tag;
       if (typeof args.project === 'string' && args.project) body.project = args.project;
+      if (args.skipFirstTaskDownload === true) body.skipFirstTaskDownload = true;
       return bridgeCall('POST', '/api/generation/start-ui', body);
     },
   },

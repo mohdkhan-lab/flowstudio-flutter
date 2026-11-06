@@ -21,6 +21,23 @@ const browserMode = require('./browserMode');
 const windowStyle = require('./windowStyle');
 const { sleepBlocker } = require('./sleepBlocker');
 
+/**
+ * v2.48.62 (AUTO-SWEEP FILTER): khud-ba-khud chalne wali
+ * end-of-run sweep kis parked row ko chhoye — KHALIS
+ * faisla. Jis row ke download attempts 3 ya zyada ho
+ * chuke hon, sweep use chhod deti hai: wohi nakam rows
+ * har run me dobara ghoomti rehti thin (~20 parked
+ * rows), aur asal jhijhak yahi thi. Ye rok SIRF is
+ * khud-kar sweep ke liye hai — user ke haath ka
+ * explicit Resume / reconcile is se bilkul nahi
+ * bandha (woh apne purane raste par hi jata hai).
+ */
+function autoSweepEligible(row) {
+  if (!row || typeof row !== 'object' || !row.id) return false;
+  const attempts = Number(row.download_attempts);
+  return (Number.isFinite(attempts) ? attempts : 0) < 3;
+}
+
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
 }
@@ -2383,9 +2400,18 @@ class WorkerPool {
       if (!this.isStopping) {
         try {
           const ownIds = new Set(pendingTasks.map(t => t.id));
-          const parked = (dbService.getNeedsCheckTasks() || [])
-            .filter(r => r && r.id && !ownIds.has(r.id))
-            .slice(0, 20);
+          // v2.48.62 (AUTO-SWEEP FILTER): jin rows ke
+          // download attempts khatam (3+) ho chuke hon,
+          // khud-kar sweep unhe is dafa chhod deti hai —
+          // taaki har run me wohi thaki hui rows dobara
+          // na ghoomain. Explicit Resume is rok se bilkul
+          // azaad hai (wo _reconcileNeedsCheck ko seedha
+          // apni fehrist deta hai, is filter se nahi).
+          const allParked = (dbService.getNeedsCheckTasks() || [])
+            .filter(r => r && r.id && !ownIds.has(r.id));
+          const eligible = allParked.filter(autoSweepEligible);
+          const parked = eligible.slice(0, 20);
+          const skippedExhausted = allParked.length - eligible.length;
           let saved = 0;
           let kept = 0;
           if (parked.length > 0) {
@@ -2401,7 +2427,7 @@ class WorkerPool {
               } catch (e) { kept++; }
             }
           }
-          this.log(`[ROOT] resume-sweep tasks=${parked.length} saved=${saved} kept=${kept}`, saved > 0 ? 'success' : 'info');
+          this.log(`[ROOT] resume-sweep tasks=${parked.length} saved=${saved} kept=${kept}${skippedExhausted > 0 ? ` skipped=${skippedExhausted}` : ''}`, saved > 0 ? 'success' : 'info');
         } catch (e) {}
       }
 
@@ -2636,4 +2662,4 @@ WorkerPool.buildRunStatusText = function buildRunStatusText(stats) {
   return text;
 };
 
-module.exports = { WorkerPool };
+module.exports = { WorkerPool, autoSweepEligible };

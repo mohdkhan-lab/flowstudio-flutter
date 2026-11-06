@@ -169,7 +169,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.61';
+const APP_VERSION = '2.48.62';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -1264,11 +1264,17 @@ async function startBridge() {
         // (lib/main.dart handles it beside the tag). Absent/empty
         // leaves the app's field exactly as it was.
         const project = typeof body.project === 'string' ? body.project.trim() : '';
+        // v2.48.62 (ZC30 TEST FLAG): skipFirstTaskDownload
+        // bhi saath jata hai — Dart apne agle (ek) start par
+        // ise apni /api/generation/start body me wapas
+        // bhejta hai, jahan se ye run ki settings me aata
+        // hai. Mustaqil app setting NAHI hai.
+        const skipFirstTaskDownload = body.skipFirstTaskDownload === true;
         broadcastEvent('automation-log', {
           message: `🔌 MCP • Muse started a run from the app screen (${prompts.length} prompts)`,
           level: 'info',
         });
-        broadcastEvent('mcp-ui-generate-request', { prompts, tag, project });
+        broadcastEvent('mcp-ui-generate-request', { prompts, tag, project, skipFirstTaskDownload });
         return sendJson(200, { ok: true, started: true, prompts: prompts.length });
       }
 
@@ -1401,6 +1407,12 @@ async function startBridge() {
           // v2.33.0: persisted in every task's settings_json, so a
           // later resume/redo restores the project with the run.
           project: projectName || '',
+          // v2.48.62 (ZC30 TEST FLAG): sirf tab jab is run ki
+          // darkhwast me asal true aaya ho. Run ki settings
+          // me rehta hai (engine ke download marhale ke
+          // liye) lekin settings_json me NAHI bachta —
+          // db.createBatchTasks use wahan se hata deta hai.
+          skipFirstTaskDownload: config.skipFirstTaskDownload === true,
         };
 
         // Start asynchronously via runQueue (into the project

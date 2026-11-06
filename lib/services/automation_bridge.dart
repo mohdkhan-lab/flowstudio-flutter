@@ -14,7 +14,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '2.48.61';
+  static const String appVersion = '2.48.62';
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();
@@ -828,6 +828,10 @@ class AutomationBridge {
     // downloads land in a subfolder of the output folder named for
     // the project.
     String project = '',
+    // v2.48.62 (ZC30 TEST FLAG): one-shot — the MCP in-app run
+    // may ask for the first prompt's download step to be
+    // skipped (its task stays parked). Never persisted.
+    bool skipFirstTaskDownload = false,
   }) async {
     try {
       final res = await http.post(
@@ -845,6 +849,7 @@ class AutomationBridge {
           'model': model,
           'namingPattern': namingPattern,
           'project': project,
+          'skipFirstTaskDownload': skipFirstTaskDownload,
         }),
       );
       return res.statusCode == 200;

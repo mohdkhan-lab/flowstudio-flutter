@@ -236,6 +236,87 @@ function recoveryEntryPlan(recordedUrl, registryRow) {
 }
 
 /**
+ * v2.48.62 (RESOLUTION-CONFIRM FIX): resolution button
+ * (360p/720p) CHUNA HUA hai ya nahi — KHALIS faisla, ek
+ * jaali snapshot par: { attrs, className, parentClassName }.
+ * Purani pehchan barkarar: aria-checked/aria-selected/
+ * aria-pressed === 'true', data-state === 'on', ya button
+ * ki apni class list me exact 'selected'/'active' token.
+ * v2.48.62 ki chaudi pehchan: Flow ka Material toggle
+ * haalat wali class (mat-button-toggle-checked waghera)
+ * aksar button ki class string ki mukhtalif shakal me ya
+ * PARENT wrapper par rakhta hai — is liye /checked|
+ * selected|active/i ab button + parent dono ki class
+ * string par chalta hai. className SVGAnimatedString
+ * bhi ho sakta hai — baseVal se saaf hota hai.
+ */
+function resolutionBtnSelected(snap) {
+  const s = snap && typeof snap === 'object' ? snap : {};
+  const attrs = s.attrs && typeof s.attrs === 'object' ? s.attrs : {};
+  if (attrs['aria-checked'] === 'true' || attrs['aria-selected'] === 'true'
+    || attrs['aria-pressed'] === 'true' || attrs['data-state'] === 'on') return true;
+  const clsOf = (c) => {
+    if (!c) return '';
+    if (typeof c === 'string') return c;
+    if (typeof c.baseVal === 'string') return c.baseVal;
+    try { return String(c); } catch (e) { return ''; }
+  };
+  const cls = clsOf(s.className);
+  const parentCls = clsOf(s.parentClassName);
+  const tokens = cls.split(/\s+/);
+  if (tokens.indexOf('selected') >= 0 || tokens.indexOf('active') >= 0) return true;
+  return /checked|selected|active/i.test(cls + ' ' + parentCls);
+}
+
+/**
+ * v2.48.62: readResolutionState ka page-side hissa ek
+ * SOURCE string ki shakal me — taaki page ke andar bhi
+ * WAHI resolutionBtnSelected chale jo Node me test hota
+ * hai (helper ka asal source is string me garam hokar
+ * jata hai; andar wala faisla aur test wala faisla ek
+ * hi hain). Test is source ko jaali document par chala
+ * kar asal bartav parkhta hai.
+ */
+function resolutionStateSource() {
+  return '(() => {\n'
+    + 'const resolutionBtnSelected = ' + resolutionBtnSelected.toString() + ';\n'
+    + 'const pop = Array.from(document.querySelectorAll(\'.cdk-overlay-pane, .settings-content\')).find(p => p.getClientRects().length > 0) || document.querySelector(\'.settings-content\');\n'
+    + 'if (!pop) return { found: false, selected: null };\n'
+    + 'const btns = Array.from(pop.querySelectorAll(\'button, [role="radio"], [role="tab"]\'));\n'
+    + 'const resBtns = btns.filter(b => [\'360p\', \'720p\'].includes((b.innerText || \'\').trim().toLowerCase()));\n'
+    + 'if (!resBtns.length) return { found: false, selected: null };\n'
+    + 'const snapOf = (b) => ({\n'
+    + '  attrs: {\n'
+    + '    \'aria-checked\': b.getAttribute(\'aria-checked\'),\n'
+    + '    \'aria-selected\': b.getAttribute(\'aria-selected\'),\n'
+    + '    \'aria-pressed\': b.getAttribute(\'aria-pressed\'),\n'
+    + '    \'data-state\': b.getAttribute(\'data-state\')\n'
+    + '  },\n'
+    + '  className: b.className,\n'
+    + '  parentClassName: b.parentElement ? b.parentElement.className : \'\'\n'
+    + '});\n'
+    + 'const sel = resBtns.find(b => resolutionBtnSelected(snapOf(b)));\n'
+    + 'return { found: true, selected: sel ? (sel.innerText || \'\').trim().toLowerCase() : null };\n'
+    + '})()';
+}
+
+/**
+ * v2.48.62 (ZC30 TEST FLAG — skipFirstTaskDownload):
+ * download ka marhala chhodna hai ya nahi — KHALIS
+ * faisla. Sirf tab jab run ki settings me flag asal
+ * `true` ho AUR task is run ka pehla prompt (index 0)
+ * ho. Flag sirf MCP ke flowstudio_generate_in_app
+ * wale ek-run argument se aata hai (settings me
+ * mustaqil kabhi nahi bachta — db ki settings_json
+ * wali copy se ye hata diya jata hai, taaki Resume
+ * use dobara na jaga sake).
+ */
+function skipFirstDownloadApplies(settings, task) {
+  return !!(settings && settings.skipFirstTaskDownload === true
+    && task && task.promptIndex === 0);
+}
+
+/**
  * v2.48.59 (OMNI 1.2 FLASH): Omni Flash 1.2 ki qeemat
  * PER-SECOND hai (Google Flow support page, verified
  * 2026-11-06; CREDIT-RATES-OMNI-1.2-2026-11-06.md) —
@@ -600,6 +681,18 @@ class FlowAutomationEngine {
         try {
           if (info && info.ok) this.log(`[ROOT] focus-emulation enabled`, 'info');
           else this.log(`[ROOT] focus-emulation failed`, 'warn');
+        } catch (e) {}
+      },
+      // v2.48.62 (GV-REQ LOGGER): har googlevideo playback
+      // darkhwast ki EK line — preview (~93KB) aur full
+      // (~1.3MB) darkhwastein kahan se aatin hain (redirect
+      // source + initiator) is ka saboot ZC30 me yahi dega.
+      // Asal signed URL kabhi nahi (fields capture ke
+      // gvReqFields se saaf hokar aate hain).
+      onGvReq: (f) => {
+        try {
+          if (!f) return;
+          this.log(`[ROOT] gv-req host=${f.host} clen=${f.clen} itag=${f.itag} dur=${f.dur} range=${f.range} from=${f.from} init=${f.init}`, 'info');
         } catch (e) {}
       }
     });
@@ -1568,6 +1661,14 @@ class FlowAutomationEngine {
       if (!survey || typeof survey !== 'object') survey = { hasNewBtn: false, links: [] };
       const decision = galleryEntryDecision(survey, preferFresh, targetMs, Date.now());
       if (decision.source) source = decision.source;
+      // v2.48.62 (GALLERY ENTRY LOG): fresh run ka faisla
+      // maujooda project par gir jaye to wo sach log me
+      // NAAM se aaye — pehle ye fallback bilkul khamosh
+      // tha aur kisi ko pata nahi chalta tha ke naya
+      // project khula ya purana (zc27 teapot wala sawal).
+      if (preferFresh && decision.kind === 'link') {
+        this.log(`[ROOT] gallery-entry fresh-fallback index=${decision.index} source=${decision.source || '-'}`, 'info');
+      }
       if (decision.kind === 'link' && survey.links[decision.index]) lastHref = survey.links[decision.index].href;
       let actionResult = 'none-found';
       if (decision.kind !== 'none') {
@@ -1591,7 +1692,16 @@ class FlowAutomationEngine {
           if (clicked) actionResult = decision.kind === 'new' ? 'clicked-new-project-button' : 'clicked-existing-project-link';
         } catch (e) {}
       }
-      this.log(`Attempt ${attempt}/3 to enter the project — ${actionResult === 'none-found' ? 'no New Project button or project link was found' : 'button/link found and clicked'}`, 'info');
+      // v2.48.62 (GALLERY ENTRY LOG): line ab ASAL action
+      // bolti hai — New Project par click hua ya maujooda
+      // project ke link par, aur kis source se. Pehle dono
+      // surat me ek hi dhundli si line chhapti thi, jis se
+      // fresh-fallback nazar hi nahi aata tha.
+      if (actionResult === 'none-found') {
+        this.log(`Attempt ${attempt}/3 to enter the project — no New Project button or project link was found`, 'info');
+      } else {
+        this.log(`Attempt ${attempt}/3 to enter the project — clicked (action=${actionResult} source=${decision.source || '-'})`, 'info');
+      }
       let entered = false;
       for (let w = 0; w < 10; w++) {
         await sleep(this.galleryEntryPollMs || 1000);
@@ -2469,15 +2579,12 @@ class FlowAutomationEngine {
         if (modeType === 'Video') {
           this.log(`Selecting the Resolution: [${genResolution}]…`, 'info');
           const readResolutionState = async () => {
-            return await this.page.evaluate(() => {
-              const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content');
-              if (!pop) return { found: false, selected: null };
-              const btns = Array.from(pop.querySelectorAll('button, [role="radio"], [role="tab"]'));
-              const resBtns = btns.filter(b => ['360p', '720p'].includes((b.innerText || '').trim().toLowerCase()));
-              if (!resBtns.length) return { found: false, selected: null };
-              const sel = resBtns.find(b => b.getAttribute('aria-checked') === 'true' || b.getAttribute('aria-selected') === 'true' || b.getAttribute('aria-pressed') === 'true' || b.getAttribute('data-state') === 'on' || b.classList.contains('selected') || b.classList.contains('active'));
-              return { found: true, selected: sel ? (sel.innerText || '').trim().toLowerCase() : null };
-            });
+            // v2.48.62: page ke andar WAHI khalis helper
+            // (resolutionBtnSelected) chalta hai jo Node me
+            // test hota hai — us ka source resolutionStateSource
+            // me garam hokar jata hai. Chaudi pehchan: haalat
+            // wali class button par ho ya us ke parent par.
+            return await this.page.evaluate(resolutionStateSource());
           };
           let resState = await readResolutionState();
           if (!resState.found) {
@@ -2496,7 +2603,26 @@ class FlowAutomationEngine {
             if (resState.selected) {
               this.log(`Resolution confirmed on Flow: [${resState.selected}] (needed [${genResolution}])`, resState.selected === genResolution ? 'success' : 'warn');
             } else {
-              this.log('The panel\'s resolution could not be confirmed after selecting — the run continues with the resolution Flow shows.', 'warn');
+              // v2.48.62 (FALLBACK): panel ke button par
+              // pehchan phir bhi na mile to settings pill ka
+              // apna text dekho — wahi pill jo is function
+              // ke aakhir me bhi padha jata hai ('Video ·
+              // 360p · 4s …'). Us me asal resolution maujood
+              // ho to wahi tasdeeq hai; warna purani
+              // chetaavni barkarar.
+              let pillConfirmed = false;
+              try {
+                const pillText = await this.page.evaluate(() => {
+                  const pill = document.querySelector('.settings-trigger-button, button.settings-trigger-button');
+                  return pill ? (pill.innerText || '').replace(/\n/g, ' ').trim() : null;
+                });
+                if (pillText && pillText.includes(genResolution)) pillConfirmed = true;
+              } catch (e) {}
+              if (pillConfirmed) {
+                this.log(`Resolution confirmed on Flow: [${genResolution}]`, 'success');
+              } else {
+                this.log('The panel\'s resolution could not be confirmed after selecting — the run continues with the resolution Flow shows.', 'warn');
+              }
             }
           }
         }
@@ -3351,7 +3477,10 @@ class FlowAutomationEngine {
    * Tile SIRF task ki apni claimed pehchan se locate hoti hai
    * (_resolveTileIndexForTask — fingerprint-first), kisi aur
    * tile ki khabar kabhi nahi aati. Lautta hai:
-   * { pctGone, url|null, via|null } ya null (tile/page nahi).
+   * { pctGone, url|null, via|null, videoWidth, videoHeight,
+   * duration, readyState } ya null (tile/page nahi).
+   * (v2.48.62: aakhri chaar — tile-media dims, <video> na ho
+   * to null.)
    */
   async _readTileMediaState(task, fallbackIdx) {
     try {
@@ -3367,18 +3496,28 @@ class FlowAutomationEngine {
         const pctGone = !/\b(\d{1,2})%/.test(text);
         const usable = (u) => (u && (u.startsWith('http') || u.startsWith('blob:'))) ? u : null;
         const vid = target.querySelector('video');
+        // v2.48.62 (TILE-MEDIA DIMS): <video> ki asal
+        // resolution / duration / readyState bhi har
+        // jawab ke saath — log se sabit ho sakega ke
+        // ~93KB wala preview chhota transcode hai ya
+        // poori file ka kata hua hissa (Gemini §6.5).
+        const media = { videoWidth: null, videoHeight: null, duration: null, readyState: null };
         if (vid) {
+          if (Number.isFinite(vid.videoWidth) && vid.videoWidth > 0) media.videoWidth = vid.videoWidth;
+          if (Number.isFinite(vid.videoHeight) && vid.videoHeight > 0) media.videoHeight = vid.videoHeight;
+          if (Number.isFinite(vid.duration)) media.duration = Math.round(vid.duration * 100) / 100;
+          if (Number.isFinite(vid.readyState)) media.readyState = vid.readyState;
           const fromSrc = usable(vid.src);
-          if (fromSrc) return { pctGone, url: fromSrc, via: 'video src' };
+          if (fromSrc) return { pctGone, url: fromSrc, via: 'video src', ...media };
           const fromCurrent = usable(vid.currentSrc);
-          if (fromCurrent) return { pctGone, url: fromCurrent, via: 'video currentSrc' };
+          if (fromCurrent) return { pctGone, url: fromCurrent, via: 'video currentSrc', ...media };
         }
         const srcEl = target.querySelector('source');
         if (srcEl) {
           const fromSource = usable(srcEl.src);
-          if (fromSource) return { pctGone, url: fromSource, via: 'source src' };
+          if (fromSource) return { pctGone, url: fromSource, via: 'source src', ...media };
         }
-        return { pctGone, url: null, via: null };
+        return { pctGone, url: null, via: null, ...media };
       }, idx);
     } catch (e) {
       return null;
@@ -5751,6 +5890,22 @@ class FlowAutomationEngine {
    * stall every later round behind it.
    */
   async downloadTaskMedia(task, downloadFolder, settings, tileIndexHint) {
+    // v2.48.62 (ZC30 TEST FLAG — skipFirstTaskDownload):
+    // is run ke pehle prompt ka download marhala jaan-
+    // boojh kar chhoda gaya hai (ZC30 ka 'first vs latest
+    // vs interference' tajurba). Round kataar me dakhil
+    // hi NAHI hota: koi download attempt NAHI gina jata
+    // (ledger ka roundSettled kabhi nahi chalta), prompt
+    // dobara submit NAHI hota, aur task.downloaded ko
+    // haath NAHI lagta — natija { ok:false, skipped:true }
+    // hai, jise monitor 'download-failed' se alag pehchan
+    // kar task ko imaandari se parked (pending +
+    // needs_check) rakhta hai.
+    if (skipFirstDownloadApplies(settings, task)) {
+      const n = (task.promptIndex || 0) + 1;
+      this.log(`[ROOT] [Prompt #${n}] download SKIPPED by test flag (skipFirstTaskDownload) — task stays parked; prompt NOT resubmitted; no download attempt counted`, 'info');
+      return { ok: false, skipped: true, attempts: [] };
+    }
     const run = () => this._downloadTaskMediaRound(task, downloadFolder, settings, tileIndexHint);
     const chained = (this._downloadRoundChain || Promise.resolve()).then(run, run);
     this._downloadRoundChain = chained.then(() => undefined, () => undefined);
@@ -6001,6 +6156,11 @@ class FlowAutomationEngine {
       }
       const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
       if (idx < 0) return; // tile not locatable — the strategies report it, as today
+      // v2.48.62 (TILE-MEDIA DIMS): is attempt ki pehli
+      // tile-state reading par <video> ki asal shakl ek
+      // dafa log me — dims/duration/readyState. Poll kai
+      // dafa ghumta hai, line sirf pehli reading par.
+      let dimsLogged = false;
       // v2.48.24: 25s -> 8s. TEST499/500 me bandhan ~1s me aa
       // gaya tha; TEST501 me 25s me bhi nahi aaya — lamba
       // intezaar sirf menu wale pakke raaste ko der karta hai.
@@ -6042,6 +6202,18 @@ class FlowAutomationEngine {
         // sirf src maujood (% abhi hai) = purani ready wali
         // break, rawaj bilkul pehle jaisa.
         const state = await this._readTileMediaState(task, idx);
+        // v2.48.62 (TILE-MEDIA DIMS): pehli reading ki
+        // ek line (upar wala dimsLogged jhanda).
+        if (state && !dimsLogged) {
+          dimsLogged = true;
+          try {
+            const w = state.videoWidth != null ? state.videoWidth : '-';
+            const h = state.videoHeight != null ? state.videoHeight : '-';
+            const d = state.duration != null ? state.duration : '-';
+            const r = state.readyState != null ? state.readyState : '-';
+            this.log(`[ROOT] tile-media dims=${w}x${h} dur=${d} ready=${r}`, 'info');
+          } catch (e) {}
+        }
         if (state && state.url) {
           const fastUrl = downloadFetch.fastFetchUrl(state);
           if (fastUrl) {
@@ -11089,7 +11261,27 @@ class FlowAutomationEngine {
                 this.log(`[Prompt #${task.promptIndex + 1}] A problem came up in the download attempt — ${t.plain}.`, 'warn', { rawError: t.raw });
               }
 
-              if (!dl.ok && !task.downloaded) {
+              if (dl.skipped) {
+                // v2.48.62 (ZC30 TEST FLAG): render mukammal
+                // hai, download jaan-boojh kar chhoda gaya —
+                // task NA downloaded hai NA failed. Monitor
+                // yahin settle karta hai (completed), aur
+                // pool ki download-deferred kitab row ko
+                // pending + needs_check park kar deti hai
+                // (download-only Resume ke liye) — wahi
+                // imaandaar haalat jo ek deferred download
+                // ki hoti hai. onTaskFailed NAHI bulaya
+                // jata: ye nakami hai hi nahi.
+                task.completed = true;
+                task.downloadSkipped = true;
+                try {
+                  this.onTaskDownloadDeferred(task, {
+                    targetUrl: task.completedVideoUrl,
+                    cookieHeader: task.preCapturedCookieHeader,
+                    userAgent: task.preCapturedUserAgent
+                  });
+                } catch (e) {}
+              } else if (!dl.ok && !task.downloaded) {
                 task.downloaded = true;
                 task.failed = true;
                 // v2.7.0 (FIX 2): stage LAZMI hai — render pura hua
@@ -11167,4 +11359,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, omni12CreditsPerVideo, modelNameParts, matchModelOption };

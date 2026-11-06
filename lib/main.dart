@@ -177,6 +177,12 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
     if (project.isNotEmpty) {
       generator.setProjectName(project);
     }
+    // v2.48.62 (ZC30 TEST FLAG): arm the one-shot skip-first-
+    // download flag for THIS run only — startGeneration
+    // captures and clears it before anything else.
+    if (data['skipFirstTaskDownload'] == true) {
+      generator.armSkipFirstTaskDownloadOnce();
+    }
     generator.startGeneration(
       accounts: context.read<AccountsProvider>(),
       activity: context.read<ActivityProvider>(),

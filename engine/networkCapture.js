@@ -561,6 +561,57 @@ function segmentKeyOf(url) {
 }
 
 /**
+ * v2.48.62 (GV-REQ LOGGER): ek CDP Network.requestWillBeSent
+ * event (googlevideo playback wali darkhwast) ke woh hisse
+ * jo '[ROOT] gv-req' line me chhapte hain — KHALIS formatter,
+ * koi capture haalat nahi chhoota. Asal signed URL kabhi
+ * nahi lautta: sirf host, chand ghair-raaz query hisse
+ * (clen/itag/dur/range), redirect ka urlShape + status,
+ * aur darkhwast shuru karne wale ka naam (initiator type +
+ * sab se upar wali stack frame). Jo hissa ghayab ho us ki
+ * jagah '-' (query hisse) ya 'none' (from/init/range).
+ * ZC30 ka sawal yahi hai: preview (~93KB) aur full (~1.3MB)
+ * darkhwastein kahan se aati hain — redirect ka source aur
+ * initiator hi in ka farq bata sakta hai.
+ */
+function gvReqFields(e) {
+  const out = { host: '-', clen: '-', itag: '-', dur: '-', range: 'none', from: 'none', init: 'none' };
+  try {
+    const ev = e && typeof e === 'object' ? e : {};
+    const url = ev.request && typeof ev.request.url === 'string' ? ev.request.url : '';
+    if (url) {
+      out.host = hostOf(url) || '-';
+      try {
+        const q = new URL(url).searchParams;
+        const clean = (v) => (v ? String(v).replace(/\s+/g, '').slice(0, 40) : '');
+        if (clean(q.get('clen'))) out.clen = clean(q.get('clen'));
+        if (clean(q.get('itag'))) out.itag = clean(q.get('itag'));
+        if (clean(q.get('dur'))) out.dur = clean(q.get('dur'));
+        if (clean(q.get('range'))) out.range = clean(q.get('range'));
+      } catch (err) {}
+    }
+    const rr = ev.redirectResponse;
+    if (rr && typeof rr.url === 'string' && rr.url) {
+      const st = Number.isFinite(rr.status) ? Math.floor(rr.status) : '-';
+      out.from = `${urlShape(rr.url)} status=${st}`;
+    }
+    const ini = ev.initiator;
+    if (ini && typeof ini === 'object') {
+      let s = String(ini.type || 'unknown').replace(/\s+/g, ' ').trim() || 'unknown';
+      const frames = ini.stack && Array.isArray(ini.stack.callFrames) ? ini.stack.callFrames : null;
+      const top = frames && frames.length ? frames[0] : null;
+      if (top && typeof top === 'object') {
+        const fn = String(top.functionName || 'anon').replace(/\s+/g, ' ').trim() || 'anon';
+        const ln = Number.isFinite(top.lineNumber) ? Math.floor(top.lineNumber) : '-';
+        s += `:${fn}@${ln}`;
+      }
+      out.init = s;
+    }
+  } catch (err) {}
+  return out;
+}
+
+/**
  * v2.48.53 (RPC-BODY SCAN): ek googlevideo videoplayback
  * URL ke query se us ki pehchan (khalis): clen = server
  * ka elaan-shuda kul size (bytes), itag = encode ki
@@ -701,6 +752,11 @@ class NetworkCapture {
     // saboot hai, shor nahi.
     this.onFetchRwRewrite = typeof opts.onFetchRwRewrite === 'function' ? opts.onFetchRwRewrite : null;
     this._fetchRwLogCount = 0;
+    // v2.48.62 (GV-REQ LOGGER): har googlevideo playback
+    // darkhwast ki ek line engine ko — gvReqFields(e) ke
+    // saaf hisse (host/clen/itag/dur/range/from/init);
+    // asal signed URL kabhi nahi jata.
+    this.onGvReq = typeof opts.onGvReq === 'function' ? opts.onGvReq : null;
     // v2.48.53 (FOCUS EMULATION): page ke CDP client
     // par focus-emulation lagne ki khabar — engine
     // '[ROOT] focus-emulation enabled/failed' line
@@ -708,9 +764,11 @@ class NetworkCapture {
     this.onFocusEmulation = typeof opts.onFocusEmulation === 'function' ? opts.onFocusEmulation : null;
     this._focusEmuClient = null;
     // Rewrite ki haalat: _fetchRwDisabled ek dafa
-    // band to is capture (poore session) ke liye band
-    // — reset() use saaf NAHI karta (band hona run-
-    // bhar ka faisla hai); _fetchRwClient woh CDP
+    // band to is LAUNCH ke liye band — v2.48.62 se
+    // reset() (har launch par chalta hai) in chaaron
+    // ko saaf karta hai, taaki ek account par band
+    // hua rewrite dusre account par band na reh jaye
+    // (neeche reset() dekho); _fetchRwClient woh CDP
     // client hai jis par rewrite is pal chalu hai.
     this._fetchRwDisabled = false;
     this._fetchRwClient = null;
@@ -723,6 +781,19 @@ class NetworkCapture {
   }
 
   reset() {
+    // v2.48.62 (RESET FIX — Gemini Brief #3 audit): fetch-
+    // rewrite ki haalat bhi har launch par saaf. Pehle ye
+    // chaar hisse sirf constructor me bante the aur reset()
+    // inhe kabhi nahi chhoota tha — ek account par
+    // _disableFetchRw('continue-failed') lag jaye to Route
+    // 1B usi engine instance ke AGLE account par bhi band
+    // rehta tha. Launch ka matlab hi saaf haalat hai
+    // (flowAutomation ki launch wali comment bhi yahi
+    // kehti hai).
+    this._fetchRwDisabled = false;
+    this._fetchRwClient = null;
+    this._fetchRwLogCount = 0;
+    this._focusEmuClient = null;
     this.submissions = [];       // [{ key, at, id|null }] — kram me
     this.keyById = new Map();     // workflowId -> taskKey
     this.urlByKey = new Map();    // taskKey -> { url, via, at }
@@ -1188,6 +1259,17 @@ class NetworkCapture {
       // ke baad har jawab ka body de deta hai. Body wahi purani
       // ingest pipeline me jata hai (pehchan ke usool same).
       client.on('Network.requestWillBeSent', (e) => {
+        // v2.48.62 (GV-REQ LOGGER): googlevideo playback
+        // darkhwast ki pehchan wali ek line — SIRF mushahida
+        // hai (observer): apni try/catch me band, handler ke
+        // asal bartav ko kabhi nahi badalta, aur asal signed
+        // URL kabhi log nahi hota (gvReqFields sirf host +
+        // ghair-raaz hisse deta hai).
+        try {
+          if (e && e.request && isGooglevideoPlaybackUrl(e.request.url) && typeof this.onGvReq === 'function') {
+            this.onGvReq(gvReqFields(e));
+          }
+        } catch (err) {}
         try {
           if (e && e.request && isBatchExecuteUrl(e.request.url)) {
             this._cdpBatch.set(e.requestId, {
@@ -3359,4 +3441,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, gvReqFields, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo };

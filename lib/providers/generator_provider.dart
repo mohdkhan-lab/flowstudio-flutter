@@ -46,6 +46,17 @@ class GeneratorProvider with ChangeNotifier {
   // It is a property of the RUN, not of the prompt text — editing
   // prompts never clears it.
   String _projectName = '';
+  // v2.48.62 (ZC30 TEST FLAG): one-shot — armed by the MCP
+  // in-app generate request, consumed (captured + cleared) by
+  // the very next startGeneration call, so it can never leak
+  // into a later manual run. Never persisted anywhere.
+  bool _skipFirstTaskDownloadOnce = false;
+
+  /// v2.48.62: arm the one-shot skip-first-download test flag
+  /// for the next run started from this provider.
+  void armSkipFirstTaskDownloadOnce() {
+    _skipFirstTaskDownloadOnce = true;
+  }
   // v2.27.0: real completion times of THIS session, for the Activity
   // stats line ("Today: M videos · Spent today: C credits").
   final List<DateTime> _completionTimes = [];
@@ -652,6 +663,12 @@ class GeneratorProvider with ChangeNotifier {
     required ActivityProvider activity,
     required SettingsProvider settings,
   }) async {
+    // v2.48.62 (ZC30 TEST FLAG): the one-shot flag is captured
+    // and cleared FIRST — before every guard — so an armed
+    // flag is spent by this call whatever happens next, and
+    // can never leak into a later manual run.
+    final skipFirstTaskDownload = _skipFirstTaskDownloadOnce;
+    _skipFirstTaskDownloadOnce = false;
     // v2.30.3: re-entry guard. The Generate button stays enabled
     // while paused, and a second start used to re-submit EVERY
     // prompt (including finished ones) to the engine. A run must
@@ -720,6 +737,7 @@ class GeneratorProvider with ChangeNotifier {
       model: settings.settings.model,
       namingPattern: settings.settings.namingPattern,
       project: _projectName.trim(),
+      skipFirstTaskDownload: skipFirstTaskDownload,
     );
 
     if (!success) {

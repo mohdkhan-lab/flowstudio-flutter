@@ -48,9 +48,9 @@ const {
   cascadeVerdict
 } = require('../engine/saveGuard');
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
-const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo } = require('../engine/networkCapture');
+const { NetworkCapture, isGooglevideoPlaybackUrl, gvReqFields, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
-const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
+const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
 const cookiesDb = require('../engine/cookiesDb');
 
@@ -4485,6 +4485,199 @@ async function main() {
     eq('X61 an unread (null) balance contributes 0', usableCreditsTotal([{ status: 'Ready', credits: null }]), 0);
     eq('X61 a null balance is not stored either', storedCreditsTotal([{ status: 'Ready', credits: null }]), 0);
     eq('X61 a dead-session balance is stored but never usable', usableCreditsTotal([{ status: 'Need Login', credits: 42 }]), 0);
+  }
+
+  // ---- X62: v2.48.62 PACK ---------------------------------------
+  // (1) gv-req logger fields, (2) netCapture reset() fix,
+  // (3) gallery-entry action logging (source pins), (4) auto-
+  // sweep exhausted-rows filter, (5) resolution-confirm fix,
+  // (6) tile-media dims (source pins — the reader needs a live
+  // page), (7) skipFirstTaskDownload: the task stays honestly
+  // parked — round never runs, no attempt counted, downloaded
+  // never set — and the flag never persists into settings_json.
+
+  // X62-RESET: ek launch par band hua fetch-rewrite agle
+  // launch (reset) ke baad band NAHI rehta.
+  {
+    const cap = new NetworkCapture({});
+    cap._disableFetchRw('test-reason');
+    eq('X62-RESET _disableFetchRw sets the disabled flag', cap._fetchRwDisabled, true);
+    cap._fetchRwClient = { fakeClient: true };
+    cap._fetchRwLogCount = 7;
+    cap._focusEmuClient = { fakeClient: true };
+    cap.reset();
+    eq('X62-RESET reset() clears _fetchRwDisabled', cap._fetchRwDisabled, false);
+    eq('X62-RESET reset() clears _fetchRwClient', cap._fetchRwClient, null);
+    eq('X62-RESET reset() clears _fetchRwLogCount', cap._fetchRwLogCount, 0);
+    eq('X62-RESET reset() clears _focusEmuClient', cap._focusEmuClient, null);
+  }
+
+  // X62-GVREQ: fields saaf hain, asal signed URL kabhi nahi.
+  {
+    const ev = {
+      request: { url: 'https://rr3---sn-abc123.googlevideo.com/videoplayback?expire=1899999999&itag=22&clen=1310720&dur=10.5&range=0-1023&signature=TOPSECRET' },
+      redirectResponse: { url: 'https://rr1---sn-abc123.googlevideo.com/videoplayback?itag=22&signature=TOPSECRET', status: 302 },
+      initiator: { type: 'script', stack: { callFrames: [{ functionName: 'fetchSegment', lineNumber: 42, columnNumber: 7 }] } },
+    };
+    const f = gvReqFields(ev);
+    eq('X62-GVREQ host is the bare hostname', f.host, 'rr3---sn-abc123.googlevideo.com');
+    eq('X62-GVREQ clen rides along', f.clen, '1310720');
+    eq('X62-GVREQ itag rides along', f.itag, '22');
+    eq('X62-GVREQ dur rides along', f.dur, '10.5');
+    eq('X62-GVREQ range rides along', f.range, '0-1023');
+    ok('X62-GVREQ from carries the redirect status', f.from.includes('status=302'));
+    ok('X62-GVREQ from uses the shape (path, no query)', f.from.includes('videoplayback') && !f.from.includes('itag'));
+    eq('X62-GVREQ init names the top frame', f.init, 'script:fetchSegment@42');
+    ok('X62-GVREQ the signed secret never appears', !JSON.stringify(f).includes('TOPSECRET'));
+    const bare = gvReqFields({ request: { url: 'https://rr3---sn-abc123.googlevideo.com/videoplayback' } });
+    eq('X62-GVREQ a bare request has clen -', bare.clen, '-');
+    eq('X62-GVREQ a bare request has itag -', bare.itag, '-');
+    eq('X62-GVREQ a bare request has range none', bare.range, 'none');
+    eq('X62-GVREQ no redirect is from none', bare.from, 'none');
+    eq('X62-GVREQ no initiator is init none', bare.init, 'none');
+    const empty = gvReqFields(null);
+    eq('X62-GVREQ a null event is all placeholders', `${empty.host}|${empty.clen}|${empty.from}|${empty.init}`, '-|-|none|none');
+    const faSrc62 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X62-GVREQ the engine logs the gv-req line', faSrc62.includes('[ROOT] gv-req host=${f.host}'));
+  }
+
+  // X62-GALLERY: faisla waisa ka waisa, log ab action bolta hai.
+  {
+    const faSrc62 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X62-GALLERY the fresh-fallback is named in the log', faSrc62.includes('[ROOT] gallery-entry fresh-fallback index=${decision.index}'));
+    ok('X62-GALLERY the attempt line carries action and source', faSrc62.includes('clicked (action=${actionResult} source=${decision.source || \'-\'})'));
+    ok('X62-GALLERY the old ambiguous line is gone', !faSrc62.includes('button/link found and clicked'));
+  }
+
+  // X62-SWEEP: 3+ attempts wali rows khud-kar sweep se bahar;
+  // explicit Resume is faisle se nahi bandha (wo apni fehrist
+  // seedha _reconcileNeedsCheck ko deta hai).
+  {
+    const { autoSweepEligible } = require('../engine/workerPool');
+    eq('X62-SWEEP 0 attempts is eligible', autoSweepEligible({ id: 'a', download_attempts: 0 }), true);
+    eq('X62-SWEEP 2 attempts is eligible', autoSweepEligible({ id: 'a', download_attempts: 2 }), true);
+    eq('X62-SWEEP 3 attempts is exhausted', autoSweepEligible({ id: 'a', download_attempts: 3 }), false);
+    eq('X62-SWEEP 9 attempts is exhausted', autoSweepEligible({ id: 'a', download_attempts: 9 }), false);
+    eq('X62-SWEEP a missing counter reads as 0', autoSweepEligible({ id: 'a' }), true);
+    eq('X62-SWEEP a NaN counter reads as 0', autoSweepEligible({ id: 'a', download_attempts: 'x' }), true);
+    eq('X62-SWEEP a null row is out', autoSweepEligible(null), false);
+    eq('X62-SWEEP a row without an id is out', autoSweepEligible({ download_attempts: 0 }), false);
+    const wpSrc62 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'workerPool.js'), 'utf8');
+    ok('X62-SWEEP the sweep log gains skipped= only when rows were skipped', wpSrc62.includes("skippedExhausted > 0 ? ` skipped=${skippedExhausted}` : ''"));
+    ok('X62-SWEEP the sweep applies the filter before the cap', wpSrc62.includes('const eligible = allParked.filter(autoSweepEligible);') && wpSrc62.includes('const parked = eligible.slice(0, 20);'));
+  }
+
+  // X62-RES: purani pehchan barkarar + parent/widened pehchan;
+  // aur page-side source asal helper ko jaali DOM par chalata hai.
+  {
+    const none = { 'aria-checked': null, 'aria-selected': null, 'aria-pressed': null, 'data-state': null };
+    eq('X62-RES the old aria-checked path still confirms', resolutionBtnSelected({ attrs: { ...none, 'aria-checked': 'true' }, className: '', parentClassName: '' }), true);
+    eq('X62-RES the old data-state=on path still confirms', resolutionBtnSelected({ attrs: { ...none, 'data-state': 'on' }, className: '', parentClassName: '' }), true);
+    eq('X62-RES the old exact selected class token still confirms', resolutionBtnSelected({ attrs: none, className: 'mat-button-toggle selected', parentClassName: '' }), true);
+    eq('X62-RES the old exact active class token still confirms', resolutionBtnSelected({ attrs: none, className: 'foo active bar', parentClassName: '' }), true);
+    eq('X62-RES a checked class on the PARENT confirms (the fix)', resolutionBtnSelected({ attrs: none, className: 'mat-button-toggle', parentClassName: 'mat-button-toggle-group mat-button-toggle-checked' }), true);
+    eq('X62-RES an SVGAnimatedString className is read via baseVal', resolutionBtnSelected({ attrs: none, className: { baseVal: 'icon checked' }, parentClassName: '' }), true);
+    eq('X62-RES aria-checked=false does not confirm', resolutionBtnSelected({ attrs: { ...none, 'aria-checked': 'false' }, className: 'mat-button-toggle', parentClassName: 'mat-button-toggle-group' }), false);
+    eq('X62-RES plain classes do not confirm', resolutionBtnSelected({ attrs: none, className: 'mat-button-toggle', parentClassName: 'group' }), false);
+    eq('X62-RES a null snapshot does not confirm', resolutionBtnSelected(null), false);
+    eq('X62-RES an empty snapshot does not confirm', resolutionBtnSelected({}), false);
+    const mkBtn = (text, attrs, className, parentClassName) => ({
+      innerText: text,
+      getAttribute: (k) => (Object.prototype.hasOwnProperty.call(attrs, k) ? attrs[k] : null),
+      className,
+      parentElement: { className: parentClassName },
+    });
+    const runInPage = (btns) => {
+      const pop = { getClientRects: () => [1], querySelectorAll: () => btns };
+      const fakeDoc = { querySelectorAll: () => [pop], querySelector: () => pop };
+      return new Function('document', `return ${resolutionStateSource()};`)(fakeDoc);
+    };
+    const rA = runInPage([
+      mkBtn('360p', {}, 'mat-button-toggle', 'group'),
+      mkBtn('720p', {}, 'mat-button-toggle', 'group mat-button-toggle-checked'),
+    ]);
+    eq('X62-RES the in-page source finds the panel', rA.found, true);
+    eq('X62-RES the in-page source confirms via the parent class', rA.selected, '720p');
+    const rB = runInPage([
+      mkBtn('360p', { 'aria-checked': 'true' }, '', ''),
+      mkBtn('720p', {}, '', ''),
+    ]);
+    eq('X62-RES the in-page source keeps the old aria path', rB.selected, '360p');
+    const rC = runInPage([
+      mkBtn('360p', {}, 'mat-button-toggle', 'group'),
+      mkBtn('720p', {}, 'mat-button-toggle', 'group'),
+    ]);
+    eq('X62-RES nothing marked means selected stays null', rC.selected, null);
+  }
+
+  // X62-DIMS: reader har jawab me dims deta hai, aur poll
+  // pehli reading par ek line deta hai (source pins — asal
+  // page chahiye bartav ke liye).
+  {
+    const faSrc62 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X62-DIMS the reader returns videoWidth', faSrc62.includes('videoWidth: null, videoHeight: null, duration: null, readyState: null'));
+    ok('X62-DIMS the poll logs tile-media once', faSrc62.includes('[ROOT] tile-media dims=${w}x${h} dur=${d} ready=${r}'));
+  }
+
+  // X62-SKIP: flag = pehle prompt ka download imaandari se
+  // parked — round kataar me dakhil hi nahi hota.
+  {
+    eq('X62-SKIP flag + first prompt applies', skipFirstDownloadApplies({ skipFirstTaskDownload: true }, { promptIndex: 0 }), true);
+    eq('X62-SKIP flag + second prompt does not apply', skipFirstDownloadApplies({ skipFirstTaskDownload: true }, { promptIndex: 1 }), false);
+    eq('X62-SKIP no flag does not apply', skipFirstDownloadApplies({}, { promptIndex: 0 }), false);
+    eq('X62-SKIP flag false does not apply', skipFirstDownloadApplies({ skipFirstTaskDownload: false }, { promptIndex: 0 }), false);
+    eq('X62-SKIP junk inputs do not apply', skipFirstDownloadApplies(null, null), false);
+    const logs62 = [];
+    const eng62 = new FlowAutomationEngine({ onLog: (e) => logs62.push(e && e.message ? e.message : String(e)) });
+    let roundCalls62 = 0;
+    eng62._downloadTaskMediaRound = async () => { roundCalls62++; return { ok: true, attempts: ['stub'] }; };
+    const task62 = { promptIndex: 0, prompt: 'skip me', downloaded: false };
+    const skipped = await eng62.downloadTaskMedia(task62, '/tmp/x62-none', { skipFirstTaskDownload: true }, -1);
+    eq('X62-SKIP the result is not ok', skipped.ok, false);
+    eq('X62-SKIP the result says skipped', skipped.skipped, true);
+    eq('X62-SKIP the result carries no attempts', Array.isArray(skipped.attempts) ? skipped.attempts.length : -1, 0);
+    eq('X62-SKIP the download round NEVER ran (no attempt counted)', roundCalls62, 0);
+    eq('X62-SKIP downloaded is never set', task62.downloaded, false);
+    ok('X62-SKIP the skip is named in the root log', logs62.some(l => l.includes('download SKIPPED by test flag (skipFirstTaskDownload)')));
+    const task62b = { promptIndex: 1, prompt: 'keep me', downloaded: false };
+    const kept = await eng62.downloadTaskMedia(task62b, '/tmp/x62-none', { skipFirstTaskDownload: true }, -1);
+    eq('X62-SKIP the second prompt still downloads', kept.ok, true);
+    eq('X62-SKIP the round ran for the second prompt', roundCalls62, 1);
+    const task62c = { promptIndex: 0, prompt: 'no flag', downloaded: false };
+    const normal = await eng62.downloadTaskMedia(task62c, '/tmp/x62-none', {}, -1);
+    eq('X62-SKIP without the flag the first prompt downloads', normal.ok, true);
+    const faSrc62 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X62-SKIP the monitor handles skipped apart from failed', faSrc62.includes('if (dl.skipped) {') && faSrc62.includes('task.downloadSkipped = true;'));
+    ok('X62-SKIP the monitor parks via the deferred ledger', faSrc62.includes('this.onTaskDownloadDeferred(task, {'));
+  }
+
+  // X62-DB: flag settings_json me NAHI bachta (Resume use
+  // dobara nahi jaga sakta); baqi settings barkarar.
+  {
+    const { execFileSync } = require('child_process');
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-x62-db-'));
+    const dbPath = JSON.stringify(path.join(__dirname, '..', 'engine', 'db.js'));
+    const script = `(async () => {
+      const { dbService } = require(${dbPath});
+      await dbService.ensureInit();
+      dbService.createBatchTasks('batch-x62', ['prompt one', 'prompt two'], { duration: '8s', aspectRatio: '9:16', model: 'Omni Flash', quality: '360p', project: 'ZC30PROJ', skipFirstTaskDownload: true });
+      const rows = dbService.getPendingTasks('batch-x62');
+      console.log(JSON.stringify(rows.map(r => ({ raw: r.settings_json, parsed: JSON.parse(r.settings_json || '{}') }))));
+    })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+    let rows62 = null;
+    try {
+      const out = execFileSync(process.execPath, ['-e', script], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+      rows62 = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+    } catch (e) { rows62 = null; }
+    ok('X62-DB the round-trip child ran', Array.isArray(rows62));
+    eq('X62-DB both tasks were created', rows62 && rows62.length, 2);
+    ok('X62-DB settings_json never carries the flag', !!rows62 && rows62.every(r => !('skipFirstTaskDownload' in r.parsed) && !r.raw.includes('skipFirstTaskDownload')));
+    eq('X62-DB the other settings survive (project)', rows62 && rows62[0].parsed.project, 'ZC30PROJ');
+    eq('X62-DB the other settings survive (duration)', rows62 && rows62[0].parsed.duration, '8s');
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

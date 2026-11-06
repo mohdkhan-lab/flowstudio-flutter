@@ -60,8 +60,8 @@ class VideoSettingsBar extends StatelessWidget {
                 child: _buildSettingField(
                   label: 'MODEL',
                   value: settings.model,
-                  items: const ['Omni Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'],
-                  display: const {'Omni Flash': 'Omni 1.1 Flash'},
+                  items: const ['Omni Flash', 'Omni 1.2 Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'],
+                  display: const {'Omni Flash': 'Omni 1.1 Flash', 'Omni 1.2 Flash': 'Omni 1.2 Flash'},
                   onChanged: (val) {
                     if (val != null) settingsProv.updateModel(val);
                   },
@@ -72,12 +72,13 @@ class VideoSettingsBar extends StatelessWidget {
                 child: _buildSettingField(
                   label: 'DURATION',
                   value: settings.duration,
-                  items: const ['4s', '6s', '8s', '10s'],
+                  items: const ['4s', '6s', '8s', '10s', '15s'],
                   display: const {
                     '4s': '4 seconds',
                     '6s': '6 seconds',
                     '8s': '8 seconds',
                     '10s': '10 seconds',
+                    '15s': '15 seconds',
                   },
                   onChanged: (val) {
                     if (val != null) settingsProv.updateDuration(val);

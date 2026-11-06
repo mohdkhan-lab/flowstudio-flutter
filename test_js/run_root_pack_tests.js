@@ -48,9 +48,9 @@ const {
   cascadeVerdict
 } = require('../engine/saveGuard');
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
-const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo } = require('../engine/networkCapture');
+const { NetworkCapture, isGooglevideoPlaybackUrl, gvReqFields, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
-const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision } = require('../engine/flowAutomation');
+const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
 const cookiesDb = require('../engine/cookiesDb');
 
@@ -4041,6 +4041,784 @@ async function main() {
     eq('X57-DB a fresh task row has an empty project_url', rt && rt.before, '');
     eq('X57-DB setTaskProjectUrl round-trips', rt && rt.after, 'https://flow.google.com/project/x57-rt');
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+  }
+
+  // ---------------------------------------------------------------------------
+  // X58. v2.48.58 (RECOVERY-NO-CREDIT-GATE):
+  //   (a) openFlowStudio ka credit gate download-only
+  //       recovery (settings.downloadOnly) par NAHI
+  //       rukta — balance 2 (LOW) ho ya 0 (EXHAUSTED)
+  //       ho, entry READY milti hai aur bypass wali
+  //       [ROOT] line log hoti hai; BINA flag ke wahi
+  //       balance aaj ki tarah LOW_CREDITS / EXHAUSTED
+  //       hi deta hai (fresh run ka gate bilkul waisa
+  //       hi).
+  //   (b) workerPool ki recovery ghadi har open call
+  //       par downloadOnly flag lagati hai.
+  //   (c) gallery-wait: recovery entry attempt 1 se
+  //       PEHLE gallery tiles ke render ka intezaar
+  //       karti hai — der se aane wala link bhi pehle
+  //       hi attempt me khul jata hai; helper had ke
+  //       andar saaf timeout bhi hota hai.
+  // ---------------------------------------------------------------------------
+  {
+    const gateLogs = [];
+    const mkGateEng = (live) => {
+      const eng = new FlowAutomationEngine({ onLog: (e) => gateLogs.push((e && e.message) || '') });
+      let cur = 'https://flow.google.com/';
+      eng.page = {
+        isClosed: () => false,
+        url: () => cur,
+        goto: async (u) => { cur = u; },
+        evaluate: async () => false,
+        waitForSelector: async () => {}
+      };
+      eng._waitForFlowSignal = async () => true;
+      eng.ensureAgentModeDisabled = async () => {};
+      eng.readLiveCreditsFromPage = async () => live;
+      eng.currentAccount = { id: 'acc-x58', name: 'X58 Acc', credits: 99 };
+      return eng;
+    };
+    const gateSettings = { duration: '4s', model: 'Omni Flash', quality: '360p', canvasStrategy: 'existing', projectUrl: 'https://flow.google.com/project/x58-proj' };
+    eq('X58-GATE no flag: low balance still returns LOW_CREDITS', await mkGateEng(2).openFlowStudio({ ...gateSettings }), 'LOW_CREDITS');
+    gateLogs.length = 0;
+    eq('X58-GATE recovery flag: low balance still enters (READY)', await mkGateEng(2).openFlowStudio({ ...gateSettings, downloadOnly: true }), 'READY');
+    ok('X58-GATE the bypass [ROOT] line was logged with the balance', gateLogs.some(m => m.includes('[ROOT] recovery-credit-gate bypassed balance=2')));
+    eq('X58-GATE no flag: zero balance still returns EXHAUSTED', await mkGateEng(0).openFlowStudio({ ...gateSettings }), 'EXHAUSTED');
+    eq('X58-GATE recovery flag: zero balance still enters (READY)', await mkGateEng(0).openFlowStudio({ ...gateSettings, downloadOnly: true }), 'READY');
+    eq('X58-GATE no flag: enough balance still enters (READY)', await mkGateEng(10).openFlowStudio({ ...gateSettings }), 'READY');
+  }
+  {
+    // (b) pool ki recovery ghadi — flag har call par
+    const { WorkerPool } = require('../engine/workerPool');
+    const { dbService } = require('../engine/db');
+    const savedDb58 = {
+      getAccount: dbService.getAccount,
+      setTaskNeedsCheck: dbService.setTaskNeedsCheck,
+      getTask: dbService.getTask,
+      completeTask: dbService.completeTask
+    };
+    const savedEng58 = {
+      launch: FlowAutomationEngine.prototype.launchBrowserForAccount,
+      open: FlowAutomationEngine.prototype.openFlowStudio,
+      reconcile: FlowAutomationEngine.prototype.reconcileRecoveredTask,
+      close: FlowAutomationEngine.prototype.closeBrowser,
+      sweepFn: FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep
+    };
+    const openCalls58 = [];
+    dbService.getAccount = (id) => (id === 'acc-x58' ? { id: 'acc-x58', name: 'X58 Acc', googleName: 'X58 Acc' } : null);
+    dbService.setTaskNeedsCheck = () => {};
+    dbService.getTask = () => null;
+    dbService.completeTask = () => {};
+    FlowAutomationEngine.prototype.launchBrowserForAccount = async () => true;
+    FlowAutomationEngine.prototype.openFlowStudio = async (settings) => { openCalls58.push(settings || {}); return 'READY'; };
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = async () => ({ found: false });
+    FlowAutomationEngine.prototype.closeBrowser = async () => {};
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = () => {};
+    const pool58 = new WorkerPool({ onLog: () => {}, onTaskUpdate: () => {} });
+    const rows58 = [
+      { id: 'x58-r1', assigned_account_id: 'acc-x58', prompt_index: 0, prompt_text: 'x58 prompt', prompt_tag: '', project_url: 'https://flow.google.com/project/x58-proj', created_at: '2026-11-06 10:05:00' },
+      { id: 'x58-r2', assigned_account_id: 'acc-x58', prompt_index: 1, prompt_text: 'x58 prompt 2', prompt_tag: '', project_url: '', created_at: '2026-11-06 09:17:00' }
+    ];
+    await pool58._reconcileNeedsCheck(rows58, '/tmp', {});
+    eq('X58-FLAG recovery opens one call per (account, project) group', openCalls58.length, 2);
+    ok('X58-FLAG every recovery open carries downloadOnly', openCalls58.every(c => c.downloadOnly === true));
+    ok('X58-FLAG every recovery open stays on the existing strategy', openCalls58.every(c => c.canvasStrategy === 'existing'));
+    dbService.getAccount = savedDb58.getAccount;
+    dbService.setTaskNeedsCheck = savedDb58.setTaskNeedsCheck;
+    dbService.getTask = savedDb58.getTask;
+    dbService.completeTask = savedDb58.completeTask;
+    FlowAutomationEngine.prototype.launchBrowserForAccount = savedEng58.launch;
+    FlowAutomationEngine.prototype.openFlowStudio = savedEng58.open;
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = savedEng58.reconcile;
+    FlowAutomationEngine.prototype.closeBrowser = savedEng58.close;
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = savedEng58.sweepFn;
+  }
+  {
+    // (c) gallery-wait — link der se aata hai
+    const waitLogs = [];
+    const engW = new FlowAutomationEngine({ onLog: (e) => waitLogs.push((e && e.message) || '') }, { galleryEntryPollMs: 1, galleryWaitMs: 3000, galleryWaitPollMs: 5 });
+    let currentUrl = 'https://flow.google.com/';
+    const clickedLinks = [];
+    const mkLateLink = (href, label) => ({
+      innerText: '',
+      getAttribute: (n) => (n === 'href' ? href : ''),
+      parentElement: { innerText: label },
+      click: () => { clickedLinks.push(href); currentUrl = `https://flow.google.com${href}`; }
+    });
+    let fakeLinks = [];
+    engW.page = {
+      isClosed: () => false,
+      url: () => currentUrl,
+      goto: async (u) => { currentUrl = u; },
+      evaluate: async (fn, arg) => {
+        const prevDoc = global.document;
+        global.document = {
+          querySelector: () => null,
+          querySelectorAll: (sel) => (String(sel).includes('/project/') ? fakeLinks : [])
+        };
+        try { return await fn(arg); } finally { global.document = prevDoc; }
+      }
+    };
+    setTimeout(() => { fakeLinks = [mkLateLink('/project/p-late', 'Nov 06 - 10:10')]; }, 60);
+    const lateEntry = await engW._enterProjectFromGallery(false, 0);
+    eq('X58-WAIT the late-appearing project still gets entered', lateEntry.entered, true);
+    eq('X58-WAIT it was entered on the first attempt', waitLogs.filter(m => m.includes('Attempt 1/3')).length === 1 && !waitLogs.some(m => m.includes('Attempt 2/3')), true);
+    ok('X58-WAIT the gallery-wait [ROOT] line reports the link', waitLogs.some(m => m.includes('[ROOT] gallery-wait links=1')));
+    eq('X58-WAIT the late link is the one that opened', JSON.stringify(clickedLinks), JSON.stringify(['/project/p-late']));
+    // helper ka saaf timeout: link kabhi nahi aata
+    const engT = new FlowAutomationEngine({ onLog: () => {} }, { galleryWaitMs: 80, galleryWaitPollMs: 5 });
+    engT.page = {
+      isClosed: () => false,
+      url: () => 'https://flow.google.com/',
+      goto: async () => {},
+      evaluate: async (fn, arg) => {
+        const prevDoc = global.document;
+        global.document = { querySelector: () => null, querySelectorAll: () => [] };
+        try { return await fn(arg); } finally { global.document = prevDoc; }
+      }
+    };
+    const gwTimeout = await engT._waitForGalleryTiles(80);
+    eq('X58-WAIT the helper times out with zero links', gwTimeout.links, 0);
+    ok('X58-WAIT the helper timeout stays bounded', gwTimeout.waitedMs >= 50 && gwTimeout.waitedMs < 2000);
+  }
+
+  // X59. v2.48.59 (OMNI 1.2 FLASH): naya model
+  // 'Omni 1.2 Flash' — per-second credit formula
+  // (Google support page, 2026-11-06) aur version-
+  // aware model matcher. Purana saaf-string
+  // includes() do tarah tootta tha: 'Omni 1.2 Flash'
+  // Flow ke 'Omni Flash 1.2' se match nahi hota tha,
+  // aur legacy 'Omni Flash' ghalti se 1.2 chun leta
+  // tha. Matcher kabhi exact string par nahi —
+  // version token + lafz tokens par faisla hota hai.
+  {
+    const menu59 = ['Omni Flash 1.1', 'Omni Flash 1.2', 'Veo 3.1 Lite', 'Veo 3.1 Fast', 'Veo 3.1 Quality'];
+    eq('X59-MATCH the 1.2 target picks the 1.2 item', matchModelOption('Omni 1.2 Flash', menu59), 1);
+    eq('X59-MATCH the legacy target picks 1.1, never 1.2', matchModelOption('Omni Flash', menu59), 0);
+    eq('X59-MATCH the explicit 1.1 target picks the 1.1 item', matchModelOption('Omni 1.1 Flash', menu59), 0);
+    eq('X59-MATCH Veo Lite picks its own item', matchModelOption('Veo 3.1 Lite', menu59), 2);
+    eq('X59-MATCH Veo Fast picks its own item', matchModelOption('Veo 3.1 Fast', menu59), 3);
+    eq('X59-MATCH Veo Quality picks its own item', matchModelOption('Veo 3.1 Quality', menu59), 4);
+    eq('X59-MATCH app-order wording matches too', matchModelOption('Omni 1.2 Flash', ['Omni 1.2 Flash', 'Omni Flash 1.1']), 0);
+    eq('X59-MATCH an unknown model matches nothing', matchModelOption('Imagen 3', menu59), -1);
+    eq('X59-MATCH only-1.2 menu falls back for the legacy target', matchModelOption('Omni Flash', ['Omni Flash 1.2']), 0);
+    // current-selection check (strictVersion): panel
+    // par 1.2 dikhna 1.1 target ke liye 'pehle se
+    // chuna hua' NAHI hai — warna run chup chaap
+    // ghalat model par chalta rehta.
+    eq('X59-CUR 1.2 showing is not the legacy target', matchModelOption('Omni Flash', ['Omni Flash 1.2'], { strictVersion: true }), -1);
+    eq('X59-CUR 1.1 showing is the legacy target', matchModelOption('Omni Flash', ['Omni Flash 1.1'], { strictVersion: true }), 0);
+    eq('X59-CUR plain showing is the legacy target', matchModelOption('Omni Flash', ['Omni Flash'], { strictVersion: true }), 0);
+    eq('X59-CUR 1.2 showing is the 1.2 target', matchModelOption('Omni 1.2 Flash', ['Omni Flash 1.2'], { strictVersion: true }), 0);
+    eq('X59-CUR 1.1 showing is not the 1.2 target', matchModelOption('Omni 1.2 Flash', ['Omni Flash 1.1'], { strictVersion: true }), -1);
+    eq('X59-PARTS version and words split out', JSON.stringify(modelNameParts('Omni 1.2 Flash')), JSON.stringify({ version: '1.2', words: ['omni', 'flash'] }));
+  }
+  {
+    // Rate formula — khalis helper par seedha.
+    eq('X59-RATE 1.2 360p 4s = 4', omni12CreditsPerVideo(4, '360p'), 4);
+    eq('X59-RATE 1.2 360p 8s = 8', omni12CreditsPerVideo(8, '360p'), 8);
+    eq('X59-RATE 1.2 360p 10s = 10', omni12CreditsPerVideo(10, '360p'), 10);
+    eq('X59-RATE 1.2 360p 11s = 12 (extra rate starts)', omni12CreditsPerVideo(11, '360p'), 12);
+    eq('X59-RATE 1.2 360p 15s = 20', omni12CreditsPerVideo(15, '360p'), 20);
+    eq('X59-RATE 1.2 720p 4s = 12', omni12CreditsPerVideo(4, '720p'), 12);
+    eq('X59-RATE 1.2 720p 8s = 24', omni12CreditsPerVideo(8, '720p'), 24);
+    eq('X59-RATE 1.2 720p 10s = 30', omni12CreditsPerVideo(10, '720p'), 30);
+    eq('X59-RATE 1.2 720p 15s = 60', omni12CreditsPerVideo(15, '720p'), 60);
+    eq('X59-RATE above-range clamps to 15s', omni12CreditsPerVideo(20, '360p'), 20);
+    eq('X59-RATE below-range clamps to 3s', omni12CreditsPerVideo(2, '360p'), 3);
+    // Engine ki asal kitab — getRequiredCredits.
+    const grc = FlowAutomationEngine.prototype.getRequiredCredits;
+    eq('X59-RATE engine 1.2 360p 15s = 20', grc.call({}, { model: 'Omni 1.2 Flash', duration: '15s', quality: '360p' }), 20);
+    eq('X59-RATE engine 1.2 720p 15s = 60', grc.call({}, { model: 'Omni 1.2 Flash', duration: '15s', quality: '720p' }), 60);
+    eq('X59-RATE engine 1.2 360p 4s = 4', grc.call({}, { model: 'Omni 1.2 Flash', duration: '4s', quality: '360p' }), 4);
+    eq('X59-RATE engine 1.1 360p 10s unchanged = 7', grc.call({}, { model: 'Omni Flash', duration: '10s', quality: '360p' }), 7);
+    eq('X59-RATE engine 1.1 720p 10s unchanged = 15', grc.call({}, { model: 'Omni Flash', duration: '10s', quality: '720p' }), 15);
+    eq('X59-RATE engine non-1.2 at 15s keeps the old fallback', grc.call({}, { model: 'Omni Flash', duration: '15s', quality: '360p' }), 5);
+  }
+
+  // ---------------------------------------------------------------------------
+  // X60. v2.48.60 (PROJECT REGISTRY): har project jo
+  //      engine enter karta hai, us (account, project)
+  //      jodi ka mustaqil record —
+  //   (a) DB: recordProjectSeen pehli baar nayi row,
+  //       dobara sirf last_seen_at (first_seen_at aur
+  //       pehla source mehfooz); project_id URL se
+  //       nikalta hai;
+  //   (b) findProjectForTime: qareeb-not-after wala
+  //       usool, sirf usi account ki kitab se;
+  //   (c) recovery ka faisla: recorded > registry >
+  //       gallery-datetime (khalis helper + pool par
+  //       amal — registry hit par seedha goto wala
+  //       raasta, miss par purana gallery pass);
+  //   (d) engine ki registration: entry par port ko
+  //       khabar, [ROOT] line sirf nayi row par, aur
+  //       kharab/ghate hue bandhan par bhi run kabhi
+  //       nahi rukta.
+  // ---------------------------------------------------------------------------
+  {
+    // (c1) khalis faisla
+    const RU = 'https://flow.google.com/project/x60-registry-proj';
+    const TU = 'https://flow.google.com/project/x60-recorded-proj';
+    eq('X60-DEC recorded beats registry', recoveryEntryPlan(TU, { projectUrl: RU }).kind, 'recorded');
+    eq('X60-DEC recorded carries its own URL', recoveryEntryPlan(TU, { projectUrl: RU }).projectUrl, TU);
+    eq('X60-DEC recorded source is recorded', recoveryEntryPlan(TU, null).source, 'recorded');
+    eq('X60-DEC registry when no recorded URL', recoveryEntryPlan('', { projectUrl: RU }).kind, 'registry');
+    eq('X60-DEC registry carries the registry URL', recoveryEntryPlan('', { projectUrl: RU }).projectUrl, RU);
+    eq('X60-DEC registry accepts a raw DB row', recoveryEntryPlan('', { project_url: RU }).kind, 'registry');
+    eq('X60-DEC gallery when neither exists', recoveryEntryPlan('', null).kind, 'gallery');
+    eq('X60-DEC a garbage registry row falls to gallery', recoveryEntryPlan(null, {}).kind, 'gallery');
+  }
+  {
+    // (d) engine ki registration ghadi
+    const regCalls = [];
+    const regLogs = [];
+    const engReg = new FlowAutomationEngine({ onLog: (e) => regLogs.push((e && e.message) || '') }, {
+      projectPort: {
+        recordSeen: (a, u, s) => {
+          regCalls.push({ a, u, s });
+          return { isNew: regCalls.length === 1, row: { firstSeenAt: Date.parse('2026-11-06T09:28:00Z') } };
+        }
+      }
+    });
+    engReg.currentAccount = { id: 'acc-x60', name: 'X60 Acc' };
+    engReg.page = { isClosed: () => false, url: () => 'https://flow.google.com/project/x60-proj-uuid/edit/abc123' };
+    engReg._registerCurrentProject('fresh-entry');
+    eq('X60-REG the entry was recorded once', regCalls.length, 1);
+    eq('X60-REG the account key is the account id (tasks assigned_account_id wali identity)', regCalls[0] && regCalls[0].a, 'acc-x60');
+    eq('X60-REG the URL is trimmed to the project root', regCalls[0] && regCalls[0].u, 'https://flow.google.com/project/x60-proj-uuid');
+    eq('X60-REG the source passes through', regCalls[0] && regCalls[0].s, 'fresh-entry');
+    ok('X60-REG the [ROOT] line fires for a new row', regLogs.some(m => m.includes('[ROOT] project-registered account=acc-x60 id=x60-proj-uuid') && m.includes('at=2026-11-06T09:28:00.000Z') && m.includes('source=fresh-entry')));
+    engReg._registerCurrentProject('fresh-entry');
+    eq('X60-REG a repeat entry still upserts through the port', regCalls.length, 2);
+    eq('X60-REG the [ROOT] line does NOT repeat for an existing row', regLogs.filter(m => m.includes('project-registered')).length, 1);
+    // account na ho to kuch darj nahi
+    const regCallsNoAcc = [];
+    const engNoAcc = new FlowAutomationEngine({ onLog: () => {} }, { projectPort: { recordSeen: (...args) => { regCallsNoAcc.push(args); return { isNew: true, row: {} }; } } });
+    engNoAcc.page = { isClosed: () => false, url: () => 'https://flow.google.com/project/x60-proj-uuid' };
+    engNoAcc._registerCurrentProject('recovery-entry');
+    eq('X60-REG no account means nothing is recorded', regCallsNoAcc.length, 0);
+    // port bandha hi na ho — khaamosh no-op
+    const engNoPort = new FlowAutomationEngine({ onLog: () => {} }, {});
+    engNoPort.currentAccount = { id: 'acc-x60' };
+    engNoPort.page = { isClosed: () => false, url: () => 'https://flow.google.com/project/x60-proj-uuid' };
+    let noPortThrew = false;
+    try { engNoPort._registerCurrentProject('fresh-entry'); } catch (e) { noPortThrew = true; }
+    eq('X60-REG no port bound is a silent no-op', noPortThrew, false);
+    // ledger kharab ho — run phir bhi nahi rukta
+    const engBadPort = new FlowAutomationEngine({ onLog: () => {} }, { projectPort: { recordSeen: () => { throw new Error('db down'); } } });
+    engBadPort.currentAccount = { id: 'acc-x60' };
+    engBadPort.page = { isClosed: () => false, url: () => 'https://flow.google.com/project/x60-proj-uuid' };
+    let badPortThrew = false;
+    try { engBadPort._registerCurrentProject('fresh-entry'); } catch (e) { badPortThrew = true; }
+    eq('X60-REG a broken ledger never breaks the run', badPortThrew, false);
+  }
+  {
+    // (c2) pool par amal — registry hit aur miss
+    const { WorkerPool } = require('../engine/workerPool');
+    const { dbService } = require('../engine/db');
+    const savedDb60 = {
+      getAccount: dbService.getAccount,
+      failTask: dbService.failTask,
+      setTaskNeedsCheck: dbService.setTaskNeedsCheck,
+      getTask: dbService.getTask,
+      completeTask: dbService.completeTask,
+      findProjectForTime: dbService.findProjectForTime
+    };
+    const savedEng60 = {
+      launch: FlowAutomationEngine.prototype.launchBrowserForAccount,
+      open: FlowAutomationEngine.prototype.openFlowStudio,
+      reconcile: FlowAutomationEngine.prototype.reconcileRecoveredTask,
+      close: FlowAutomationEngine.prototype.closeBrowser,
+      sweepFn: FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep
+    };
+    const REG_U = 'https://flow.google.com/project/x60-reg-proj';
+    const REC_U = 'https://flow.google.com/project/x60-rec-proj';
+    const findCalls = [];
+    let registryHit = { accountKey: 'acc-x60', projectUrl: REG_U, projectId: 'x60-reg-proj', firstSeenAt: Date.parse('2026-11-06T09:10:00Z'), lastSeenAt: Date.parse('2026-11-06T09:10:00Z'), source: 'fresh-entry' };
+    dbService.getAccount = (id) => (id === 'acc-x60' ? { id: 'acc-x60', name: 'X60 Acc', googleName: 'X60 Acc' } : null);
+    dbService.failTask = () => {};
+    dbService.setTaskNeedsCheck = () => {};
+    dbService.getTask = () => null;
+    dbService.completeTask = () => {};
+    dbService.findProjectForTime = (accId, ms) => { findCalls.push({ accId, ms }); return registryHit; };
+    const openCalls60 = [];
+    FlowAutomationEngine.prototype.launchBrowserForAccount = async () => true;
+    FlowAutomationEngine.prototype.openFlowStudio = async (settings) => { openCalls60.push(settings || {}); return 'READY'; };
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = async () => ({ found: false });
+    FlowAutomationEngine.prototype.closeBrowser = async () => {};
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = () => {};
+    const pool60 = new WorkerPool({ onLog: () => {}, onTaskUpdate: () => {} });
+    const rows60 = [
+      { id: 'x60-r1', assigned_account_id: 'acc-x60', prompt_index: 0, prompt_text: 'x60 prompt', prompt_tag: '', project_url: '', created_at: '2026-11-06 09:17:00' },
+      { id: 'x60-r2', assigned_account_id: 'acc-x60', prompt_index: 1, prompt_text: 'x60 prompt 2', prompt_tag: '', project_url: '', created_at: '2026-11-06 09:18:00' },
+      { id: 'x60-r3', assigned_account_id: 'acc-x60', prompt_index: 2, prompt_text: 'x60 prompt 3', prompt_tag: '', project_url: REC_U, created_at: '2026-11-06 10:05:00' }
+    ];
+    await pool60._reconcileNeedsCheck(rows60, '/tmp', {});
+    eq('X60-POOL one open per (account, project) group', openCalls60.length, 2);
+    eq('X60-POOL the registry is consulted exactly once (unrecorded group only)', findCalls.length, 1);
+    eq('X60-POOL the registry is asked with the group oldest row time', findCalls[0] && findCalls[0].ms, Date.parse('2026-11-06T09:17:00Z'));
+    eq('X60-POOL the registry is asked for the group account', findCalls[0] && findCalls[0].accId, 'acc-x60');
+    const regCall = openCalls60.find(c => c.projectUrlSource === 'registry');
+    ok('X60-POOL a registry hit opens its project directly', !!regCall);
+    eq('X60-POOL the registry open carries the registry URL', regCall && regCall.projectUrl, REG_U);
+    eq('X60-POOL the registry open carries NO gallery target time', regCall && regCall.recoveryTargetTime, undefined);
+    ok('X60-POOL the registry open stays download-only', !!regCall && regCall.downloadOnly === true && regCall.canvasStrategy === 'existing');
+    const recCall = openCalls60.find(c => c.projectUrl === REC_U);
+    ok('X60-POOL the recorded group still opens its recorded URL', !!recCall);
+    eq('X60-POOL the recorded open is NOT marked registry', recCall && recCall.projectUrlSource, undefined);
+    // miss: registry khaali — purana gallery pass
+    registryHit = null;
+    findCalls.length = 0;
+    openCalls60.length = 0;
+    await pool60._reconcileNeedsCheck([rows60[0]], '/tmp', {});
+    eq('X60-POOL a registry miss still opens once', openCalls60.length, 1);
+    eq('X60-POOL a registry miss falls back to the gallery pass (no URL)', openCalls60[0] && openCalls60[0].projectUrl, undefined);
+    eq('X60-POOL the gallery fallback carries the oldest row time', openCalls60[0] && openCalls60[0].recoveryTargetTime, Date.parse('2026-11-06T09:17:00Z'));
+    dbService.getAccount = savedDb60.getAccount;
+    dbService.failTask = savedDb60.failTask;
+    dbService.setTaskNeedsCheck = savedDb60.setTaskNeedsCheck;
+    dbService.getTask = savedDb60.getTask;
+    dbService.completeTask = savedDb60.completeTask;
+    dbService.findProjectForTime = savedDb60.findProjectForTime;
+    FlowAutomationEngine.prototype.launchBrowserForAccount = savedEng60.launch;
+    FlowAutomationEngine.prototype.openFlowStudio = savedEng60.open;
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = savedEng60.reconcile;
+    FlowAutomationEngine.prototype.closeBrowser = savedEng60.close;
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = savedEng60.sweepFn;
+  }
+  {
+    // (a)+(b) asal DB round-trip — alag process,
+    // throwaway data dir (X57-DB wala tarika).
+    const { execFileSync } = require('child_process');
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-x60-db-'));
+    const dbPath = JSON.stringify(path.join(__dirname, '..', 'engine', 'db.js'));
+    const script = `(async () => {
+      const { dbService } = require(${dbPath});
+      await dbService.ensureInit();
+      const U1 = 'https://flow.google.com/project/11111111-2222-3333-4444-555555555555';
+      const U2 = 'https://flow.google.com/project/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const U3 = 'https://flow.google.com/project/zzzz-other-account-proj';
+      const T0 = Date.parse('2026-11-06T09:00:00Z');
+      const T1 = Date.parse('2026-11-06T09:28:00Z');
+      const T2 = Date.parse('2026-11-06T10:05:00Z');
+      const a1 = dbService.recordProjectSeen({ accountKey: 'acc-a', projectUrl: U1, source: 'fresh-entry', now: T1 });
+      const a1b = dbService.recordProjectSeen({ accountKey: 'acc-a', projectUrl: U1, source: 'task-birth', now: T2 });
+      const a2 = dbService.recordProjectSeen({ accountKey: 'acc-a', projectUrl: U2, source: 'fresh-entry', now: T0 });
+      const b1 = dbService.recordProjectSeen({ accountKey: 'acc-b', projectUrl: U3, source: 'fresh-entry', now: T1 });
+      const bad = dbService.recordProjectSeen({ accountKey: '', projectUrl: U1, source: 'fresh-entry', now: T1 });
+      const listA = dbService.listProjects('acc-a');
+      const findBefore = dbService.findProjectForTime('acc-a', T0 - 1);
+      const findBetween = dbService.findProjectForTime('acc-a', T0 + 60000);
+      const findAt = dbService.findProjectForTime('acc-a', T1);
+      const findLater = dbService.findProjectForTime('acc-a', T2 + 60000);
+      const findB = dbService.findProjectForTime('acc-b', T2);
+      const findNone = dbService.findProjectForTime('acc-nope', T2);
+      console.log(JSON.stringify({
+        a1New: a1 && a1.isNew, a1Id: a1 && a1.row && a1.row.projectId,
+        a1First: a1 && a1.row && a1.row.firstSeenAt, a1Source: a1 && a1.row && a1.row.source,
+        a1bNew: a1b && a1b.isNew, a1bFirst: a1b && a1b.row && a1b.row.firstSeenAt,
+        a1bLast: a1b && a1b.row && a1b.row.lastSeenAt, a1bSource: a1b && a1b.row && a1b.row.source,
+        a2New: a2 && a2.isNew, b1New: b1 && b1.isNew, bad: bad,
+        listA: listA.length,
+        findBefore: findBefore, findBetween: findBetween && findBetween.projectUrl,
+        findAt: findAt && findAt.projectUrl, findLater: findLater && findLater.projectUrl,
+        findB: findB && findB.projectUrl, findNone: findNone
+      }));
+    })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+    let rt = null;
+    try {
+      const out = execFileSync(process.execPath, ['-e', script], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+      rt = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+    } catch (e) { rt = null; }
+    ok('X60-DB the round-trip child ran', !!rt);
+    eq('X60-DB the first sighting inserts a new row', rt && rt.a1New, true);
+    eq('X60-DB project_id is parsed from the URL', rt && rt.a1Id, '11111111-2222-3333-4444-555555555555');
+    eq('X60-DB first_seen_at is the sighting time', rt && rt.a1First, Date.parse('2026-11-06T09:28:00Z'));
+    eq('X60-DB the source is recorded', rt && rt.a1Source, 'fresh-entry');
+    eq('X60-DB a repeat sighting is NOT new', rt && rt.a1bNew, false);
+    eq('X60-DB a repeat keeps the original first_seen_at', rt && rt.a1bFirst, Date.parse('2026-11-06T09:28:00Z'));
+    eq('X60-DB a repeat updates last_seen_at', rt && rt.a1bLast, Date.parse('2026-11-06T10:05:00Z'));
+    eq('X60-DB a repeat keeps the FIRST source', rt && rt.a1bSource, 'fresh-entry');
+    eq('X60-DB a second project inserts its own row', rt && rt.a2New, true);
+    eq('X60-DB another account inserts its own row', rt && rt.b1New, true);
+    eq('X60-DB an empty account key records nothing', rt && rt.bad, null);
+    eq('X60-DB the account list holds exactly its two projects', rt && rt.listA, 2);
+    eq('X60-DB a target before every project finds nothing', rt && rt.findBefore, null);
+    eq('X60-DB the closest-not-after project wins', rt && rt.findBetween, 'https://flow.google.com/project/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    eq('X60-DB an exact-time target finds that project', rt && rt.findAt, 'https://flow.google.com/project/11111111-2222-3333-4444-555555555555');
+    eq('X60-DB a later target still finds the latest not-after', rt && rt.findLater, 'https://flow.google.com/project/11111111-2222-3333-4444-555555555555');
+    eq('X60-DB the other account finds only its own project', rt && rt.findB, 'https://flow.google.com/project/zzzz-other-account-proj');
+    eq('X60-DB an unknown account finds nothing', rt && rt.findNone, null);
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+  }
+
+  // ---- X61: USABLE-CREDITS TOTAL (v2.48.61) --------------------
+  // Owner's bug: the top bar / MCP total summed STORED balances of
+  // dead-session accounts (53 shown, 3 spendable). The one
+  // definition mirrors the planner's pool rule (status !==
+  // 'Need Login'); storedCredits keeps the old sum under its own
+  // name.
+  {
+    const { isUsableAccount, usableCreditsTotal, storedCreditsTotal } = require('../engine/usableCredits');
+    const ownerMix = [
+      { name: '(22)', status: 'Ready', credits: 2 },
+      { name: '(18)', status: 'Ready', credits: 1 },
+      { name: 'plain', status: 'Exhausted', credits: 0 },
+      { name: '(20)', status: 'Need Login', credits: 42 },
+      { name: '(24)', status: 'Need Login', credits: 8 },
+    ];
+    eq('X61 the owner mix usable total is the spendable 3', usableCreditsTotal(ownerMix), 3);
+    eq('X61 the owner mix stored total is the old 53', storedCreditsTotal(ownerMix), 53);
+    eq('X61 Ready is usable', isUsableAccount({ status: 'Ready' }), true);
+    eq('X61 Need Login is NOT usable', isUsableAccount({ status: 'Need Login' }), false);
+    eq('X61 Exhausted is usable (adds its real 0)', isUsableAccount({ status: 'Exhausted' }), true);
+    eq('X61 LowCredits stays usable (planner pool rule)', isUsableAccount({ status: 'LowCredits' }), true);
+    eq('X61 LowCredits balance counts toward usable', usableCreditsTotal([{ status: 'LowCredits', credits: 3 }]), 3);
+    eq('X61 all-Ready usable equals the plain sum', usableCreditsTotal([{ status: 'Ready', credits: 50 }, { status: 'Ready', credits: 7 }]), 57);
+    eq('X61 all-Ready stored equals usable', storedCreditsTotal([{ status: 'Ready', credits: 50 }, { status: 'Ready', credits: 7 }]), 57);
+    eq('X61 no accounts gives 0', usableCreditsTotal([]), 0);
+    eq('X61 a non-array gives 0', usableCreditsTotal(null), 0);
+    eq('X61 an unread (null) balance contributes 0', usableCreditsTotal([{ status: 'Ready', credits: null }]), 0);
+    eq('X61 a null balance is not stored either', storedCreditsTotal([{ status: 'Ready', credits: null }]), 0);
+    eq('X61 a dead-session balance is stored but never usable', usableCreditsTotal([{ status: 'Need Login', credits: 42 }]), 0);
+  }
+
+  // ---- X62: v2.48.62 PACK ---------------------------------------
+  // (1) gv-req logger fields, (2) netCapture reset() fix,
+  // (3) gallery-entry action logging (source pins), (4) auto-
+  // sweep exhausted-rows filter, (5) resolution-confirm fix,
+  // (6) tile-media dims (source pins — the reader needs a live
+  // page), (7) skipFirstTaskDownload: the task stays honestly
+  // parked — round never runs, no attempt counted, downloaded
+  // never set — and the flag never persists into settings_json.
+
+  // X62-RESET: ek launch par band hua fetch-rewrite agle
+  // launch (reset) ke baad band NAHI rehta.
+  {
+    const cap = new NetworkCapture({});
+    cap._disableFetchRw('test-reason');
+    eq('X62-RESET _disableFetchRw sets the disabled flag', cap._fetchRwDisabled, true);
+    cap._fetchRwClient = { fakeClient: true };
+    cap._fetchRwLogCount = 7;
+    cap._focusEmuClient = { fakeClient: true };
+    cap.reset();
+    eq('X62-RESET reset() clears _fetchRwDisabled', cap._fetchRwDisabled, false);
+    eq('X62-RESET reset() clears _fetchRwClient', cap._fetchRwClient, null);
+    eq('X62-RESET reset() clears _fetchRwLogCount', cap._fetchRwLogCount, 0);
+    eq('X62-RESET reset() clears _focusEmuClient', cap._focusEmuClient, null);
+  }
+
+  // X62-GVREQ: fields saaf hain, asal signed URL kabhi nahi.
+  {
+    const ev = {
+      request: { url: 'https://rr3---sn-abc123.googlevideo.com/videoplayback?expire=1899999999&itag=22&clen=1310720&dur=10.5&range=0-1023&signature=TOPSECRET' },
+      redirectResponse: { url: 'https://rr1---sn-abc123.googlevideo.com/videoplayback?itag=22&signature=TOPSECRET', status: 302 },
+      initiator: { type: 'script', stack: { callFrames: [{ functionName: 'fetchSegment', lineNumber: 42, columnNumber: 7 }] } },
+    };
+    const f = gvReqFields(ev);
+    eq('X62-GVREQ host is the bare hostname', f.host, 'rr3---sn-abc123.googlevideo.com');
+    eq('X62-GVREQ clen rides along', f.clen, '1310720');
+    eq('X62-GVREQ itag rides along', f.itag, '22');
+    eq('X62-GVREQ dur rides along', f.dur, '10.5');
+    eq('X62-GVREQ range rides along', f.range, '0-1023');
+    ok('X62-GVREQ from carries the redirect status', f.from.includes('status=302'));
+    ok('X62-GVREQ from uses the shape (path, no query)', f.from.includes('videoplayback') && !f.from.includes('itag'));
+    eq('X62-GVREQ init names the top frame', f.init, 'script:fetchSegment@42');
+    ok('X62-GVREQ the signed secret never appears', !JSON.stringify(f).includes('TOPSECRET'));
+    const bare = gvReqFields({ request: { url: 'https://rr3---sn-abc123.googlevideo.com/videoplayback' } });
+    eq('X62-GVREQ a bare request has clen -', bare.clen, '-');
+    eq('X62-GVREQ a bare request has itag -', bare.itag, '-');
+    eq('X62-GVREQ a bare request has range none', bare.range, 'none');
+    eq('X62-GVREQ no redirect is from none', bare.from, 'none');
+    eq('X62-GVREQ no initiator is init none', bare.init, 'none');
+    const empty = gvReqFields(null);
+    eq('X62-GVREQ a null event is all placeholders', `${empty.host}|${empty.clen}|${empty.from}|${empty.init}`, '-|-|none|none');
+    const faSrc62 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X62-GVREQ the engine logs the gv-req line', faSrc62.includes('[ROOT] gv-req host=${f.host}'));
+  }
+
+  // X62-GALLERY: faisla waisa ka waisa, log ab action bolta hai.
+  {
+    const faSrc62 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X62-GALLERY the fresh-fallback is named in the log', faSrc62.includes('[ROOT] gallery-entry fresh-fallback index=${decision.index}'));
+    ok('X62-GALLERY the attempt line carries action and source', faSrc62.includes('clicked (action=${actionResult} source=${decision.source || \'-\'})'));
+    ok('X62-GALLERY the old ambiguous line is gone', !faSrc62.includes('button/link found and clicked'));
+  }
+
+  // X62-SWEEP: 3+ attempts wali rows khud-kar sweep se bahar;
+  // explicit Resume is faisle se nahi bandha (wo apni fehrist
+  // seedha _reconcileNeedsCheck ko deta hai).
+  {
+    const { autoSweepEligible } = require('../engine/workerPool');
+    eq('X62-SWEEP 0 attempts is eligible', autoSweepEligible({ id: 'a', download_attempts: 0 }), true);
+    eq('X62-SWEEP 2 attempts is eligible', autoSweepEligible({ id: 'a', download_attempts: 2 }), true);
+    eq('X62-SWEEP 3 attempts is exhausted', autoSweepEligible({ id: 'a', download_attempts: 3 }), false);
+    eq('X62-SWEEP 9 attempts is exhausted', autoSweepEligible({ id: 'a', download_attempts: 9 }), false);
+    eq('X62-SWEEP a missing counter reads as 0', autoSweepEligible({ id: 'a' }), true);
+    eq('X62-SWEEP a NaN counter reads as 0', autoSweepEligible({ id: 'a', download_attempts: 'x' }), true);
+    eq('X62-SWEEP a null row is out', autoSweepEligible(null), false);
+    eq('X62-SWEEP a row without an id is out', autoSweepEligible({ download_attempts: 0 }), false);
+    const wpSrc62 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'workerPool.js'), 'utf8');
+    ok('X62-SWEEP the sweep log gains skipped= only when rows were skipped', wpSrc62.includes("skippedExhausted > 0 ? ` skipped=${skippedExhausted}` : ''"));
+    ok('X62-SWEEP the sweep applies the filter before the cap', wpSrc62.includes('const eligible = allParked.filter(autoSweepEligible);') && wpSrc62.includes('const parked = eligible.slice(0, 20);'));
+  }
+
+  // X62-RES: purani pehchan barkarar + parent/widened pehchan;
+  // aur page-side source asal helper ko jaali DOM par chalata hai.
+  {
+    const none = { 'aria-checked': null, 'aria-selected': null, 'aria-pressed': null, 'data-state': null };
+    eq('X62-RES the old aria-checked path still confirms', resolutionBtnSelected({ attrs: { ...none, 'aria-checked': 'true' }, className: '', parentClassName: '' }), true);
+    eq('X62-RES the old data-state=on path still confirms', resolutionBtnSelected({ attrs: { ...none, 'data-state': 'on' }, className: '', parentClassName: '' }), true);
+    eq('X62-RES the old exact selected class token still confirms', resolutionBtnSelected({ attrs: none, className: 'mat-button-toggle selected', parentClassName: '' }), true);
+    eq('X62-RES the old exact active class token still confirms', resolutionBtnSelected({ attrs: none, className: 'foo active bar', parentClassName: '' }), true);
+    eq('X62-RES a checked class on the PARENT confirms (the fix)', resolutionBtnSelected({ attrs: none, className: 'mat-button-toggle', parentClassName: 'mat-button-toggle-group mat-button-toggle-checked' }), true);
+    eq('X62-RES an SVGAnimatedString className is read via baseVal', resolutionBtnSelected({ attrs: none, className: { baseVal: 'icon checked' }, parentClassName: '' }), true);
+    eq('X62-RES aria-checked=false does not confirm', resolutionBtnSelected({ attrs: { ...none, 'aria-checked': 'false' }, className: 'mat-button-toggle', parentClassName: 'mat-button-toggle-group' }), false);
+    eq('X62-RES plain classes do not confirm', resolutionBtnSelected({ attrs: none, className: 'mat-button-toggle', parentClassName: 'group' }), false);
+    eq('X62-RES a null snapshot does not confirm', resolutionBtnSelected(null), false);
+    eq('X62-RES an empty snapshot does not confirm', resolutionBtnSelected({}), false);
+    const mkBtn = (text, attrs, className, parentClassName) => ({
+      innerText: text,
+      getAttribute: (k) => (Object.prototype.hasOwnProperty.call(attrs, k) ? attrs[k] : null),
+      className,
+      parentElement: { className: parentClassName },
+    });
+    const runInPage = (btns) => {
+      const pop = { getClientRects: () => [1], querySelectorAll: () => btns };
+      const fakeDoc = { querySelectorAll: () => [pop], querySelector: () => pop };
+      return new Function('document', `return ${resolutionStateSource()};`)(fakeDoc);
+    };
+    const rA = runInPage([
+      mkBtn('360p', {}, 'mat-button-toggle', 'group'),
+      mkBtn('720p', {}, 'mat-button-toggle', 'group mat-button-toggle-checked'),
+    ]);
+    eq('X62-RES the in-page source finds the panel', rA.found, true);
+    eq('X62-RES the in-page source confirms via the parent class', rA.selected, '720p');
+    const rB = runInPage([
+      mkBtn('360p', { 'aria-checked': 'true' }, '', ''),
+      mkBtn('720p', {}, '', ''),
+    ]);
+    eq('X62-RES the in-page source keeps the old aria path', rB.selected, '360p');
+    const rC = runInPage([
+      mkBtn('360p', {}, 'mat-button-toggle', 'group'),
+      mkBtn('720p', {}, 'mat-button-toggle', 'group'),
+    ]);
+    eq('X62-RES nothing marked means selected stays null', rC.selected, null);
+  }
+
+  // X62-DIMS: reader har jawab me dims deta hai, aur poll
+  // pehli reading par ek line deta hai (source pins — asal
+  // page chahiye bartav ke liye).
+  {
+    const faSrc62 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X62-DIMS the reader returns videoWidth', faSrc62.includes('videoWidth: null, videoHeight: null, duration: null, readyState: null'));
+    ok('X62-DIMS the poll logs tile-media once', faSrc62.includes('[ROOT] tile-media dims=${w}x${h} dur=${d} ready=${r}'));
+  }
+
+  // X63-SKIP: (.62 ka block, .63 ki pehchan-wali shakal
+  // me) flag = nishani lagi task ka download imaandari
+  // se parked — round kataar me dakhil hi nahi hota.
+  // Nishani ab promptIndex nahi, task ki DB id hai
+  // (workerPool batch bante hi settings._skipFirstTaskId
+  // lagata hai): dusri batch ki pehli task — sweep wali
+  // purani parked task bhi — kabhi skip nahi hoti.
+  {
+    const stamped = { skipFirstTaskDownload: true, _skipFirstTaskId: 'task_A' };
+    eq('X63-SKIP flag + stamped id applies', skipFirstDownloadApplies(stamped, { taskId: 'task_A', promptIndex: 0 }), true);
+    eq('X63-SKIP flag + stamped id applies even off index 0', skipFirstDownloadApplies(stamped, { taskId: 'task_A', promptIndex: 3 }), true);
+    eq('X63-SKIP flag + another task id does not apply', skipFirstDownloadApplies(stamped, { taskId: 'task_B', promptIndex: 0 }), false);
+    eq('X63-SKIP flag + recovery task (own batch first, other id) does not apply', skipFirstDownloadApplies(stamped, { taskId: 'task_old_1', promptIndex: 0 }), false);
+    eq('X63-SKIP flag + no stamp does not apply', skipFirstDownloadApplies({ skipFirstTaskDownload: true }, { taskId: 'task_A', promptIndex: 0 }), false);
+    eq('X63-SKIP flag + task without id does not apply', skipFirstDownloadApplies(stamped, { promptIndex: 0 }), false);
+    eq('X63-SKIP no flag does not apply', skipFirstDownloadApplies({ _skipFirstTaskId: 'task_A' }, { taskId: 'task_A', promptIndex: 0 }), false);
+    eq('X63-SKIP flag false does not apply', skipFirstDownloadApplies({ skipFirstTaskDownload: false, _skipFirstTaskId: 'task_A' }, { taskId: 'task_A', promptIndex: 0 }), false);
+    eq('X63-SKIP junk inputs do not apply', skipFirstDownloadApplies(null, null), false);
+    const logs63 = [];
+    const eng63 = new FlowAutomationEngine({ onLog: (e) => logs63.push(e && e.message ? e.message : String(e)) });
+    let roundCalls63 = 0;
+    eng63._downloadTaskMediaRound = async () => { roundCalls63++; return { ok: true, attempts: ['stub'] }; };
+    const task63 = { taskId: 'task_A', promptIndex: 0, prompt: 'skip me', downloaded: false };
+    const skipped = await eng63.downloadTaskMedia(task63, '/tmp/x63-none', stamped, -1);
+    eq('X63-SKIP the result is not ok', skipped.ok, false);
+    eq('X63-SKIP the result says skipped', skipped.skipped, true);
+    eq('X63-SKIP the result carries no attempts', Array.isArray(skipped.attempts) ? skipped.attempts.length : -1, 0);
+    eq('X63-SKIP the download round NEVER ran (no attempt counted)', roundCalls63, 0);
+    eq('X63-SKIP downloaded is never set', task63.downloaded, false);
+    eq('X63-SKIP the skip line is spoken ONCE', logs63.filter(l => l.includes('download SKIPPED by test flag (skipFirstTaskDownload)')).length, 1);
+    // LATCH: dusra call bhi skipped, lekin line dobara NAHI.
+    const skippedAgain = await eng63.downloadTaskMedia(task63, '/tmp/x63-none', stamped, -1);
+    eq('X63-SKIP the latch keeps the result skipped', skippedAgain.skipped, true);
+    eq('X63-SKIP the latch keeps the round unrun', roundCalls63, 0);
+    eq('X63-SKIP the latch keeps the log silent', logs63.filter(l => l.includes('download SKIPPED by test flag (skipFirstTaskDownload)')).length, 1);
+    // Dusri task (sweep wali purani parked bhi) inhi
+    // settings par aaram se download hoti hai.
+    const task63b = { taskId: 'task_B', promptIndex: 0, prompt: 'keep me', downloaded: false };
+    const kept = await eng63.downloadTaskMedia(task63b, '/tmp/x63-none', stamped, -1);
+    eq('X63-SKIP another task id still downloads', kept.ok, true);
+    eq('X63-SKIP the round ran for the other task', roundCalls63, 1);
+    const task63c = { taskId: 'task_A', promptIndex: 0, prompt: 'no flag', downloaded: false };
+    const normal = await eng63.downloadTaskMedia(task63c, '/tmp/x63-none', {}, -1);
+    eq('X63-SKIP without the flag the stamped task downloads', normal.ok, true);
+    // Retry raasta: skip wali task ke liye grid scan se
+    // pehle hi 'skipped' — aur aam task ke liye barkarar.
+    const retrySkipped = await eng63.retryDownloadForTask(task63, '/tmp/x63-none', stamped);
+    eq('X63-SKIP retry stands down with skipped status', retrySkipped.status, 'skipped');
+    const faSrc63 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X63-SKIP the monitor handles skipped apart from failed', faSrc63.includes('if (dl.skipped) {') && faSrc63.includes('task.downloadSkipped = true;'));
+    ok('X63-SKIP the monitor parks via the deferred ledger', faSrc63.includes('this.onTaskDownloadDeferred(task, {'));
+    const wpSrc63 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'workerPool.js'), 'utf8');
+    ok('X63-SKIP the pool stamps the first task id', wpSrc63.includes('settings._skipFirstTaskId = firstRow.id'));
+    ok('X63-SKIP the pool settles skipped in the drain', wpSrc63.includes("outcome.status === 'skipped'"));
+  }
+
+  // X62-DB: flag settings_json me NAHI bachta (Resume use
+  // dobara nahi jaga sakta); baqi settings barkarar.
+  {
+    const { execFileSync } = require('child_process');
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-x62-db-'));
+    const dbPath = JSON.stringify(path.join(__dirname, '..', 'engine', 'db.js'));
+    const script = `(async () => {
+      const { dbService } = require(${dbPath});
+      await dbService.ensureInit();
+      dbService.createBatchTasks('batch-x62', ['prompt one', 'prompt two'], { duration: '8s', aspectRatio: '9:16', model: 'Omni Flash', quality: '360p', project: 'ZC30PROJ', skipFirstTaskDownload: true, _skipFirstTaskId: 'task_sham' });
+      const rows = dbService.getPendingTasks('batch-x62');
+      console.log(JSON.stringify(rows.map(r => ({ raw: r.settings_json, parsed: JSON.parse(r.settings_json || '{}') }))));
+    })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+    let rows62 = null;
+    try {
+      const out = execFileSync(process.execPath, ['-e', script], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+      rows62 = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+    } catch (e) { rows62 = null; }
+    ok('X62-DB the round-trip child ran', Array.isArray(rows62));
+    eq('X62-DB both tasks were created', rows62 && rows62.length, 2);
+    ok('X62-DB settings_json never carries the flag', !!rows62 && rows62.every(r => !('skipFirstTaskDownload' in r.parsed) && !r.raw.includes('skipFirstTaskDownload')));
+    ok('X63-DB settings_json never carries the stamped id', !!rows62 && rows62.every(r => !('_skipFirstTaskId' in r.parsed) && !r.raw.includes('_skipFirstTaskId')));
+    eq('X62-DB the other settings survive (project)', rows62 && rows62[0].parsed.project, 'ZC30PROJ');
+    eq('X62-DB the other settings survive (duration)', rows62 && rows62[0].parsed.duration, '8s');
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+  }
+
+  // X63-PILL: settings pill ka parser — teen asal
+  // shaklein + khaali/kachra. Aspect dono taraf
+  // normalize hota hai (crop_9_16 -> 9:16).
+  {
+    const p720 = parseSettingsPill('Video · 720p · 8s crop_9_16 x1');
+    eq('X63-PILL the 720p pill is video', p720.isVideo, true);
+    eq('X63-PILL the 720p pill resolution', p720.resolution, '720p');
+    eq('X63-PILL the 720p pill duration', p720.durationSec, 8);
+    eq('X63-PILL the 720p pill aspect normalizes', p720.aspect, '9:16');
+    eq('X63-PILL the 720p pill count', p720.count, 'x1');
+    const p360 = parseSettingsPill('Video · 360p · 4s crop_9_16 x1');
+    eq('X63-PILL the 360p pill is video', p360.isVideo, true);
+    eq('X63-PILL the 360p pill resolution', p360.resolution, '360p');
+    eq('X63-PILL the 360p pill duration', p360.durationSec, 4);
+    eq('X63-PILL the 360p pill aspect', p360.aspect, '9:16');
+    const pImg = parseSettingsPill('🍌 Nano Banana 2.1 crop_16_9 x2');
+    eq('X63-PILL the image pill is not video', pImg.isVideo, false);
+    eq('X63-PILL the image pill has no resolution', pImg.resolution, null);
+    eq('X63-PILL the image pill has no duration', pImg.durationSec, null);
+    eq('X63-PILL the image pill aspect normalizes the other way', pImg.aspect, '16:9');
+    eq('X63-PILL the image pill count', pImg.count, 'x2');
+    const pNull = parseSettingsPill(null);
+    eq('X63-PILL null input gives nulls (isVideo)', pNull.isVideo, null);
+    eq('X63-PILL null input gives nulls (resolution)', pNull.resolution, null);
+    eq('X63-PILL null input gives nulls (duration)', pNull.durationSec, null);
+    eq('X63-PILL null input gives nulls (aspect)', pNull.aspect, null);
+    const pJunk = parseSettingsPill('kuch bhi likha hai');
+    eq('X63-PILL garbage gives nulls (isVideo)', pJunk.isVideo, null);
+    eq('X63-PILL garbage gives nulls (resolution)', pJunk.resolution, null);
+    eq('X63-PILL garbage gives nulls (aspect)', pJunk.aspect, null);
+  }
+
+  // X63-MISMATCH: pill vs mangi hui settings — ZC30
+  // wala asal case, muwafiq case, aur sirf-aspect
+  // wala ikhtilaf. Gate ki wiring bhi pin hai.
+  {
+    const req360 = { mode: 'Video', resolution: '360p', durationSec: 4, aspect: '9:16' };
+    const zc30 = settingsPillMismatch(req360, parseSettingsPill('Video · 720p · 8s crop_9_16 x1'));
+    eq('X63-MISMATCH the ZC30 case names resolution', zc30.includes('resolution'), true);
+    eq('X63-MISMATCH the ZC30 case names duration', zc30.includes('duration'), true);
+    eq('X63-MISMATCH the ZC30 case names nothing else', zc30.length, 2);
+    eq('X63-MISMATCH a matching pill is clean', settingsPillMismatch(req360, parseSettingsPill('Video · 360p · 4s crop_9_16 x1')).length, 0);
+    const aspOnly = settingsPillMismatch(req360, parseSettingsPill('Video · 360p · 4s crop_16_9 x1'));
+    eq('X63-MISMATCH an aspect-only pill names aspect', aspOnly.length === 1 && aspOnly[0] === 'aspect', true);
+    const modeCase = settingsPillMismatch(req360, parseSettingsPill('🍌 Nano Banana 2.1 crop_16_9 x2'));
+    eq('X63-MISMATCH an image pill names mode first', modeCase[0], 'mode');
+    eq('X63-MISMATCH junk inputs are clean', settingsPillMismatch(null, null).length, 0);
+    const faSrc63b = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X63-MISMATCH the gate logs the root line', faSrc63b.includes('[ROOT] settings-mismatch pill="${finalPillText}" fields=${pillMismatch.join(\',\')}'));
+    ok('X63-MISMATCH submitPrompt returns the pre-fire status', faSrc63b.includes("return { status: 'SETTINGS_MISMATCH', mismatchFields: cfgRes.settingsMismatch"));
+    const wpSrc63b = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'workerPool.js'), 'utf8');
+    ok('X63-MISMATCH the pool handles the status', wpSrc63b.includes("submitRes.status === 'SETTINGS_MISMATCH'"));
+    ok('X63-MISMATCH the pool excludes the account for the run', wpSrc63b.includes('unusableAccounts.set(workerAccount.id, mismatchReason)'));
+    ok('X63-MISMATCH the pool requeues like other pre-fire failures', wpSrc63b.includes('taskQueue.requeueFront(nextTask);'));
+  }
+
+  // X63-PASSIVE: passive claim ka darwaza — is
+  // session me render hua task andar, baqi bahar.
+  {
+    const sess = 1000000;
+    eq('X63-PASSIVE an in-session render applies', passiveClaimApplies({ renderCompletedAt: sess + 5000, mediaSaved: false }, sess), true);
+    eq('X63-PASSIVE a render at the session start applies', passiveClaimApplies({ renderCompletedAt: sess, mediaSaved: false }, sess), true);
+    eq('X63-PASSIVE a missing render time does not apply', passiveClaimApplies({ mediaSaved: false }, sess), false);
+    eq('X63-PASSIVE a null render time does not apply', passiveClaimApplies({ renderCompletedAt: null, mediaSaved: false }, sess), false);
+    eq('X63-PASSIVE an older-than-session render does not apply', passiveClaimApplies({ renderCompletedAt: sess - 1, mediaSaved: false }, sess), false);
+    eq('X63-PASSIVE an already-saved task does not apply', passiveClaimApplies({ renderCompletedAt: sess + 5000, mediaSaved: true }, sess), false);
+    eq('X63-PASSIVE junk inputs do not apply', passiveClaimApplies(null, sess), false);
+    eq('X63-PASSIVE a junk session start does not apply', passiveClaimApplies({ renderCompletedAt: sess + 1, mediaSaved: false }, undefined), false);
+    const faSrc63c = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X63-PASSIVE the session start is stamped in the constructor', faSrc63c.includes('this._sessionStartedAt = Date.now();'));
+    ok('X63-PASSIVE the harvest gates on the predicate', faSrc63c.includes('if (passiveClaimApplies(task, this._sessionStartedAt)) {'));
+    ok('X63-PASSIVE the start line is pinned', faSrc63c.includes('mainpage-harvest: passive claim — watching the network only (no hover, no clicks) for up to'));
+    ok('X63-PASSIVE the end line is pinned', faSrc63c.includes('mainpage-harvest: passive claim finished — saved=${passiveSaved ? \'yes\' : \'no\'}'));
+  }
+
+  // X64-RESIZE: tile-resize trigger ka darwaza
+  // passive wale darwaze ka hi doosra naam hai —
+  // is session ke taaza renders andar, baqi bahar.
+  // Baaki pins: helpers, tartib (passive ke baad,
+  // hover-exit se pehle) aur teeno log lines.
+  {
+    const sess = 1000000;
+    eq('X64-RESIZE the alias is the same function', resizeTriggerApplies, passiveClaimApplies);
+    eq('X64-RESIZE an in-session render applies', resizeTriggerApplies({ renderCompletedAt: sess + 5000, mediaSaved: false }, sess), true);
+    eq('X64-RESIZE a render at the session start applies', resizeTriggerApplies({ renderCompletedAt: sess, mediaSaved: false }, sess), true);
+    eq('X64-RESIZE a missing render time does not apply', resizeTriggerApplies({ mediaSaved: false }, sess), false);
+    eq('X64-RESIZE a null render time does not apply', resizeTriggerApplies({ renderCompletedAt: null, mediaSaved: false }, sess), false);
+    eq('X64-RESIZE an older-than-session render does not apply', resizeTriggerApplies({ renderCompletedAt: sess - 1, mediaSaved: false }, sess), false);
+    eq('X64-RESIZE an already-saved task does not apply', resizeTriggerApplies({ renderCompletedAt: sess + 5000, mediaSaved: true }, sess), false);
+    eq('X64-RESIZE junk inputs do not apply', resizeTriggerApplies(null, sess), false);
+    eq('X64-RESIZE a junk session start does not apply', resizeTriggerApplies({ renderCompletedAt: sess + 1, mediaSaved: false }, undefined), false);
+    const faSrc64 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X64-RESIZE the harvest gates on the predicate', faSrc64.includes('if (resizeTriggerApplies(task, this._sessionStartedAt)) {'));
+    ok('X64-RESIZE the enlarge helper exists', faSrc64.includes('async _enlargeMainpageTile(task, tileIndexHint) {'));
+    ok('X64-RESIZE the fullscreen helper exists', faSrc64.includes('async _fullscreenMainpageTile(task, tileIndexHint) {'));
+    ok('X64-RESIZE the restore helper exists', faSrc64.includes('async _restoreMainpageTile(task, tileIndexHint, savedStyles, enteredFullscreen) {'));
+    ok('X64-RESIZE the restore runs with the saved token', faSrc64.includes('await this._restoreMainpageTile(task, tileIndexHint, enl.token, fsEntered);'));
+    ok('X64-RESIZE fullscreen is requested on the tile video', faSrc64.includes('vid.requestFullscreen()'));
+    ok('X64-RESIZE restore exits fullscreen', faSrc64.includes('document.exitFullscreen()'));
+    ok('X64-RESIZE the css apply line is pinned', faSrc64.includes('mainpage-harvest: resize trigger applied method=css box=${enl.box || \'-\'} — watching up to 30s for the full stream'));
+    ok('X64-RESIZE the fullscreen apply line is pinned', faSrc64.includes('mainpage-harvest: resize trigger applied method=fullscreen box=${fs.box || \'-\'} — watching up to 30s for the full stream'));
+    ok('X64-RESIZE the skipped line is pinned', faSrc64.includes('mainpage-harvest: resize trigger skipped reason=${(enl && enl.reason) || \'no-tile\'}'));
+    ok('X64-RESIZE the end line is pinned', faSrc64.includes('mainpage-harvest: resize finished — saved=${resizeSaved ? \'yes\' : \'no\'}'));
+    const resizeIdx = faSrc64.indexOf('if (resizeTriggerApplies(task, this._sessionStartedAt)) {');
+    ok('X64-RESIZE the phase sits after the passive claim', resizeIdx > faSrc64.indexOf('mainpage-harvest: passive claim finished'));
+    ok('X64-RESIZE the phase sits before the hover escalation', resizeIdx > -1 && resizeIdx < faSrc64.indexOf('const scrolled = await this._scrollMainpageTileIntoView'));
+  }
+
+  // X63-DIMS: tile-media line ab harvest attempt ki
+  // pehli reading par bhi hai (ZC30 me poll wali line
+  // ghayab rahi thi) — source pin.
+  {
+    const faSrc63d = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X63-DIMS the attempt-start line exists', faSrc63d.includes('[ROOT] tile-media dims=${dw}x${dh} dur=${dd} ready=${dr}'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

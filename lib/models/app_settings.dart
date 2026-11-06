@@ -1,8 +1,8 @@
 class AppSettings {
   String appearance; // 'dark', 'white', 'system'
   String theme; // v2.26.0: colour theme id (see AppTheme.themeIds)
-  String model; // 'Omni Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'
-  String duration; // '4s', '6s', '8s', '10s'
+  String model; // 'Omni Flash' (1.1, default), 'Omni 1.2 Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'
+  String duration; // '4s', '6s', '8s', '10s', '15s' (15s = Omni 1.2 only)
   String aspectRatio; // '9:16', '16:9', '1:1'
   String quality; // '360p', '720p', '1080p' (1080p = Flow's enhanced download)
   String namingPattern; // 'tag' (00-01.mp4), 'scene' (scene001.mp4)
@@ -39,7 +39,7 @@ class AppSettings {
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.currentVersion = 'v2.48.57',
+    this.currentVersion = 'v2.48.64',
     // v2.34.0 (Problem 12): no placeholder social links ship any
     // more — an unconfigured service shows NO icon (top strip /
     // About) instead of an icon that opens a dead page. The owner

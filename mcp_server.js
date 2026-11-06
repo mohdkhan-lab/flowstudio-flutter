@@ -19,10 +19,11 @@
 const http = require('http');
 const crypto = require('crypto');
 const os = require('os');
+const { usableCreditsTotal, storedCreditsTotal } = require('./engine/usableCredits');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.48.57';
+const SERVER_VERSION = '2.48.64';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -176,7 +177,7 @@ const TOOLS = [
   },
   {
     name: 'flowstudio_get_credits',
-    description: 'Total Flow credits across all accounts, plus the per-account breakdown.',
+    description: 'Total SPENDABLE Flow credits (usable accounts only — a Need Login account\'s stored balance is not spendable), plus the per-account breakdown and the stored all-accounts sum.',
     inputSchema: { type: 'object', properties: {} },
     run: async () => {
       const res = await bridgeCall('GET', '/api/accounts');
@@ -185,8 +186,11 @@ const TOOLS = [
         status: a.status,
         credits: a.credits,
       }));
-      const total = accounts.reduce((sum, a) => sum + (Number(a.credits) || 0), 0);
-      return { ok: true, totalCredits: total, accounts };
+      // v2.48.61: totalCredits is the USABLE (spendable) sum — the
+      // planner's definition (status !== 'Need Login'), via
+      // engine/usableCredits. storedCredits keeps the old
+      // all-accounts stored sum under its own honest name.
+      return { ok: true, totalCredits: usableCreditsTotal(accounts), storedCredits: storedCreditsTotal(accounts), accounts };
     },
   },
   {
@@ -215,8 +219,8 @@ const TOOLS = [
       type: 'object',
       properties: {
         prompts: { type: 'array', items: { type: 'string' }, description: 'One prompt per video' },
-        model: { type: 'string', description: "e.g. 'Omni Flash', 'Veo 3.1 Fast'" },
-        duration: { type: 'string', description: "e.g. '4s', '6s', '8s', '10s'" },
+        model: { type: 'string', description: "e.g. 'Omni Flash', 'Omni 1.2 Flash', 'Veo 3.1 Fast'" },
+        duration: { type: 'string', description: "e.g. '4s', '6s', '8s', '10s', '15s'" },
         aspectRatio: { type: 'string', description: "e.g. '9:16', '16:9', '1:1'" },
         quality: { type: 'string', description: "e.g. '720p', '1080p'" },
         parallelBrowsers: { type: 'number', description: 'How many accounts work in parallel (1-4)' },
@@ -253,6 +257,7 @@ const TOOLS = [
         prompts: { type: 'array', items: { type: 'string' }, description: 'One prompt per video' },
         tag: { type: 'string', description: 'Optional tag — becomes the app\'s selected TAG (used as the file name)' },
         project: { type: 'string', description: 'Optional project name — becomes the app\'s current Project field value before the run starts' },
+        skipFirstTaskDownload: { type: 'boolean', description: 'TEST FLAG (v2.48.62, ZC30): when true, the FIRST prompt of this run is generated as usual but its download step is deliberately skipped — the task stays parked (pending + needs_check) for a later download-only Resume, no download attempt is counted and the prompt is never resubmitted. Exists to separate first-vs-latest-render effects in the download investigation; leave unset for normal runs.' },
       },
       required: ['prompts'],
     },
@@ -262,6 +267,7 @@ const TOOLS = [
       const body = { prompts };
       if (typeof args.tag === 'string' && args.tag) body.tag = args.tag;
       if (typeof args.project === 'string' && args.project) body.project = args.project;
+      if (args.skipFirstTaskDownload === true) body.skipFirstTaskDownload = true;
       return bridgeCall('POST', '/api/generation/start-ui', body);
     },
   },

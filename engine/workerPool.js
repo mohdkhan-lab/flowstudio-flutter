@@ -1,4 +1,4 @@
-const { FlowAutomationEngine } = require('./flowAutomation');
+const { FlowAutomationEngine, projectIdOfUrl, recoveryEntryPlan } = require('./flowAutomation');
 const { getAccounts, fetchRealCredits } = require('./accountStore');
 const { dbService } = require('./db');
 const { getCreditService } = require('./creditService');
@@ -20,6 +20,23 @@ const sequenceReport = require('./sequenceReport');
 const browserMode = require('./browserMode');
 const windowStyle = require('./windowStyle');
 const { sleepBlocker } = require('./sleepBlocker');
+
+/**
+ * v2.48.62 (AUTO-SWEEP FILTER): khud-ba-khud chalne wali
+ * end-of-run sweep kis parked row ko chhoye — KHALIS
+ * faisla. Jis row ke download attempts 3 ya zyada ho
+ * chuke hon, sweep use chhod deti hai: wohi nakam rows
+ * har run me dobara ghoomti rehti thin (~20 parked
+ * rows), aur asal jhijhak yahi thi. Ye rok SIRF is
+ * khud-kar sweep ke liye hai — user ke haath ka
+ * explicit Resume / reconcile is se bilkul nahi
+ * bandha (woh apne purane raste par hi jata hai).
+ */
+function autoSweepEligible(row) {
+  if (!row || typeof row !== 'object' || !row.id) return false;
+  const attempts = Number(row.download_attempts);
+  return (Number.isFinite(attempts) ? attempts : 0) < 3;
+}
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -365,6 +382,24 @@ class WorkerPool {
     };
   }
 
+  /**
+   * v2.48.60 (PROJECT REGISTRY): the PROJECT LEDGER port
+   * bound into every engine this pool creates. The engine
+   * reports every project it ENTERS through it; the record
+   * lives in dbService's project_registry (account + project
+   * + first-seen time), so recovery can later re-open the
+   * EXACT project on the EXACT account instead of checking
+   * every account. Returns the ledger's { isNew, row } so
+   * the engine can log a new registration exactly once.
+   */
+  _projectPort() {
+    return {
+      recordSeen: (accountKey, projectUrl, source) => {
+        try { return dbService.recordProjectSeen({ accountKey, projectUrl, source }); } catch (e) { return null; }
+      }
+    };
+  }
+
   _creditPort() {
     const cs = getCreditService();
     // v2.0.0: spend ledger for the credits dashboard. Fed ONLY through
@@ -614,7 +649,9 @@ class WorkerPool {
         workerId: 'recovery',
         creditPort: this._creditPort(),
         // v2.31.3: recovery downloads count in the same ledger.
-        downloadPort: this._downloadPort()
+        downloadPort: this._downloadPort(),
+        // v2.48.60: recovery entries also register their project.
+        projectPort: this._projectPort()
       });
 
       try {
@@ -626,16 +663,39 @@ class WorkerPool {
           // bilkul nahi); na ho to gallery pass ke liye
           // is group ki sab se purani row ka waqt do —
           // date-time wala chunav usi se hoga.
+          // v2.48.58 (RECOVERY-NO-CREDIT-GATE change 1):
+          // downloadOnly hamesha laga kar bhejo — ye
+          // recovery koi credit NAHI kharch karti, is
+          // liye openFlowStudio ka credit gate yahan
+          // NAHI rukna chahiye (ZEROCLICK26: (22) ke 2
+          // credits par 10 parked tasks ruk gaye the).
+          // v2.48.60 (PROJECT REGISTRY): entry ka
+          // tartib ab teen darjon ka hai — recorded
+          // (task ki apni darj-shuda URL) > registry
+          // (is account ki kitab me group ki sab se
+          // purani row ke waqt ke qareeb-not-after
+          // project) > gallery-datetime (screen-scrape
+          // wala purana andaza, sirf tab jab registry
+          // me kuch na ho — .60 se pehle ke projects).
+          // Faisla khalis recoveryEntryPlan karta hai;
+          // registry ki query yahan DB se aati hai aur
+          // koi khata use 'koi hit nahi' hi samjhta hai.
+          let targetMs = 0;
+          for (const r of group) {
+            const t = rowCreatedMs(r);
+            if (t > 0 && (targetMs === 0 || t < targetMs)) targetMs = t;
+          }
+          let registryRow = null;
+          if (!projectUrl && targetMs > 0) {
+            try { registryRow = dbService.findProjectForTime(accountId, targetMs); } catch (e) { registryRow = null; }
+          }
+          const entryPlan = recoveryEntryPlan(projectUrl, registryRow);
           let openSettings;
-          if (projectUrl) {
-            openSettings = { ...settings, canvasStrategy: 'existing', projectUrl };
+          if (entryPlan.kind === 'recorded' || entryPlan.kind === 'registry') {
+            openSettings = { ...settings, canvasStrategy: 'existing', projectUrl: entryPlan.projectUrl, downloadOnly: true };
+            if (entryPlan.kind === 'registry') openSettings.projectUrlSource = 'registry';
           } else {
-            let targetMs = 0;
-            for (const r of group) {
-              const t = rowCreatedMs(r);
-              if (t > 0 && (targetMs === 0 || t < targetMs)) targetMs = t;
-            }
-            openSettings = { ...settings, canvasStrategy: 'existing' };
+            openSettings = { ...settings, canvasStrategy: 'existing', downloadOnly: true };
             if (targetMs > 0) openSettings.recoveryTargetTime = targetMs;
           }
           const st = await engine.openFlowStudio(openSettings).catch(() => null);
@@ -786,6 +846,19 @@ class WorkerPool {
       } else {
         batchId = `batch_${Date.now()}`;
         pendingTasks = dbService.createBatchTasks(batchId, prompts, settings);
+        // v2.48.63 (SKIP SCOPE — Item C): skip-flag ki
+        // nishani ab task ki PEHCHAN (DB id) hai, sirf is
+        // batch ke promptIndex-0 wale task par. .62 ka
+        // promptIndex wala usool usi run ke aakhri sweep
+        // me dusri batch ki pehli parked task ko bhi
+        // galti se skip kar deta tha (ZC30 wart). Ye
+        // nishani runtime-only hai — settings_json me
+        // kabhi nahi bachta (db.js strip), is liye Resume
+        // use dobara nahi jaga sakta.
+        if (settings && settings.skipFirstTaskDownload === true) {
+          const firstRow = pendingTasks.find(t => t && t.prompt_index === 0);
+          if (firstRow && firstRow.id) settings._skipFirstTaskId = firstRow.id;
+        }
       }
       this.currentBatchId = batchId;
       this.batchIds = new Set(pendingTasks.map(t => t.batch_id).filter(Boolean));
@@ -1550,6 +1623,17 @@ class WorkerPool {
             });
             this.onTaskUpdate({ taskId: rowTask.id, promptIndex: rowTask.prompt_index, promptText: rowTask.prompt_text, tag: rowTask.prompt_tag || '', status: 'failed', reason });
             noteTaskSettled(rowTask.id, 'failed');
+          } else if (outcome.status === 'skipped') {
+            // v2.48.63 (Item C — DRAIN STAND-DOWN): is run
+            // ki test-flag (skipFirstTaskDownload) wali
+            // task — download is run me jaan-boojh kar
+            // chhoda gaya tha. Yahi settle hai: entry
+            // dobara kataar me NAHI jati, koi Activity
+            // shor NAHI, koi 'download-failed' wali
+            // chetaavni NAHI. Row pehle se pending +
+            // needs_check hai (monitor ne park ki thi) —
+            // agla Resume (bina flag ke) sirf us ka
+            // download karega, koi naya charge nahi.
           } else {
             // download-failed, tile maujood: pending + needs_check
             // barkarar — agla Resume sirf download dobara try karega.
@@ -1813,7 +1897,9 @@ class WorkerPool {
           workerId,
           creditPort,
           // v2.31.3: persisted download-attempt ledger (3-round cap).
-          downloadPort: this._downloadPort()
+          downloadPort: this._downloadPort(),
+          // v2.48.60: project entries register in the registry.
+          projectPort: this._projectPort()
         });
 
         this.activeWorkers.set(workerId, engine);
@@ -2025,6 +2111,47 @@ class WorkerPool {
                   break;
                 }
 
+                if (submitRes.status === 'SETTINGS_MISMATCH') {
+                  // v2.48.63 (SETTINGS TASDEEQ — Item B): the
+                  // prompt NEVER fired — the engine read Flow's
+                  // settings pill after configuring and it did
+                  // NOT match this run's settings (ZC30: a fresh
+                  // account's panel sat at 720p/8s and the run
+                  // burned 20 credits instead of 8). Pre-fire
+                  // family like LOW_CREDITS: release the claim,
+                  // re-queue at the front, browser stays open
+                  // until the in-flight window drains. The
+                  // DIFFERENCE: the fault is this account's
+                  // PANEL state, so the account is marked
+                  // unusable for the rest of THIS run — no
+                  // worker retries another prompt against the
+                  // same broken panel. Other accounts take the
+                  // task normally; if none remain, the leftover
+                  // tasks end with this reason (lastStartError).
+                  taskQueue.releaseSubmission(nextTask.id);
+                  taskQueue.requeueFront(nextTask);
+                  try { dbService.updateTaskProgress(nextTask.id, 'pending'); } catch (e) {}
+                  const mismatchFields = Array.isArray(submitRes.mismatchFields) && submitRes.mismatchFields.length > 0
+                    ? submitRes.mismatchFields.join(', ') : 'settings';
+                  const mismatchReason = `Flow's settings panel on this account did not match the run's settings (${mismatchFields}) — the prompt was NOT sent and no credits were spent.`;
+                  if (workerAccount) unusableAccounts.set(workerAccount.id, mismatchReason);
+                  if (!lastStartError) lastStartError = mismatchReason;
+                  recordActivity({
+                    category: 'errors', level: 'error', accountId: workerAccount ? workerAccount.id : null, accountName: workerAccount ? workerAccount.name : null,
+                    stage: 'settings',
+                    taskId: nextTask.id,
+                    promptIndex: currentIdx,
+                    reason: mismatchReason,
+                    detail: `Before Prompt #${currentIdx + 1} was sent, the engine read Flow's settings pill on [${workerAccount ? workerAccount.name : 'this account'}]${submitRes.pillText ? ` ("${submitRes.pillText}")` : ''} and it did not match this run's settings — mismatched: ${mismatchFields}. Sending anyway would have generated (and charged) at the WRONG settings, so the prompt was NOT sent and NO credits were spent. The prompt is back in the queue for another account, and this account is skipped for the rest of the run. Fix the account's Flow panel (mode / resolution / duration / size) before the next run.`,
+                    message: `Settings mismatch: Prompt #${currentIdx + 1} NOT sent — no credits spent${workerAccount ? ` · ${workerAccount.name}` : ''}`
+                  });
+                  this.onTaskUpdate({ taskId: nextTask.id, promptIndex: currentIdx, promptText: nextTask.prompt_text, status: 'pending' });
+                  noteTaskSettled(nextTask.id, 'moved');
+                  this.log(`Worker #${workerIndex + 1}: [${workerAccount.name}]'s Flow settings panel does not match this run's settings (${mismatchFields}) — Prompt #${currentIdx + 1} was NOT sent and no credits were spent. The prompt is back in the queue; this account is skipped for the rest of the run.`, 'error');
+                  accountBlocked = true;
+                  break;
+                }
+
                 if (submitRes.status === 'VIOLATION') {
                   // Prompt-level rejection — failover kabhi nahi (har
                   // account par yahi hoga; credits barbaad honge).
@@ -2070,7 +2197,26 @@ class WorkerPool {
                   // project URL us ke har task ke liye).
                   try {
                     const purl = submitRes.projectUrl || engine.currentProjectUrl();
-                    if (purl) dbService.setTaskProjectUrl(nextTask.id, purl);
+                    if (purl) {
+                      dbService.setTaskProjectUrl(nextTask.id, purl);
+                      // v2.48.60 (PROJECT REGISTRY): yehi
+                      // pal is (account, project) jodi ko
+                      // registry me bhi darj karta hai —
+                      // source 'task-birth'. Entry wali
+                      // 'fresh-entry' row aam tor par pehle
+                      // se maujood hoti hai (ye upsert sirf
+                      // last_seen aage badhayega); agar kisi
+                      // wajah se entry darj na hui ho to yehi
+                      // pehli row banegi aur [ROOT] wali
+                      // line yahin lagegi.
+                      if (workerAccount && workerAccount.id) {
+                        const reg = dbService.recordProjectSeen({ accountKey: workerAccount.id, projectUrl: purl, source: 'task-birth' });
+                        if (reg && reg.isNew) {
+                          const firstSeen = reg.row && Number(reg.row.firstSeenAt) > 0 ? Number(reg.row.firstSeenAt) : Date.now();
+                          this.log(`[ROOT] project-registered account=${workerAccount.id} id=${projectIdOfUrl(purl)} at=${new Date(firstSeen).toISOString()} source=task-birth`, 'info');
+                        }
+                      }
+                    }
                   } catch (e) {}
                   activeWorkerTasks.push(submitRes);
 
@@ -2319,9 +2465,18 @@ class WorkerPool {
       if (!this.isStopping) {
         try {
           const ownIds = new Set(pendingTasks.map(t => t.id));
-          const parked = (dbService.getNeedsCheckTasks() || [])
-            .filter(r => r && r.id && !ownIds.has(r.id))
-            .slice(0, 20);
+          // v2.48.62 (AUTO-SWEEP FILTER): jin rows ke
+          // download attempts khatam (3+) ho chuke hon,
+          // khud-kar sweep unhe is dafa chhod deti hai —
+          // taaki har run me wohi thaki hui rows dobara
+          // na ghoomain. Explicit Resume is rok se bilkul
+          // azaad hai (wo _reconcileNeedsCheck ko seedha
+          // apni fehrist deta hai, is filter se nahi).
+          const allParked = (dbService.getNeedsCheckTasks() || [])
+            .filter(r => r && r.id && !ownIds.has(r.id));
+          const eligible = allParked.filter(autoSweepEligible);
+          const parked = eligible.slice(0, 20);
+          const skippedExhausted = allParked.length - eligible.length;
           let saved = 0;
           let kept = 0;
           if (parked.length > 0) {
@@ -2337,7 +2492,7 @@ class WorkerPool {
               } catch (e) { kept++; }
             }
           }
-          this.log(`[ROOT] resume-sweep tasks=${parked.length} saved=${saved} kept=${kept}`, saved > 0 ? 'success' : 'info');
+          this.log(`[ROOT] resume-sweep tasks=${parked.length} saved=${saved} kept=${kept}${skippedExhausted > 0 ? ` skipped=${skippedExhausted}` : ''}`, saved > 0 ? 'success' : 'info');
         } catch (e) {}
       }
 
@@ -2572,4 +2727,4 @@ WorkerPool.buildRunStatusText = function buildRunStatusText(stats) {
   return text;
 };
 
-module.exports = { WorkerPool };
+module.exports = { WorkerPool, autoSweepEligible };

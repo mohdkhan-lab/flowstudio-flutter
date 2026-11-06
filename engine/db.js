@@ -187,6 +187,27 @@ function initSchema() {
       value TEXT NOT NULL,
       updated_at DATETIME DEFAULT CURRENT_TIMESTAMP
     );
+
+    -- v2.48.60 (PROJECT REGISTRY): har Flow project jo
+    -- engine KABHI enter karta hai, us (account, project)
+    -- jodi ka mustaqil record — project kis cookies
+    -- account par bana aur kis waqt pehli baar dekha
+    -- gaya. Recovery kisi bachi-hui video ke liye registry
+    -- se seedha wahi account + wahi project kholti hai,
+    -- bajaye har baar saare accounts check karne ke.
+    -- account_key wahi identity hai jo queue_tasks
+    -- assigned_account_id me rakhti hain (accounts.id) —
+    -- recovery grouping bhi isi par hoti hai.
+    CREATE TABLE IF NOT EXISTS project_registry (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      account_key TEXT NOT NULL,
+      project_url TEXT NOT NULL,
+      project_id TEXT DEFAULT '',
+      first_seen_at INTEGER DEFAULT 0,
+      last_seen_at INTEGER DEFAULT 0,
+      source TEXT DEFAULT '',
+      UNIQUE(account_key, project_url)
+    );
   `);
 
   // v1.8.0 migrations (ZDola-logic edition): timed account rest +
@@ -279,6 +300,31 @@ function mapAccountRow(a) {
     cooldownLevel: Number(a.cooldown_level) || 0,
     hasCookies: !!a.has_cookies,
     creditsSource: a.credits_source || 'live'
+  };
+}
+
+/**
+ * v2.48.60 (PROJECT REGISTRY): project_registry ki ek
+ * row ki saaf shakal. projectId yahin URL se nikalta
+ * hai (flowAutomation.projectIdOfUrl wali hi kaat —
+ * db.js us module ko import nahi karta, is liye regex
+ * yahan dohra hai).
+ */
+function projectIdFromUrl(url) {
+  const m = String(url || '').match(/\/project\/([^/?#]+)/);
+  return m ? m[1] : '';
+}
+
+function mapProjectRegistryRow(r) {
+  if (!r) return null;
+  return {
+    id: r.id,
+    accountKey: r.account_key || '',
+    projectUrl: r.project_url || '',
+    projectId: r.project_id || '',
+    firstSeenAt: Number(r.first_seen_at) || 0,
+    lastSeenAt: Number(r.last_seen_at) || 0,
+    source: r.source || ''
   };
 }
 
@@ -387,6 +433,19 @@ const dbService = {
   // ---------- Queue tasks ----------
   createBatchTasks(batchId, prompts, settings) {
     const now = Date.now();
+    // v2.48.62 (ZC30 TEST FLAG): skipFirstTaskDownload sirf
+    // ZINDA run ki settings me rehta hai — DB me bachti
+    // settings_json copy se hata do. Wajah: Resume apni
+    // settings kisi task ki settings_json se dobara banata
+    // hai; flag wahan bach jaye to us batch ka pehla task
+    // phir kabhi download na ho sake.
+    // v2.48.63 (Item C): flag ki nishani wali task id
+    // (_skipFirstTaskId) bhi bilkul waisi hi runtime-only
+    // hai — wahi wajah, wahi strip.
+    const persistedSettings = { ...(settings || {}) };
+    delete persistedSettings.skipFirstTaskDownload;
+    delete persistedSettings._skipFirstTaskId;
+    const settingsJson = JSON.stringify(persistedSettings);
     (Array.isArray(prompts) ? prompts : []).forEach((p, idx) => {
       // v2.3.0: a prompt item may be a plain string (old callers) or
       // { text, tag, index } from the smart parser / missing-retry.
@@ -413,7 +472,7 @@ const dbService = {
         item.text,
         promptIndex,
         item.tag.slice(0, 60),
-        JSON.stringify(settings || {}),
+        settingsJson,
         (settings && settings.duration) || '6s',
         (settings && settings.aspectRatio) || '9:16',
         (settings && settings.model) || 'Omni Flash',
@@ -484,6 +543,74 @@ const dbService = {
   setTaskProjectUrl(taskId, url) {
     run('UPDATE queue_tasks SET project_url = ? WHERE id = ?', [String(url || ''), taskId]);
     return this.getTask(taskId);
+  },
+
+  /**
+   * v2.48.60 (PROJECT REGISTRY): ek (account, project)
+   * jodi ko registry me darj karo — pehli baar ho to
+   * nayi row (first_seen_at = last_seen_at = now, asal
+   * source mehfooz), dobara ho to SIRF last_seen_at
+   * aage badhta hai (pehla source hi rehta hai —
+   * 'kis ghadi pehli baar pata chala' wali sachai nahi
+   * badalti). Lautta hai { isNew, row } — bulane wala
+   * [ROOT] project-registered wali line SIRF isNew par
+   * hi lagata hai, taaki har entry par log na bhare.
+   * Khali accountKey/projectUrl par null (koi row nahi).
+   * `now` (epoch ms) teston ke liye diya ja sakta hai.
+   */
+  recordProjectSeen(entry) {
+    const accountKey = String((entry && entry.accountKey) || '').trim();
+    const projectUrl = String((entry && entry.projectUrl) || '').trim();
+    if (!accountKey || !projectUrl) return null;
+    const now = Number(entry && entry.now) > 0 ? Math.floor(Number(entry.now)) : Date.now();
+    const source = String((entry && entry.source) || '').trim();
+    const existing = queryOne(
+      'SELECT * FROM project_registry WHERE account_key = ? AND project_url = ?',
+      [accountKey, projectUrl]
+    );
+    if (existing) {
+      run('UPDATE project_registry SET last_seen_at = ? WHERE id = ?', [now, existing.id]);
+      return { isNew: false, row: mapProjectRegistryRow({ ...existing, last_seen_at: now }) };
+    }
+    run(
+      'INSERT INTO project_registry (account_key, project_url, project_id, first_seen_at, last_seen_at, source) VALUES (?, ?, ?, ?, ?, ?)',
+      [accountKey, projectUrl, projectIdFromUrl(projectUrl), now, now, source]
+    );
+    const row = queryOne(
+      'SELECT * FROM project_registry WHERE account_key = ? AND project_url = ?',
+      [accountKey, projectUrl]
+    );
+    return { isNew: true, row: mapProjectRegistryRow(row) };
+  },
+
+  /**
+   * v2.48.60 (PROJECT REGISTRY): kisi account ke us
+   * project ki registry row jo diye gaye waqt (epoch ms)
+   * se pehle ya usi par pehli baar dekha gaya ho aur
+   * un sab me sab se LATE ho — .57 ke pickGalleryProject
+   * wala 'sab se qareeb, baad ka na ho' usool, lekin
+   * gallery ki screen-scrape ki jagah apni kitab se.
+   * Aisi row na ho (ya account/waqt khali ho) to null.
+   */
+  findProjectForTime(accountKey, epochMs) {
+    const key = String(accountKey || '').trim();
+    const t = Number(epochMs) || 0;
+    if (!key || t <= 0) return null;
+    const row = queryOne(
+      'SELECT * FROM project_registry WHERE account_key = ? AND first_seen_at <= ? ORDER BY first_seen_at DESC, id DESC LIMIT 1',
+      [key, t]
+    );
+    return row ? mapProjectRegistryRow(row) : null;
+  },
+
+  /** v2.48.60: registry ki rows — account diya ho to
+   * sirf usi ki, warna saari (tests/debug ke liye). */
+  listProjects(accountKey) {
+    const key = String(accountKey || '').trim();
+    const rows = key
+      ? query('SELECT * FROM project_registry WHERE account_key = ? ORDER BY first_seen_at ASC, id ASC', [key])
+      : query('SELECT * FROM project_registry ORDER BY first_seen_at ASC, id ASC');
+    return rows.map(mapProjectRegistryRow);
   },
 
   /**

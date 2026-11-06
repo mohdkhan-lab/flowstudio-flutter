@@ -209,6 +209,300 @@ function galleryEntryDecision(survey, preferFresh, targetMs, nowMs) {
 }
 
 /**
+ * v2.48.60 (PROJECT REGISTRY): recovery ke ek
+ * (account, project) group ke liye ENTRY ka faisla —
+ * khalis, koi page/DB nahi chhoota:
+ *   1. task par RECORDED project_url ho -> wahi,
+ *      source 'recorded' (sab se pakki pehchan).
+ *   2. warna registry (dbService.findProjectForTime)
+ *      ka qareebi-not-after project -> source
+ *      'registry' — engine usi URL par seedha jata
+ *      hai, gallery scrape bilkul nahi.
+ *   3. warna gallery ka date-time wala raasta
+ *      (kind 'gallery' — pool recoveryTargetTime
+ *      bhejta hai, faisla galleryEntryDecision ka).
+ * registryRow dbService ki mapped shakal
+ * (projectUrl) bhi ho sakti hai aur kachi DB shakal
+ * (project_url) bhi — dono qubool hain.
+ */
+function recoveryEntryPlan(recordedUrl, registryRow) {
+  const rec = String(recordedUrl || '').trim();
+  if (rec) return { kind: 'recorded', projectUrl: rec, source: 'recorded' };
+  const regUrl = registryRow
+    ? String(registryRow.projectUrl || registryRow.project_url || '').trim()
+    : '';
+  if (regUrl) return { kind: 'registry', projectUrl: regUrl, source: 'registry' };
+  return { kind: 'gallery', projectUrl: '', source: null };
+}
+
+/**
+ * v2.48.62 (RESOLUTION-CONFIRM FIX): resolution button
+ * (360p/720p) CHUNA HUA hai ya nahi — KHALIS faisla, ek
+ * jaali snapshot par: { attrs, className, parentClassName }.
+ * Purani pehchan barkarar: aria-checked/aria-selected/
+ * aria-pressed === 'true', data-state === 'on', ya button
+ * ki apni class list me exact 'selected'/'active' token.
+ * v2.48.62 ki chaudi pehchan: Flow ka Material toggle
+ * haalat wali class (mat-button-toggle-checked waghera)
+ * aksar button ki class string ki mukhtalif shakal me ya
+ * PARENT wrapper par rakhta hai — is liye /checked|
+ * selected|active/i ab button + parent dono ki class
+ * string par chalta hai. className SVGAnimatedString
+ * bhi ho sakta hai — baseVal se saaf hota hai.
+ */
+function resolutionBtnSelected(snap) {
+  const s = snap && typeof snap === 'object' ? snap : {};
+  const attrs = s.attrs && typeof s.attrs === 'object' ? s.attrs : {};
+  if (attrs['aria-checked'] === 'true' || attrs['aria-selected'] === 'true'
+    || attrs['aria-pressed'] === 'true' || attrs['data-state'] === 'on') return true;
+  const clsOf = (c) => {
+    if (!c) return '';
+    if (typeof c === 'string') return c;
+    if (typeof c.baseVal === 'string') return c.baseVal;
+    try { return String(c); } catch (e) { return ''; }
+  };
+  const cls = clsOf(s.className);
+  const parentCls = clsOf(s.parentClassName);
+  const tokens = cls.split(/\s+/);
+  if (tokens.indexOf('selected') >= 0 || tokens.indexOf('active') >= 0) return true;
+  return /checked|selected|active/i.test(cls + ' ' + parentCls);
+}
+
+/**
+ * v2.48.62: readResolutionState ka page-side hissa ek
+ * SOURCE string ki shakal me — taaki page ke andar bhi
+ * WAHI resolutionBtnSelected chale jo Node me test hota
+ * hai (helper ka asal source is string me garam hokar
+ * jata hai; andar wala faisla aur test wala faisla ek
+ * hi hain). Test is source ko jaali document par chala
+ * kar asal bartav parkhta hai.
+ */
+function resolutionStateSource() {
+  return '(() => {\n'
+    + 'const resolutionBtnSelected = ' + resolutionBtnSelected.toString() + ';\n'
+    + 'const pop = Array.from(document.querySelectorAll(\'.cdk-overlay-pane, .settings-content\')).find(p => p.getClientRects().length > 0) || document.querySelector(\'.settings-content\');\n'
+    + 'if (!pop) return { found: false, selected: null };\n'
+    + 'const btns = Array.from(pop.querySelectorAll(\'button, [role="radio"], [role="tab"]\'));\n'
+    + 'const resBtns = btns.filter(b => [\'360p\', \'720p\'].includes((b.innerText || \'\').trim().toLowerCase()));\n'
+    + 'if (!resBtns.length) return { found: false, selected: null };\n'
+    + 'const snapOf = (b) => ({\n'
+    + '  attrs: {\n'
+    + '    \'aria-checked\': b.getAttribute(\'aria-checked\'),\n'
+    + '    \'aria-selected\': b.getAttribute(\'aria-selected\'),\n'
+    + '    \'aria-pressed\': b.getAttribute(\'aria-pressed\'),\n'
+    + '    \'data-state\': b.getAttribute(\'data-state\')\n'
+    + '  },\n'
+    + '  className: b.className,\n'
+    + '  parentClassName: b.parentElement ? b.parentElement.className : \'\'\n'
+    + '});\n'
+    + 'const sel = resBtns.find(b => resolutionBtnSelected(snapOf(b)));\n'
+    + 'return { found: true, selected: sel ? (sel.innerText || \'\').trim().toLowerCase() : null };\n'
+    + '})()';
+}
+
+/**
+ * v2.48.62 (ZC30 TEST FLAG — skipFirstTaskDownload):
+ * download ka marhala chhodna hai ya nahi — KHALIS
+ * faisla. Flag sirf MCP ke flowstudio_generate_in_app
+ * wale ek-run argument se aata hai (settings me
+ * mustaqil kabhi nahi bachta — db ki settings_json
+ * wali copy se ye hata diya jata hai, taaki Resume
+ * use dobara na jaga sake).
+ * v2.48.63 (SCOPE FIX — ZC30 wart): .62 me shart
+ * `task.promptIndex === 0` thi — lekin promptIndex
+ * HAR batch ka apna hota hai, is liye usi run ke
+ * aakhri sweep ne dusri batch ki ek purani parked
+ * task (account (18) wali) ko bhi galti se skip kar
+ * diya. Ab nishani task ki PEHCHAN hai: workerPool
+ * batch bante hi settings par us task ki DB id
+ * `settings._skipFirstTaskId` laga deta hai, aur
+ * sirf WAHI task skip hoti hai (id bhi settings_json
+ * me nahi bachta — db.js strip).
+ */
+function skipFirstDownloadApplies(settings, task) {
+  return !!(settings && settings.skipFirstTaskDownload === true
+    && settings._skipFirstTaskId != null
+    && task && task.taskId != null
+    && task.taskId === settings._skipFirstTaskId);
+}
+
+/**
+ * v2.48.63 (PASSIVE-FIRST — Item A): mainpage-harvest
+ * ka pehla, khamosh marhala is task par laagu hai ya
+ * nahi — KHALIS faisla. Shartein: task maujood ho,
+ * file pehle se save na hui ho, aur us ka render ISI
+ * engine session me mukammal hua ho (renderCompletedAt
+ * session ke aaghaz ke baad ka ho). Recovery tasks ka
+ * render is session me hua hi nahi hota (un par waqt
+ * darj hi nahi, ya purana hota hai) — wo is darwaze se
+ * bahar rehte hain, kyunke dobara khula project sirf
+ * chhota preview deta hai; wahan khamosh intezaar sirf
+ * sweep ka waqt khayega.
+ */
+function passiveClaimApplies(task, sessionStartedAt) {
+  return !!(task
+    && !task.mediaSaved
+    && Number.isFinite(task.renderCompletedAt)
+    && Number.isFinite(sessionStartedAt)
+    && task.renderCompletedAt >= sessionStartedAt);
+}
+
+/**
+ * v2.48.64 (TILE-RESIZE TRIGGER): resize wale
+ * marhale ka darwaza passive wale se bilkul waisa
+ * hi hai — sirf is session me render hue taaza
+ * tasks (recovery is se bahar; ZC32 ka pehla
+ * parhna generation-phase ka saaf parhna hai).
+ * Doosra naam is liye taaki harvest ki tartib aur
+ * test dono saaf parhe jaayein; faisla ek hi
+ * function karta hai.
+ */
+const resizeTriggerApplies = passiveClaimApplies;
+
+/**
+ * v2.48.63 (SETTINGS TASDEEQ — Item B): Flow ki
+ * settings pill ke text ko parhna — KHALIS parser.
+ * Pill ki shaklein: 'Video · 720p · 8s crop_9_16 x1',
+ * 'Video · 360p · 4s crop_9_16 x1', image wali
+ * '🍌 Nano Banana 2.1 crop_16_9 x2'. Jo cheez text me
+ * na mile wo null rehti hai. Aspect 'crop_9_16' se
+ * '9:16' banta hai (aur 'crop_16_9' se '16:9').
+ * Lautta hai { isVideo, resolution, durationSec,
+ * aspect, count } — isVideo 'Video' lafz mile to
+ * true, 'Image'/'Banana' mile to false, warna null.
+ */
+function parseSettingsPill(text) {
+  const out = { isVideo: null, resolution: null, durationSec: null, aspect: null, count: null };
+  if (typeof text !== 'string' || !text.trim()) return out;
+  const t = text.replace(/\s+/g, ' ').trim();
+  if (/\bVideo\b/.test(t)) out.isVideo = true;
+  else if (/\bImage\b/.test(t) || t.includes('Banana')) out.isVideo = false;
+  const res = t.match(/(\d{3,4})p\b/i);
+  if (res) out.resolution = `${res[1]}p`;
+  const dur = t.match(/\b(\d+(?:\.\d+)?)s\b/);
+  if (dur) {
+    const v = Number(dur[1]);
+    if (Number.isFinite(v)) out.durationSec = v;
+  }
+  const asp = t.match(/crop_(\d+)_(\d+)/) || t.match(/\b(\d+):(\d+)\b/);
+  if (asp) out.aspect = `${asp[1]}:${asp[2]}`;
+  const cnt = t.match(/\bx(\d+)\b/i);
+  if (cnt) out.count = `x${cnt[1]}`;
+  return out;
+}
+
+/**
+ * v2.48.63 (SETTINGS TASDEEQ — Item B): mangi hui
+ * settings aur pill ki asal haalat ka muqabla —
+ * KHALIS faisla. requested = { mode: 'Video'|'Image',
+ * resolution: '360p'|null, durationSec: number|null,
+ * aspect: '9:16'|null } (null = is run ke liye wo
+ * cheez maayne nahi rakhti, muqabla nahi hota). Pill
+ * kisi cheez ko rakhta hi na ho to wo bhi ikhtilaf
+ * gina jata hai (pill padh sakne ki soorat me).
+ * Lautta hai ikhtilaf wale kheton ke naam
+ * ('mode'|'resolution'|'duration'|'aspect');
+ * khaali fehrist = poora muwafiq.
+ */
+function settingsPillMismatch(requested, pill) {
+  const out = [];
+  if (!requested || !pill) return out;
+  const wantVideo = requested.mode === 'Video' ? true
+    : (requested.mode === 'Image' ? false : null);
+  if (wantVideo !== null && pill.isVideo !== wantVideo) out.push('mode');
+  if (requested.resolution != null && pill.resolution !== requested.resolution) out.push('resolution');
+  if (requested.durationSec != null && pill.durationSec !== requested.durationSec) out.push('duration');
+  if (requested.aspect != null && pill.aspect !== requested.aspect) out.push('aspect');
+  return out;
+}
+
+/**
+ * v2.48.59 (OMNI 1.2 FLASH): Omni Flash 1.2 ki qeemat
+ * PER-SECOND hai (Google Flow support page, verified
+ * 2026-11-06; CREDIT-RATES-OMNI-1.2-2026-11-06.md) —
+ * 1.1 ki flat table (4/5/6/7 waghera) se bilkul alag:
+ *   360p: sec 1–10 = 1 credit/sec, sec 11–15 = 2/sec
+ *   720p: sec 1–10 = 3 credits/sec, sec 11–15 = 6/sec
+ * Durations 3–15s (1s steps). Range se bahar ki value
+ * sab se qareeb in-range value par clamp hoti hai
+ * (engine ki purani fallback aadat — engine ko hamesha
+ * ek number chahiye; Dart wali estimate wahan null
+ * deti hai kyunke wo sirf dikhane ke liye hai).
+ * Khalis helper — getRequiredCredits isi ko bulata hai.
+ */
+function omni12CreditsPerVideo(seconds, genRes) {
+  let secs = Math.round(Number(seconds) || 0);
+  if (!Number.isFinite(secs) || secs <= 0) secs = 6;
+  if (secs < 3) secs = 3;
+  if (secs > 15) secs = 15;
+  const base = genRes === '720p' ? 3 : 1;
+  const extra = genRes === '720p' ? 6 : 2;
+  if (secs <= 10) return secs * base;
+  return 10 * base + (secs - 10) * extra;
+}
+
+/**
+ * v2.48.59 (OMNI 1.2 FLASH): model-naam ki pehchan —
+ * version token (pehla \d+\.\d+, masalan '1.2'/'3.1')
+ * aur baaki lafz tokens (version hata kar). Flow ke
+ * menu ki exact wording yahan se maloom nahi ho sakti
+ * — 'Omni 1.2 Flash' bhi ho sakta hai aur 'Omni Flash
+ * 1.2' bhi — is liye chunav kabhi ek exact string par
+ * nahi, hamesha in tokens par hota hai.
+ */
+function modelNameParts(name) {
+  const raw = String(name == null ? '' : name).toLowerCase();
+  const vm = raw.match(/\d+\.\d+/);
+  const version = vm ? vm[0] : null;
+  const rest = vm ? raw.replace(vm[0], ' ') : raw;
+  const words = rest.match(/[a-z]+/g) || [];
+  return { version, words };
+}
+
+/**
+ * v2.48.59: matchModelOption(targetName, itemTexts)
+ * -> chune hue item ka index, ya -1. Khalis faisla:
+ *  - Target ke paas version ho (masalan 'Omni 1.2
+ *    Flash', 'Veo 3.1 Fast') to item tabhi match hai
+ *    jab us ka version WAHI ho aur target ke saare
+ *    lafz tokens us me hon.
+ *  - Target bina version ke ho (legacy 'Omni Flash'
+ *    = Omni 1.1) to pehle bina-version wala item,
+ *    warna '1.1' version wala — '1.2' jaisa doosra
+ *    version KABHI nahi jab 1.1/bina-version maujood
+ *    ho (purana includes() yahi galti karta tha:
+ *    'omniflash' saaf string 'omniflash12' ke andar
+ *    mil jati thi). Kuch aur bache hi na to purani
+ *    token-subset fallback (pehla candidate).
+ *  - opts.strictVersion (current-selection check ke
+ *    liye): doosre version par fallback NAHI — warna
+ *    panel par 1.2 chalta hua 1.1 target ko 'pehle se
+ *    chuna hua' keh kar chup chaap 1.2 hi rehne deta.
+ */
+function matchModelOption(targetName, itemTexts, opts) {
+  const strict = !!(opts && opts.strictVersion);
+  const t = modelNameParts(targetName);
+  const items = Array.isArray(itemTexts) ? itemTexts : [];
+  if (!t.words.length || !items.length) return -1;
+  const parsed = items.map((txt) => modelNameParts(txt));
+  const cand = [];
+  parsed.forEach((p, i) => {
+    if (t.words.every((w) => p.words.includes(w))) cand.push(i);
+  });
+  if (!cand.length) return -1;
+  if (t.version) {
+    const hit = cand.find((i) => parsed[i].version === t.version);
+    return hit === undefined ? -1 : hit;
+  }
+  const noVer = cand.find((i) => parsed[i].version === null);
+  if (noVer !== undefined) return noVer;
+  const v11 = cand.find((i) => parsed[i].version === '1.1');
+  if (v11 !== undefined) return v11;
+  if (strict) return -1;
+  return cand[0];
+}
+
+/**
  * v2.48.52 (ROUTE 1A PACK): netload (CDP
  * Network.loadNetworkResource) koshish ki [ROOT]
  * line (khalis). Ek koshish = ek line: kaun sa host,
@@ -488,6 +782,18 @@ class FlowAutomationEngine {
           if (info && info.ok) this.log(`[ROOT] focus-emulation enabled`, 'info');
           else this.log(`[ROOT] focus-emulation failed`, 'warn');
         } catch (e) {}
+      },
+      // v2.48.62 (GV-REQ LOGGER): har googlevideo playback
+      // darkhwast ki EK line — preview (~93KB) aur full
+      // (~1.3MB) darkhwastein kahan se aatin hain (redirect
+      // source + initiator) is ka saboot ZC30 me yahi dega.
+      // Asal signed URL kabhi nahi (fields capture ke
+      // gvReqFields se saaf hokar aate hain).
+      onGvReq: (f) => {
+        try {
+          if (!f) return;
+          this.log(`[ROOT] gv-req host=${f.host} clen=${f.clen} itag=${f.itag} dur=${f.dur} range=${f.range} from=${f.from} init=${f.init}`, 'info');
+        } catch (e) {}
       }
     });
     // v2.48.36 (ROOT PACK — A): download-stage ka tala —
@@ -502,6 +808,22 @@ class FlowAutomationEngine {
     // bindings that landed before the task object was registered.
     this._captureTasks = new Map();
     this._earlyBackend = new Map();
+    // v2.48.63 (PASSIVE-FIRST — Item A): is engine
+    // session ka aaghaz — kisi task ka render ISI
+    // session me mukammal hua hai ya nahi, is ki
+    // pehchan passiveClaimApplies isi se karta hai.
+    // Engine har worker / recovery session ke liye
+    // naya banta hai (workerPool), is liye constructor
+    // ka pal hi session ka aaghaz hai.
+    this._sessionStartedAt = Date.now();
+    // v2.48.63 (SKIP SCOPE — Item C): jin taskIds ka
+    // download is session me test-flag se park ho
+    // chuka hai — un ke liye SKIPPED wali [ROOT] line
+    // sirf EK dafa; us ke baad downloadTaskMedia
+    // khamoshi se wahi { skipped:true } natija deta
+    // hai (ZC30 me drain/retry ne ~8 dafa wahi line
+    // dohrayi thi).
+    this._skipParkedTaskIds = new Set();
     // v2.48.13: direct-API pollers (videoId -> poll state). Har
     // submit ke baad ek poller us task ke workflow ki haal-jaanch
     // wali asal API request ko page ke andar se replay karke
@@ -563,6 +885,21 @@ class FlowAutomationEngine {
     };
     this._downloadChannel = 'monitor';
     this.downloadPort = Object.assign({}, noopDownloadPort, options.downloadPort || {});
+    // v2.48.60 (PROJECT REGISTRY): PROJECT LEDGER port —
+    // pool isey dbService.recordProjectSeen se bandhta
+    // hai. Engine har project entry par recordSeen
+    // bulata hai; ledger pehli baar ki row par
+    // { isNew: true } lautata hai taaki [ROOT]
+    // project-registered wali line SIRF nayi row par
+    // lage. No-op jab pool na bandhe (purane bulane
+    // wale / tests — un ke liye registry khaamosh
+    // rehti hai).
+    //   recordSeen(accountKey, projectUrl, source)
+    //     -> { isNew, row } | null
+    const noopProjectPort = {
+      recordSeen: () => null
+    };
+    this.projectPort = Object.assign({}, noopProjectPort, options.projectPort || {});
     // v2.31.3 tuning (constructor options so simulations can shrink
     // the windows; production uses these defaults): one download
     // ROUND gets 150s (v2.48.0: raised from 120s — the 25s media-
@@ -584,6 +921,12 @@ class FlowAutomationEngine {
     // muddat (production 1000ms) — constructor option
     // taaki nakli-page test tez chal saken.
     this.galleryEntryPollMs = Number(options.galleryEntryPollMs) > 0 ? Number(options.galleryEntryPollMs) : 1000;
+    // v2.48.58 (RECOVERY-NO-CREDIT-GATE change 2):
+    // recovery gallery entry se pehle tiles ke render
+    // ka intezaar — production me had 15s, poll 500ms.
+    // Constructor options taaki test ghata saken.
+    this.galleryWaitMs = Number(options.galleryWaitMs) > 0 ? Number(options.galleryWaitMs) : 15000;
+    this.galleryWaitPollMs = Number(options.galleryWaitPollMs) > 0 ? Number(options.galleryWaitPollMs) : 500;
     // v2.48.43 (HOVER + PATIENCE PACK): SABR ki khidki
     // — download attempt apne render-complete se itni
     // der (production 60s) main page par stream ka
@@ -1321,6 +1664,34 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.60 (PROJECT REGISTRY): page jis project me
+   * hai, us (account, project) jodi ko registry me darj
+   * karo — account wahi identity jo tasks
+   * assigned_account_id me rakhti hain
+   * (this.currentAccount.id). Ye kitab ENTRY ke pal
+   * likhi jati hai, koi prompt submit hone se pehle —
+   * run beech me mar bhi jaye to project ka record
+   * mehfooz rehta hai aur recovery ko har baar saare
+   * accounts nahi chaanne padte. [ROOT] wali line SIRF
+   * nayi row par lagti hai (ledger ka isNew); dobara
+   * entry par sirf last_seen_at aage badhta hai,
+   * khaamoshi se. Koi bhi khata yahan run ko NAHI
+   * rokta — try/catch me lipta, log-and-continue.
+   */
+  _registerCurrentProject(source) {
+    try {
+      const url = this.currentProjectUrl();
+      const accountKey = this.currentAccount ? this.currentAccount.id : '';
+      if (!url || !accountKey) return;
+      const res = this.projectPort.recordSeen(accountKey, url, source);
+      if (res && res.isNew) {
+        const firstSeen = res.row && Number(res.row.firstSeenAt) > 0 ? Number(res.row.firstSeenAt) : Date.now();
+        this.log(`[ROOT] project-registered account=${accountKey} id=${projectIdOfUrl(url)} at=${new Date(firstSeen).toISOString()} source=${source}`, 'info');
+      }
+    } catch (e) {}
+  }
+
+  /**
    * v2.48.57 (PROJECT-TRUTH changes 2+3): gallery se
    * project ke andar jana. Faisla khalis
    * galleryEntryDecision karta hai:
@@ -1333,9 +1704,54 @@ class FlowAutomationEngine {
    * recovery ke liye matlab rakhta hai
    * ('gallery-datetime' | 'gallery-first').
    */
+  /**
+   * v2.48.58 (change 2): gallery ke tiles asal me
+   * render hone ka intezaar — kam az kam ek project
+   * link YA New Project button dikhe tab tak, had
+   * bounded (this.galleryWaitMs). ZEROCLICK26 ki
+   * recovery entries me pehla attempt hamesha
+   * 'none-found' par zaya hota tha kyunke us pal
+   * gallery ke banners hi load ho rahe the, tiles
+   * aayi hi nahi thin; doosra attempt ~10s baad
+   * kaam karta tha. Lautta hai { links, waitedMs } —
+   * links us pal ke project links ki ginti.
+   */
+  async _waitForGalleryTiles(timeoutMs) {
+    const budget = Number(timeoutMs) > 0 ? Number(timeoutMs) : (this.galleryWaitMs || 15000);
+    const poll = Number(this.galleryWaitPollMs) > 0 ? Number(this.galleryWaitPollMs) : 500;
+    const started = Date.now();
+    let links = 0;
+    for (;;) {
+      try {
+        const probe = await this.page.evaluate(() => {
+          const n = document.querySelectorAll('a[href*="/project/"]').length;
+          const hasNew = !!document.querySelector('button.new-project-button') ||
+            Array.from(document.querySelectorAll('button, div[role="button"]')).some(b => {
+              const txt = (b.innerText || '').toLowerCase();
+              const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+              return txt.includes('new project') || aria.includes('new project') || txt.includes('create project');
+            });
+          return { links: n, ready: n > 0 || hasNew };
+        });
+        links = probe && typeof probe.links === 'number' ? probe.links : 0;
+        if (probe && probe.ready) break;
+      } catch (e) {}
+      if (Date.now() - started >= budget) break;
+      await sleep(poll);
+    }
+    return { links, waitedMs: Date.now() - started };
+  }
+
   async _enterProjectFromGallery(preferFresh, targetMs) {
     let source = null;
     let lastHref = null;
+    // v2.48.58 (change 2): SIRF recovery entry pehle
+    // gallery ke render ka intezaar karti hai — fresh
+    // run ka bartav bilkul pehle jaisa.
+    if (!preferFresh) {
+      const gw = await this._waitForGalleryTiles(this.galleryWaitMs || 15000);
+      this.log(`[ROOT] gallery-wait links=${gw.links} waited=${gw.waitedMs}`, 'info');
+    }
     for (let attempt = 1; attempt <= 3; attempt++) {
       let survey = null;
       try {
@@ -1361,6 +1777,14 @@ class FlowAutomationEngine {
       if (!survey || typeof survey !== 'object') survey = { hasNewBtn: false, links: [] };
       const decision = galleryEntryDecision(survey, preferFresh, targetMs, Date.now());
       if (decision.source) source = decision.source;
+      // v2.48.62 (GALLERY ENTRY LOG): fresh run ka faisla
+      // maujooda project par gir jaye to wo sach log me
+      // NAAM se aaye — pehle ye fallback bilkul khamosh
+      // tha aur kisi ko pata nahi chalta tha ke naya
+      // project khula ya purana (zc27 teapot wala sawal).
+      if (preferFresh && decision.kind === 'link') {
+        this.log(`[ROOT] gallery-entry fresh-fallback index=${decision.index} source=${decision.source || '-'}`, 'info');
+      }
       if (decision.kind === 'link' && survey.links[decision.index]) lastHref = survey.links[decision.index].href;
       let actionResult = 'none-found';
       if (decision.kind !== 'none') {
@@ -1384,7 +1808,16 @@ class FlowAutomationEngine {
           if (clicked) actionResult = decision.kind === 'new' ? 'clicked-new-project-button' : 'clicked-existing-project-link';
         } catch (e) {}
       }
-      this.log(`Attempt ${attempt}/3 to enter the project — ${actionResult === 'none-found' ? 'no New Project button or project link was found' : 'button/link found and clicked'}`, 'info');
+      // v2.48.62 (GALLERY ENTRY LOG): line ab ASAL action
+      // bolti hai — New Project par click hua ya maujooda
+      // project ke link par, aur kis source se. Pehle dono
+      // surat me ek hi dhundli si line chhapti thi, jis se
+      // fresh-fallback nazar hi nahi aata tha.
+      if (actionResult === 'none-found') {
+        this.log(`Attempt ${attempt}/3 to enter the project — no New Project button or project link was found`, 'info');
+      } else {
+        this.log(`Attempt ${attempt}/3 to enter the project — clicked (action=${actionResult} source=${decision.source || '-'})`, 'info');
+      }
       let entered = false;
       for (let w = 0; w < 10; w++) {
         await sleep(this.galleryEntryPollMs || 1000);
@@ -1476,7 +1909,14 @@ class FlowAutomationEngine {
         await this._waitForFlowSignal(5000);
       }
       if (wantId && this.page.url().includes(`/project/${wantId}`)) {
-        this.log(`[ROOT] recovery-project url=${recordedProjectUrl} source=recorded`, 'info');
+        // v2.48.60 (PROJECT REGISTRY): URL task par
+        // darj tha to 'recorded'; pool ne registry se
+        // chuna tha (projectUrlSource='registry') to
+        // 'registry' — raasta ek hi (seedha goto +
+        // id verify), pehchan ka zariya alag darj
+        // hota hai.
+        const entrySource = settings.projectUrlSource === 'registry' ? 'registry' : 'recorded';
+        this.log(`[ROOT] recovery-project url=${recordedProjectUrl} source=${entrySource}`, 'info');
       } else {
         throw new Error(`The recorded Flow project could not be opened (${recordedProjectUrl}) — recovery keeps its tasks pending for a later Resume.`);
       }
@@ -1509,6 +1949,16 @@ class FlowAutomationEngine {
       } catch (e) {}
     }
 
+    // v2.48.60 (PROJECT REGISTRY): page ab project me
+    // hai — teeno entry raaste (recorded/registry wala
+    // seedha goto, gallery entry, ya pehle se khula
+    // project) yahin milte hain. Is jodi ko registry me
+    // ENTRY ke pal darj karo, credit gate aur kisi bhi
+    // prompt se PEHLE: fresh run = 'fresh-entry',
+    // recovery ('existing') = 'recovery-entry'. Run
+    // yahan se aage kahin bhi mare, record reh jayega.
+    this._registerCurrentProject(preferFreshCanvas ? 'fresh-entry' : 'recovery-entry');
+
     // Dismiss tutorial/welcome overlay and clean up stale failed tiles
     try {
       await this.page.evaluate(() => {
@@ -1534,6 +1984,19 @@ class FlowAutomationEngine {
     } catch (e) {}
 
     // 4. Live credit pre-check — all writes go through the credit port.
+    // v2.48.58 (RECOVERY-NO-CREDIT-GATE): download-only
+    // recovery (settings.downloadOnly — ye jhanda SIRF
+    // workerPool ki recovery ghadi lagati hai) koi
+    // credit NAHI kharch karti: video pehle hi ban
+    // chuki hai aur us ka paisa kat chuka hai. Is liye
+    // wahan balance sirf RECORD hota hai, gate NAHI
+    // banta — ZEROCLICK26 me account (22) ke paas sirf
+    // 2 credits bache the aur us ki poori recovery
+    // (10 parked tasks) LOW_CREDITS par ruk gayi thi,
+    // halanke download par ek bhi credit nahi lagna
+    // tha. Fresh generation ka gate bilkul pehle
+    // jaisa hi rehta hai.
+    const downloadOnly = !!(settings && settings.downloadOnly);
     const required = this.getRequiredCredits(settings || this.currentSettings);
     const accId = this.currentAccount ? this.currentAccount.id : null;
     // v1.9.0: name via a guarded local — currentAccount is set by the
@@ -1544,22 +2007,31 @@ class FlowAutomationEngine {
     if (typeof liveCredits === 'number') {
       this.creditPort.liveBalance(accId, liveCredits);
       if (this.currentAccount) this.currentAccount.credits = liveCredits;
-      if (liveCredits === 0) {
+      if (downloadOnly) {
+        // v2.48.58: recovery me balance kitna bhi ho
+        // (0 bhi), entry rukti NAHI — neeche wali dono
+        // gate-shaklein skip; balance upar record ho
+        // chuka hai.
+        this.log(`[ROOT] recovery-credit-gate bypassed balance=${liveCredits} (download-only, no credits needed)`, 'info');
+        this.log(`[${accName}] has ${liveCredits} credits — download-only recovery needs no credits; continuing.`, 'success');
+      } else if (liveCredits === 0) {
         this.log(`[${accName}] has 0 credits — no video will be made from this account; moving to the next account.`, 'warn');
         return 'EXHAUSTED';
-      }
-      if (required > 0 && liveCredits < required) {
+      } else if (required > 0 && liveCredits < required) {
         // Audit fix #2: low balance is a skip reason, NOT exhaustion.
         this.creditPort.lowCredits(accId, required);
         this.log(`[${accName}] has only ${liveCredits} credits; one video needs ~${required} — skipping this account for this run.`, 'warn');
         return 'LOW_CREDITS';
+      } else {
+        this.log(`[${accName}] has ${liveCredits} credits (one video ≈ ${required} credits).`, 'success');
       }
-      this.log(`[${accName}] has ${liveCredits} credits (one video ≈ ${required} credits).`, 'success');
     } else {
       // Audit fix #3: an inconclusive read changes nothing.
       this.creditPort.ambiguous(accId);
       const known = Number(this.currentAccount ? this.currentAccount.credits : NaN);
-      if (!isNaN(known) && required > 0 && known < required) {
+      if (downloadOnly) {
+        this.log(`[ROOT] recovery-credit-gate bypassed balance=${isNaN(known) ? 'unknown' : known} (download-only, no credits needed)`, 'info');
+      } else if (!isNaN(known) && required > 0 && known < required) {
         this.creditPort.lowCredits(accId, required);
         this.log(`[${accName}]'s last known balance is ${known} credits, which is less than the needed ~${required} — skipping this account.`, 'warn');
         return 'LOW_CREDITS';
@@ -1648,6 +2120,11 @@ class FlowAutomationEngine {
   // Real rates only — the owner's own Flow panel screenshots,
   // 2026-10-27 (CREDIT-RATES-REAL-2026-10-27.md); the same table
   // the app shows in lib/services/credit_costs.dart.
+  // v2.48.59: Omni Flash 1.2 PER-SECOND hai (Google Flow
+  // support page, verified 2026-11-06 —
+  // CREDIT-RATES-OMNI-1.2-2026-11-06.md): 360p 1/sec
+  // (sec 1–10) phir 2/sec (sec 11–15); 720p 3/sec phir
+  // 6/sec. Formula omni12CreditsPerVideo me hai.
   getRequiredCredits(settings) {
     if (!settings || settings.type === 'Image') {
       return 0;
@@ -1679,6 +2156,13 @@ class FlowAutomationEngine {
       creditsPerOutput = 20;
     } else if (model.includes('lite')) {
       creditsPerOutput = 10;
+    } else if ((model.includes('omni') || model.includes('flash')) && model.includes('1.2')) {
+      // v2.48.59: Omni Flash 1.2 — per-second billing
+      // (upar wala note). Ye shakha generic Omni shakha
+      // se PEHLE aati hai: 'omni 1.2 flash' bhi aam
+      // omni/flash check me phansta tha aur use 1.1 ki
+      // flat table mil jati (15s par ghalat '5').
+      creditsPerOutput = omni12CreditsPerVideo(parseInt(duration, 10), genRes);
     } else if (model.includes('omni') || model.includes('flash')) {
       // Real Omni rates (owner's panel screenshots, 2026-10-27),
       // keyed by the generation resolution above. The old
@@ -2130,28 +2614,56 @@ class FlowAutomationEngine {
         // 3.5 Select AI Model FIRST among the value controls (v1.6.2: changing the model makes Flow reset the duration to that model's default — setting duration before the model is how a 6s request silently became 8s)
         if (settings.model) {
           this.log(`Selecting the AI Model: [${settings.model}]…`, 'info');
-          await this.page.evaluate(async (mName) => {
+          // v2.48.59 (OMNI 1.2 FLASH): chunav ka faisla ab
+          // Node par hota hai — khalis matchModelOption
+          // helper. Purana saaf-string includes() versioned
+          // naamon par tootta tha: target 'Omni 1.2 Flash'
+          // (saaf 'omni12flash') Flow ke menu text 'Omni
+          // Flash 1.2' ('omniflash12') se match hi nahi
+          // hota tha, aur legacy target 'Omni Flash'
+          // ('omniflash') ghalti se 'Omni Flash 1.2' ko
+          // chun leta tha. Pattern gallery entry (.57)
+          // wala hai: survey (dropdown ka current text)
+          // -> faisla (strictVersion — 1.2 dikhna 1.1
+          // target ke liye 'pehle se chuna hua' NAHI) ->
+          // menu survey (item texts) -> faisla -> index
+          // par click.
+          const currentModelText = await this.page.evaluate(() => {
             const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content') || document.body;
             const btns = Array.from(pop.querySelectorAll('button, div[role="button"]'));
             const modelDropdown = btns.find(b => {
               const txt = (b.innerText || '').toLowerCase();
               return txt.includes('omni') || txt.includes('veo') || txt.includes('flash') || txt.includes('banana') || b.getAttribute('aria-haspopup') === 'menu';
             });
-            if (modelDropdown) {
-              const currentTxt = (modelDropdown.innerText || '').toLowerCase();
-              const cleanTarget = mName.toLowerCase().replace(/[^a-z0-9]/g, '');
-              if (!currentTxt.replace(/[^a-z0-9]/g, '').includes(cleanTarget)) {
-                modelDropdown.click();
-                await new Promise(r => setTimeout(r, 400));
-                const menuItems = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"], [role="menu"] button, div[role="menu"] div, div[role="listbox"] [role="option"]'));
-                const opt = menuItems.find(item => {
-                  const itTxt = (item.innerText || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-                  return itTxt.includes(cleanTarget) || cleanTarget.includes(itTxt);
-                });
-                if (opt) opt.click();
+            return modelDropdown ? (modelDropdown.innerText || '') : null;
+          });
+          const alreadySelected = currentModelText !== null
+            && matchModelOption(settings.model, [currentModelText], { strictVersion: true }) === 0;
+          if (!alreadySelected) {
+            const itemTexts = await this.page.evaluate(async () => {
+              const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content') || document.body;
+              const btns = Array.from(pop.querySelectorAll('button, div[role="button"]'));
+              const modelDropdown = btns.find(b => {
+                const txt = (b.innerText || '').toLowerCase();
+                return txt.includes('omni') || txt.includes('veo') || txt.includes('flash') || txt.includes('banana') || b.getAttribute('aria-haspopup') === 'menu';
+              });
+              if (!modelDropdown) return null;
+              modelDropdown.click();
+              await new Promise(r => setTimeout(r, 400));
+              const menuItems = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"], [role="menu"] button, div[role="menu"] div, div[role="listbox"] [role="option"]'));
+              return menuItems.map(item => item.innerText || '');
+            });
+            if (Array.isArray(itemTexts) && itemTexts.length) {
+              const pick = matchModelOption(settings.model, itemTexts);
+              if (pick >= 0) {
+                await this.page.evaluate((idx) => {
+                  const menuItems = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"], [role="menu"] button, div[role="menu"] div, div[role="listbox"] [role="option"]'));
+                  const opt = menuItems[idx];
+                  if (opt) opt.click();
+                }, pick);
               }
             }
-          }, settings.model);
+          }
           await sleep(400);
         }
 
@@ -2183,15 +2695,12 @@ class FlowAutomationEngine {
         if (modeType === 'Video') {
           this.log(`Selecting the Resolution: [${genResolution}]…`, 'info');
           const readResolutionState = async () => {
-            return await this.page.evaluate(() => {
-              const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content');
-              if (!pop) return { found: false, selected: null };
-              const btns = Array.from(pop.querySelectorAll('button, [role="radio"], [role="tab"]'));
-              const resBtns = btns.filter(b => ['360p', '720p'].includes((b.innerText || '').trim().toLowerCase()));
-              if (!resBtns.length) return { found: false, selected: null };
-              const sel = resBtns.find(b => b.getAttribute('aria-checked') === 'true' || b.getAttribute('aria-selected') === 'true' || b.getAttribute('aria-pressed') === 'true' || b.getAttribute('data-state') === 'on' || b.classList.contains('selected') || b.classList.contains('active'));
-              return { found: true, selected: sel ? (sel.innerText || '').trim().toLowerCase() : null };
-            });
+            // v2.48.62: page ke andar WAHI khalis helper
+            // (resolutionBtnSelected) chalta hai jo Node me
+            // test hota hai — us ka source resolutionStateSource
+            // me garam hokar jata hai. Chaudi pehchan: haalat
+            // wali class button par ho ya us ke parent par.
+            return await this.page.evaluate(resolutionStateSource());
           };
           let resState = await readResolutionState();
           if (!resState.found) {
@@ -2210,7 +2719,26 @@ class FlowAutomationEngine {
             if (resState.selected) {
               this.log(`Resolution confirmed on Flow: [${resState.selected}] (needed [${genResolution}])`, resState.selected === genResolution ? 'success' : 'warn');
             } else {
-              this.log('The panel\'s resolution could not be confirmed after selecting — the run continues with the resolution Flow shows.', 'warn');
+              // v2.48.62 (FALLBACK): panel ke button par
+              // pehchan phir bhi na mile to settings pill ka
+              // apna text dekho — wahi pill jo is function
+              // ke aakhir me bhi padha jata hai ('Video ·
+              // 360p · 4s …'). Us me asal resolution maujood
+              // ho to wahi tasdeeq hai; warna purani
+              // chetaavni barkarar.
+              let pillConfirmed = false;
+              try {
+                const pillText = await this.page.evaluate(() => {
+                  const pill = document.querySelector('.settings-trigger-button, button.settings-trigger-button');
+                  return pill ? (pill.innerText || '').replace(/\n/g, ' ').trim() : null;
+                });
+                if (pillText && pillText.includes(genResolution)) pillConfirmed = true;
+              } catch (e) {}
+              if (pillConfirmed) {
+                this.log(`Resolution confirmed on Flow: [${genResolution}]`, 'success');
+              } else {
+                this.log('The panel\'s resolution could not be confirmed after selecting — the run continues with the resolution Flow shows.', 'warn');
+              }
             }
           }
         }
@@ -2308,6 +2836,37 @@ class FlowAutomationEngine {
         } else {
           this.log(`Saari Flow settings lag gayi aur Flow ke UI me confirm bhi ho gayi: "${finalPillText || modeType}"`, 'success');
         }
+
+        // v2.48.63 (SETTINGS TASDEEQ — Item B): pill ka
+        // muqabla MANGI hui settings se — aakhri darwaza.
+        // ZC30 ka saboot: taaza account ka panel image
+        // mode me 720p/8s par baitha tha; resolution ke
+        // button 'not found' par sirf chetaavni aayi, koi
+        // Duration-confirmed line nahi aayi, aur run upar
+        // wali 'confirm ho gayi' line ke saath 360p/4s ki
+        // jagah 720p/8s par chala gaya — 8 ki jagah 20
+        // credits jale. Ab: pill PADH sakne par ikhtilaf
+        // ho to natija { settingsMismatch } caller tak
+        // jata hai aur submitPrompt prompt FIRE kiye
+        // bagair SETTINGS_MISMATCH lautata hai (koi
+        // credit nahi katta). Pill na padh sakein (null)
+        // to purani rawish barkarar — chetaavni ke saath
+        // aage. Per-step purani lines bilkul nahi badli;
+        // ye un ka badal nahi, aakhri darwaza hai.
+        if (modeType === 'Video' && finalPillText) {
+          const requestedPill = {
+            mode: modeType,
+            resolution: genResolution,
+            durationSec: parseInt(String(settings.duration || '6s'), 10) || null,
+            aspect: targetAspect
+          };
+          const pillMismatch = settingsPillMismatch(requestedPill, parseSettingsPill(finalPillText));
+          if (pillMismatch.length > 0) {
+            this.log(`[ROOT] settings-mismatch pill="${finalPillText}" fields=${pillMismatch.join(',')} — run stopped before any submit; no credits spent`, 'error');
+            this.log(`Flow's settings panel does not match this run's settings (${pillMismatch.join(', ')}) — the prompt was NOT sent and no credits were spent. This account will be skipped for the rest of the run.`, 'error');
+            return { ok: false, settingsMismatch: pillMismatch, pillText: finalPillText };
+          }
+        }
       } else {
         this.log('No settings pill was found on Flow — work will continue with the default settings.', 'warn');
       }
@@ -2318,9 +2877,10 @@ class FlowAutomationEngine {
   }
 
   // SUBMIT A SINGLE PROMPT (fire-and-forget: returns once Flow accepts it)
-  // Returns { status: 'SUBMITTED' | 'EXHAUSTED' | 'LOW_CREDITS' | 'VIOLATION' | 'STOPPED', ... }
-  // EXHAUSTED / LOW_CREDITS are only ever returned BEFORE the prompt fires,
-  // so the pool may safely re-queue the task on another account.
+  // Returns { status: 'SUBMITTED' | 'EXHAUSTED' | 'LOW_CREDITS' | 'VIOLATION' | 'STOPPED' | 'SETTINGS_MISMATCH', ... }
+  // EXHAUSTED / LOW_CREDITS / SETTINGS_MISMATCH are only ever returned
+  // BEFORE the prompt fires, so the pool may safely re-queue the task
+  // on another account.
   async submitPrompt(promptText, settings, promptIndex, totalPrompts) {
     if (this.isStopping) return { status: 'STOPPED' };
     // v1.1: from here on, video streams on this page may be results of our
@@ -2365,7 +2925,13 @@ class FlowAutomationEngine {
     // 1. Configure settings on the first prompt of this browser session
     // (hasConfiguredSettings is reset on every launch/close — audit fix #5).
     if (!this.hasConfiguredSettings) {
-      await this.configureGenerationSettings(settings);
+      const cfgRes = await this.configureGenerationSettings(settings);
+      if (cfgRes && Array.isArray(cfgRes.settingsMismatch)) {
+        // v2.48.63 (SETTINGS TASDEEQ): pre-fire nakami —
+        // prompt gaya hi nahi, credit kata hi nahi; pool
+        // task ko dusre account par bhej sakta hai.
+        return { status: 'SETTINGS_MISMATCH', mismatchFields: cfgRes.settingsMismatch, pillText: cfgRes.pillText || null };
+      }
       this.hasConfiguredSettings = true;
     }
 
@@ -2378,7 +2944,13 @@ class FlowAutomationEngine {
     const isVideoExpected = (settings.type || 'Video') === 'Video';
     if (isVideoExpected && currentPillText && (currentPillText.includes('Banana') || currentPillText.startsWith('Image'))) {
       this.log(`The Flow workspace has gone back to Image (${currentPillText}) — applying Video mode again…`, 'warn');
-      await this.configureGenerationSettings(settings);
+      const cfgRes2 = await this.configureGenerationSettings(settings);
+      if (cfgRes2 && Array.isArray(cfgRes2.settingsMismatch)) {
+        // v2.48.63 (SETTINGS TASDEEQ): dobara lagane ke
+        // baad bhi pill mangi hui settings se nahi mili —
+        // wohi pre-fire nakami, prompt FIRE nahi hoga.
+        return { status: 'SETTINGS_MISMATCH', mismatchFields: cfgRes2.settingsMismatch, pillText: cfgRes2.pillText || null };
+      }
     }
 
     // 2. Focus the ProseMirror prompt box and type the prompt
@@ -3065,7 +3637,10 @@ class FlowAutomationEngine {
    * Tile SIRF task ki apni claimed pehchan se locate hoti hai
    * (_resolveTileIndexForTask — fingerprint-first), kisi aur
    * tile ki khabar kabhi nahi aati. Lautta hai:
-   * { pctGone, url|null, via|null } ya null (tile/page nahi).
+   * { pctGone, url|null, via|null, videoWidth, videoHeight,
+   * duration, readyState } ya null (tile/page nahi).
+   * (v2.48.62: aakhri chaar — tile-media dims, <video> na ho
+   * to null.)
    */
   async _readTileMediaState(task, fallbackIdx) {
     try {
@@ -3081,18 +3656,28 @@ class FlowAutomationEngine {
         const pctGone = !/\b(\d{1,2})%/.test(text);
         const usable = (u) => (u && (u.startsWith('http') || u.startsWith('blob:'))) ? u : null;
         const vid = target.querySelector('video');
+        // v2.48.62 (TILE-MEDIA DIMS): <video> ki asal
+        // resolution / duration / readyState bhi har
+        // jawab ke saath — log se sabit ho sakega ke
+        // ~93KB wala preview chhota transcode hai ya
+        // poori file ka kata hua hissa (Gemini §6.5).
+        const media = { videoWidth: null, videoHeight: null, duration: null, readyState: null };
         if (vid) {
+          if (Number.isFinite(vid.videoWidth) && vid.videoWidth > 0) media.videoWidth = vid.videoWidth;
+          if (Number.isFinite(vid.videoHeight) && vid.videoHeight > 0) media.videoHeight = vid.videoHeight;
+          if (Number.isFinite(vid.duration)) media.duration = Math.round(vid.duration * 100) / 100;
+          if (Number.isFinite(vid.readyState)) media.readyState = vid.readyState;
           const fromSrc = usable(vid.src);
-          if (fromSrc) return { pctGone, url: fromSrc, via: 'video src' };
+          if (fromSrc) return { pctGone, url: fromSrc, via: 'video src', ...media };
           const fromCurrent = usable(vid.currentSrc);
-          if (fromCurrent) return { pctGone, url: fromCurrent, via: 'video currentSrc' };
+          if (fromCurrent) return { pctGone, url: fromCurrent, via: 'video currentSrc', ...media };
         }
         const srcEl = target.querySelector('source');
         if (srcEl) {
           const fromSource = usable(srcEl.src);
-          if (fromSource) return { pctGone, url: fromSource, via: 'source src' };
+          if (fromSource) return { pctGone, url: fromSource, via: 'source src', ...media };
         }
-        return { pctGone, url: null, via: null };
+        return { pctGone, url: null, via: null, ...media };
       }, idx);
     } catch (e) {
       return null;
@@ -5465,6 +6050,33 @@ class FlowAutomationEngine {
    * stall every later round behind it.
    */
   async downloadTaskMedia(task, downloadFolder, settings, tileIndexHint) {
+    // v2.48.62 (ZC30 TEST FLAG — skipFirstTaskDownload):
+    // is run ke pehle prompt ka download marhala jaan-
+    // boojh kar chhoda gaya hai (ZC30 ka 'first vs latest
+    // vs interference' tajurba). Round kataar me dakhil
+    // hi NAHI hota: koi download attempt NAHI gina jata
+    // (ledger ka roundSettled kabhi nahi chalta), prompt
+    // dobara submit NAHI hota, aur task.downloaded ko
+    // haath NAHI lagta — natija { ok:false, skipped:true }
+    // hai, jise monitor 'download-failed' se alag pehchan
+    // kar task ko imaandari se parked (pending +
+    // needs_check) rakhta hai.
+    if (skipFirstDownloadApplies(settings, task)) {
+      // v2.48.63 (Item C — LATCH): pehli dafa line
+      // bolti hai aur taskId is session ki kitab me
+      // darj ho jata hai; us ke baad ke saare calls
+      // (drain, retry, final pass) khamoshi se wahi
+      // natija dete hain — koi shor nahi, koi dobara
+      // koshish nahi.
+      const skipKey = task.taskId;
+      if (skipKey != null && this._skipParkedTaskIds.has(skipKey)) {
+        return { ok: false, skipped: true, attempts: [] };
+      }
+      if (skipKey != null) this._skipParkedTaskIds.add(skipKey);
+      const n = (task.promptIndex || 0) + 1;
+      this.log(`[ROOT] [Prompt #${n}] download SKIPPED by test flag (skipFirstTaskDownload) — task stays parked; prompt NOT resubmitted; no download attempt counted`, 'info');
+      return { ok: false, skipped: true, attempts: [] };
+    }
     const run = () => this._downloadTaskMediaRound(task, downloadFolder, settings, tileIndexHint);
     const chained = (this._downloadRoundChain || Promise.resolve()).then(run, run);
     this._downloadRoundChain = chained.then(() => undefined, () => undefined);
@@ -5715,6 +6327,11 @@ class FlowAutomationEngine {
       }
       const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
       if (idx < 0) return; // tile not locatable — the strategies report it, as today
+      // v2.48.62 (TILE-MEDIA DIMS): is attempt ki pehli
+      // tile-state reading par <video> ki asal shakl ek
+      // dafa log me — dims/duration/readyState. Poll kai
+      // dafa ghumta hai, line sirf pehli reading par.
+      let dimsLogged = false;
       // v2.48.24: 25s -> 8s. TEST499/500 me bandhan ~1s me aa
       // gaya tha; TEST501 me 25s me bhi nahi aaya — lamba
       // intezaar sirf menu wale pakke raaste ko der karta hai.
@@ -5756,6 +6373,18 @@ class FlowAutomationEngine {
         // sirf src maujood (% abhi hai) = purani ready wali
         // break, rawaj bilkul pehle jaisa.
         const state = await this._readTileMediaState(task, idx);
+        // v2.48.62 (TILE-MEDIA DIMS): pehli reading ki
+        // ek line (upar wala dimsLogged jhanda).
+        if (state && !dimsLogged) {
+          dimsLogged = true;
+          try {
+            const w = state.videoWidth != null ? state.videoWidth : '-';
+            const h = state.videoHeight != null ? state.videoHeight : '-';
+            const d = state.duration != null ? state.duration : '-';
+            const r = state.readyState != null ? state.readyState : '-';
+            this.log(`[ROOT] tile-media dims=${w}x${h} dur=${d} ready=${r}`, 'info');
+          } catch (e) {}
+        }
         if (state && state.url) {
           const fastUrl = downloadFetch.fastFetchUrl(state);
           if (fastUrl) {
@@ -6698,6 +7327,147 @@ class FlowAutomationEngine {
         };
       } catch (e) {}
       return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.64 (TILE-RESIZE TRIGGER): tile ko CSS se
+   * BADA karke dikhao — ZC31 ka saboot: tile ka
+   * <video> element 360x640 ka preview encode hi
+   * rakhta hai, aur Flow ka player encode apne
+   * display size ke hisaab se chunta hai (Gemini
+   * brief-3 §6.4 Rank 1). Container 720px/1280px,
+   * video 100%/100% — sab '!important' ke saath
+   * (grid ki apni classes jeet na jayein); position
+   * relative + uncha z-index taaki badi tile
+   * padosiyon ke neeche kat na jaye. Phir wahi muted
+   * play wala ishara jo baaki helpers dete hain.
+   * Download phir bhi backend se hi hota hai — ye
+   * sirf woh ghanti hai jo server ko asal file
+   * bhejne par majboor karti hai; koi click nahi,
+   * koi editor nahi.
+   * Asal inline styles (cssText) token me save
+   * hote hain — _restoreMainpageTile unhe hu-ba-hu
+   * wapas rakhta hai. Lautta hai: { applied:true,
+   * method:'css', box:'<video client W>x<H>', token }
+   * | { applied:false, reason:'no-tile'|'no-video' }.
+   */
+  async _enlargeMainpageTile(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return { applied: false, reason: 'no-tile' };
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return { applied: false, reason: 'no-tile' };
+      const r = await this.page.evaluate((tileIdx) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (!el) return { applied: false, reason: 'no-tile' };
+          const vid = el.querySelector('video');
+          if (!vid) return { applied: false, reason: 'no-video' };
+          const token = { tileCss: el.style.cssText || '', vidCss: vid.style.cssText || '' };
+          try {
+            el.style.setProperty('width', '720px', 'important');
+            el.style.setProperty('height', '1280px', 'important');
+            el.style.setProperty('position', 'relative', 'important');
+            el.style.setProperty('z-index', '9999', 'important');
+            vid.style.setProperty('width', '100%', 'important');
+            vid.style.setProperty('height', '100%', 'important');
+          } catch (e) {}
+          try {
+            vid.muted = true;
+            const pr = vid.play();
+            if (pr && typeof pr.catch === 'function') pr.catch(() => {});
+          } catch (e) {}
+          return { applied: true, method: 'css', box: `${vid.clientWidth || 0}x${vid.clientHeight || 0}`, token };
+        } catch (e) { return { applied: false, reason: 'no-tile' }; }
+      }, idx);
+      return r || { applied: false, reason: 'no-tile' };
+    } catch (e) {
+      return { applied: false, reason: 'no-tile' };
+    }
+  }
+
+  /**
+   * v2.48.64 (TILE-RESIZE TRIGGER): CSS wale
+   * marhale se ~15s tak stream na aaye aur tile ki
+   * videoWidth ab bhi <= 360 ho to EK dafa
+   * fullscreen wali seedhi — tile ke <video> par
+   * requestFullscreen(). Player ko sab se bada
+   * display milta hai; encode badalna ho to yahin
+   * badlega. Har khata andar hi dabayi jati hai
+   * (user-gesture wali pabandi par ye aaram se
+   * nakam ho sakta hai — tab watch CSS par hi aage
+   * badhta hai). Lautta hai: { entered:true, box }
+   * | { entered:false }.
+   */
+  async _fullscreenMainpageTile(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return { entered: false };
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return { entered: false };
+      const r = await this.page.evaluate(async (tileIdx) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (!el) return null;
+          const vid = el.querySelector('video');
+          if (!vid || typeof vid.requestFullscreen !== 'function') return null;
+          try { await vid.requestFullscreen(); } catch (e) { return null; }
+          try {
+            vid.muted = true;
+            const pr = vid.play();
+            if (pr && typeof pr.catch === 'function') pr.catch(() => {});
+          } catch (e) {}
+          return { entered: true, box: `${vid.clientWidth || 0}x${vid.clientHeight || 0}` };
+        } catch (e) { return null; }
+      }, idx);
+      return r || { entered: false };
+    } catch (e) {
+      return { entered: false };
+    }
+  }
+
+  /**
+   * v2.48.64 (TILE-RESIZE TRIGGER): resize wale
+   * marhale ki WAPSI — lazmi, har nikaas par. Save
+   * hue token ke cssText dono elements par hu-ba-hu
+   * wapas, aur is marhale ne fullscreen liya ho to
+   * us se nikaas bhi. Ye hover escalation se PEHLE
+   * chalta hai taaki baaki saare marhale untouched
+   * grid dekhein. Jo stream ek dafa maangi ja chuki
+   * ho wo network layer par pakdi rehti hai —
+   * restore use nahi rokta.
+   */
+  async _restoreMainpageTile(task, tileIndexHint, savedStyles, enteredFullscreen) {
+    try {
+      if (!this.page || this.page.isClosed()) return false;
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return false;
+      const r = await this.page.evaluate((tileIdx, saved, exitFs) => {
+        try {
+          let ok = false;
+          if (exitFs) {
+            try {
+              if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
+                const p = document.exitFullscreen();
+                if (p && typeof p.catch === 'function') p.catch(() => {});
+                ok = true;
+              }
+            } catch (e) {}
+          }
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (el && saved) {
+            try { el.style.cssText = saved.tileCss || ''; ok = true; } catch (e) {}
+            const vid = el.querySelector('video');
+            if (vid) { try { vid.style.cssText = saved.vidCss || ''; } catch (e) {} }
+          }
+          return ok;
+        } catch (e) { return false; }
+      }, idx, savedStyles || null, !!enteredFullscreen);
+      return !!r;
     } catch (e) {
       return false;
     }
@@ -8094,6 +8864,20 @@ class FlowAutomationEngine {
     let tileSrcKind = null;
     try {
       const st = await this._readTileMediaState(task, tileIndexHint);
+      // v2.48.63 (Item D): tile-media wali line ab HAR
+      // attempt ki is pehli reading par yahin se nikalti
+      // hai — .62 wali line ready-poll loop ke andar thi
+      // (backend link pehle bandh jaye to loop pehli
+      // reading se pehle hi toot jata tha; ZC30 ke log
+      // me line bilkul ghayab rahi). Shakal purani wali
+      // hi hai; <video> na ho to har cheez '-'.
+      try {
+        const dw = st && st.videoWidth != null ? st.videoWidth : '-';
+        const dh = st && st.videoHeight != null ? st.videoHeight : '-';
+        const dd = st && st.duration != null ? st.duration : '-';
+        const dr = st && st.readyState != null ? st.readyState : '-';
+        this.log(`[ROOT] tile-media dims=${dw}x${dh} dur=${dd} ready=${dr}`, 'info');
+      } catch (e) {}
       const raw = st && st.url ? st.url : null;
       if (raw && flowContent.isFlowContentVideoUrl(raw)) { tileSrcKind = 'flow-content'; tileSrcUrl = raw; }
       else if (raw && networkCapture.isGooglevideoPlaybackUrl(raw)) { tileSrcKind = 'googlevideo'; tileSrcUrl = raw; }
@@ -8576,6 +9360,127 @@ class FlowAutomationEngine {
     // me ho to hover ka intezaar hi nahi.
     try { if (await tryRpcFeed(watchDeadline)) return true; } catch (e) {}
     try { if (await tryStateProbe()) return true; } catch (e) {}
+    // v2.48.63 (PASSIVE-FIRST — Item A): ZC30 ka saboot
+    // — download ka pehla marhala ab SIRF SUNTA hai.
+    // Is session me render hue task ki poori stream aam
+    // tor par render ke chand seconds baad KHUD network
+    // par aa jati hai; purana hover-watch (scroll /
+    // synthetic / pointer, ~59s tak) page ko chhed kar
+    // usi aane ko dusri tiles ke liye rok deta tha —
+    // pehli video ka watch dusri ki khidki band kar
+    // deta tha. Yahan page ko bilkul NAHI chheda jata
+    // (na scroll, na hover, na pointer, na focus):
+    // kitab me stream dikhte hi binding plan use isi
+    // task se bandh kar save kar deta hai. Download
+    // render ke saath hi shuru hota hai (owner ki
+    // standing demand) — bas pehla marhala khamosh hai.
+    // Khidki (render + 45s) guzar jaye aur stream na
+    // aaye to neeche wala purana hover escalation
+    // bilkul waisa hi chalta hai. Do-while ki shakal:
+    // khidki guzar chuki ho tab bhi binding plan EK
+    // dafa lazmi chalta hai — kataar me intezaar ke
+    // dauraan pakdi gayi stream bina kisi deri ke isi
+    // pal claim ho jati hai.
+    if (passiveClaimApplies(task, this._sessionStartedAt)) {
+      const passiveUntil = task.renderCompletedAt + 45000;
+      const passiveRemainMs = passiveUntil - Date.now();
+      if (passiveRemainMs > 1000) {
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: passive claim — watching the network only (no hover, no clicks) for up to ${Math.max(1, Math.round(passiveRemainMs / 1000))}s; the full stream is expected to arrive on its own`, 'info');
+      }
+      let passiveSaved = false;
+      let passiveAmbiguous = false;
+      do {
+        if (this.isStopping) break;
+        const pr = await tryBindingPlan({ watchStart });
+        if (pr === 'saved' || task.mediaSaved) { passiveSaved = true; break; }
+        if (pr === 'ambiguous') { passiveAmbiguous = true; break; }
+        if (Date.now() >= passiveUntil) break;
+        await sleep(250);
+      } while (Date.now() < passiveUntil);
+      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: passive claim finished — saved=${passiveSaved ? 'yes' : 'no'}`, 'info');
+      if (passiveAmbiguous) return failOut();
+      if (passiveSaved || task.mediaSaved) return true;
+    }
+    // v2.48.64 (TILE-RESIZE TRIGGER): passive ke baad
+    // wala marhala — tile ko BADA karke dikhao.
+    // ZC31 ka saboot: 360p par tile ka <video>
+    // element khud 360x640 ka preview encode rakhta
+    // hai; khamosh intezaar par bhi, hover par bhi
+    // sirf wahi chhota preview aata hai. Player
+    // encode apne display size se chunta hai
+    // (ZC30 me 720p par stream khud aa gayi thi) —
+    // is liye ab tile ko CSS se 720px/1280px tak
+    // bada karke 30s dekho: server ko asal file
+    // bhejni pade to yahin padegi, aur file phir bhi
+    // backend (googlevideo) se hi network layer par
+    // pakdi jayegi. ~15s tak kuch na aaye aur
+    // videoWidth ab bhi <= 360 ho to EK dafa
+    // fullscreen wali seedhi. Marhala khatam hote hi
+    // tile ki asal shakal hu-ba-hu wapas — neeche
+    // wala hover escalation untouched grid dekhta
+    // hai. Darwaza sirf is session ke taaza renders
+    // ke liye (resizeTriggerApplies); recovery is
+    // se bahar hai.
+    if (resizeTriggerApplies(task, this._sessionStartedAt)) {
+      const logResizeTileMedia = async () => {
+        try {
+          const stM = await this._readTileMediaState(task, tileIndexHint);
+          const mw = stM && stM.videoWidth != null ? stM.videoWidth : '-';
+          const mh = stM && stM.videoHeight != null ? stM.videoHeight : '-';
+          const md = stM && stM.duration != null ? stM.duration : '-';
+          const mr = stM && stM.readyState != null ? stM.readyState : '-';
+          this.log(`[ROOT] tile-media dims=${mw}x${mh} dur=${md} ready=${mr}`, 'info');
+        } catch (e) {}
+      };
+      let enl = null;
+      try { enl = await this._enlargeMainpageTile(task, tileIndexHint); } catch (e) { enl = null; }
+      if (!enl || !enl.applied) {
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize trigger skipped reason=${(enl && enl.reason) || 'no-tile'}`, 'info');
+      } else {
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize trigger applied method=css box=${enl.box || '-'} — watching up to 30s for the full stream`, 'info');
+        await logResizeTileMedia();
+        const resizeStart = Date.now();
+        const resizeDeadline = resizeStart + 30000;
+        const resizeHalfway = resizeStart + 15000;
+        let resizeSaved = false;
+        let resizeAmbiguous = false;
+        let fsTried = false;
+        let fsEntered = false;
+        for (;;) {
+          if (this.isStopping) break;
+          const rz = await tryBindingPlan({ watchStart });
+          if (rz === 'saved' || task.mediaSaved) { resizeSaved = true; break; }
+          if (rz === 'ambiguous') { resizeAmbiguous = true; break; }
+          const nowZ = Date.now();
+          if (nowZ >= resizeDeadline) break;
+          if (!fsTried && nowZ >= resizeHalfway) {
+            fsTried = true;
+            let vwNow = null;
+            try {
+              const stFs = await this._readTileMediaState(task, tileIndexHint);
+              if (stFs && Number.isFinite(stFs.videoWidth)) vwNow = stFs.videoWidth;
+            } catch (e) {}
+            if (vwNow != null && vwNow <= 360) {
+              let fs = null;
+              try { fs = await this._fullscreenMainpageTile(task, tileIndexHint); } catch (e) { fs = null; }
+              if (fs && fs.entered) {
+                fsEntered = true;
+                this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize trigger applied method=fullscreen box=${fs.box || '-'} — watching up to 30s for the full stream`, 'info');
+                await logResizeTileMedia();
+              }
+            }
+          }
+          await sleep(250);
+        }
+        // WAPSI lazmi hai — saved ho, ambiguous ho
+        // ya waqt khatam; hover escalation se pehle
+        // grid apni asal shakal me wapas.
+        try { await this._restoreMainpageTile(task, tileIndexHint, enl.token, fsEntered); } catch (e) {}
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize finished — saved=${resizeSaved ? 'yes' : 'no'}`, 'info');
+        if (resizeAmbiguous) return failOut();
+        if (resizeSaved || task.mediaSaved) return true;
+      }
+    }
     try { await this._exitPrevMainpageHover(task); } catch (e) {}
     const scrolled = await this._scrollMainpageTileIntoView(task, tileIndexHint);
     this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=scroll (this video's tile ${scrolled ? 'was scrolled' : 'could not be scrolled'} into view on the main page; nothing opened, nothing clicked); watching up to ${Math.max(1, Math.round((watchDeadline - watchStart) / 1000))}s for its stream`, 'info');
@@ -9789,6 +10694,18 @@ class FlowAutomationEngine {
   async retryDownloadForTask(task, downloadFolder, settings) {
     const isImage = !!(settings && settings.type === 'Image');
     const n = (task.promptIndex || 0) + 1;
+    // v2.48.63 (Item C — DRAIN STAND-DOWN): test-flag
+    // se park hui task ke liye retry bhi yahin khamoshi
+    // se settle — na grid scan, na strategies. Pool
+    // 'skipped' natije ko is run ke liye settle samajh
+    // kar task ko pending + needs_check hi rehne deta
+    // hai (agla Resume bina flag ke sirf download
+    // karega). .62 me ye raasta har dafa poora scan +
+    // downloadTaskMedia tak jata tha aur wahi SKIPPED
+    // line baar baar dohraya karta tha.
+    if (skipFirstDownloadApplies(settings, task)) {
+      return { status: 'skipped', attempts: [] };
+    }
     // v2.8.0: sabse pehle BACKEND — isi session me is task se bandha
     // link ho (ya kataar/kram se bandh sake) to bina grid khoje
     // seedha fetch. Register bhi yahi hota hai, taaki is pal ke baad
@@ -9846,6 +10763,13 @@ class FlowAutomationEngine {
       dl = await this.downloadTaskMedia(task, downloadFolder, settings, task.tileIndex);
     } finally {
       this._downloadChannel = prevChannel || 'monitor';
+    }
+    // v2.48.63 (Item C): skipped bhi apni pehchan ke
+    // saath upar jata hai — 'download-failed' me ghul
+    // jaye to pool use dobara koshish ke qabil samajh
+    // kar cycle chala deta tha.
+    if (dl.skipped) {
+      return { status: 'skipped', attempts: backendAttempts.concat(dl.attempts) };
     }
     return dl.ok
       ? { status: 'downloaded', attempts: backendAttempts.concat(dl.attempts) }
@@ -10803,7 +11727,27 @@ class FlowAutomationEngine {
                 this.log(`[Prompt #${task.promptIndex + 1}] A problem came up in the download attempt — ${t.plain}.`, 'warn', { rawError: t.raw });
               }
 
-              if (!dl.ok && !task.downloaded) {
+              if (dl.skipped) {
+                // v2.48.62 (ZC30 TEST FLAG): render mukammal
+                // hai, download jaan-boojh kar chhoda gaya —
+                // task NA downloaded hai NA failed. Monitor
+                // yahin settle karta hai (completed), aur
+                // pool ki download-deferred kitab row ko
+                // pending + needs_check park kar deti hai
+                // (download-only Resume ke liye) — wahi
+                // imaandaar haalat jo ek deferred download
+                // ki hoti hai. onTaskFailed NAHI bulaya
+                // jata: ye nakami hai hi nahi.
+                task.completed = true;
+                task.downloadSkipped = true;
+                try {
+                  this.onTaskDownloadDeferred(task, {
+                    targetUrl: task.completedVideoUrl,
+                    cookieHeader: task.preCapturedCookieHeader,
+                    userAgent: task.preCapturedUserAgent
+                  });
+                } catch (e) {}
+              } else if (!dl.ok && !task.downloaded) {
                 task.downloaded = true;
                 task.failed = true;
                 // v2.7.0 (FIX 2): stage LAZMI hai — render pura hua
@@ -10881,4 +11825,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption };

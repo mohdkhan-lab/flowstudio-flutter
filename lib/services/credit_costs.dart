@@ -22,6 +22,14 @@
 //   Veo 3.1 Fast ....... 20 per video  Flow offers no Veo
 //   Veo 3.1 Quality .... 100 per video duration choice)
 //
+//   Omni Flash 1.2 (v2.48.59) is billed PER SECOND — Google
+//   Flow support page, verified 2026-11-06
+//   (CREDIT-RATES-OMNI-1.2-2026-11-06.md). Durations 3–15s:
+//     360p: 1 credit/sec for sec 1–10, 2 credits/sec for
+//           sec 11–15  ->  4s=4, 8s=8, 10s=10, 15s=20
+//     720p: 3 credits/sec for sec 1–10, 6 credits/sec for
+//           sec 11–15  ->  4s=12, 8s=24, 10s=30, 15s=60
+//
 // Evidence: the owner's screenshots of the live Flow generation
 // panel (Ingredients mode, 9:16, x1 output), 2026-10-27. The
 // same table lives in the engine (engine/flowAutomation.js
@@ -44,6 +52,25 @@ String generationResolution(String quality) {
 int? creditCostPerVideo(String model, String duration, String quality) {
   final m = model.toLowerCase();
   final d = duration.trim().toLowerCase();
+  final secs = int.tryParse(d.replaceAll('s', ''));
+  final isOmni12 =
+      m.contains('1.2') && (m.contains('omni') || m.contains('flash'));
+  // v2.48.59: durations above 10s are evidenced ONLY for
+  // Omni 1.2 (per-second table below). Omni 1.1's table
+  // stops at 10s and Veo is always 8s, so a 15s selection
+  // with any other model has NO evidenced rate -> null,
+  // never an extrapolated number.
+  if (secs != null && secs > 10 && !isOmni12) return null;
+  if (isOmni12) {
+    // Omni Flash 1.2 — per-second billing (Google Flow
+    // support page, verified 2026-11-06): 360p = 1/sec
+    // (sec 1–10) then 2/sec (sec 11–15); 720p = 3/sec
+    // then 6/sec. Outside Flow's 3–15s range -> null.
+    if (secs == null || secs < 3 || secs > 15) return null;
+    final is720 = generationResolution(quality) == '720p';
+    if (secs <= 10) return secs * (is720 ? 3 : 1);
+    return (is720 ? 30 : 10) + (secs - 10) * (is720 ? 6 : 2);
+  }
   // Veo models have no duration choice — a Veo video is always
   // 8s — so their rates are flat per video, at any duration.
   if (m.contains('quality')) return 100;

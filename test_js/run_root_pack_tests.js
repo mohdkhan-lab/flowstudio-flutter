@@ -50,7 +50,7 @@ const {
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
 const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
-const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
+const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
 const cookiesDb = require('../engine/cookiesDb');
 
@@ -4235,6 +4235,225 @@ async function main() {
     eq('X59-RATE engine 1.1 360p 10s unchanged = 7', grc.call({}, { model: 'Omni Flash', duration: '10s', quality: '360p' }), 7);
     eq('X59-RATE engine 1.1 720p 10s unchanged = 15', grc.call({}, { model: 'Omni Flash', duration: '10s', quality: '720p' }), 15);
     eq('X59-RATE engine non-1.2 at 15s keeps the old fallback', grc.call({}, { model: 'Omni Flash', duration: '15s', quality: '360p' }), 5);
+  }
+
+  // ---------------------------------------------------------------------------
+  // X60. v2.48.60 (PROJECT REGISTRY): har project jo
+  //      engine enter karta hai, us (account, project)
+  //      jodi ka mustaqil record —
+  //   (a) DB: recordProjectSeen pehli baar nayi row,
+  //       dobara sirf last_seen_at (first_seen_at aur
+  //       pehla source mehfooz); project_id URL se
+  //       nikalta hai;
+  //   (b) findProjectForTime: qareeb-not-after wala
+  //       usool, sirf usi account ki kitab se;
+  //   (c) recovery ka faisla: recorded > registry >
+  //       gallery-datetime (khalis helper + pool par
+  //       amal — registry hit par seedha goto wala
+  //       raasta, miss par purana gallery pass);
+  //   (d) engine ki registration: entry par port ko
+  //       khabar, [ROOT] line sirf nayi row par, aur
+  //       kharab/ghate hue bandhan par bhi run kabhi
+  //       nahi rukta.
+  // ---------------------------------------------------------------------------
+  {
+    // (c1) khalis faisla
+    const RU = 'https://flow.google.com/project/x60-registry-proj';
+    const TU = 'https://flow.google.com/project/x60-recorded-proj';
+    eq('X60-DEC recorded beats registry', recoveryEntryPlan(TU, { projectUrl: RU }).kind, 'recorded');
+    eq('X60-DEC recorded carries its own URL', recoveryEntryPlan(TU, { projectUrl: RU }).projectUrl, TU);
+    eq('X60-DEC recorded source is recorded', recoveryEntryPlan(TU, null).source, 'recorded');
+    eq('X60-DEC registry when no recorded URL', recoveryEntryPlan('', { projectUrl: RU }).kind, 'registry');
+    eq('X60-DEC registry carries the registry URL', recoveryEntryPlan('', { projectUrl: RU }).projectUrl, RU);
+    eq('X60-DEC registry accepts a raw DB row', recoveryEntryPlan('', { project_url: RU }).kind, 'registry');
+    eq('X60-DEC gallery when neither exists', recoveryEntryPlan('', null).kind, 'gallery');
+    eq('X60-DEC a garbage registry row falls to gallery', recoveryEntryPlan(null, {}).kind, 'gallery');
+  }
+  {
+    // (d) engine ki registration ghadi
+    const regCalls = [];
+    const regLogs = [];
+    const engReg = new FlowAutomationEngine({ onLog: (e) => regLogs.push((e && e.message) || '') }, {
+      projectPort: {
+        recordSeen: (a, u, s) => {
+          regCalls.push({ a, u, s });
+          return { isNew: regCalls.length === 1, row: { firstSeenAt: Date.parse('2026-11-06T09:28:00Z') } };
+        }
+      }
+    });
+    engReg.currentAccount = { id: 'acc-x60', name: 'X60 Acc' };
+    engReg.page = { isClosed: () => false, url: () => 'https://flow.google.com/project/x60-proj-uuid/edit/abc123' };
+    engReg._registerCurrentProject('fresh-entry');
+    eq('X60-REG the entry was recorded once', regCalls.length, 1);
+    eq('X60-REG the account key is the account id (tasks assigned_account_id wali identity)', regCalls[0] && regCalls[0].a, 'acc-x60');
+    eq('X60-REG the URL is trimmed to the project root', regCalls[0] && regCalls[0].u, 'https://flow.google.com/project/x60-proj-uuid');
+    eq('X60-REG the source passes through', regCalls[0] && regCalls[0].s, 'fresh-entry');
+    ok('X60-REG the [ROOT] line fires for a new row', regLogs.some(m => m.includes('[ROOT] project-registered account=acc-x60 id=x60-proj-uuid') && m.includes('at=2026-11-06T09:28:00.000Z') && m.includes('source=fresh-entry')));
+    engReg._registerCurrentProject('fresh-entry');
+    eq('X60-REG a repeat entry still upserts through the port', regCalls.length, 2);
+    eq('X60-REG the [ROOT] line does NOT repeat for an existing row', regLogs.filter(m => m.includes('project-registered')).length, 1);
+    // account na ho to kuch darj nahi
+    const regCallsNoAcc = [];
+    const engNoAcc = new FlowAutomationEngine({ onLog: () => {} }, { projectPort: { recordSeen: (...args) => { regCallsNoAcc.push(args); return { isNew: true, row: {} }; } } });
+    engNoAcc.page = { isClosed: () => false, url: () => 'https://flow.google.com/project/x60-proj-uuid' };
+    engNoAcc._registerCurrentProject('recovery-entry');
+    eq('X60-REG no account means nothing is recorded', regCallsNoAcc.length, 0);
+    // port bandha hi na ho — khaamosh no-op
+    const engNoPort = new FlowAutomationEngine({ onLog: () => {} }, {});
+    engNoPort.currentAccount = { id: 'acc-x60' };
+    engNoPort.page = { isClosed: () => false, url: () => 'https://flow.google.com/project/x60-proj-uuid' };
+    let noPortThrew = false;
+    try { engNoPort._registerCurrentProject('fresh-entry'); } catch (e) { noPortThrew = true; }
+    eq('X60-REG no port bound is a silent no-op', noPortThrew, false);
+    // ledger kharab ho — run phir bhi nahi rukta
+    const engBadPort = new FlowAutomationEngine({ onLog: () => {} }, { projectPort: { recordSeen: () => { throw new Error('db down'); } } });
+    engBadPort.currentAccount = { id: 'acc-x60' };
+    engBadPort.page = { isClosed: () => false, url: () => 'https://flow.google.com/project/x60-proj-uuid' };
+    let badPortThrew = false;
+    try { engBadPort._registerCurrentProject('fresh-entry'); } catch (e) { badPortThrew = true; }
+    eq('X60-REG a broken ledger never breaks the run', badPortThrew, false);
+  }
+  {
+    // (c2) pool par amal — registry hit aur miss
+    const { WorkerPool } = require('../engine/workerPool');
+    const { dbService } = require('../engine/db');
+    const savedDb60 = {
+      getAccount: dbService.getAccount,
+      failTask: dbService.failTask,
+      setTaskNeedsCheck: dbService.setTaskNeedsCheck,
+      getTask: dbService.getTask,
+      completeTask: dbService.completeTask,
+      findProjectForTime: dbService.findProjectForTime
+    };
+    const savedEng60 = {
+      launch: FlowAutomationEngine.prototype.launchBrowserForAccount,
+      open: FlowAutomationEngine.prototype.openFlowStudio,
+      reconcile: FlowAutomationEngine.prototype.reconcileRecoveredTask,
+      close: FlowAutomationEngine.prototype.closeBrowser,
+      sweepFn: FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep
+    };
+    const REG_U = 'https://flow.google.com/project/x60-reg-proj';
+    const REC_U = 'https://flow.google.com/project/x60-rec-proj';
+    const findCalls = [];
+    let registryHit = { accountKey: 'acc-x60', projectUrl: REG_U, projectId: 'x60-reg-proj', firstSeenAt: Date.parse('2026-11-06T09:10:00Z'), lastSeenAt: Date.parse('2026-11-06T09:10:00Z'), source: 'fresh-entry' };
+    dbService.getAccount = (id) => (id === 'acc-x60' ? { id: 'acc-x60', name: 'X60 Acc', googleName: 'X60 Acc' } : null);
+    dbService.failTask = () => {};
+    dbService.setTaskNeedsCheck = () => {};
+    dbService.getTask = () => null;
+    dbService.completeTask = () => {};
+    dbService.findProjectForTime = (accId, ms) => { findCalls.push({ accId, ms }); return registryHit; };
+    const openCalls60 = [];
+    FlowAutomationEngine.prototype.launchBrowserForAccount = async () => true;
+    FlowAutomationEngine.prototype.openFlowStudio = async (settings) => { openCalls60.push(settings || {}); return 'READY'; };
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = async () => ({ found: false });
+    FlowAutomationEngine.prototype.closeBrowser = async () => {};
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = () => {};
+    const pool60 = new WorkerPool({ onLog: () => {}, onTaskUpdate: () => {} });
+    const rows60 = [
+      { id: 'x60-r1', assigned_account_id: 'acc-x60', prompt_index: 0, prompt_text: 'x60 prompt', prompt_tag: '', project_url: '', created_at: '2026-11-06 09:17:00' },
+      { id: 'x60-r2', assigned_account_id: 'acc-x60', prompt_index: 1, prompt_text: 'x60 prompt 2', prompt_tag: '', project_url: '', created_at: '2026-11-06 09:18:00' },
+      { id: 'x60-r3', assigned_account_id: 'acc-x60', prompt_index: 2, prompt_text: 'x60 prompt 3', prompt_tag: '', project_url: REC_U, created_at: '2026-11-06 10:05:00' }
+    ];
+    await pool60._reconcileNeedsCheck(rows60, '/tmp', {});
+    eq('X60-POOL one open per (account, project) group', openCalls60.length, 2);
+    eq('X60-POOL the registry is consulted exactly once (unrecorded group only)', findCalls.length, 1);
+    eq('X60-POOL the registry is asked with the group oldest row time', findCalls[0] && findCalls[0].ms, Date.parse('2026-11-06T09:17:00Z'));
+    eq('X60-POOL the registry is asked for the group account', findCalls[0] && findCalls[0].accId, 'acc-x60');
+    const regCall = openCalls60.find(c => c.projectUrlSource === 'registry');
+    ok('X60-POOL a registry hit opens its project directly', !!regCall);
+    eq('X60-POOL the registry open carries the registry URL', regCall && regCall.projectUrl, REG_U);
+    eq('X60-POOL the registry open carries NO gallery target time', regCall && regCall.recoveryTargetTime, undefined);
+    ok('X60-POOL the registry open stays download-only', !!regCall && regCall.downloadOnly === true && regCall.canvasStrategy === 'existing');
+    const recCall = openCalls60.find(c => c.projectUrl === REC_U);
+    ok('X60-POOL the recorded group still opens its recorded URL', !!recCall);
+    eq('X60-POOL the recorded open is NOT marked registry', recCall && recCall.projectUrlSource, undefined);
+    // miss: registry khaali — purana gallery pass
+    registryHit = null;
+    findCalls.length = 0;
+    openCalls60.length = 0;
+    await pool60._reconcileNeedsCheck([rows60[0]], '/tmp', {});
+    eq('X60-POOL a registry miss still opens once', openCalls60.length, 1);
+    eq('X60-POOL a registry miss falls back to the gallery pass (no URL)', openCalls60[0] && openCalls60[0].projectUrl, undefined);
+    eq('X60-POOL the gallery fallback carries the oldest row time', openCalls60[0] && openCalls60[0].recoveryTargetTime, Date.parse('2026-11-06T09:17:00Z'));
+    dbService.getAccount = savedDb60.getAccount;
+    dbService.failTask = savedDb60.failTask;
+    dbService.setTaskNeedsCheck = savedDb60.setTaskNeedsCheck;
+    dbService.getTask = savedDb60.getTask;
+    dbService.completeTask = savedDb60.completeTask;
+    dbService.findProjectForTime = savedDb60.findProjectForTime;
+    FlowAutomationEngine.prototype.launchBrowserForAccount = savedEng60.launch;
+    FlowAutomationEngine.prototype.openFlowStudio = savedEng60.open;
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = savedEng60.reconcile;
+    FlowAutomationEngine.prototype.closeBrowser = savedEng60.close;
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = savedEng60.sweepFn;
+  }
+  {
+    // (a)+(b) asal DB round-trip — alag process,
+    // throwaway data dir (X57-DB wala tarika).
+    const { execFileSync } = require('child_process');
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-x60-db-'));
+    const dbPath = JSON.stringify(path.join(__dirname, '..', 'engine', 'db.js'));
+    const script = `(async () => {
+      const { dbService } = require(${dbPath});
+      await dbService.ensureInit();
+      const U1 = 'https://flow.google.com/project/11111111-2222-3333-4444-555555555555';
+      const U2 = 'https://flow.google.com/project/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee';
+      const U3 = 'https://flow.google.com/project/zzzz-other-account-proj';
+      const T0 = Date.parse('2026-11-06T09:00:00Z');
+      const T1 = Date.parse('2026-11-06T09:28:00Z');
+      const T2 = Date.parse('2026-11-06T10:05:00Z');
+      const a1 = dbService.recordProjectSeen({ accountKey: 'acc-a', projectUrl: U1, source: 'fresh-entry', now: T1 });
+      const a1b = dbService.recordProjectSeen({ accountKey: 'acc-a', projectUrl: U1, source: 'task-birth', now: T2 });
+      const a2 = dbService.recordProjectSeen({ accountKey: 'acc-a', projectUrl: U2, source: 'fresh-entry', now: T0 });
+      const b1 = dbService.recordProjectSeen({ accountKey: 'acc-b', projectUrl: U3, source: 'fresh-entry', now: T1 });
+      const bad = dbService.recordProjectSeen({ accountKey: '', projectUrl: U1, source: 'fresh-entry', now: T1 });
+      const listA = dbService.listProjects('acc-a');
+      const findBefore = dbService.findProjectForTime('acc-a', T0 - 1);
+      const findBetween = dbService.findProjectForTime('acc-a', T0 + 60000);
+      const findAt = dbService.findProjectForTime('acc-a', T1);
+      const findLater = dbService.findProjectForTime('acc-a', T2 + 60000);
+      const findB = dbService.findProjectForTime('acc-b', T2);
+      const findNone = dbService.findProjectForTime('acc-nope', T2);
+      console.log(JSON.stringify({
+        a1New: a1 && a1.isNew, a1Id: a1 && a1.row && a1.row.projectId,
+        a1First: a1 && a1.row && a1.row.firstSeenAt, a1Source: a1 && a1.row && a1.row.source,
+        a1bNew: a1b && a1b.isNew, a1bFirst: a1b && a1b.row && a1b.row.firstSeenAt,
+        a1bLast: a1b && a1b.row && a1b.row.lastSeenAt, a1bSource: a1b && a1b.row && a1b.row.source,
+        a2New: a2 && a2.isNew, b1New: b1 && b1.isNew, bad: bad,
+        listA: listA.length,
+        findBefore: findBefore, findBetween: findBetween && findBetween.projectUrl,
+        findAt: findAt && findAt.projectUrl, findLater: findLater && findLater.projectUrl,
+        findB: findB && findB.projectUrl, findNone: findNone
+      }));
+    })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+    let rt = null;
+    try {
+      const out = execFileSync(process.execPath, ['-e', script], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+      rt = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+    } catch (e) { rt = null; }
+    ok('X60-DB the round-trip child ran', !!rt);
+    eq('X60-DB the first sighting inserts a new row', rt && rt.a1New, true);
+    eq('X60-DB project_id is parsed from the URL', rt && rt.a1Id, '11111111-2222-3333-4444-555555555555');
+    eq('X60-DB first_seen_at is the sighting time', rt && rt.a1First, Date.parse('2026-11-06T09:28:00Z'));
+    eq('X60-DB the source is recorded', rt && rt.a1Source, 'fresh-entry');
+    eq('X60-DB a repeat sighting is NOT new', rt && rt.a1bNew, false);
+    eq('X60-DB a repeat keeps the original first_seen_at', rt && rt.a1bFirst, Date.parse('2026-11-06T09:28:00Z'));
+    eq('X60-DB a repeat updates last_seen_at', rt && rt.a1bLast, Date.parse('2026-11-06T10:05:00Z'));
+    eq('X60-DB a repeat keeps the FIRST source', rt && rt.a1bSource, 'fresh-entry');
+    eq('X60-DB a second project inserts its own row', rt && rt.a2New, true);
+    eq('X60-DB another account inserts its own row', rt && rt.b1New, true);
+    eq('X60-DB an empty account key records nothing', rt && rt.bad, null);
+    eq('X60-DB the account list holds exactly its two projects', rt && rt.listA, 2);
+    eq('X60-DB a target before every project finds nothing', rt && rt.findBefore, null);
+    eq('X60-DB the closest-not-after project wins', rt && rt.findBetween, 'https://flow.google.com/project/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    eq('X60-DB an exact-time target finds that project', rt && rt.findAt, 'https://flow.google.com/project/11111111-2222-3333-4444-555555555555');
+    eq('X60-DB a later target still finds the latest not-after', rt && rt.findLater, 'https://flow.google.com/project/11111111-2222-3333-4444-555555555555');
+    eq('X60-DB the other account finds only its own project', rt && rt.findB, 'https://flow.google.com/project/zzzz-other-account-proj');
+    eq('X60-DB an unknown account finds nothing', rt && rt.findNone, null);
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

@@ -209,6 +209,33 @@ function galleryEntryDecision(survey, preferFresh, targetMs, nowMs) {
 }
 
 /**
+ * v2.48.60 (PROJECT REGISTRY): recovery ke ek
+ * (account, project) group ke liye ENTRY ka faisla —
+ * khalis, koi page/DB nahi chhoota:
+ *   1. task par RECORDED project_url ho -> wahi,
+ *      source 'recorded' (sab se pakki pehchan).
+ *   2. warna registry (dbService.findProjectForTime)
+ *      ka qareebi-not-after project -> source
+ *      'registry' — engine usi URL par seedha jata
+ *      hai, gallery scrape bilkul nahi.
+ *   3. warna gallery ka date-time wala raasta
+ *      (kind 'gallery' — pool recoveryTargetTime
+ *      bhejta hai, faisla galleryEntryDecision ka).
+ * registryRow dbService ki mapped shakal
+ * (projectUrl) bhi ho sakti hai aur kachi DB shakal
+ * (project_url) bhi — dono qubool hain.
+ */
+function recoveryEntryPlan(recordedUrl, registryRow) {
+  const rec = String(recordedUrl || '').trim();
+  if (rec) return { kind: 'recorded', projectUrl: rec, source: 'recorded' };
+  const regUrl = registryRow
+    ? String(registryRow.projectUrl || registryRow.project_url || '').trim()
+    : '';
+  if (regUrl) return { kind: 'registry', projectUrl: regUrl, source: 'registry' };
+  return { kind: 'gallery', projectUrl: '', source: null };
+}
+
+/**
  * v2.48.59 (OMNI 1.2 FLASH): Omni Flash 1.2 ki qeemat
  * PER-SECOND hai (Google Flow support page, verified
  * 2026-11-06; CREDIT-RATES-OMNI-1.2-2026-11-06.md) —
@@ -649,6 +676,21 @@ class FlowAutomationEngine {
     };
     this._downloadChannel = 'monitor';
     this.downloadPort = Object.assign({}, noopDownloadPort, options.downloadPort || {});
+    // v2.48.60 (PROJECT REGISTRY): PROJECT LEDGER port —
+    // pool isey dbService.recordProjectSeen se bandhta
+    // hai. Engine har project entry par recordSeen
+    // bulata hai; ledger pehli baar ki row par
+    // { isNew: true } lautata hai taaki [ROOT]
+    // project-registered wali line SIRF nayi row par
+    // lage. No-op jab pool na bandhe (purane bulane
+    // wale / tests — un ke liye registry khaamosh
+    // rehti hai).
+    //   recordSeen(accountKey, projectUrl, source)
+    //     -> { isNew, row } | null
+    const noopProjectPort = {
+      recordSeen: () => null
+    };
+    this.projectPort = Object.assign({}, noopProjectPort, options.projectPort || {});
     // v2.31.3 tuning (constructor options so simulations can shrink
     // the windows; production uses these defaults): one download
     // ROUND gets 150s (v2.48.0: raised from 120s — the 25s media-
@@ -1413,6 +1455,34 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.60 (PROJECT REGISTRY): page jis project me
+   * hai, us (account, project) jodi ko registry me darj
+   * karo — account wahi identity jo tasks
+   * assigned_account_id me rakhti hain
+   * (this.currentAccount.id). Ye kitab ENTRY ke pal
+   * likhi jati hai, koi prompt submit hone se pehle —
+   * run beech me mar bhi jaye to project ka record
+   * mehfooz rehta hai aur recovery ko har baar saare
+   * accounts nahi chaanne padte. [ROOT] wali line SIRF
+   * nayi row par lagti hai (ledger ka isNew); dobara
+   * entry par sirf last_seen_at aage badhta hai,
+   * khaamoshi se. Koi bhi khata yahan run ko NAHI
+   * rokta — try/catch me lipta, log-and-continue.
+   */
+  _registerCurrentProject(source) {
+    try {
+      const url = this.currentProjectUrl();
+      const accountKey = this.currentAccount ? this.currentAccount.id : '';
+      if (!url || !accountKey) return;
+      const res = this.projectPort.recordSeen(accountKey, url, source);
+      if (res && res.isNew) {
+        const firstSeen = res.row && Number(res.row.firstSeenAt) > 0 ? Number(res.row.firstSeenAt) : Date.now();
+        this.log(`[ROOT] project-registered account=${accountKey} id=${projectIdOfUrl(url)} at=${new Date(firstSeen).toISOString()} source=${source}`, 'info');
+      }
+    } catch (e) {}
+  }
+
+  /**
    * v2.48.57 (PROJECT-TRUTH changes 2+3): gallery se
    * project ke andar jana. Faisla khalis
    * galleryEntryDecision karta hai:
@@ -1613,7 +1683,14 @@ class FlowAutomationEngine {
         await this._waitForFlowSignal(5000);
       }
       if (wantId && this.page.url().includes(`/project/${wantId}`)) {
-        this.log(`[ROOT] recovery-project url=${recordedProjectUrl} source=recorded`, 'info');
+        // v2.48.60 (PROJECT REGISTRY): URL task par
+        // darj tha to 'recorded'; pool ne registry se
+        // chuna tha (projectUrlSource='registry') to
+        // 'registry' — raasta ek hi (seedha goto +
+        // id verify), pehchan ka zariya alag darj
+        // hota hai.
+        const entrySource = settings.projectUrlSource === 'registry' ? 'registry' : 'recorded';
+        this.log(`[ROOT] recovery-project url=${recordedProjectUrl} source=${entrySource}`, 'info');
       } else {
         throw new Error(`The recorded Flow project could not be opened (${recordedProjectUrl}) — recovery keeps its tasks pending for a later Resume.`);
       }
@@ -1645,6 +1722,16 @@ class FlowAutomationEngine {
         await this.page.waitForSelector('flow-grid-tile-container, .ProseMirror, div[contenteditable="true"]', { timeout: 2500 });
       } catch (e) {}
     }
+
+    // v2.48.60 (PROJECT REGISTRY): page ab project me
+    // hai — teeno entry raaste (recorded/registry wala
+    // seedha goto, gallery entry, ya pehle se khula
+    // project) yahin milte hain. Is jodi ko registry me
+    // ENTRY ke pal darj karo, credit gate aur kisi bhi
+    // prompt se PEHLE: fresh run = 'fresh-entry',
+    // recovery ('existing') = 'recovery-entry'. Run
+    // yahan se aage kahin bhi mare, record reh jayega.
+    this._registerCurrentProject(preferFreshCanvas ? 'fresh-entry' : 'recovery-entry');
 
     // Dismiss tutorial/welcome overlay and clean up stale failed tiles
     try {
@@ -11080,4 +11167,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, omni12CreditsPerVideo, modelNameParts, matchModelOption };

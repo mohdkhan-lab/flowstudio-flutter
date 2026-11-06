@@ -1,4 +1,4 @@
-const { FlowAutomationEngine } = require('./flowAutomation');
+const { FlowAutomationEngine, projectIdOfUrl, recoveryEntryPlan } = require('./flowAutomation');
 const { getAccounts, fetchRealCredits } = require('./accountStore');
 const { dbService } = require('./db');
 const { getCreditService } = require('./creditService');
@@ -365,6 +365,24 @@ class WorkerPool {
     };
   }
 
+  /**
+   * v2.48.60 (PROJECT REGISTRY): the PROJECT LEDGER port
+   * bound into every engine this pool creates. The engine
+   * reports every project it ENTERS through it; the record
+   * lives in dbService's project_registry (account + project
+   * + first-seen time), so recovery can later re-open the
+   * EXACT project on the EXACT account instead of checking
+   * every account. Returns the ledger's { isNew, row } so
+   * the engine can log a new registration exactly once.
+   */
+  _projectPort() {
+    return {
+      recordSeen: (accountKey, projectUrl, source) => {
+        try { return dbService.recordProjectSeen({ accountKey, projectUrl, source }); } catch (e) { return null; }
+      }
+    };
+  }
+
   _creditPort() {
     const cs = getCreditService();
     // v2.0.0: spend ledger for the credits dashboard. Fed ONLY through
@@ -614,7 +632,9 @@ class WorkerPool {
         workerId: 'recovery',
         creditPort: this._creditPort(),
         // v2.31.3: recovery downloads count in the same ledger.
-        downloadPort: this._downloadPort()
+        downloadPort: this._downloadPort(),
+        // v2.48.60: recovery entries also register their project.
+        projectPort: this._projectPort()
       });
 
       try {
@@ -632,15 +652,32 @@ class WorkerPool {
           // liye openFlowStudio ka credit gate yahan
           // NAHI rukna chahiye (ZEROCLICK26: (22) ke 2
           // credits par 10 parked tasks ruk gaye the).
+          // v2.48.60 (PROJECT REGISTRY): entry ka
+          // tartib ab teen darjon ka hai — recorded
+          // (task ki apni darj-shuda URL) > registry
+          // (is account ki kitab me group ki sab se
+          // purani row ke waqt ke qareeb-not-after
+          // project) > gallery-datetime (screen-scrape
+          // wala purana andaza, sirf tab jab registry
+          // me kuch na ho — .60 se pehle ke projects).
+          // Faisla khalis recoveryEntryPlan karta hai;
+          // registry ki query yahan DB se aati hai aur
+          // koi khata use 'koi hit nahi' hi samjhta hai.
+          let targetMs = 0;
+          for (const r of group) {
+            const t = rowCreatedMs(r);
+            if (t > 0 && (targetMs === 0 || t < targetMs)) targetMs = t;
+          }
+          let registryRow = null;
+          if (!projectUrl && targetMs > 0) {
+            try { registryRow = dbService.findProjectForTime(accountId, targetMs); } catch (e) { registryRow = null; }
+          }
+          const entryPlan = recoveryEntryPlan(projectUrl, registryRow);
           let openSettings;
-          if (projectUrl) {
-            openSettings = { ...settings, canvasStrategy: 'existing', projectUrl, downloadOnly: true };
+          if (entryPlan.kind === 'recorded' || entryPlan.kind === 'registry') {
+            openSettings = { ...settings, canvasStrategy: 'existing', projectUrl: entryPlan.projectUrl, downloadOnly: true };
+            if (entryPlan.kind === 'registry') openSettings.projectUrlSource = 'registry';
           } else {
-            let targetMs = 0;
-            for (const r of group) {
-              const t = rowCreatedMs(r);
-              if (t > 0 && (targetMs === 0 || t < targetMs)) targetMs = t;
-            }
             openSettings = { ...settings, canvasStrategy: 'existing', downloadOnly: true };
             if (targetMs > 0) openSettings.recoveryTargetTime = targetMs;
           }
@@ -1819,7 +1856,9 @@ class WorkerPool {
           workerId,
           creditPort,
           // v2.31.3: persisted download-attempt ledger (3-round cap).
-          downloadPort: this._downloadPort()
+          downloadPort: this._downloadPort(),
+          // v2.48.60: project entries register in the registry.
+          projectPort: this._projectPort()
         });
 
         this.activeWorkers.set(workerId, engine);
@@ -2076,7 +2115,26 @@ class WorkerPool {
                   // project URL us ke har task ke liye).
                   try {
                     const purl = submitRes.projectUrl || engine.currentProjectUrl();
-                    if (purl) dbService.setTaskProjectUrl(nextTask.id, purl);
+                    if (purl) {
+                      dbService.setTaskProjectUrl(nextTask.id, purl);
+                      // v2.48.60 (PROJECT REGISTRY): yehi
+                      // pal is (account, project) jodi ko
+                      // registry me bhi darj karta hai —
+                      // source 'task-birth'. Entry wali
+                      // 'fresh-entry' row aam tor par pehle
+                      // se maujood hoti hai (ye upsert sirf
+                      // last_seen aage badhayega); agar kisi
+                      // wajah se entry darj na hui ho to yehi
+                      // pehli row banegi aur [ROOT] wali
+                      // line yahin lagegi.
+                      if (workerAccount && workerAccount.id) {
+                        const reg = dbService.recordProjectSeen({ accountKey: workerAccount.id, projectUrl: purl, source: 'task-birth' });
+                        if (reg && reg.isNew) {
+                          const firstSeen = reg.row && Number(reg.row.firstSeenAt) > 0 ? Number(reg.row.firstSeenAt) : Date.now();
+                          this.log(`[ROOT] project-registered account=${workerAccount.id} id=${projectIdOfUrl(purl)} at=${new Date(firstSeen).toISOString()} source=task-birth`, 'info');
+                        }
+                      }
+                    }
                   } catch (e) {}
                   activeWorkerTasks.push(submitRes);
 

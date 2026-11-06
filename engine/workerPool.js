@@ -626,16 +626,22 @@ class WorkerPool {
           // bilkul nahi); na ho to gallery pass ke liye
           // is group ki sab se purani row ka waqt do —
           // date-time wala chunav usi se hoga.
+          // v2.48.58 (RECOVERY-NO-CREDIT-GATE change 1):
+          // downloadOnly hamesha laga kar bhejo — ye
+          // recovery koi credit NAHI kharch karti, is
+          // liye openFlowStudio ka credit gate yahan
+          // NAHI rukna chahiye (ZEROCLICK26: (22) ke 2
+          // credits par 10 parked tasks ruk gaye the).
           let openSettings;
           if (projectUrl) {
-            openSettings = { ...settings, canvasStrategy: 'existing', projectUrl };
+            openSettings = { ...settings, canvasStrategy: 'existing', projectUrl, downloadOnly: true };
           } else {
             let targetMs = 0;
             for (const r of group) {
               const t = rowCreatedMs(r);
               if (t > 0 && (targetMs === 0 || t < targetMs)) targetMs = t;
             }
-            openSettings = { ...settings, canvasStrategy: 'existing' };
+            openSettings = { ...settings, canvasStrategy: 'existing', downloadOnly: true };
             if (targetMs > 0) openSettings.recoveryTargetTime = targetMs;
           }
           const st = await engine.openFlowStudio(openSettings).catch(() => null);

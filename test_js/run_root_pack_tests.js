@@ -4043,6 +4043,146 @@ async function main() {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
   }
 
+  // ---------------------------------------------------------------------------
+  // X58. v2.48.58 (RECOVERY-NO-CREDIT-GATE):
+  //   (a) openFlowStudio ka credit gate download-only
+  //       recovery (settings.downloadOnly) par NAHI
+  //       rukta — balance 2 (LOW) ho ya 0 (EXHAUSTED)
+  //       ho, entry READY milti hai aur bypass wali
+  //       [ROOT] line log hoti hai; BINA flag ke wahi
+  //       balance aaj ki tarah LOW_CREDITS / EXHAUSTED
+  //       hi deta hai (fresh run ka gate bilkul waisa
+  //       hi).
+  //   (b) workerPool ki recovery ghadi har open call
+  //       par downloadOnly flag lagati hai.
+  //   (c) gallery-wait: recovery entry attempt 1 se
+  //       PEHLE gallery tiles ke render ka intezaar
+  //       karti hai — der se aane wala link bhi pehle
+  //       hi attempt me khul jata hai; helper had ke
+  //       andar saaf timeout bhi hota hai.
+  // ---------------------------------------------------------------------------
+  {
+    const gateLogs = [];
+    const mkGateEng = (live) => {
+      const eng = new FlowAutomationEngine({ onLog: (e) => gateLogs.push((e && e.message) || '') });
+      let cur = 'https://flow.google.com/';
+      eng.page = {
+        isClosed: () => false,
+        url: () => cur,
+        goto: async (u) => { cur = u; },
+        evaluate: async () => false,
+        waitForSelector: async () => {}
+      };
+      eng._waitForFlowSignal = async () => true;
+      eng.ensureAgentModeDisabled = async () => {};
+      eng.readLiveCreditsFromPage = async () => live;
+      eng.currentAccount = { id: 'acc-x58', name: 'X58 Acc', credits: 99 };
+      return eng;
+    };
+    const gateSettings = { duration: '4s', model: 'Omni Flash', quality: '360p', canvasStrategy: 'existing', projectUrl: 'https://flow.google.com/project/x58-proj' };
+    eq('X58-GATE no flag: low balance still returns LOW_CREDITS', await mkGateEng(2).openFlowStudio({ ...gateSettings }), 'LOW_CREDITS');
+    gateLogs.length = 0;
+    eq('X58-GATE recovery flag: low balance still enters (READY)', await mkGateEng(2).openFlowStudio({ ...gateSettings, downloadOnly: true }), 'READY');
+    ok('X58-GATE the bypass [ROOT] line was logged with the balance', gateLogs.some(m => m.includes('[ROOT] recovery-credit-gate bypassed balance=2')));
+    eq('X58-GATE no flag: zero balance still returns EXHAUSTED', await mkGateEng(0).openFlowStudio({ ...gateSettings }), 'EXHAUSTED');
+    eq('X58-GATE recovery flag: zero balance still enters (READY)', await mkGateEng(0).openFlowStudio({ ...gateSettings, downloadOnly: true }), 'READY');
+    eq('X58-GATE no flag: enough balance still enters (READY)', await mkGateEng(10).openFlowStudio({ ...gateSettings }), 'READY');
+  }
+  {
+    // (b) pool ki recovery ghadi — flag har call par
+    const { WorkerPool } = require('../engine/workerPool');
+    const { dbService } = require('../engine/db');
+    const savedDb58 = {
+      getAccount: dbService.getAccount,
+      setTaskNeedsCheck: dbService.setTaskNeedsCheck,
+      getTask: dbService.getTask,
+      completeTask: dbService.completeTask
+    };
+    const savedEng58 = {
+      launch: FlowAutomationEngine.prototype.launchBrowserForAccount,
+      open: FlowAutomationEngine.prototype.openFlowStudio,
+      reconcile: FlowAutomationEngine.prototype.reconcileRecoveredTask,
+      close: FlowAutomationEngine.prototype.closeBrowser,
+      sweepFn: FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep
+    };
+    const openCalls58 = [];
+    dbService.getAccount = (id) => (id === 'acc-x58' ? { id: 'acc-x58', name: 'X58 Acc', googleName: 'X58 Acc' } : null);
+    dbService.setTaskNeedsCheck = () => {};
+    dbService.getTask = () => null;
+    dbService.completeTask = () => {};
+    FlowAutomationEngine.prototype.launchBrowserForAccount = async () => true;
+    FlowAutomationEngine.prototype.openFlowStudio = async (settings) => { openCalls58.push(settings || {}); return 'READY'; };
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = async () => ({ found: false });
+    FlowAutomationEngine.prototype.closeBrowser = async () => {};
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = () => {};
+    const pool58 = new WorkerPool({ onLog: () => {}, onTaskUpdate: () => {} });
+    const rows58 = [
+      { id: 'x58-r1', assigned_account_id: 'acc-x58', prompt_index: 0, prompt_text: 'x58 prompt', prompt_tag: '', project_url: 'https://flow.google.com/project/x58-proj', created_at: '2026-11-06 10:05:00' },
+      { id: 'x58-r2', assigned_account_id: 'acc-x58', prompt_index: 1, prompt_text: 'x58 prompt 2', prompt_tag: '', project_url: '', created_at: '2026-11-06 09:17:00' }
+    ];
+    await pool58._reconcileNeedsCheck(rows58, '/tmp', {});
+    eq('X58-FLAG recovery opens one call per (account, project) group', openCalls58.length, 2);
+    ok('X58-FLAG every recovery open carries downloadOnly', openCalls58.every(c => c.downloadOnly === true));
+    ok('X58-FLAG every recovery open stays on the existing strategy', openCalls58.every(c => c.canvasStrategy === 'existing'));
+    dbService.getAccount = savedDb58.getAccount;
+    dbService.setTaskNeedsCheck = savedDb58.setTaskNeedsCheck;
+    dbService.getTask = savedDb58.getTask;
+    dbService.completeTask = savedDb58.completeTask;
+    FlowAutomationEngine.prototype.launchBrowserForAccount = savedEng58.launch;
+    FlowAutomationEngine.prototype.openFlowStudio = savedEng58.open;
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = savedEng58.reconcile;
+    FlowAutomationEngine.prototype.closeBrowser = savedEng58.close;
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = savedEng58.sweepFn;
+  }
+  {
+    // (c) gallery-wait — link der se aata hai
+    const waitLogs = [];
+    const engW = new FlowAutomationEngine({ onLog: (e) => waitLogs.push((e && e.message) || '') }, { galleryEntryPollMs: 1, galleryWaitMs: 3000, galleryWaitPollMs: 5 });
+    let currentUrl = 'https://flow.google.com/';
+    const clickedLinks = [];
+    const mkLateLink = (href, label) => ({
+      innerText: '',
+      getAttribute: (n) => (n === 'href' ? href : ''),
+      parentElement: { innerText: label },
+      click: () => { clickedLinks.push(href); currentUrl = `https://flow.google.com${href}`; }
+    });
+    let fakeLinks = [];
+    engW.page = {
+      isClosed: () => false,
+      url: () => currentUrl,
+      goto: async (u) => { currentUrl = u; },
+      evaluate: async (fn, arg) => {
+        const prevDoc = global.document;
+        global.document = {
+          querySelector: () => null,
+          querySelectorAll: (sel) => (String(sel).includes('/project/') ? fakeLinks : [])
+        };
+        try { return await fn(arg); } finally { global.document = prevDoc; }
+      }
+    };
+    setTimeout(() => { fakeLinks = [mkLateLink('/project/p-late', 'Nov 06 - 10:10')]; }, 60);
+    const lateEntry = await engW._enterProjectFromGallery(false, 0);
+    eq('X58-WAIT the late-appearing project still gets entered', lateEntry.entered, true);
+    eq('X58-WAIT it was entered on the first attempt', waitLogs.filter(m => m.includes('Attempt 1/3')).length === 1 && !waitLogs.some(m => m.includes('Attempt 2/3')), true);
+    ok('X58-WAIT the gallery-wait [ROOT] line reports the link', waitLogs.some(m => m.includes('[ROOT] gallery-wait links=1')));
+    eq('X58-WAIT the late link is the one that opened', JSON.stringify(clickedLinks), JSON.stringify(['/project/p-late']));
+    // helper ka saaf timeout: link kabhi nahi aata
+    const engT = new FlowAutomationEngine({ onLog: () => {} }, { galleryWaitMs: 80, galleryWaitPollMs: 5 });
+    engT.page = {
+      isClosed: () => false,
+      url: () => 'https://flow.google.com/',
+      goto: async () => {},
+      evaluate: async (fn, arg) => {
+        const prevDoc = global.document;
+        global.document = { querySelector: () => null, querySelectorAll: () => [] };
+        try { return await fn(arg); } finally { global.document = prevDoc; }
+      }
+    };
+    const gwTimeout = await engT._waitForGalleryTiles(80);
+    eq('X58-WAIT the helper times out with zero links', gwTimeout.links, 0);
+    ok('X58-WAIT the helper timeout stays bounded', gwTimeout.waitedMs >= 50 && gwTimeout.waitedMs < 2000);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

@@ -584,6 +584,12 @@ class FlowAutomationEngine {
     // muddat (production 1000ms) — constructor option
     // taaki nakli-page test tez chal saken.
     this.galleryEntryPollMs = Number(options.galleryEntryPollMs) > 0 ? Number(options.galleryEntryPollMs) : 1000;
+    // v2.48.58 (RECOVERY-NO-CREDIT-GATE change 2):
+    // recovery gallery entry se pehle tiles ke render
+    // ka intezaar — production me had 15s, poll 500ms.
+    // Constructor options taaki test ghata saken.
+    this.galleryWaitMs = Number(options.galleryWaitMs) > 0 ? Number(options.galleryWaitMs) : 15000;
+    this.galleryWaitPollMs = Number(options.galleryWaitPollMs) > 0 ? Number(options.galleryWaitPollMs) : 500;
     // v2.48.43 (HOVER + PATIENCE PACK): SABR ki khidki
     // — download attempt apne render-complete se itni
     // der (production 60s) main page par stream ka
@@ -1333,9 +1339,54 @@ class FlowAutomationEngine {
    * recovery ke liye matlab rakhta hai
    * ('gallery-datetime' | 'gallery-first').
    */
+  /**
+   * v2.48.58 (change 2): gallery ke tiles asal me
+   * render hone ka intezaar — kam az kam ek project
+   * link YA New Project button dikhe tab tak, had
+   * bounded (this.galleryWaitMs). ZEROCLICK26 ki
+   * recovery entries me pehla attempt hamesha
+   * 'none-found' par zaya hota tha kyunke us pal
+   * gallery ke banners hi load ho rahe the, tiles
+   * aayi hi nahi thin; doosra attempt ~10s baad
+   * kaam karta tha. Lautta hai { links, waitedMs } —
+   * links us pal ke project links ki ginti.
+   */
+  async _waitForGalleryTiles(timeoutMs) {
+    const budget = Number(timeoutMs) > 0 ? Number(timeoutMs) : (this.galleryWaitMs || 15000);
+    const poll = Number(this.galleryWaitPollMs) > 0 ? Number(this.galleryWaitPollMs) : 500;
+    const started = Date.now();
+    let links = 0;
+    for (;;) {
+      try {
+        const probe = await this.page.evaluate(() => {
+          const n = document.querySelectorAll('a[href*="/project/"]').length;
+          const hasNew = !!document.querySelector('button.new-project-button') ||
+            Array.from(document.querySelectorAll('button, div[role="button"]')).some(b => {
+              const txt = (b.innerText || '').toLowerCase();
+              const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+              return txt.includes('new project') || aria.includes('new project') || txt.includes('create project');
+            });
+          return { links: n, ready: n > 0 || hasNew };
+        });
+        links = probe && typeof probe.links === 'number' ? probe.links : 0;
+        if (probe && probe.ready) break;
+      } catch (e) {}
+      if (Date.now() - started >= budget) break;
+      await sleep(poll);
+    }
+    return { links, waitedMs: Date.now() - started };
+  }
+
   async _enterProjectFromGallery(preferFresh, targetMs) {
     let source = null;
     let lastHref = null;
+    // v2.48.58 (change 2): SIRF recovery entry pehle
+    // gallery ke render ka intezaar karti hai — fresh
+    // run ka bartav bilkul pehle jaisa.
+    if (!preferFresh) {
+      const gw = await this._waitForGalleryTiles(this.galleryWaitMs || 15000);
+      this.log(`[ROOT] gallery-wait links=${gw.links} waited=${gw.waitedMs}`, 'info');
+    }
     for (let attempt = 1; attempt <= 3; attempt++) {
       let survey = null;
       try {
@@ -1534,6 +1585,19 @@ class FlowAutomationEngine {
     } catch (e) {}
 
     // 4. Live credit pre-check — all writes go through the credit port.
+    // v2.48.58 (RECOVERY-NO-CREDIT-GATE): download-only
+    // recovery (settings.downloadOnly — ye jhanda SIRF
+    // workerPool ki recovery ghadi lagati hai) koi
+    // credit NAHI kharch karti: video pehle hi ban
+    // chuki hai aur us ka paisa kat chuka hai. Is liye
+    // wahan balance sirf RECORD hota hai, gate NAHI
+    // banta — ZEROCLICK26 me account (22) ke paas sirf
+    // 2 credits bache the aur us ki poori recovery
+    // (10 parked tasks) LOW_CREDITS par ruk gayi thi,
+    // halanke download par ek bhi credit nahi lagna
+    // tha. Fresh generation ka gate bilkul pehle
+    // jaisa hi rehta hai.
+    const downloadOnly = !!(settings && settings.downloadOnly);
     const required = this.getRequiredCredits(settings || this.currentSettings);
     const accId = this.currentAccount ? this.currentAccount.id : null;
     // v1.9.0: name via a guarded local — currentAccount is set by the
@@ -1544,22 +1608,31 @@ class FlowAutomationEngine {
     if (typeof liveCredits === 'number') {
       this.creditPort.liveBalance(accId, liveCredits);
       if (this.currentAccount) this.currentAccount.credits = liveCredits;
-      if (liveCredits === 0) {
+      if (downloadOnly) {
+        // v2.48.58: recovery me balance kitna bhi ho
+        // (0 bhi), entry rukti NAHI — neeche wali dono
+        // gate-shaklein skip; balance upar record ho
+        // chuka hai.
+        this.log(`[ROOT] recovery-credit-gate bypassed balance=${liveCredits} (download-only, no credits needed)`, 'info');
+        this.log(`[${accName}] has ${liveCredits} credits — download-only recovery needs no credits; continuing.`, 'success');
+      } else if (liveCredits === 0) {
         this.log(`[${accName}] has 0 credits — no video will be made from this account; moving to the next account.`, 'warn');
         return 'EXHAUSTED';
-      }
-      if (required > 0 && liveCredits < required) {
+      } else if (required > 0 && liveCredits < required) {
         // Audit fix #2: low balance is a skip reason, NOT exhaustion.
         this.creditPort.lowCredits(accId, required);
         this.log(`[${accName}] has only ${liveCredits} credits; one video needs ~${required} — skipping this account for this run.`, 'warn');
         return 'LOW_CREDITS';
+      } else {
+        this.log(`[${accName}] has ${liveCredits} credits (one video ≈ ${required} credits).`, 'success');
       }
-      this.log(`[${accName}] has ${liveCredits} credits (one video ≈ ${required} credits).`, 'success');
     } else {
       // Audit fix #3: an inconclusive read changes nothing.
       this.creditPort.ambiguous(accId);
       const known = Number(this.currentAccount ? this.currentAccount.credits : NaN);
-      if (!isNaN(known) && required > 0 && known < required) {
+      if (downloadOnly) {
+        this.log(`[ROOT] recovery-credit-gate bypassed balance=${isNaN(known) ? 'unknown' : known} (download-only, no credits needed)`, 'info');
+      } else if (!isNaN(known) && required > 0 && known < required) {
         this.creditPort.lowCredits(accId, required);
         this.log(`[${accName}]'s last known balance is ${known} credits, which is less than the needed ~${required} — skipping this account.`, 'warn');
         return 'LOW_CREDITS';

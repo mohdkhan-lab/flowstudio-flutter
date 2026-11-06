@@ -22,7 +22,7 @@ const os = require('os');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.48.58';
+const SERVER_VERSION = '2.48.59';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -215,8 +215,8 @@ const TOOLS = [
       type: 'object',
       properties: {
         prompts: { type: 'array', items: { type: 'string' }, description: 'One prompt per video' },
-        model: { type: 'string', description: "e.g. 'Omni Flash', 'Veo 3.1 Fast'" },
-        duration: { type: 'string', description: "e.g. '4s', '6s', '8s', '10s'" },
+        model: { type: 'string', description: "e.g. 'Omni Flash', 'Omni 1.2 Flash', 'Veo 3.1 Fast'" },
+        duration: { type: 'string', description: "e.g. '4s', '6s', '8s', '10s', '15s'" },
         aspectRatio: { type: 'string', description: "e.g. '9:16', '16:9', '1:1'" },
         quality: { type: 'string', description: "e.g. '720p', '1080p'" },
         parallelBrowsers: { type: 'number', description: 'How many accounts work in parallel (1-4)' },

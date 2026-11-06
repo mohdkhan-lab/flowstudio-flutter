@@ -50,7 +50,7 @@ const {
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
 const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
-const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision } = require('../engine/flowAutomation');
+const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
 const cookiesDb = require('../engine/cookiesDb');
 
@@ -4181,6 +4181,60 @@ async function main() {
     const gwTimeout = await engT._waitForGalleryTiles(80);
     eq('X58-WAIT the helper times out with zero links', gwTimeout.links, 0);
     ok('X58-WAIT the helper timeout stays bounded', gwTimeout.waitedMs >= 50 && gwTimeout.waitedMs < 2000);
+  }
+
+  // X59. v2.48.59 (OMNI 1.2 FLASH): naya model
+  // 'Omni 1.2 Flash' — per-second credit formula
+  // (Google support page, 2026-11-06) aur version-
+  // aware model matcher. Purana saaf-string
+  // includes() do tarah tootta tha: 'Omni 1.2 Flash'
+  // Flow ke 'Omni Flash 1.2' se match nahi hota tha,
+  // aur legacy 'Omni Flash' ghalti se 1.2 chun leta
+  // tha. Matcher kabhi exact string par nahi —
+  // version token + lafz tokens par faisla hota hai.
+  {
+    const menu59 = ['Omni Flash 1.1', 'Omni Flash 1.2', 'Veo 3.1 Lite', 'Veo 3.1 Fast', 'Veo 3.1 Quality'];
+    eq('X59-MATCH the 1.2 target picks the 1.2 item', matchModelOption('Omni 1.2 Flash', menu59), 1);
+    eq('X59-MATCH the legacy target picks 1.1, never 1.2', matchModelOption('Omni Flash', menu59), 0);
+    eq('X59-MATCH the explicit 1.1 target picks the 1.1 item', matchModelOption('Omni 1.1 Flash', menu59), 0);
+    eq('X59-MATCH Veo Lite picks its own item', matchModelOption('Veo 3.1 Lite', menu59), 2);
+    eq('X59-MATCH Veo Fast picks its own item', matchModelOption('Veo 3.1 Fast', menu59), 3);
+    eq('X59-MATCH Veo Quality picks its own item', matchModelOption('Veo 3.1 Quality', menu59), 4);
+    eq('X59-MATCH app-order wording matches too', matchModelOption('Omni 1.2 Flash', ['Omni 1.2 Flash', 'Omni Flash 1.1']), 0);
+    eq('X59-MATCH an unknown model matches nothing', matchModelOption('Imagen 3', menu59), -1);
+    eq('X59-MATCH only-1.2 menu falls back for the legacy target', matchModelOption('Omni Flash', ['Omni Flash 1.2']), 0);
+    // current-selection check (strictVersion): panel
+    // par 1.2 dikhna 1.1 target ke liye 'pehle se
+    // chuna hua' NAHI hai — warna run chup chaap
+    // ghalat model par chalta rehta.
+    eq('X59-CUR 1.2 showing is not the legacy target', matchModelOption('Omni Flash', ['Omni Flash 1.2'], { strictVersion: true }), -1);
+    eq('X59-CUR 1.1 showing is the legacy target', matchModelOption('Omni Flash', ['Omni Flash 1.1'], { strictVersion: true }), 0);
+    eq('X59-CUR plain showing is the legacy target', matchModelOption('Omni Flash', ['Omni Flash'], { strictVersion: true }), 0);
+    eq('X59-CUR 1.2 showing is the 1.2 target', matchModelOption('Omni 1.2 Flash', ['Omni Flash 1.2'], { strictVersion: true }), 0);
+    eq('X59-CUR 1.1 showing is not the 1.2 target', matchModelOption('Omni 1.2 Flash', ['Omni Flash 1.1'], { strictVersion: true }), -1);
+    eq('X59-PARTS version and words split out', JSON.stringify(modelNameParts('Omni 1.2 Flash')), JSON.stringify({ version: '1.2', words: ['omni', 'flash'] }));
+  }
+  {
+    // Rate formula — khalis helper par seedha.
+    eq('X59-RATE 1.2 360p 4s = 4', omni12CreditsPerVideo(4, '360p'), 4);
+    eq('X59-RATE 1.2 360p 8s = 8', omni12CreditsPerVideo(8, '360p'), 8);
+    eq('X59-RATE 1.2 360p 10s = 10', omni12CreditsPerVideo(10, '360p'), 10);
+    eq('X59-RATE 1.2 360p 11s = 12 (extra rate starts)', omni12CreditsPerVideo(11, '360p'), 12);
+    eq('X59-RATE 1.2 360p 15s = 20', omni12CreditsPerVideo(15, '360p'), 20);
+    eq('X59-RATE 1.2 720p 4s = 12', omni12CreditsPerVideo(4, '720p'), 12);
+    eq('X59-RATE 1.2 720p 8s = 24', omni12CreditsPerVideo(8, '720p'), 24);
+    eq('X59-RATE 1.2 720p 10s = 30', omni12CreditsPerVideo(10, '720p'), 30);
+    eq('X59-RATE 1.2 720p 15s = 60', omni12CreditsPerVideo(15, '720p'), 60);
+    eq('X59-RATE above-range clamps to 15s', omni12CreditsPerVideo(20, '360p'), 20);
+    eq('X59-RATE below-range clamps to 3s', omni12CreditsPerVideo(2, '360p'), 3);
+    // Engine ki asal kitab — getRequiredCredits.
+    const grc = FlowAutomationEngine.prototype.getRequiredCredits;
+    eq('X59-RATE engine 1.2 360p 15s = 20', grc.call({}, { model: 'Omni 1.2 Flash', duration: '15s', quality: '360p' }), 20);
+    eq('X59-RATE engine 1.2 720p 15s = 60', grc.call({}, { model: 'Omni 1.2 Flash', duration: '15s', quality: '720p' }), 60);
+    eq('X59-RATE engine 1.2 360p 4s = 4', grc.call({}, { model: 'Omni 1.2 Flash', duration: '4s', quality: '360p' }), 4);
+    eq('X59-RATE engine 1.1 360p 10s unchanged = 7', grc.call({}, { model: 'Omni Flash', duration: '10s', quality: '360p' }), 7);
+    eq('X59-RATE engine 1.1 720p 10s unchanged = 15', grc.call({}, { model: 'Omni Flash', duration: '10s', quality: '720p' }), 15);
+    eq('X59-RATE engine non-1.2 at 15s keeps the old fallback', grc.call({}, { model: 'Omni Flash', duration: '15s', quality: '360p' }), 5);
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

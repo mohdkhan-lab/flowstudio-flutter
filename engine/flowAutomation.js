@@ -209,6 +209,92 @@ function galleryEntryDecision(survey, preferFresh, targetMs, nowMs) {
 }
 
 /**
+ * v2.48.59 (OMNI 1.2 FLASH): Omni Flash 1.2 ki qeemat
+ * PER-SECOND hai (Google Flow support page, verified
+ * 2026-11-06; CREDIT-RATES-OMNI-1.2-2026-11-06.md) —
+ * 1.1 ki flat table (4/5/6/7 waghera) se bilkul alag:
+ *   360p: sec 1–10 = 1 credit/sec, sec 11–15 = 2/sec
+ *   720p: sec 1–10 = 3 credits/sec, sec 11–15 = 6/sec
+ * Durations 3–15s (1s steps). Range se bahar ki value
+ * sab se qareeb in-range value par clamp hoti hai
+ * (engine ki purani fallback aadat — engine ko hamesha
+ * ek number chahiye; Dart wali estimate wahan null
+ * deti hai kyunke wo sirf dikhane ke liye hai).
+ * Khalis helper — getRequiredCredits isi ko bulata hai.
+ */
+function omni12CreditsPerVideo(seconds, genRes) {
+  let secs = Math.round(Number(seconds) || 0);
+  if (!Number.isFinite(secs) || secs <= 0) secs = 6;
+  if (secs < 3) secs = 3;
+  if (secs > 15) secs = 15;
+  const base = genRes === '720p' ? 3 : 1;
+  const extra = genRes === '720p' ? 6 : 2;
+  if (secs <= 10) return secs * base;
+  return 10 * base + (secs - 10) * extra;
+}
+
+/**
+ * v2.48.59 (OMNI 1.2 FLASH): model-naam ki pehchan —
+ * version token (pehla \d+\.\d+, masalan '1.2'/'3.1')
+ * aur baaki lafz tokens (version hata kar). Flow ke
+ * menu ki exact wording yahan se maloom nahi ho sakti
+ * — 'Omni 1.2 Flash' bhi ho sakta hai aur 'Omni Flash
+ * 1.2' bhi — is liye chunav kabhi ek exact string par
+ * nahi, hamesha in tokens par hota hai.
+ */
+function modelNameParts(name) {
+  const raw = String(name == null ? '' : name).toLowerCase();
+  const vm = raw.match(/\d+\.\d+/);
+  const version = vm ? vm[0] : null;
+  const rest = vm ? raw.replace(vm[0], ' ') : raw;
+  const words = rest.match(/[a-z]+/g) || [];
+  return { version, words };
+}
+
+/**
+ * v2.48.59: matchModelOption(targetName, itemTexts)
+ * -> chune hue item ka index, ya -1. Khalis faisla:
+ *  - Target ke paas version ho (masalan 'Omni 1.2
+ *    Flash', 'Veo 3.1 Fast') to item tabhi match hai
+ *    jab us ka version WAHI ho aur target ke saare
+ *    lafz tokens us me hon.
+ *  - Target bina version ke ho (legacy 'Omni Flash'
+ *    = Omni 1.1) to pehle bina-version wala item,
+ *    warna '1.1' version wala — '1.2' jaisa doosra
+ *    version KABHI nahi jab 1.1/bina-version maujood
+ *    ho (purana includes() yahi galti karta tha:
+ *    'omniflash' saaf string 'omniflash12' ke andar
+ *    mil jati thi). Kuch aur bache hi na to purani
+ *    token-subset fallback (pehla candidate).
+ *  - opts.strictVersion (current-selection check ke
+ *    liye): doosre version par fallback NAHI — warna
+ *    panel par 1.2 chalta hua 1.1 target ko 'pehle se
+ *    chuna hua' keh kar chup chaap 1.2 hi rehne deta.
+ */
+function matchModelOption(targetName, itemTexts, opts) {
+  const strict = !!(opts && opts.strictVersion);
+  const t = modelNameParts(targetName);
+  const items = Array.isArray(itemTexts) ? itemTexts : [];
+  if (!t.words.length || !items.length) return -1;
+  const parsed = items.map((txt) => modelNameParts(txt));
+  const cand = [];
+  parsed.forEach((p, i) => {
+    if (t.words.every((w) => p.words.includes(w))) cand.push(i);
+  });
+  if (!cand.length) return -1;
+  if (t.version) {
+    const hit = cand.find((i) => parsed[i].version === t.version);
+    return hit === undefined ? -1 : hit;
+  }
+  const noVer = cand.find((i) => parsed[i].version === null);
+  if (noVer !== undefined) return noVer;
+  const v11 = cand.find((i) => parsed[i].version === '1.1');
+  if (v11 !== undefined) return v11;
+  if (strict) return -1;
+  return cand[0];
+}
+
+/**
  * v2.48.52 (ROUTE 1A PACK): netload (CDP
  * Network.loadNetworkResource) koshish ki [ROOT]
  * line (khalis). Ek koshish = ek line: kaun sa host,
@@ -1721,6 +1807,11 @@ class FlowAutomationEngine {
   // Real rates only — the owner's own Flow panel screenshots,
   // 2026-10-27 (CREDIT-RATES-REAL-2026-10-27.md); the same table
   // the app shows in lib/services/credit_costs.dart.
+  // v2.48.59: Omni Flash 1.2 PER-SECOND hai (Google Flow
+  // support page, verified 2026-11-06 —
+  // CREDIT-RATES-OMNI-1.2-2026-11-06.md): 360p 1/sec
+  // (sec 1–10) phir 2/sec (sec 11–15); 720p 3/sec phir
+  // 6/sec. Formula omni12CreditsPerVideo me hai.
   getRequiredCredits(settings) {
     if (!settings || settings.type === 'Image') {
       return 0;
@@ -1752,6 +1843,13 @@ class FlowAutomationEngine {
       creditsPerOutput = 20;
     } else if (model.includes('lite')) {
       creditsPerOutput = 10;
+    } else if ((model.includes('omni') || model.includes('flash')) && model.includes('1.2')) {
+      // v2.48.59: Omni Flash 1.2 — per-second billing
+      // (upar wala note). Ye shakha generic Omni shakha
+      // se PEHLE aati hai: 'omni 1.2 flash' bhi aam
+      // omni/flash check me phansta tha aur use 1.1 ki
+      // flat table mil jati (15s par ghalat '5').
+      creditsPerOutput = omni12CreditsPerVideo(parseInt(duration, 10), genRes);
     } else if (model.includes('omni') || model.includes('flash')) {
       // Real Omni rates (owner's panel screenshots, 2026-10-27),
       // keyed by the generation resolution above. The old
@@ -2203,28 +2301,56 @@ class FlowAutomationEngine {
         // 3.5 Select AI Model FIRST among the value controls (v1.6.2: changing the model makes Flow reset the duration to that model's default — setting duration before the model is how a 6s request silently became 8s)
         if (settings.model) {
           this.log(`Selecting the AI Model: [${settings.model}]…`, 'info');
-          await this.page.evaluate(async (mName) => {
+          // v2.48.59 (OMNI 1.2 FLASH): chunav ka faisla ab
+          // Node par hota hai — khalis matchModelOption
+          // helper. Purana saaf-string includes() versioned
+          // naamon par tootta tha: target 'Omni 1.2 Flash'
+          // (saaf 'omni12flash') Flow ke menu text 'Omni
+          // Flash 1.2' ('omniflash12') se match hi nahi
+          // hota tha, aur legacy target 'Omni Flash'
+          // ('omniflash') ghalti se 'Omni Flash 1.2' ko
+          // chun leta tha. Pattern gallery entry (.57)
+          // wala hai: survey (dropdown ka current text)
+          // -> faisla (strictVersion — 1.2 dikhna 1.1
+          // target ke liye 'pehle se chuna hua' NAHI) ->
+          // menu survey (item texts) -> faisla -> index
+          // par click.
+          const currentModelText = await this.page.evaluate(() => {
             const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content') || document.body;
             const btns = Array.from(pop.querySelectorAll('button, div[role="button"]'));
             const modelDropdown = btns.find(b => {
               const txt = (b.innerText || '').toLowerCase();
               return txt.includes('omni') || txt.includes('veo') || txt.includes('flash') || txt.includes('banana') || b.getAttribute('aria-haspopup') === 'menu';
             });
-            if (modelDropdown) {
-              const currentTxt = (modelDropdown.innerText || '').toLowerCase();
-              const cleanTarget = mName.toLowerCase().replace(/[^a-z0-9]/g, '');
-              if (!currentTxt.replace(/[^a-z0-9]/g, '').includes(cleanTarget)) {
-                modelDropdown.click();
-                await new Promise(r => setTimeout(r, 400));
-                const menuItems = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"], [role="menu"] button, div[role="menu"] div, div[role="listbox"] [role="option"]'));
-                const opt = menuItems.find(item => {
-                  const itTxt = (item.innerText || '').toLowerCase().replace(/[^a-z0-9]/g, '');
-                  return itTxt.includes(cleanTarget) || cleanTarget.includes(itTxt);
-                });
-                if (opt) opt.click();
+            return modelDropdown ? (modelDropdown.innerText || '') : null;
+          });
+          const alreadySelected = currentModelText !== null
+            && matchModelOption(settings.model, [currentModelText], { strictVersion: true }) === 0;
+          if (!alreadySelected) {
+            const itemTexts = await this.page.evaluate(async () => {
+              const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content') || document.body;
+              const btns = Array.from(pop.querySelectorAll('button, div[role="button"]'));
+              const modelDropdown = btns.find(b => {
+                const txt = (b.innerText || '').toLowerCase();
+                return txt.includes('omni') || txt.includes('veo') || txt.includes('flash') || txt.includes('banana') || b.getAttribute('aria-haspopup') === 'menu';
+              });
+              if (!modelDropdown) return null;
+              modelDropdown.click();
+              await new Promise(r => setTimeout(r, 400));
+              const menuItems = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"], [role="menu"] button, div[role="menu"] div, div[role="listbox"] [role="option"]'));
+              return menuItems.map(item => item.innerText || '');
+            });
+            if (Array.isArray(itemTexts) && itemTexts.length) {
+              const pick = matchModelOption(settings.model, itemTexts);
+              if (pick >= 0) {
+                await this.page.evaluate((idx) => {
+                  const menuItems = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"], [role="menu"] button, div[role="menu"] div, div[role="listbox"] [role="option"]'));
+                  const opt = menuItems[idx];
+                  if (opt) opt.click();
+                }, pick);
               }
             }
-          }, settings.model);
+          }
           await sleep(400);
         }
 
@@ -10954,4 +11080,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, omni12CreditsPerVideo, modelNameParts, matchModelOption };

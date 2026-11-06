@@ -515,7 +515,7 @@ class _SettingsViewState extends State<SettingsView> {
                       child: _buildDropdown(
                         label: 'MODEL',
                         value: s.model,
-                        items: ['Omni Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'],
+                        items: ['Omni Flash', 'Omni 1.2 Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'],
                         onChanged: (v) => prov.updateModel(v!),
                       ),
                     ),
@@ -524,7 +524,7 @@ class _SettingsViewState extends State<SettingsView> {
                       child: _buildDropdown(
                         label: 'DURATION',
                         value: s.duration,
-                        items: ['4s', '6s', '8s', '10s'],
+                        items: ['4s', '6s', '8s', '10s', '15s'],
                         onChanged: (v) => prov.updateDuration(v!),
                       ),
                     ),

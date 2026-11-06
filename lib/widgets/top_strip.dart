@@ -87,31 +87,21 @@ class TopStrip extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    RichText(
-                      text: TextSpan(
-                        style: TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textMain,
-                        ),
-                        children: [
-                          TextSpan(text: 'FlowStudio '),
-                          TextSpan(
-                            text: 'Lite',
-                            style: TextStyle(
-                              color: AppTheme.accentText,
-                              fontWeight: FontWeight.w600,
-                            ),
-                          ),
-                        ],
+                    Text(
+                      'FlowStudio',
+                      style: TextStyle(
+                        fontSize: 14,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textMain,
                       ),
                     ),
                     Text(
-                      'Multi-Account Flow Studio',
+                      'By MK',
                       style: TextStyle(
                         fontSize: 9.5,
-                        color: AppTheme.accentAmber,
-                        fontWeight: FontWeight.w500,
+                        color: AppTheme.textDim,
+                        fontWeight: FontWeight.w600,
+                        letterSpacing: 0.3,
                       ),
                     ),
                   ],
@@ -142,87 +132,22 @@ class TopStrip extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Created by MK
-                  RichText(
-            text: TextSpan(
-              style: TextStyle(fontSize: 13, color: AppTheme.textDim),
-              children: [
-                TextSpan(text: 'Created by '),
-                TextSpan(
-                  text: 'MK',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.textMain,
+                  // Total Credits
+                  Column(
+                    crossAxisAlignment: CrossAxisAlignment.end,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        'TOTAL CREDITS',
+                        style: TextStyle(
+                          fontSize: 8.5,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 0.8,
+                          color: AppTheme.textFaint,
+                        ),
+                      ),
+                    ],
                   ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 14),
-
-          // Social Icons (WhatsApp, Chat, Support) — v2.34.0
-          // (Problem 12): an icon renders ONLY when its saved link
-          // is usable; an unconfigured or placeholder link shows
-          // nothing instead of opening a dead page.
-          Consumer<SettingsProvider>(
-            builder: (context, settingsProv, _) {
-              final s = settingsProv.settings;
-              final icons = <Widget>[];
-              if (isUsableSocialLink(s.whatsAppLink)) {
-                icons.add(_buildCircleIcon(
-                  icon: Icons.chat_bubble,
-                  color: AppTheme.whatsApp,
-                  tooltip: 'WhatsApp',
-                  onTap: () => context.read<SettingsProvider>().openSocial('whatsapp'),
-                ));
-              }
-              if (isUsableSocialLink(s.chatLink)) {
-                if (icons.isNotEmpty) icons.add(const SizedBox(width: 6));
-                icons.add(_buildCircleIcon(
-                  icon: Icons.message_outlined,
-                  color: AppTheme.textDim,
-                  tooltip: 'Chat',
-                  onTap: () => context.read<SettingsProvider>().openSocial('chat'),
-                ));
-              }
-              if (isUsableSocialLink(s.supportLink)) {
-                if (icons.isNotEmpty) icons.add(const SizedBox(width: 6));
-                icons.add(_buildCircleIcon(
-                  icon: Icons.headphones_outlined,
-                  color: AppTheme.textDim,
-                  tooltip: 'Support',
-                  onTap: () => context.read<SettingsProvider>().openSocial('support'),
-                ));
-              }
-              return Row(mainAxisSize: MainAxisSize.min, children: icons);
-            },
-          ),
-
-          const SizedBox(width: 14),
-          // Vertical Separator
-          Container(
-            width: 1,
-            height: 24,
-            color: AppTheme.borderSoft,
-          ),
-          const SizedBox(width: 14),
-
-          // Total Credits & Sync
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'TOTAL CREDITS',
-                style: TextStyle(
-                  fontSize: 8.5,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.8,
-                  color: AppTheme.textFaint,
-                ),
-              ),
-            ],
-          ),
           const SizedBox(width: 8),
           Text(
             // v2.46.3 (owner ka order): kul yog par bhi koi '~'
@@ -305,25 +230,5 @@ class TopStrip extends StatelessWidget {
     );
   }
 
-  Widget _buildCircleIcon({
-    required IconData icon,
-    required Color color,
-    required String tooltip,
-    VoidCallback? onTap,
-  }) {
-    return Tooltip(
-      message: tooltip,
-      child: TactileButton(
-        type: TactileType.icon,
-        shape: BoxShape.circle,
-        width: 28,
-        height: 28,
-        bevelDepth: 1.8,
-        padding: EdgeInsets.zero,
-        onTap: onTap,
-        child: Icon(icon, size: 14, color: color),
-      ),
-    );
-  }
 }
 

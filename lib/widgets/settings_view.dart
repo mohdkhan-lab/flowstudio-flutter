@@ -1,11 +1,14 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:file_picker/file_picker.dart';
+
 import '../theme/app_theme.dart';
 import '../models/app_settings.dart';
 import '../providers/notifications_provider.dart';
 import '../providers/settings_provider.dart';
+
 import 'package:flutter/services.dart';
+
 import '../services/automation_bridge.dart';
 import 'panel_entrance.dart';
 import 'tactile_components.dart';
@@ -82,7 +85,6 @@ class _SettingsViewState extends State<SettingsView> {
     }
   }
 
-
   // --- v2.31.0: MCP connector (approved design Option 2 — grid card) ---
 
   Future<void> _loadMcpStatus() async {
@@ -113,7 +115,9 @@ class _SettingsViewState extends State<SettingsView> {
         final steps = res['steps'];
         if (steps is List) {
           for (final s in steps) {
-            if (s is Map && s['ok'] != true) bad.add('${s['id']}: ${s['detail']}');
+            if (s is Map && s['ok'] != true) {
+              bad.add('${s['id']}: ${s['detail']}');
+            }
           }
         }
         _mcpFeedback = 'Still not fully connected — ${bad.join(' · ')}';
@@ -126,14 +130,23 @@ class _SettingsViewState extends State<SettingsView> {
   /// v2): dot + label on the left, bold state on the right — green
   /// when healthy, red when broken, faint when unknown.
   Widget _connRow(String label, String value, bool? ok) {
-    final color = ok == null ? AppTheme.textFaint : (ok ? AppTheme.green : AppTheme.red);
+    final color = ok == null
+        ? AppTheme.textFaint
+        : (ok ? AppTheme.green : AppTheme.red);
     return Container(
       margin: const EdgeInsets.only(bottom: 4),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-      decoration: BoxDecoration(color: AppTheme.overlay08, borderRadius: BorderRadius.circular(6)),
+      decoration: BoxDecoration(
+        color: AppTheme.overlay08,
+        borderRadius: BorderRadius.circular(6),
+      ),
       child: Row(
         children: [
-          Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
+          Container(
+            width: 8,
+            height: 8,
+            decoration: BoxDecoration(color: color, shape: BoxShape.circle),
+          ),
           const SizedBox(width: 8),
           Text(label, style: TextStyle(fontSize: 11, color: AppTheme.textMain)),
           const Spacer(),
@@ -143,7 +156,11 @@ class _SettingsViewState extends State<SettingsView> {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.right,
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color),
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: color,
+              ),
             ),
           ),
         ],
@@ -166,7 +183,9 @@ class _SettingsViewState extends State<SettingsView> {
     setState(() {
       if (st != null) _mcpStatus = st;
       _mcpBusy = false;
-      _mcpFeedback = v ? 'MCP server is running — Muse can connect now.' : 'MCP server stopped.';
+      _mcpFeedback = v
+          ? 'MCP server is running — Muse can connect now.'
+          : 'MCP server stopped.';
     });
   }
 
@@ -237,10 +256,20 @@ class _SettingsViewState extends State<SettingsView> {
     final chain = chainRaw is Map ? Map<String, dynamic>.from(chainRaw) : null;
     final engineVersion = conn?['engineVersion']?.toString();
     final lastRaw = st?['lastConnectedAt'];
-    final lastMs = lastRaw is num ? lastRaw.toInt() : (lastRaw == null ? 0 : int.tryParse(lastRaw.toString()) ?? 0);
+    final lastMs = lastRaw is num
+        ? lastRaw.toInt()
+        : (lastRaw == null ? 0 : int.tryParse(lastRaw.toString()) ?? 0);
     const toolLabels = [
-      'Status', 'Accounts', 'Credits', 'History', 'Outputs',
-      'Generate', 'Pause / Resume', 'Stop', 'Sync Credits', 'Check Cookies',
+      'Status',
+      'Accounts',
+      'Credits',
+      'History',
+      'Outputs',
+      'Generate',
+      'Pause / Resume',
+      'Stop',
+      'Sync Credits',
+      'Check Cookies',
       'Update App',
     ];
     return _buildPanel(
@@ -253,9 +282,13 @@ class _SettingsViewState extends State<SettingsView> {
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
                 decoration: BoxDecoration(
-                  color: running ? AppTheme.green.withValues(alpha: 0.16) : AppTheme.overlay08,
+                  color: running
+                      ? AppTheme.green.withValues(alpha: 0.16)
+                      : AppTheme.overlay08,
                   borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: running ? AppTheme.green : AppTheme.borderSoft),
+                  border: Border.all(
+                    color: running ? AppTheme.green : AppTheme.borderSoft,
+                  ),
                 ),
                 child: Text(
                   running ? '● REMOTE: ON' : '○ REMOTE: OFF',
@@ -291,9 +324,11 @@ class _SettingsViewState extends State<SettingsView> {
                 engineVersion == null
                     ? '—'
                     : engineVersion == AutomationBridge.appVersion
-                        ? 'v$engineVersion — running, same version'
-                        : 'v$engineVersion — STALE, restart the app',
-                engineVersion == null ? null : engineVersion == AutomationBridge.appVersion,
+                    ? 'v$engineVersion — running, same version'
+                    : 'v$engineVersion — STALE, restart the app',
+                engineVersion == null
+                    ? null
+                    : engineVersion == AutomationBridge.appVersion,
               ),
               _connRow(
                 'Remote server (MCP)',
@@ -302,17 +337,32 @@ class _SettingsViewState extends State<SettingsView> {
               ),
               _connRow(
                 'Tailscale',
-                chain == null ? '—' : chain['exeFound'] != true ? 'Not found' : chain['backendRunning'] == true ? 'Connected' : 'Not connected',
+                chain == null
+                    ? '—'
+                    : chain['exeFound'] != true
+                    ? 'Not found'
+                    : chain['backendRunning'] == true
+                    ? 'Connected'
+                    : 'Not connected',
                 chain == null ? null : chain['backendRunning'] == true,
               ),
               _connRow(
                 'Internet route (Funnel)',
-                chain == null ? '—' : chain['funnelAsserted'] == true ? 'On' : 'DOWN — needs repair',
+                chain == null
+                    ? '—'
+                    : chain['funnelAsserted'] == true
+                    ? 'On'
+                    : 'DOWN — needs repair',
                 chain == null ? null : chain['funnelAsserted'] == true,
               ),
               _connRow(
                 'Muse connected',
-                lastMs <= 0 ? 'Not yet' : _mcpLastConnectedText().replaceFirst('Last connected: ', ''),
+                lastMs <= 0
+                    ? 'Not yet'
+                    : _mcpLastConnectedText().replaceFirst(
+                        'Last connected: ',
+                        '',
+                      ),
                 lastMs <= 0 ? null : true,
               ),
             ],
@@ -329,7 +379,11 @@ class _SettingsViewState extends State<SettingsView> {
             onTap: _repairBusy ? null : _repairConnection,
             child: Text(
               _repairBusy ? 'WORKING…' : '1-CLICK CONNECT / FIX CONNECTION',
-              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.white),
+              style: const TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.bold,
+                color: Colors.white,
+              ),
             ),
           ),
           const SizedBox(height: 4),
@@ -345,7 +399,15 @@ class _SettingsViewState extends State<SettingsView> {
             onChanged: _toggleMcp,
           ),
           const SizedBox(height: 10),
-          Text('CONNECTION URL (TAILSCALE)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8, color: AppTheme.textFaint)),
+          Text(
+            'CONNECTION URL (TAILSCALE)',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 0.8,
+              color: AppTheme.textFaint,
+            ),
+          ),
           const SizedBox(height: 4),
           Row(
             children: [
@@ -359,7 +421,12 @@ class _SettingsViewState extends State<SettingsView> {
                     border: Border.all(color: AppTheme.borderSoft),
                   ),
                   alignment: Alignment.centerLeft,
-                  child: Text(url, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: AppTheme.textMain)),
+                  child: Text(
+                    url,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: AppTheme.textMain),
+                  ),
                 ),
               ),
               const SizedBox(width: 8),
@@ -375,7 +442,15 @@ class _SettingsViewState extends State<SettingsView> {
             ],
           ),
           const SizedBox(height: 10),
-          Text('ACCESS TOKEN', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8, color: AppTheme.textFaint)),
+          Text(
+            'ACCESS TOKEN',
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 0.8,
+              color: AppTheme.textFaint,
+            ),
+          ),
           const SizedBox(height: 4),
           Row(
             children: [
@@ -389,7 +464,12 @@ class _SettingsViewState extends State<SettingsView> {
                     border: Border.all(color: AppTheme.borderSoft),
                   ),
                   alignment: Alignment.centerLeft,
-                  child: Text(tokenMasked, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: AppTheme.textMain)),
+                  child: Text(
+                    tokenMasked,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 11, color: AppTheme.textMain),
+                  ),
                 ),
               ),
               const SizedBox(width: 6),
@@ -427,7 +507,14 @@ class _SettingsViewState extends State<SettingsView> {
                   borderRadius: BorderRadius.circular(12),
                   border: Border.all(color: AppTheme.borderSoft),
                 ),
-                child: Text(t, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppTheme.accentText)),
+                child: Text(
+                  t,
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w600,
+                    color: AppTheme.accentText,
+                  ),
+                ),
               );
             }).toList(),
           ),
@@ -443,9 +530,7 @@ class _SettingsViewState extends State<SettingsView> {
           ),
           const SizedBox(height: 8),
           Text(
-            _mcpFeedback.isNotEmpty
-                ? _mcpFeedback
-                : 'Cookies & passwords are never shared. Starting a generation always asks for approval.',
+            _mcpFeedback.isNotEmpty ? _mcpFeedback : 'Cookies & passwords are never shared. Starting a generation always asks for approval.',
             style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
           ),
         ],
@@ -469,58 +554,72 @@ class _SettingsViewState extends State<SettingsView> {
     // Appearance | Defaults, Automation | Files & Paths, Updates |
     // MCP Connection, with an About BAR along the bottom — each
     // row's two cards share one height and one heading style.
-    final appearancePanel = PanelEntrance(index: 0, child: _buildPanel(
-            title: '🎨 APPEARANCE',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // v2.31.2 (owner-approved design Option A, Compact
-                // Cards): one slim segmented mode row, a compact 5×2
-                // theme grid and a single closing note, so this panel
-                // is finally the same height class as the other
-                // Settings boxes instead of towering over them.
-                _buildModeSegment(prov, s),
-                const SizedBox(height: 10),
-                Text(
-                  'THEME',
-                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8, color: AppTheme.textFaint),
-                ),
-                const SizedBox(height: 6),
-                _buildThemeGrid(prov, s),
-                const SizedBox(height: 8),
-                Text(
-                  'Your choice is saved and kept after the app restarts.',
-                  style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
-                ),
-              ],
+    final appearancePanel = PanelEntrance(
+      index: 0,
+      child: _buildPanel(
+        title: '🎨 APPEARANCE',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // v2.31.2 (owner-approved design Option A, Compact
+            // Cards): one slim segmented mode row, a compact 5×2
+            // theme grid and a single closing note, so this panel
+            // is finally the same height class as the other
+            // Settings boxes instead of towering over them.
+            _buildModeSegment(prov, s),
+            const SizedBox(height: 10),
+            Text(
+              'THEME',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.8,
+                color: AppTheme.textFaint,
+              ),
             ),
-          ),
+            const SizedBox(height: 6),
+            _buildThemeGrid(prov, s),
+            const SizedBox(height: 8),
+            Text(
+              'Your choice is saved and kept after the app restarts.',
+              style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
+            ),
+          ],
+        ),
+      ),
     );
 
-    final defaultsPanel = PanelEntrance(index: 1, child: _buildPanel(
-            title: '⚙ DEFAULTS',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    final defaultsPanel = PanelEntrance(
+      index: 1,
+      child: _buildPanel(
+        title: '⚙ DEFAULTS',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Dropdown grid (Sample A): MODEL | DURATION,
+            // ASPECT | QUALITY, FILE NAMING — v2.34.0 adds the
+            // Quality control (Problem 11): the setting existed
+            // and was sent on every run, but no control anywhere
+            // could change it.
+            Column(
               children: [
-                // Dropdown grid (Sample A): MODEL | DURATION,
-                // ASPECT | QUALITY, FILE NAMING — v2.34.0 adds the
-                // Quality control (Problem 11): the setting existed
-                // and was sent on every run, but no control anywhere
-                // could change it.
-                Column(
+                Row(
                   children: [
-                    Row(
-                      children: [
-                        Expanded(
+                    Expanded(
                       child: _buildDropdown(
                         label: 'MODEL',
                         value: s.model,
-                        items: ['Omni Flash', 'Veo 3.1 Fast', 'Veo 3.1 Lite', 'Veo 3.1 Quality'],
+                        items: [
+                          'Omni Flash',
+                          'Veo 3.1 Fast',
+                          'Veo 3.1 Lite',
+                          'Veo 3.1 Quality',
+                        ],
                         onChanged: (v) => prov.updateModel(v!),
                       ),
                     ),
-                        const SizedBox(width: 8),
-                        Expanded(
+                    const SizedBox(width: 8),
+                    Expanded(
                       child: _buildDropdown(
                         label: 'DURATION',
                         value: s.duration,
@@ -528,12 +627,12 @@ class _SettingsViewState extends State<SettingsView> {
                         onChanged: (v) => prov.updateDuration(v!),
                       ),
                     ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
                       child: _buildDropdown(
                         label: 'ASPECT',
                         value: s.aspectRatio,
@@ -541,8 +640,8 @@ class _SettingsViewState extends State<SettingsView> {
                         onChanged: (v) => prov.updateAspectRatio(v!),
                       ),
                     ),
-                        const SizedBox(width: 8),
-                        Expanded(
+                    const SizedBox(width: 8),
+                    Expanded(
                       child: _buildDropdown(
                         label: 'QUALITY',
                         value: s.quality,
@@ -558,166 +657,197 @@ class _SettingsViewState extends State<SettingsView> {
                         onChanged: (v) => prov.updateQuality(v!),
                       ),
                     ),
-                      ],
-                    ),
-                    const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        Expanded(
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  children: [
+                    Expanded(
                       child: _buildDropdown(
                         label: 'FILE NAMING',
                         value: s.namingPattern,
                         items: ['tag', 'scene'],
-                        labels: {'tag': 'By tag name (00-01.mp4)', 'scene': 'Old way (scene001.mp4)'},
+                        labels: {
+                          'tag': 'By tag name (00-01.mp4)',
+                          'scene': 'Old way (scene001.mp4)',
+                        },
                         onChanged: (v) => prov.updateNamingPattern(v!),
                       ),
                     ),
-                        const SizedBox(width: 8),
-                        const Expanded(child: SizedBox()),
-                      ],
-                    ),
-                  ],
-                ),
-
-                const SizedBox(height: 6),
-                // Item 7 + v2.40.0: say plainly what the quality
-                // choice does now — it drives the generation
-                // itself, not just the download.
-                Text(
-                  '360p and 720p set the generation quality itself — the Flow panel, the credit cost and the download all follow it. 1080p (enhanced) generates at 720p and downloads Flow\'s enhanced 1080p when offered.',
-                  style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
-                ),
-
-                const SizedBox(height: _sectionGap),
-
-                // Custom Tags
-                Text(
-                  'CUSTOM TAGS',
-                  style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8, color: AppTheme.textFaint),
-                ),
-                const SizedBox(height: 6),
-                Wrap(
-                  spacing: 6,
-                  runSpacing: 6,
-                  children: s.customTags.map((t) {
-                    final isDefaultNone = t == 'None';
-                    return Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: AppTheme.accentGold.withValues(alpha: 0.10),
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(color: AppTheme.borderSoft),
-                      ),
-                      child: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          Text(t, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppTheme.accentText)),
-                          if (!isDefaultNone) ...[
-                            const SizedBox(width: 4),
-                            InkWell(
-                              onTap: () => prov.removeCustomTag(t),
-                              child: Icon(Icons.close, size: 12, color: AppTheme.textFaint),
-                            ),
-                          ],
-                        ],
-                      ),
-                    );
-                  }).toList(),
-                ),
-                const SizedBox(height: 8),
-                Row(
-                  children: [
-                    Expanded(
-                      child: Container(
-                        height: 32,
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        decoration: BoxDecoration(
-                          color: AppTheme.inputBg,
-                          borderRadius: BorderRadius.circular(6),
-                          border: Border.all(color: AppTheme.borderSoft),
-                        ),
-                        child: TextField(
-                          controller: _customTagController,
-                          textAlignVertical: TextAlignVertical.center,
-                          style: TextStyle(fontSize: 11.5, color: AppTheme.textMain),
-                          decoration: InputDecoration(
-                            hintText: 'Type a new tag name...',
-                            hintStyle: TextStyle(fontSize: 11, color: AppTheme.textFaint),
-                            border: InputBorder.none,
-                            isDense: true,
-                            contentPadding: EdgeInsets.zero,
-                          ),
-                          onSubmitted: (val) {
-                            if (val.trim().isNotEmpty) {
-                              prov.addCustomTag(val.trim());
-                              _customTagController.clear();
-                            }
-                          },
-                        ),
-                      ),
-                    ),
                     const SizedBox(width: 8),
-                    TactileButton(
-                      type: TactileType.gold,
-                      height: 32,
-                      borderRadius: 6,
-                      bevelDepth: 2.0,
-                      padding: const EdgeInsets.symmetric(horizontal: 14),
-                      onTap: () {
-                        if (_customTagController.text.trim().isNotEmpty) {
-                          prov.addCustomTag(_customTagController.text.trim());
-                          _customTagController.clear();
-                        }
-                      },
-                      label: 'Add',
-                    ),
+                    const Expanded(child: SizedBox()),
                   ],
-                ),
-                const SizedBox(height: 4),
-                Text(
-                  'These tags appear in the TAG list at the top of the Generate page. A video is saved with its tag as the file name; a prompt with no tag is saved by its number (01.mp4, 02.mp4...).',
-                  style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
                 ),
               ],
             ),
-          ),
+
+            const SizedBox(height: 6),
+            // Item 7 + v2.40.0: say plainly what the quality
+            // choice does now — it drives the generation
+            // itself, not just the download.
+            Text(
+              '360p and 720p set the generation quality itself — the Flow panel, the credit cost and the download all follow it. 1080p (enhanced) generates at 720p and downloads Flow\'s enhanced 1080p when offered.',
+              style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+            ),
+
+            const SizedBox(height: _sectionGap),
+
+            // Custom Tags
+            Text(
+              'CUSTOM TAGS',
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.8,
+                color: AppTheme.textFaint,
+              ),
+            ),
+            const SizedBox(height: 6),
+            Wrap(
+              spacing: 6,
+              runSpacing: 6,
+              children: s.customTags.map((t) {
+                final isDefaultNone = t == 'None';
+                return Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accentGold.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: AppTheme.borderSoft),
+                  ),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        t,
+                        style: TextStyle(
+                          fontSize: 10.5,
+                          fontWeight: FontWeight.w600,
+                          color: AppTheme.accentText,
+                        ),
+                      ),
+                      if (!isDefaultNone) ...[
+                        const SizedBox(width: 4),
+                        InkWell(
+                          onTap: () => prov.removeCustomTag(t),
+                          child: Icon(
+                            Icons.close,
+                            size: 12,
+                            color: AppTheme.textFaint,
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 8),
+            Row(
+              children: [
+                Expanded(
+                  child: Container(
+                    height: 32,
+                    padding: const EdgeInsets.symmetric(horizontal: 8),
+                    decoration: BoxDecoration(
+                      color: AppTheme.inputBg,
+                      borderRadius: BorderRadius.circular(6),
+                      border: Border.all(color: AppTheme.borderSoft),
+                    ),
+                    child: TextField(
+                      controller: _customTagController,
+                      textAlignVertical: TextAlignVertical.center,
+                      style: TextStyle(
+                        fontSize: 11.5,
+                        color: AppTheme.textMain,
+                      ),
+                      decoration: InputDecoration(
+                        hintText: 'Type a new tag name...',
+                        hintStyle: TextStyle(
+                          fontSize: 11,
+                          color: AppTheme.textFaint,
+                        ),
+                        border: InputBorder.none,
+                        isDense: true,
+                        contentPadding: EdgeInsets.zero,
+                      ),
+                      onSubmitted: (val) {
+                        if (val.trim().isNotEmpty) {
+                          prov.addCustomTag(val.trim());
+                          _customTagController.clear();
+                        }
+                      },
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                TactileButton(
+                  type: TactileType.gold,
+                  height: 32,
+                  borderRadius: 6,
+                  bevelDepth: 2.0,
+                  padding: const EdgeInsets.symmetric(horizontal: 14),
+                  onTap: () {
+                    if (_customTagController.text.trim().isNotEmpty) {
+                      prov.addCustomTag(_customTagController.text.trim());
+                      _customTagController.clear();
+                    }
+                  },
+                  label: 'Add',
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'These tags appear in the TAG list at the top of the Generate page. A video is saved with its tag as the file name; a prompt with no tag is saved by its number (01.mp4, 02.mp4...).',
+              style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+            ),
+          ],
+        ),
+      ),
     );
 
     // v2.34.0 (Problem 13, Sample A): the two path pickers move out
     // of Defaults into their own Files & Paths card, paired with
     // Automation in the grid.
-    final filesPathsPanel = PanelEntrance(index: 3, child: _buildPanel(
-            title: '🗂 FILES & PATHS',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                // Output Folder
-                _buildPathPicker(
-                  label: 'Output folder',
-                  controller: _folderController,
-                  buttonText: 'Browse...',
-                  onBrowse: _pickOutputFolder,
-                ),
-
-                const SizedBox(height: 10),
-
-                // Chrome Path
-                _buildPathPicker(
-                  label: 'Chrome path (leave empty = auto-detect)',
-                  controller: _chromeController,
-                  placeholder: 'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
-                  buttonText: 'Browse...',
-                  onBrowse: _pickChromeFile,
-                ),
-
-                const SizedBox(height: 8),
-                Text(
-                  'Project runs save into their own subfolder inside the output folder.',
-                  style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
-                ),
-              ],
+    final filesPathsPanel = PanelEntrance(
+      index: 3,
+      child: _buildPanel(
+        title: '🗂 FILES & PATHS',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Output Folder
+            _buildPathPicker(
+              label: 'Output folder',
+              controller: _folderController,
+              buttonText: 'Browse...',
+              onBrowse: _pickOutputFolder,
             ),
-          ),
+
+            const SizedBox(height: 10),
+
+            // Chrome Path
+            _buildPathPicker(
+              label: 'Chrome path (leave empty = auto-detect)',
+              controller: _chromeController,
+              placeholder:
+                  'C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe',
+              buttonText: 'Browse...',
+              onBrowse: _pickChromeFile,
+            ),
+
+            const SizedBox(height: 8),
+            Text(
+              'Project runs save into their own subfolder inside the output folder.',
+              style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+            ),
+          ],
+        ),
+      ),
     );
 
     // The Automation toggles, stacked in the half-width panel
@@ -768,134 +898,163 @@ class _SettingsViewState extends State<SettingsView> {
       onChanged: (v) => notifProv.setEnabled(v),
     );
 
-    final automationPanel = PanelEntrance(index: 2, child: _buildPanel(
-            title: '🤖 AUTOMATION',
-            child: Column(
-              children: [
-                tglShowBrowsers,
-                Divider(color: AppTheme.borderSoft, height: 16),
-                tglHeadlessGeneration,
-                Divider(color: AppTheme.borderSoft, height: 16),
-                tglPreviewAutoplay,
-                Divider(color: AppTheme.borderSoft, height: 16),
-                tglAutoVerify,
-                Divider(color: AppTheme.borderSoft, height: 16),
-                tglOnlyLive,
-                Divider(color: AppTheme.borderSoft, height: 16),
-                tglNotifications,
-              ],
-            ),
-          ),
+    final automationPanel = PanelEntrance(
+      index: 2,
+      child: _buildPanel(
+        title: '🤖 AUTOMATION',
+        child: Column(
+          children: [
+            tglShowBrowsers,
+            Divider(color: AppTheme.borderSoft, height: 16),
+            tglHeadlessGeneration,
+            Divider(color: AppTheme.borderSoft, height: 16),
+            tglPreviewAutoplay,
+            Divider(color: AppTheme.borderSoft, height: 16),
+            tglAutoVerify,
+            Divider(color: AppTheme.borderSoft, height: 16),
+            tglOnlyLive,
+            Divider(color: AppTheme.borderSoft, height: 16),
+            tglNotifications,
+          ],
+        ),
+      ),
     );
 
-    final updatesPanel = PanelEntrance(index: 4, child: _buildPanel(
-            title: '🔔 UPDATES',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
+    final updatesPanel = PanelEntrance(
+      index: 4,
+      child: _buildPanel(
+        title: '🔔 UPDATES',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
               children: [
-                Row(
-                  children: [
-                    Container(
-                      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 3),
-                      decoration: BoxDecoration(
-                        color: AppTheme.accentGold.withValues(alpha: 0.10),
-                        borderRadius: BorderRadius.circular(10),
-                        border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.5)),
-                      ),
-                      child: Text(
-                        s.currentVersion,
-                        style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.accentText),
-                      ),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 6,
+                    vertical: 3,
+                  ),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accentGold.withValues(alpha: 0.10),
+                    borderRadius: BorderRadius.circular(10),
+                    border: Border.all(
+                      color: AppTheme.accentGold.withValues(alpha: 0.5),
                     ),
-                    const SizedBox(width: 4),
-                    // v2.27.0: Flexible instead of Spacer so this row
-                    // also fits the narrower two-column panel.
-                    Expanded(
-                      child: Text('— current version', maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 10, color: AppTheme.textFaint)),
+                  ),
+                  child: Text(
+                    s.currentVersion,
+                    style: TextStyle(
+                      fontSize: 11,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.accentText,
                     ),
-                    const SizedBox(width: 4),
-                    TactileButton(
-                      type: TactileType.gold,
-                      height: 32,
-                      borderRadius: 6,
-                      bevelDepth: 2.0,
-                      padding: const EdgeInsets.symmetric(horizontal: 6),
-                      enabled: !prov.isCheckingUpdates,
-                      onTap: prov.isCheckingUpdates ? null : () => prov.checkForUpdates(),
-                      icon: Icons.refresh,
-                      label: prov.isCheckingUpdates ? 'Checking…' : 'Check for Updates',
-                    ),
-                  ],
+                  ),
                 ),
-                const SizedBox(height: 8),
-                Text(prov.updateStatusMessage, style: TextStyle(fontSize: 10.5, color: AppTheme.textDim)),
-                // v2.23.0: in-app updater controls — download + install
-                // happen right here; no manual GitHub trip.
-                if (prov.updateAvailable && prov.downloadedSetupPath.isEmpty) ...[
-                  const SizedBox(height: 8),
-                  Row(
-                    children: [
-                      TactileButton(
-                        type: TactileType.primary,
-                        height: 32,
-                        borderRadius: 6,
-                        bevelDepth: 2.5,
-                        padding: const EdgeInsets.symmetric(horizontal: 12),
-                        enabled: !prov.isDownloadingUpdate,
-                        onTap: prov.isDownloadingUpdate ? null : () => prov.downloadUpdate(),
-                        icon: Icons.download,
-                        label: prov.isDownloadingUpdate
-                            ? 'Downloading...'
-                            : 'Download update${prov.updateSizeLabel.isNotEmpty ? ' (${prov.updateSizeLabel})' : ''}',
-                      ),
-                      if (prov.isDownloadingUpdate) ...[
-                        const SizedBox(width: 10),
-                        Expanded(
-                          child: LinearProgressIndicator(
-                            value: prov.updateDownloadProgress > 0 ? prov.updateDownloadProgress : null,
-                            color: AppTheme.accentGold,
-                            backgroundColor: AppTheme.borderSoft,
-                            minHeight: 5,
-                          ),
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          '${(prov.updateDownloadProgress * 100).toStringAsFixed(0)}%',
-                          style: TextStyle(fontSize: 11, color: AppTheme.textDim),
-                        ),
-                      ],
-                    ],
+                const SizedBox(width: 4),
+                // v2.27.0: Flexible instead of Spacer so this row
+                // also fits the narrower two-column panel.
+                Expanded(
+                  child: Text(
+                    '— current version',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: 10, color: AppTheme.textFaint),
                   ),
-                ],
-                if (prov.downloadedSetupPath.isNotEmpty) ...[
-                  const SizedBox(height: 8),
-                  // v2.27.0: FittedBox so the long install label also
-                  // fits the narrower two-column Updates panel.
-                  FittedBox(
-                    fit: BoxFit.scaleDown,
-                    alignment: Alignment.centerLeft,
-                    child: TactileButton(
-                      type: TactileType.primary,
-                      height: 32,
-                      borderRadius: 6,
-                      bevelDepth: 2.5,
-                      padding: const EdgeInsets.symmetric(horizontal: 12),
-                      onTap: () => prov.installDownloadedUpdate(),
-                      icon: Icons.system_update,
-                      label: 'Install update — the app will close & update itself',
-                    ),
-                  ),
-                ],
-                const SizedBox(height: 8),
-                _buildToggleRow(
-                  title: 'Check automatically',
-                  subtitle: 'The app checks for updates on its own when it starts, and tells you when a new version is ready',
-                  value: s.autoCheckUpdates,
-                  onChanged: (v) => prov.toggleAutoUpdate(v),
+                ),
+                const SizedBox(width: 4),
+                TactileButton(
+                  type: TactileType.gold,
+                  height: 32,
+                  borderRadius: 6,
+                  bevelDepth: 2.0,
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  enabled: !prov.isCheckingUpdates,
+                  onTap: prov.isCheckingUpdates
+                      ? null
+                      : () => prov.checkForUpdates(),
+                  icon: Icons.refresh,
+                  label: prov.isCheckingUpdates
+                      ? 'Checking…'
+                      : 'Check for Updates',
                 ),
               ],
             ),
-          ),
+            const SizedBox(height: 8),
+            Text(
+              prov.updateStatusMessage,
+              style: TextStyle(fontSize: 10.5, color: AppTheme.textDim),
+            ),
+            // v2.23.0: in-app updater controls — download + install
+            // happen right here; no manual GitHub trip.
+            if (prov.updateAvailable && prov.downloadedSetupPath.isEmpty) ...[
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  TactileButton(
+                    type: TactileType.primary,
+                    height: 32,
+                    borderRadius: 6,
+                    bevelDepth: 2.5,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    enabled: !prov.isDownloadingUpdate,
+                    onTap: prov.isDownloadingUpdate
+                        ? null
+                        : () => prov.downloadUpdate(),
+                    icon: Icons.download,
+                    label: prov.isDownloadingUpdate
+                        ? 'Downloading...'
+                        : 'Download update${prov.updateSizeLabel.isNotEmpty ? ' (${prov.updateSizeLabel})' : ''}',
+                  ),
+                  if (prov.isDownloadingUpdate) ...[
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: LinearProgressIndicator(
+                        value: prov.updateDownloadProgress > 0
+                            ? prov.updateDownloadProgress
+                            : null,
+                        color: AppTheme.accentGold,
+                        backgroundColor: AppTheme.borderSoft,
+                        minHeight: 5,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Text(
+                      '${(prov.updateDownloadProgress * 100).toStringAsFixed(0)}%',
+                      style: TextStyle(fontSize: 11, color: AppTheme.textDim),
+                    ),
+                  ],
+                ],
+              ),
+            ],
+            if (prov.downloadedSetupPath.isNotEmpty) ...[
+              const SizedBox(height: 8),
+              // v2.27.0: FittedBox so the long install label also
+              // fits the narrower two-column Updates panel.
+              FittedBox(
+                fit: BoxFit.scaleDown,
+                alignment: Alignment.centerLeft,
+                child: TactileButton(
+                  type: TactileType.primary,
+                  height: 32,
+                  borderRadius: 6,
+                  bevelDepth: 2.5,
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  onTap: () => prov.installDownloadedUpdate(),
+                  icon: Icons.system_update,
+                  label: 'Install update — the app will close & update itself',
+                ),
+              ),
+            ],
+            const SizedBox(height: 8),
+            _buildToggleRow(
+              title: 'Check automatically',
+              subtitle: 'The app checks for updates on its own when it starts, and tells you when a new version is ready',
+              value: s.autoCheckUpdates,
+              onChanged: (v) => prov.toggleAutoUpdate(v),
+            ),
+          ],
+        ),
+      ),
     );
 
     final mcpPanel = PanelEntrance(index: 5, child: _buildMcpPanel());
@@ -905,189 +1064,254 @@ class _SettingsViewState extends State<SettingsView> {
     // video stats and the social icons on the right — not another
     // tall card. (The old card's "Design" row is gone: themes live
     // in the Appearance card directly above.)
-    final aboutPanel = PanelEntrance(index: 6, child: Container(
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppTheme.surface,
-        borderRadius: BorderRadius.circular(13),
-        border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            '📋 ABOUT',
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w800,
-              letterSpacing: 1.3,
-              color: AppTheme.textDim,
+    final aboutPanel = PanelEntrance(
+      index: 6,
+      child: Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: AppTheme.surface,
+          borderRadius: BorderRadius.circular(13),
+          border: Border.all(color: AppTheme.borderSoft),
+          boxShadow: const [
+            BoxShadow(
+              color: Colors.black26,
+              blurRadius: 10,
+              offset: Offset(0, 4),
             ),
-          ),
-          const SizedBox(height: 10),
-          Row(
-            children: [
-              Container(
-                width: 30,
-                height: 30,
-                decoration: BoxDecoration(
-                  gradient: AppTheme.accentGrad,
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: ClipRRect(
-                  borderRadius: BorderRadius.circular(8),
-                  child: Image.asset(
-                    'assets/icon.png',
-                    width: 30,
-                    height: 30,
-                    fit: BoxFit.contain,
-                    errorBuilder: (ctx, err, st) => Center(
-                      child: Icon(Icons.play_arrow_rounded, size: 20, color: AppTheme.onAccent),
+          ],
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '📋 ABOUT',
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.w800,
+                letterSpacing: 1.3,
+                color: AppTheme.textDim,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              children: [
+                Container(
+                  width: 30,
+                  height: 30,
+                  decoration: BoxDecoration(
+                    gradient: AppTheme.accentGrad,
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(8),
+                    child: Image.asset(
+                      'assets/icon.png',
+                      width: 30,
+                      height: 30,
+                      fit: BoxFit.contain,
+                      errorBuilder: (ctx, err, st) => Center(
+                        child: Icon(
+                          Icons.play_arrow_rounded,
+                          size: 20,
+                          color: AppTheme.onAccent,
+                        ),
+                      ),
                     ),
                   ),
                 ),
-              ),
-              const SizedBox(width: 10),
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    'FlowStudio Lite ${s.currentVersion}',
-                    style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-                  ),
-                  Text(
-                    'Multi-Account Flow Studio — About',
-                    style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
-                  ),
-                ],
-              ),
-              const Spacer(),
-              Flexible(
-                child: Text(
-                  '${prov.totalAccounts} account${prov.totalAccounts == 1 ? '' : 's'} · ${prov.totalVideosSaved} videos all-time · Created by MK',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  textAlign: TextAlign.right,
-                  style: TextStyle(fontSize: 11, color: AppTheme.textDim),
-                ),
-              ),
-              // v2.34.0 (Problem 12): the About social icons render
-              // only for usable links — same rule as the top strip.
-              if (isUsableSocialLink(s.whatsAppLink)) ...[
                 const SizedBox(width: 10),
-                InkWell(
-                  onTap: () => prov.openSocial('whatsapp'),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.all(4),
-                    child: Icon(Icons.chat_bubble, size: 18, color: AppTheme.whatsApp),
-                  ),
-                ),
-              ],
-              if (isUsableSocialLink(s.chatLink)) ...[
-                const SizedBox(width: 6),
-                InkWell(
-                  onTap: () => prov.openSocial('chat'),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.all(4),
-                    child: Icon(Icons.message_outlined, size: 18, color: AppTheme.textDim),
-                  ),
-                ),
-              ],
-              if (isUsableSocialLink(s.supportLink)) ...[
-                const SizedBox(width: 6),
-                InkWell(
-                  onTap: () => prov.openSocial('support'),
-                  borderRadius: BorderRadius.circular(12),
-                  child: Padding(
-                    padding: const EdgeInsets.all(4),
-                    child: Icon(Icons.headphones_outlined, size: 18, color: AppTheme.textDim),
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ],
-      ),
-    ),
-    );
-
-    final createdByPanel = PanelEntrance(index: 7, child: _buildPanel(
-            title: 'CREATED BY',
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Row(
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text('MK', style: TextStyle(fontSize: 16, fontWeight: FontWeight.w900, color: AppTheme.textMain)),
-                    // v2.34.0 (Problem 12): these icons render only
-                    // when the link saved below is usable — the
-                    // editors stay, so a real link can always be
-                    // typed in and the icon then appears.
-                    if (isUsableSocialLink(s.whatsAppLink)) ...[
-                      const SizedBox(width: 14),
-                      InkWell(
-                        onTap: () => prov.openSocial('whatsapp'),
-                        borderRadius: BorderRadius.circular(12),
-                        child: Padding(
-                          padding: const EdgeInsets.all(4),
-                          child: Icon(Icons.chat_bubble, size: 18, color: AppTheme.whatsApp),
-                        ),
+                    Text(
+                      'FlowStudio Lite ${s.currentVersion}',
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.bold,
+                        color: AppTheme.textMain,
                       ),
-                    ],
-                    if (isUsableSocialLink(s.chatLink)) ...[
-                      const SizedBox(width: 8),
-                      InkWell(
-                        onTap: () => prov.openSocial('chat'),
-                        borderRadius: BorderRadius.circular(12),
-                        child: Padding(
-                          padding: const EdgeInsets.all(4),
-                          child: Icon(Icons.message_outlined, size: 18, color: AppTheme.textDim),
-                        ),
+                    ),
+                    Text(
+                      'Multi-Account Flow Studio — About',
+                      style: TextStyle(
+                        fontSize: 10.5,
+                        color: AppTheme.textFaint,
                       ),
-                    ],
-                    if (isUsableSocialLink(s.supportLink)) ...[
-                      const SizedBox(width: 8),
-                      InkWell(
-                        onTap: () => prov.openSocial('support'),
-                        borderRadius: BorderRadius.circular(12),
-                        child: Padding(
-                          padding: const EdgeInsets.all(4),
-                          child: Icon(Icons.headphones_outlined, size: 18, color: AppTheme.textDim),
-                        ),
-                      ),
-                    ],
+                    ),
                   ],
                 ),
-                const SizedBox(height: 10),
-                _buildTextInputRow('WhatsApp link', _whatsappController, onChanged: (v) {
-                  prov.updateSocialLinks(whatsapp: v);
-                }),
-                const SizedBox(height: 6),
-                _buildTextInputRow('Chat link', _chatController, onChanged: (v) {
-                  prov.updateSocialLinks(chat: v);
-                }),
-                const SizedBox(height: 6),
-                _buildTextInputRow('Support link', _supportController, onChanged: (v) {
-                  prov.updateSocialLinks(support: v);
-                }),
-                const SizedBox(height: 6),
-                Text(
-                  'These links open from the icons — in the top strip on a big screen, and in this box on a small (mobile-size) screen.',
-                  style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+                const Spacer(),
+                Flexible(
+                  child: Text(
+                    '${prov.totalAccounts} account${prov.totalAccounts == 1 ? '' : 's'} · ${prov.totalVideosSaved} videos all-time · Created by MK',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    textAlign: TextAlign.right,
+                    style: TextStyle(fontSize: 11, color: AppTheme.textDim),
+                  ),
                 ),
+                // v2.34.0 (Problem 12): the About social icons render
+                // only for usable links — same rule as the top strip.
+                if (isUsableSocialLink(s.whatsAppLink)) ...[
+                  const SizedBox(width: 10),
+                  InkWell(
+                    onTap: () => prov.openSocial('whatsapp'),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.chat_bubble,
+                        size: 18,
+                        color: AppTheme.whatsApp,
+                      ),
+                    ),
+                  ),
+                ],
+                if (isUsableSocialLink(s.chatLink)) ...[
+                  const SizedBox(width: 6),
+                  InkWell(
+                    onTap: () => prov.openSocial('chat'),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.message_outlined,
+                        size: 18,
+                        color: AppTheme.textDim,
+                      ),
+                    ),
+                  ),
+                ],
+                if (isUsableSocialLink(s.supportLink)) ...[
+                  const SizedBox(width: 6),
+                  InkWell(
+                    onTap: () => prov.openSocial('support'),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.headphones_outlined,
+                        size: 18,
+                        color: AppTheme.textDim,
+                      ),
+                    ),
+                  ),
+                ],
               ],
             ),
-          ),
+          ],
+        ),
+      ),
+    );
+
+    final createdByPanel = PanelEntrance(
+      index: 7,
+      child: _buildPanel(
+        title: 'CREATED BY',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text(
+                  'MK',
+                  style: TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w900,
+                    color: AppTheme.textMain,
+                  ),
+                ),
+                // v2.34.0 (Problem 12): these icons render only
+                // when the link saved below is usable — the
+                // editors stay, so a real link can always be
+                // typed in and the icon then appears.
+                if (isUsableSocialLink(s.whatsAppLink)) ...[
+                  const SizedBox(width: 14),
+                  InkWell(
+                    onTap: () => prov.openSocial('whatsapp'),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.chat_bubble,
+                        size: 18,
+                        color: AppTheme.whatsApp,
+                      ),
+                    ),
+                  ),
+                ],
+                if (isUsableSocialLink(s.chatLink)) ...[
+                  const SizedBox(width: 8),
+                  InkWell(
+                    onTap: () => prov.openSocial('chat'),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.message_outlined,
+                        size: 18,
+                        color: AppTheme.textDim,
+                      ),
+                    ),
+                  ),
+                ],
+                if (isUsableSocialLink(s.supportLink)) ...[
+                  const SizedBox(width: 8),
+                  InkWell(
+                    onTap: () => prov.openSocial('support'),
+                    borderRadius: BorderRadius.circular(12),
+                    child: Padding(
+                      padding: const EdgeInsets.all(4),
+                      child: Icon(
+                        Icons.headphones_outlined,
+                        size: 18,
+                        color: AppTheme.textDim,
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            ),
+            const SizedBox(height: 10),
+            _buildTextInputRow(
+              'WhatsApp link',
+              _whatsappController,
+              onChanged: (v) {
+                prov.updateSocialLinks(whatsapp: v);
+              },
+            ),
+            const SizedBox(height: 6),
+            _buildTextInputRow(
+              'Chat link',
+              _chatController,
+              onChanged: (v) {
+                prov.updateSocialLinks(chat: v);
+              },
+            ),
+            const SizedBox(height: 6),
+            _buildTextInputRow(
+              'Support link',
+              _supportController,
+              onChanged: (v) {
+                prov.updateSocialLinks(support: v);
+              },
+            ),
+            const SizedBox(height: 6),
+            Text(
+              'These links open from the icons — in the top strip on a big screen, and in this box on a small (mobile-size) screen.',
+              style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+            ),
+          ],
+        ),
+      ),
     );
 
     return SingleChildScrollView(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: _sectionGap),
+      padding: const EdgeInsets.symmetric(
+        horizontal: 14,
+        vertical: _sectionGap,
+      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1102,11 +1326,16 @@ class _SettingsViewState extends State<SettingsView> {
                 onTap: () => prov.setNavView('generate'),
                 borderRadius: BorderRadius.circular(7),
                 child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 6,
+                  ),
                   decoration: BoxDecoration(
                     color: AppTheme.accentGold.withValues(alpha: 0.07),
                     borderRadius: BorderRadius.circular(7),
-                    border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.55)),
+                    border: Border.all(
+                      color: AppTheme.accentGold.withValues(alpha: 0.55),
+                    ),
                   ),
                   child: Text(
                     '← Back to Studio',
@@ -1155,17 +1384,17 @@ class _SettingsViewState extends State<SettingsView> {
               // panels stack in that same reading order and the
               // page scrolls (as it already could).
               Widget pair(Widget a, Widget b) => Table(
-                    columnWidths: const {
-                      0: FlexColumnWidth(1),
-                      1: FixedColumnWidth(12),
-                      2: FlexColumnWidth(1),
-                    },
-                    defaultVerticalAlignment:
-                        TableCellVerticalAlignment.intrinsicHeight,
-                    children: [
-                      TableRow(children: [a, const SizedBox(), b]),
-                    ],
-                  );
+                columnWidths: const {
+                  0: FlexColumnWidth(1),
+                  1: FixedColumnWidth(12),
+                  2: FlexColumnWidth(1),
+                },
+                defaultVerticalAlignment:
+                    TableCellVerticalAlignment.intrinsicHeight,
+                children: [
+                  TableRow(children: [a, const SizedBox(), b]),
+                ],
+              );
               if (constraints.maxWidth < 700) {
                 return Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -1214,7 +1443,11 @@ class _SettingsViewState extends State<SettingsView> {
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
         boxShadow: const [
-          BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
+          BoxShadow(
+            color: Colors.black26,
+            blurRadius: 10,
+            offset: Offset(0, 4),
+          ),
         ],
       ),
       child: Column(
@@ -1281,7 +1514,11 @@ class _SettingsViewState extends State<SettingsView> {
   // preview chip with the theme name in ONE line under it (ellipsis
   // at the narrowest widths), and the family's accent ring when
   // selected — same tap behaviour as the old tall card.
-  Widget _buildThemeCardCompact(SettingsProvider prov, AppSettings s, String id) {
+  Widget _buildThemeCardCompact(
+    SettingsProvider prov,
+    AppSettings s,
+    String id,
+  ) {
     final pal = AppTheme.paletteFor(id, AppTheme.dark);
     final selected = s.theme == id;
     return InkWell(
@@ -1350,13 +1587,22 @@ class _SettingsViewState extends State<SettingsView> {
               mainAxisAlignment: MainAxisAlignment.center,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Container(height: 3, decoration: BoxDecoration(color: pal.accentGold, borderRadius: BorderRadius.circular(2))),
+                Container(
+                  height: 3,
+                  decoration: BoxDecoration(
+                    color: pal.accentGold,
+                    borderRadius: BorderRadius.circular(2),
+                  ),
+                ),
                 const SizedBox(height: 3),
                 Center(
                   child: Container(
                     width: 5,
                     height: 5,
-                    decoration: BoxDecoration(color: pal.activeGold, shape: BoxShape.circle),
+                    decoration: BoxDecoration(
+                      color: pal.activeGold,
+                      shape: BoxShape.circle,
+                    ),
                   ),
                 ),
               ],
@@ -1380,7 +1626,10 @@ class _SettingsViewState extends State<SettingsView> {
                   const SizedBox(height: 3),
                   Container(
                     height: 3,
-                    decoration: BoxDecoration(color: pal.accentGold.withValues(alpha: 0.8), borderRadius: BorderRadius.circular(2)),
+                    decoration: BoxDecoration(
+                      color: pal.accentGold.withValues(alpha: 0.8),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
                   ),
                 ],
               ),
@@ -1411,7 +1660,9 @@ class _SettingsViewState extends State<SettingsView> {
               boxShadow: isActive
                   ? [
                       BoxShadow(
-                        color: Colors.black.withValues(alpha: AppTheme.dark ? 0.4 : 0.14),
+                        color: Colors.black.withValues(
+                          alpha: AppTheme.dark ? 0.4 : 0.14,
+                        ),
                         blurRadius: 4,
                         offset: const Offset(0, 1),
                       ),
@@ -1461,7 +1712,14 @@ class _SettingsViewState extends State<SettingsView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppTheme.textFaint)),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+            color: AppTheme.textFaint,
+          ),
+        ),
         const SizedBox(height: 4),
         Container(
           height: 32,
@@ -1482,13 +1740,23 @@ class _SettingsViewState extends State<SettingsView> {
               // INSIDE the box instead of pushing out of it.
               isDense: true,
               alignment: Alignment.centerLeft,
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain),
-              icon: Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
+              style: TextStyle(
+                fontSize: 11,
+                fontWeight: FontWeight.bold,
+                color: AppTheme.textMain,
+              ),
+              icon: Icon(
+                Icons.keyboard_arrow_down,
+                size: 14,
+                color: AppTheme.textDim,
+              ),
               items: items.map((item) {
                 return DropdownMenuItem(
                   value: item,
                   child: Text(
-                    labels != null && labels.containsKey(item) ? labels[item]! : item,
+                    labels != null && labels.containsKey(item)
+                        ? labels[item]!
+                        : item,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -1512,7 +1780,14 @@ class _SettingsViewState extends State<SettingsView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppTheme.textFaint)),
+        Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.bold,
+            color: AppTheme.textFaint,
+          ),
+        ),
         const SizedBox(height: 4),
         Row(
           children: [
@@ -1535,7 +1810,10 @@ class _SettingsViewState extends State<SettingsView> {
                   style: TextStyle(fontSize: 11, color: AppTheme.textMain),
                   decoration: InputDecoration(
                     hintText: placeholder,
-                    hintStyle: TextStyle(fontSize: 11, color: AppTheme.textFaint),
+                    hintStyle: TextStyle(
+                      fontSize: 11,
+                      color: AppTheme.textFaint,
+                    ),
                     border: InputBorder.none,
                     isDense: true,
                     contentPadding: EdgeInsets.zero,
@@ -1579,9 +1857,19 @@ class _SettingsViewState extends State<SettingsView> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text(title, style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.textMain)),
+              Text(
+                title,
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.textMain,
+                ),
+              ),
               const SizedBox(height: 2),
-              Text(subtitle, style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint)),
+              Text(
+                subtitle,
+                style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+              ),
             ],
           ),
         ),
@@ -1600,12 +1888,23 @@ class _SettingsViewState extends State<SettingsView> {
     );
   }
 
-  Widget _buildTextInputRow(String label, TextEditingController controller, {ValueChanged<String>? onChanged}) {
+  Widget _buildTextInputRow(
+    String label,
+    TextEditingController controller, {
+    ValueChanged<String>? onChanged,
+  }) {
     return Row(
       children: [
         SizedBox(
           width: 90,
-          child: Text(label, style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppTheme.textFaint)),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.bold,
+              color: AppTheme.textFaint,
+            ),
+          ),
         ),
         Expanded(
           child: Container(
@@ -1620,7 +1919,11 @@ class _SettingsViewState extends State<SettingsView> {
               controller: controller,
               textAlignVertical: TextAlignVertical.center,
               style: TextStyle(fontSize: 10.5, color: AppTheme.textMain),
-              decoration: const InputDecoration(border: InputBorder.none, isDense: true, contentPadding: EdgeInsets.zero),
+              decoration: const InputDecoration(
+                border: InputBorder.none,
+                isDense: true,
+                contentPadding: EdgeInsets.zero,
+              ),
               onChanged: onChanged,
             ),
           ),

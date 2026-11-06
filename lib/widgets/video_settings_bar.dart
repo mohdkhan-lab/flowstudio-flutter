@@ -39,13 +39,8 @@ class VideoSettingsBar extends StatelessWidget {
         gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.specularRim,
-            offset: const Offset(0, 1),
-            blurRadius: 0,
-          ),
-          const BoxShadow(color: Colors.black38, blurRadius: 14, offset: Offset(0, 5)),
+        boxShadow: const [
+          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
         ],
       ),
       child: LayoutBuilder(
@@ -131,57 +126,49 @@ class VideoSettingsBar extends StatelessWidget {
           Row(
             children: [
               // Stop Button (Tactile 3D)
-              TactileButton(
-                type: TactileType.stop,
-                height: 32,
-                padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
-                borderRadius: 7,
-                bevelDepth: 2.5,
-                enabled: isRunning || isPaused,
-                onTap: (isRunning || isPaused) ? () => generator.stopGeneration(activity) : null,
-                icon: Icons.stop,
-                label: 'Stop',
+              Tooltip(
+                message: 'Stop generation',
+                child: TactileButton(
+                  type: TactileType.stop,
+                  height: 32,
+                  padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
+                  borderRadius: 7,
+                  bevelDepth: 2.5,
+                  enabled: isRunning || isPaused,
+                  onTap: (isRunning || isPaused) ? () => generator.stopGeneration(activity) : null,
+                  icon: Icons.stop,
+                  label: 'Stop',
+                ),
               ),
               SizedBox(width: compact ? 6 : 8),
 
               // Pause / Resume Button (Tactile 3D)
-              TactileButton(
-                type: TactileType.pause,
-                height: 32,
-                padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
-                borderRadius: 7,
-                bevelDepth: 2.5,
-                enabled: isRunning || isPaused,
-                onTap: isRunning
-                    ? () => generator.pauseGeneration(activity)
-                    : isPaused
-                        ? () => generator.resumeGeneration(
-                              accounts: accounts,
-                              activity: activity,
-                              settings: settingsProv,
-                            )
-                        : null,
-                icon: isPaused ? Icons.play_arrow : Icons.pause,
-                label: isPaused ? 'Resume' : 'Pause',
+              Tooltip(
+                message: isPaused ? 'Resume generation' : 'Pause generation',
+                child: TactileButton(
+                  type: TactileType.pause,
+                  height: 32,
+                  padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
+                  borderRadius: 7,
+                  bevelDepth: 2.5,
+                  enabled: isRunning || isPaused,
+                  onTap: isRunning
+                      ? () => generator.pauseGeneration(activity)
+                      : isPaused
+                          ? () => generator.resumeGeneration(
+                                accounts: accounts,
+                                activity: activity,
+                                settings: settingsProv,
+                              )
+                          : null,
+                  icon: isPaused ? Icons.play_arrow : Icons.pause,
+                  label: isPaused ? 'Resume' : 'Pause',
+                ),
               ),
 
               SizedBox(width: compact ? 6 : 8),
 
               // Estimate (design): "N prompts · est. X credits · Y Live accounts"
-              // v2.28.0: the estimate flexes + ellipsizes — Stop/Pause
-              // keep their intrinsic size and the Generate button is
-              // NEVER clipped (at 1024 wide the old Spacer row
-              // overflowed and cut the button at the right edge).
-              // v2.34.0 (Problem 10): the estimate is REAL — the
-              // cost table the engine itself charges by
-              // (services/credit_costs.dart), updating live with
-              // the MODEL/DURATION dropdowns above. v2.40.0: the
-              // table holds the owner's real panel rates, keyed
-              // by generation resolution (the Quality setting)
-              // as well. The
-              // old hardcoded "× 7" printed 14 for two 4-credit
-              // Omni videos. A combination with no evidenced rate
-              // shows NO estimate at all — never a fake number.
               Expanded(
                 child: Text(
                   () {
@@ -204,35 +191,37 @@ class VideoSettingsBar extends StatelessWidget {
               SizedBox(width: compact ? 6 : 8),
 
               // Generate Button — Tactile 3D (Mechanical Bevel + 2.0px Lift)
-              TactileButton(
-                type: TactileType.primary,
-                height: 54,
-                padding: EdgeInsets.symmetric(horizontal: compact ? 14 : 24),
-                borderRadius: 10,
-                bevelDepth: 4.0,
-                enabled: !isRunning,
-                onTap: !isRunning
-                    ? () => generator.startGeneration(
-                          accounts: accounts,
-                          activity: activity,
-                          settings: settingsProv,
-                        )
-                    : null,
-                child: Row(
-                  mainAxisSize: MainAxisSize.min,
-                  children: [
-                    Icon(Icons.play_arrow_rounded, size: compact ? 18 : 22, color: Colors.white),
-                    const SizedBox(width: 6),
-                    Text(
-                      isRunning ? 'Running...' : 'Generate',
-                      style: TextStyle(
-                        fontSize: compact ? 13.0 : 14.5,
-                        fontWeight: FontWeight.w800,
-                        color: Colors.white,
-                        letterSpacing: 0.5,
+              Tooltip(
+                message: isRunning ? 'Generation in progress...' : 'Start generation (Ctrl + Enter)',
+                child: TactileButton(
+                  type: TactileType.primary,
+                  height: 38,
+                  padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 20),
+                  borderRadius: 8,
+                  bevelDepth: 3.5,
+                  enabled: !isRunning,
+                  onTap: !isRunning
+                      ? () => generator.startGeneration(
+                            accounts: accounts,
+                            activity: activity,
+                            settings: settingsProv,
+                          )
+                      : null,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      const Icon(Icons.play_arrow, size: 15, color: Colors.white),
+                      const SizedBox(width: 4),
+                      Text(
+                        isRunning ? 'Running...' : 'Generate',
+                        style: const TextStyle(
+                          fontSize: 12.5,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                        ),
                       ),
-                    ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ],

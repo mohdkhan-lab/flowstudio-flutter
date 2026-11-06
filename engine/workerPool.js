@@ -505,6 +505,27 @@ class WorkerPool {
    * is liye 'na mila' wahan 'nahi hai' ka saboot
    * nahi hai. Restart-recovery wala bulawa (bina
    * opts ke) bilkul aaj jaisa hi rehta hai.
+   *
+   * v2.48.57 (PROJECT-TRUTH): teen badlav —
+   * (change 2) rows ab account ke saath-saath un ke
+   * RECORDED project_url se bhi group hoti hain: har
+   * (account, project) group ke liye browser ek baar
+   * khulta hai aur engine seedha USI project URL par
+   * jata hai (gallery ghusta hi nahi). Recorded URL na
+   * ho (pre-.57 parked rows) to ek gallery pass rehta
+   * hai, jisme gallery ka wo project chuna jata hai
+   * jiska date-time row ke banne ke waqt ke sab se
+   * qareeb (aur baad ka na) ho.
+   * (change 3) recovery KABHI naya project nahi
+   * banati (openFlowStudio 'existing' ka new-project
+   * fallback hata diya gaya hai).
+   * (change 4) recovery me tile NA milna ab KISI bhi
+   * mode me fail NAHI hai — restart wala bulawa bhi
+   * sweep ki tarah park karta hai (pending +
+   * needs_check). ZEROCLICK25 me Resume ne ghalat
+   * project khol kar dono tasks FAILED kar diye the;
+   * 'na mila' yahan 'nahi hai' ka saboot nahi hai,
+   * kyunke video kisi AUR project me ho sakti hai.
    */
   async _reconcileNeedsCheck(checkRows, downloadFolder, settings, opts = {}) {
     const sweepMode = !!(opts && opts.sweepMode);
@@ -515,27 +536,54 @@ class WorkerPool {
       if (!byAccount.has(key)) byAccount.set(key, []);
       byAccount.get(key).push(row);
     }
+    // v2.48.57 (PROJECT-TRUTH change 2): row ke banne ka
+    // waqt (ms) — SQLite CURRENT_TIMESTAMP UTC hota hai,
+    // is liye 'Z' jod kar parse karo. Gallery ke
+    // date-time wala chunav isi se hota hai.
+    const rowCreatedMs = (r) => {
+      const raw = r && r.created_at ? String(r.created_at) : '';
+      if (!raw) return 0;
+      const iso = raw.includes('T') ? raw : `${raw.replace(' ', 'T')}Z`;
+      const ms = Date.parse(iso);
+      return Number.isFinite(ms) ? ms : 0;
+    };
 
-    for (const [accountId, group] of byAccount) {
+    for (const [accountId, accountRows] of byAccount) {
       const account = accountId ? dbService.getAccount(accountId) : null;
       if (!account) {
-        for (const row of group) {
+        for (const row of accountRows) {
           // v2.48.51 (item 1): sweep mode me account
           // ghayab hona bhi fail ki wajah NAHI — row
           // parked hi rehti hai (kept).
+          // v2.48.57 (PROJECT-TRUTH change 4): ab ye
+          // restart mode me bhi sach hai — recovery
+          // fail NAHI karti; row pending + needs_check
+          // hi rehti hai.
+          handled.add(row.id);
           if (sweepMode) {
-            handled.add(row.id);
             continue;
           }
-          const reason = 'Recovered after restart, but the account it was running on no longer exists. It was NOT re-submitted.';
-          try { dbService.failTask(row.id, reason); } catch (e) {}
-          try { dbService.setTaskNeedsCheck(row.id, 0); } catch (e) {}
-          this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'failed', reason });
-          handled.add(row.id);
+          const reason = 'Recovered after restart, but the account it was running on no longer exists. It was NOT re-submitted and NOT failed — it stays pending (check-only) until the account is available again.';
+          try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
+          this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
         }
         continue;
       }
 
+      // v2.48.57 (PROJECT-TRUTH change 2): is account ki
+      // rows ko un ke RECORDED project_url se group
+      // karo — browser har (account, project) group ke
+      // liye ek baar khulega aur seedha usi project par
+      // jayega. Bina recorded URL wali rows ('' group)
+      // ek gallery pass leti hain.
+      const byProject = new Map();
+      for (const row of accountRows) {
+        const key = String(row.project_url || '').trim();
+        if (!byProject.has(key)) byProject.set(key, []);
+        byProject.get(key).push(row);
+      }
+
+      for (const [projectUrl, group] of byProject) {
       const engine = new FlowAutomationEngine({
         onLog: (data) => { this.onLog({ ...data, message: `[Recovery]: ${data.message}` }); },
         onTaskCompleted: (task, result) => {
@@ -573,7 +621,24 @@ class WorkerPool {
         let ready = false;
         const launched = await engine.launchBrowserForAccount(account, downloadFolder).catch(() => false);
         if (launched) {
-          const st = await engine.openFlowStudio({ ...settings, canvasStrategy: 'existing' }).catch(() => null);
+          // v2.48.57 (PROJECT-TRUTH change 2): recorded
+          // URL ho to seedha usi project par (gallery
+          // bilkul nahi); na ho to gallery pass ke liye
+          // is group ki sab se purani row ka waqt do —
+          // date-time wala chunav usi se hoga.
+          let openSettings;
+          if (projectUrl) {
+            openSettings = { ...settings, canvasStrategy: 'existing', projectUrl };
+          } else {
+            let targetMs = 0;
+            for (const r of group) {
+              const t = rowCreatedMs(r);
+              if (t > 0 && (targetMs === 0 || t < targetMs)) targetMs = t;
+            }
+            openSettings = { ...settings, canvasStrategy: 'existing' };
+            if (targetMs > 0) openSettings.recoveryTargetTime = targetMs;
+          }
+          const st = await engine.openFlowStudio(openSettings).catch(() => null);
           ready = (st === 'READY');
         }
         if (!ready) {
@@ -608,7 +673,8 @@ class WorkerPool {
             // threw that away over what may be a transient download
             // problem. The row stays pending + needs_check, so a
             // later Resume / Redo Missing retries ONLY the download.
-            // FAIL is now reserved for tile-missing (the else branch).
+            // (v2.48.57: tile-missing bhi ab fail NAHI —
+            // neeche wala else branch bhi park karta hai.)
             const reason = 'Recovered after restart: this prompt\'s tile exists in the Flow project but its video could not be downloaded this time (it may still be rendering, or the download routes failed). It was NOT re-submitted and NOT failed — it stays pending (check-only); on the next Resume only its download will be tried again, with no new charge.';
             try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
             this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
@@ -629,10 +695,23 @@ class WorkerPool {
             this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
             this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in the latest project during the sweep. Kept parked (pending, check-only) — NOT failed, NOT resubmitted.`, 'warn');
           } else {
-            const reason = 'Interrupted by an app close. No matching video was found in the account\'s latest Flow project, so it was NOT auto-resubmitted (that could double-charge credits). Use Retry to run it again.';
-            try { dbService.failTask(row.id, reason); } catch (e) {}
-            this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'failed', reason });
-            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in the Flow project. Marked as failed (NOT resubmitted).`, 'warn');
+            // v2.48.57 (PROJECT-TRUTH change 4): tile NA
+            // milna ab restart mode me bhi FAIL NAHI hai
+            // — sweep wala hi bartav: park. Jo project
+            // khola gaya tha wo is task ka asal project
+            // ho hi na (recorded URL pre-.57 rows ke
+            // paas hai hi nahi, aur gallery ka date-time
+            // chunav andaza hai), is liye 'na mila' yahan
+            // 'nahi hai' ka saboot nahi hai. ZEROCLICK25
+            // me isi fail ne dono bani-hui videos ke
+            // tasks khatam kar diye the. FAIL sirf owner
+            // ke explicit Retry raaston ke liye rehta
+            // hai (is function ke bahar — unhahe NAHI
+            // chhua gaya).
+            const reason = 'Recovery check: no matching video was found in the Flow project that was opened (the video may live in another of this account\'s projects — Flow lists projects by their date-time). It was NOT re-submitted and NOT failed — it stays pending (check-only); on the next Resume only its download will be tried again, with no new charge.';
+            try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
+            this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
+            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in the Flow project. Kept pending (check-only) — NOT failed, NOT resubmitted.`, 'warn');
           }
         }
       } finally {
@@ -641,6 +720,7 @@ class WorkerPool {
         // sweep for this browser (see releaseDownloadWatchers).
         try { engine.scheduleDownloadWatcherSweep(); } catch (e) {}
       }
+      } // v2.48.57: (account, project) group khatam
     }
     return handled;
   }
@@ -1978,6 +2058,20 @@ class WorkerPool {
                   submitRes.taskId = nextTask.id;
                   // v2.3.0: the engine names the download by this tag.
                   submitRes.tag = nextTask.prompt_tag || '';
+                  // v2.48.57 (PROJECT-TRUTH change 1): is
+                  // task ke PROJECT ka URL abhi, submit ke
+                  // pal par record kar lo — video SIRF isi
+                  // project me milegi aur recovery ko yahi
+                  // pata chahiye hoga. Pehle engine ki
+                  // birth-binding wali value (tile link ke
+                  // pal ki), warna page ka maujooda project
+                  // URL (task usi project me submit hua
+                  // tha — brief ki fallback shakal: run ka
+                  // project URL us ke har task ke liye).
+                  try {
+                    const purl = submitRes.projectUrl || engine.currentProjectUrl();
+                    if (purl) dbService.setTaskProjectUrl(nextTask.id, purl);
+                  } catch (e) {}
                   activeWorkerTasks.push(submitRes);
 
                   if (activeWorkerTasks.length < maxBurstConcurrency && taskQueue.size() > 0 && !this.isStopping) {

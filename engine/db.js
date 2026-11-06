@@ -228,6 +228,12 @@ function initSchema() {
   // v2.3.0: the prompt's TAG (smart parser: `#00-01`, `scene3`, …) —
   // downloads are named by it and the sequence report checks by it.
   addColumnIfMissing('queue_tasks', "prompt_tag TEXT DEFAULT ''");
+  // v2.48.57 (PROJECT-TRUTH change 1): the Flow PROJECT this task's
+  // video was generated in. A generated video exists ONLY in that
+  // project (Flow's home lists projects by their creation
+  // date-time), so check-only recovery must re-open THIS project —
+  // recorded at submit time by the pool (dbService.setTaskProjectUrl).
+  addColumnIfMissing('queue_tasks', "project_url TEXT DEFAULT ''");
 
   recoveredInterruptedCount = recoverInterruptedTasks();
   persistDirty = true;
@@ -466,6 +472,17 @@ const dbService = {
 
   setTaskNeedsCheck(taskId, flag) {
     run('UPDATE queue_tasks SET needs_check = ? WHERE id = ?', [flag ? 1 : 0, taskId]);
+    return this.getTask(taskId);
+  },
+
+  /**
+   * v2.48.57 (PROJECT-TRUTH change 1): record the Flow project URL
+   * a task's video was generated in (see the project_url column).
+   * Recovery groups parked rows by this URL and navigates straight
+   * to it — the video exists nowhere else.
+   */
+  setTaskProjectUrl(taskId, url) {
+    run('UPDATE queue_tasks SET project_url = ? WHERE id = ?', [String(url || ''), taskId]);
     return this.getTask(taskId);
   },
 

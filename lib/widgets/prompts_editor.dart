@@ -90,13 +90,8 @@ class _PromptsEditorState extends State<PromptsEditor> {
         gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.specularRim,
-            offset: const Offset(0, 1),
-            blurRadius: 0,
-          ),
-          const BoxShadow(color: Colors.black38, blurRadius: 14, offset: Offset(0, 5)),
+        boxShadow: const [
+          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
         ],
       ),
       child: Column(
@@ -194,19 +189,22 @@ class _PromptsEditorState extends State<PromptsEditor> {
               ),
               const SizedBox(width: 6),
               // + Add Tag (Tactile 3D Gold)
-              TactileButton(
-                type: TactileType.gold,
-                height: 26,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                borderRadius: 6,
-                bevelDepth: 2.0,
-                onTap: () => _showAddTagDialog(context),
-                child: Text(
-                  '+ Add Tag',
-                  style: TextStyle(
-                    fontSize: 10.5,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.accentText,
+              Tooltip(
+                message: 'Add custom filename tag to output videos',
+                child: TactileButton(
+                  type: TactileType.gold,
+                  height: 26,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  borderRadius: 6,
+                  bevelDepth: 2.0,
+                  onTap: () => _showAddTagDialog(context),
+                  child: Text(
+                    '+ Add Tag',
+                    style: TextStyle(
+                      fontSize: 10.5,
+                      fontWeight: FontWeight.bold,
+                      color: AppTheme.accentText,
+                    ),
                   ),
                 ),
               ),
@@ -254,7 +252,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
                   decoration: BoxDecoration(
                     color: AppTheme.inputBg,
                     borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: AppTheme.borderSoft),
+                    border: Border.all(color: AppTheme.borderSoft.withValues(alpha: 0.6)),
                   ),
                   child: TextField(
                     controller: _projectController,
@@ -297,14 +295,14 @@ class _PromptsEditorState extends State<PromptsEditor> {
               decoration: BoxDecoration(
                 color: AppTheme.inputBg,
                 borderRadius: BorderRadius.circular(10),
-                border: Border.all(color: AppTheme.borderSoft),
+                border: Border.all(color: AppTheme.borderSoft.withValues(alpha: 0.6)),
               ),
               child: TextField(
                 controller: _controller,
                 maxLines: null,
                 expands: true,
                 style: TextStyle(
-                  fontSize: 11.0,
+                  fontSize: 11.5,
                   height: 1.5,
                   color: AppTheme.textMain,
                   fontFamily: 'Consolas',
@@ -343,54 +341,94 @@ class _PromptsEditorState extends State<PromptsEditor> {
                     child: Row(
                       children: [
                         // Bulk Prompt Pill (Tactile 3D)
-                        TactileButton(
-                          type: TactileType.pill,
-                          isActive: generator.isBulkMode,
-                          borderRadius: 12,
-                          bevelDepth: 2.0,
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          onTap: () => context.read<GeneratorProvider>().setPromptMode(true),
-                          child: Text(
-                            'Bulk Prompt',
-                            style: TextStyle(
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.bold,
-                              color: generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
+                        Tooltip(
+                          message: 'One video prompt per line',
+                          child: TactileButton(
+                            type: TactileType.pill,
+                            isActive: generator.isBulkMode,
+                            borderRadius: 12,
+                            bevelDepth: 2.0,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            onTap: () => context.read<GeneratorProvider>().setPromptMode(true),
+                            child: Text(
+                              'Bulk Prompt',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                                color: generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
+                              ),
                             ),
                           ),
                         ),
                         const SizedBox(width: 6),
                         // Agent Prompt Pill (Tactile 3D)
-                        TactileButton(
-                          type: TactileType.pill,
-                          isActive: !generator.isBulkMode,
-                          borderRadius: 12,
-                          bevelDepth: 2.0,
-                          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                          onTap: () => context.read<GeneratorProvider>().setPromptMode(false),
-                          child: Text(
-                            'Agent Prompt',
-                            style: TextStyle(
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.bold,
-                              color: !generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
+                        Tooltip(
+                          message: 'AI agent structured prompt mode',
+                          child: TactileButton(
+                            type: TactileType.pill,
+                            isActive: !generator.isBulkMode,
+                            borderRadius: 12,
+                            bevelDepth: 2.0,
+                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                            onTap: () => context.read<GeneratorProvider>().setPromptMode(false),
+                            child: Text(
+                              'Agent Prompt',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.bold,
+                                color: !generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
+                              ),
                             ),
                           ),
                         ),
                         const Spacer(),
+                        if (generator.rawText.isEmpty) ...[
+                          Tooltip(
+                            message: 'Load sample prompts for instant testing',
+                            child: TactileButton(
+                              type: TactileType.ghost,
+                              borderRadius: 6,
+                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+                              onTap: () {
+                                const sample = '#00-01 Cinematic drone flyover of neon cyberpunk city at night, rain reflections\\n#00-02 Golden hour sunlight streaming through ancient redwood forest canopy';
+                                _controller.text = sample;
+                                context.read<GeneratorProvider>().setRawText(sample);
+                              },
+                              child: Row(
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  Icon(Icons.bolt, size: 12, color: AppTheme.accent),
+                                  const SizedBox(width: 2),
+                                  Text(
+                                    'Sample',
+                                    style: TextStyle(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w600,
+                                      color: AppTheme.accent,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
+                          const SizedBox(width: 6),
+                        ],
                         // txt/srt import button (Tactile 3D)
-                        TactileButton(
-                          type: TactileType.secondary,
-                          borderRadius: 6,
-                          bevelDepth: 2.0,
-                          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                          onTap: () => _handleFileImport(context),
-                          child: Text(
-                            'txt/srt',
-                            style: TextStyle(
-                              fontSize: 10.5,
-                              fontWeight: FontWeight.w700,
-                              color: AppTheme.textMain,
+                        Tooltip(
+                          message: 'Import prompt list from TXT or SRT subtitle file',
+                          child: TactileButton(
+                            type: TactileType.secondary,
+                            borderRadius: 6,
+                            bevelDepth: 2.0,
+                            padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                            onTap: () => _handleFileImport(context),
+                            child: Text(
+                              'txt/srt',
+                              style: TextStyle(
+                                fontSize: 10.5,
+                                fontWeight: FontWeight.w700,
+                                color: AppTheme.textMain,
+                              ),
                             ),
                           ),
                         ),

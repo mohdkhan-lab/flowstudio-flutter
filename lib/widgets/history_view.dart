@@ -4,7 +4,6 @@ import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import 'package:intl/intl.dart';
-
 import '../theme/app_theme.dart';
 import '../providers/settings_provider.dart';
 import '../services/automation_bridge.dart';
@@ -99,15 +98,11 @@ class _HistoryViewState extends State<HistoryView> {
     if (!c.hasClients) return;
     final pos = c.position;
     final step = pos.viewportDimension;
-    final target = (c.offset + (forward ? step : -step)).clamp(
-      0.0,
-      pos.maxScrollExtent,
-    );
-    c.animateTo(
-      target.toDouble(),
-      duration: const Duration(milliseconds: 250),
-      curve: Curves.easeOut,
-    );
+    final target =
+        (c.offset + (forward ? step : -step)).clamp(0.0, pos.maxScrollExtent);
+    c.animateTo(target.toDouble(),
+        duration: const Duration(milliseconds: 250),
+        curve: Curves.easeOut);
   }
 
   Widget _stripArrow(bool left, bool enabled, VoidCallback onTap) {
@@ -150,15 +145,12 @@ class _HistoryViewState extends State<HistoryView> {
     if (event is! PointerScrollEvent) return;
     final c = _listScrollController;
     if (!c.hasClients) return;
-    GestureBinding.instance.pointerSignalResolver.register(event, (
-      PointerSignalEvent resolved,
-    ) {
+    GestureBinding.instance.pointerSignalResolver
+        .register(event, (PointerSignalEvent resolved) {
       if (!c.hasClients) return;
       final pos = c.position;
-      final target = (pos.pixels + event.scrollDelta.dy).clamp(
-        0.0,
-        pos.maxScrollExtent,
-      );
+      final target =
+          (pos.pixels + event.scrollDelta.dy).clamp(0.0, pos.maxScrollExtent);
       c.jumpTo(target.toDouble());
     });
   }
@@ -207,7 +199,8 @@ class _HistoryViewState extends State<HistoryView> {
       // only when the file really is in the output folder. The
       // match is by name or by `rel` (a project file is opened
       // through its project-qualified reference).
-      final pending = context.read<SettingsProvider>().takePendingHistoryFile();
+      final pending =
+          context.read<SettingsProvider>().takePendingHistoryFile();
       if (pending != null && pending.isNotEmpty) {
         Map<String, dynamic>? match;
         for (final f in files) {
@@ -288,10 +281,9 @@ class _HistoryViewState extends State<HistoryView> {
           final dir = Directory('$home\\$name');
           try {
             if (!await dir.exists()) continue;
-            await for (final ent
-                in dir
-                    .list(recursive: true, followLinks: false)
-                    .handleError((_) {})) {
+            await for (final ent in dir
+                .list(recursive: true, followLinks: false)
+                .handleError((_) {})) {
               if (ent is! File) continue;
               final lower = ent.path.toLowerCase();
               final dot = lower.lastIndexOf('.');
@@ -323,10 +315,8 @@ class _HistoryViewState extends State<HistoryView> {
     } catch (_) {
       // A scan that cannot run at all just yields an empty list.
     }
-    results.sort(
-      (a, b) =>
-          ((b['mtime'] as num?) ?? 0).compareTo((a['mtime'] as num?) ?? 0),
-    );
+    results.sort((a, b) =>
+        ((b['mtime'] as num?) ?? 0).compareTo((a['mtime'] as num?) ?? 0));
     if (mounted) {
       setState(() {
         _pcFiles = results;
@@ -429,9 +419,8 @@ class _HistoryViewState extends State<HistoryView> {
       if (!projects.contains(p)) projects.add(p);
       projectCounts[p] = (projectCounts[p] ?? 0) + 1;
     }
-    final activeFilter = projects.contains(_projectFilter)
-        ? _projectFilter
-        : '';
+    final activeFilter =
+        projects.contains(_projectFilter) ? _projectFilter : '';
 
     // The list body: section headers (String) and file rows (Map).
     // Filtered → just that project's files. Unfiltered → grouped:
@@ -474,399 +463,340 @@ class _HistoryViewState extends State<HistoryView> {
     return Listener(
       onPointerSignal: _onPageWheel,
       child: Padding(
-        padding: const EdgeInsets.fromLTRB(10, 12, 14, 12),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // Top row (design): Back chip + title + search
-            Row(
-              children: [
-                InkWell(
-                  onTap: () =>
-                      context.read<SettingsProvider>().setNavView('generate'),
-                  borderRadius: BorderRadius.circular(14),
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 10,
-                      vertical: 6,
-                    ),
-                    decoration: BoxDecoration(
-                      color: AppTheme.accentGold.withValues(alpha: 0.07),
-                      borderRadius: BorderRadius.circular(14),
-                      border: Border.all(
-                        color: AppTheme.accentGold.withValues(alpha: 0.55),
-                      ),
-                    ),
-                    child: Text(
-                      '← Back to Studio',
-                      style: TextStyle(
-                        fontSize: 11,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.accentText,
-                      ),
-                    ),
+      padding: const EdgeInsets.fromLTRB(10, 12, 14, 12),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          // Top row (design): Back chip + title + search
+          Row(
+            children: [
+              InkWell(
+                onTap: () => context.read<SettingsProvider>().setNavView('generate'),
+                borderRadius: BorderRadius.circular(14),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: AppTheme.accentGold.withValues(alpha: 0.07),
+                    borderRadius: BorderRadius.circular(14),
+                    border: Border.all(color: AppTheme.accentGold.withValues(alpha: 0.55)),
+                  ),
+                  child: Text(
+                    '← Back to Studio',
+                    style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: AppTheme.accentText),
                   ),
                 ),
-                const SizedBox(width: 12),
-                Text(
-                  'Previous Videos',
-                  style: TextStyle(
-                    fontSize: 15,
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.textMain,
-                  ),
-                ),
-                const SizedBox(width: 14),
-                Expanded(
-                  child: Container(
-                    height: 32,
-                    padding: const EdgeInsets.symmetric(horizontal: 10),
-                    decoration: BoxDecoration(
-                      color: AppTheme.inputBg,
-                      borderRadius: BorderRadius.circular(8),
-                      border: Border.all(color: AppTheme.borderSoft),
-                    ),
-                    child: TextField(
-                      // v2.30.0: text vertically centred in its box.
-                      textAlignVertical: TextAlignVertical.center,
-                      style: TextStyle(
-                        fontSize: 11.5,
-                        color: AppTheme.textMain,
-                      ),
-                      decoration: InputDecoration(
-                        // v2.29.0: the search only ever matched file
-                        // NAMES (no per-file prompt is stored) — the
-                        // hint no longer promises prompt search.
-                        hintText: 'Search by video name...',
-                        hintStyle: TextStyle(
-                          fontSize: 11,
-                          color: AppTheme.textFaint,
-                        ),
-                        border: InputBorder.none,
-                        isDense: true,
-                        contentPadding: EdgeInsets.zero,
-                      ),
-                      onChanged: (v) => setState(() => _query = v),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-
-            const SizedBox(height: 10),
-
-            // v2.39.0: the two History modes. [App Videos] is the
-            // app's own generated output; [Local PC] scans the PC's
-            // Videos / Downloads / Desktop folders — clicking it IS
-            // the scan (nothing is picked or added by hand).
-            Row(
-              children: [
-                _modeButton(
-                  'App Videos',
-                  !_localMode,
-                  () => setState(() => _localMode = false),
-                ),
-                const SizedBox(width: 6),
-                _modeButton('Local PC', _localMode, _showLocalPc),
-                if (_localMode) ...[
-                  const SizedBox(width: 10),
-                  Text(
-                    _scanning
-                        ? 'Scanning…'
-                        : _scanned
-                        ? '${_pcFiles.length} video${_pcFiles.length == 1 ? '' : 's'} found on this PC'
-                        : '',
-                    style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
-                  ),
-                ],
-              ],
-            ),
-
-            const SizedBox(height: 12),
-
-            // Stat cards (design) — App Videos only: they count the
-            // engine's output, and Local PC results never enter them.
-            if (!_localMode) ...[
-              Row(
-                children: [
-                  _statCard('$total', 'TOTAL VIDEOS (ALL TIME)'),
-                  const SizedBox(width: 10),
-                  _statCard('$todayCount', "TODAY'S VIDEOS"),
-                  const SizedBox(width: 10),
-                  _statCard('$last7', 'LAST 7 DAYS'),
-                  const SizedBox(width: 10),
-                  _statCard('$spendToday', "TODAY'S SPEND (CREDITS)"),
-                ],
               ),
-              const SizedBox(height: 14),
+              const SizedBox(width: 12),
+              Text(
+                'Previous Videos',
+                style: TextStyle(fontSize: 15, fontWeight: FontWeight.bold, color: AppTheme.textMain),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Container(
+                  height: 32,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: AppTheme.inputBg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: AppTheme.borderSoft),
+                  ),
+                  child: TextField(
+                    // v2.30.0: text vertically centred in its box.
+                    textAlignVertical: TextAlignVertical.center,
+                    style: TextStyle(fontSize: 11.5, color: AppTheme.textMain),
+                    decoration: InputDecoration(
+                      // v2.29.0: the search only ever matched file
+                      // NAMES (no per-file prompt is stored) — the
+                      // hint no longer promises prompt search.
+                      hintText: 'Search by video name...',
+                      hintStyle: TextStyle(fontSize: 11, color: AppTheme.textFaint),
+                      border: InputBorder.none,
+                      isDense: true,
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                    onChanged: (v) => setState(() => _query = v),
+                  ),
+                ),
+              ),
             ],
+          ),
 
-            // List header row (design)
+          const SizedBox(height: 10),
+
+          // v2.39.0: the two History modes. [App Videos] is the
+          // app's own generated output; [Local PC] scans the PC's
+          // Videos / Downloads / Desktop folders — clicking it IS
+          // the scan (nothing is picked or added by hand).
+          Row(
+            children: [
+              _modeButton('App Videos', !_localMode,
+                  () => setState(() => _localMode = false)),
+              const SizedBox(width: 6),
+              _modeButton('Local PC', _localMode, _showLocalPc),
+              if (_localMode) ...[
+                const SizedBox(width: 10),
+                Text(
+                  _scanning
+                      ? 'Scanning…'
+                      : _scanned
+                          ? '${_pcFiles.length} video${_pcFiles.length == 1 ? '' : 's'} found on this PC'
+                          : '',
+                  style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
+                ),
+              ],
+            ],
+          ),
+
+          const SizedBox(height: 12),
+
+          // Stat cards (design) — App Videos only: they count the
+          // engine's output, and Local PC results never enter them.
+          if (!_localMode) ...[
             Row(
               children: [
-                Text(
-                  _localMode
-                      ? 'VIDEOS ON THIS PC'
-                      : activeFilter.isEmpty
-                      ? 'ALL VIDEOS'
-                      : 'PROJECT VIDEOS',
-                  style: TextStyle(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: 1.1,
-                    color: AppTheme.textFaint,
-                  ),
+                _statCard('$total', 'TOTAL VIDEOS (ALL TIME)'),
+                const SizedBox(width: 10),
+                _statCard('$todayCount', "TODAY'S VIDEOS"),
+                const SizedBox(width: 10),
+                _statCard('$last7', 'LAST 7 DAYS'),
+                const SizedBox(width: 10),
+                _statCard('$spendToday', "TODAY'S SPEND (CREDITS)"),
+              ],
+            ),
+            const SizedBox(height: 14),
+          ],
+
+          // List header row (design)
+          Row(
+            children: [
+              Text(
+                _localMode
+                    ? 'VIDEOS ON THIS PC'
+                    : activeFilter.isEmpty
+                        ? 'ALL VIDEOS'
+                        : 'PROJECT VIDEOS',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.1,
+                  color: AppTheme.textFaint,
+                ),
+              ),
+              const SizedBox(width: 8),
+              // Responsive pass: the two buttons form ONE
+              // scale-down cluster (same treatment as the top
+              // strip) — at narrow widths they shrink as a unit
+              // instead of overflowing the header row.
+              // v2.29.0: the "All Folders" dropdown is GONE — it had
+              // a single option and a no-op onChanged (the app has
+              // exactly one output folder, so there was nothing to
+              // filter).
+              Flexible(
+                child: FittedBox(
+                  fit: BoxFit.scaleDown,
+                  alignment: Alignment.centerRight,
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+              // v2.39.0: Local PC mode's only header action is a
+              // fresh scan; the App Videos actions (Clear History,
+              // Open Output Folder) belong to the app's own list.
+              if (_localMode)
+                TactileButton(
+                  type: TactileType.secondary,
+                  height: 30,
+                  borderRadius: 7,
+                  bevelDepth: 2.0,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  enabled: !_scanning,
+                  onTap: _scanning ? null : _scanPc,
+                  label: 'Rescan',
+                ),
+              if (!_localMode) ...[
+                TactileButton(
+                  type: TactileType.secondary,
+                  height: 30,
+                  borderRadius: 7,
+                  bevelDepth: 2.0,
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                  enabled: allFiles.isNotEmpty,
+                  onTap: allFiles.isEmpty
+                      ? null
+                      : () {
+                          context.read<SettingsProvider>().clearHistoryRecords(
+                                allFiles.map(_keyOf),
+                              );
+                        },
+                  label: 'Clear History (records only)',
                 ),
                 const SizedBox(width: 8),
-                // Responsive pass: the two buttons form ONE
-                // scale-down cluster (same treatment as the top
-                // strip) — at narrow widths they shrink as a unit
-                // instead of overflowing the header row.
-                // v2.29.0: the "All Folders" dropdown is GONE — it had
-                // a single option and a no-op onChanged (the app has
-                // exactly one output folder, so there was nothing to
-                // filter).
-                Flexible(
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    alignment: Alignment.centerRight,
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        // v2.39.0: Local PC mode's only header action is a
-                        // fresh scan; the App Videos actions (Clear History,
-                        // Open Output Folder) belong to the app's own list.
-                        if (_localMode)
-                          TactileButton(
-                            type: TactileType.secondary,
-                            height: 30,
-                            borderRadius: 7,
-                            bevelDepth: 2.0,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 4,
-                            ),
-                            enabled: !_scanning,
-                            onTap: _scanning ? null : _scanPc,
-                            label: 'Rescan',
-                          ),
-                        if (!_localMode) ...[
-                          TactileButton(
-                            type: TactileType.secondary,
-                            height: 30,
-                            borderRadius: 7,
-                            bevelDepth: 2.0,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 10,
-                              vertical: 4,
-                            ),
-                            enabled: allFiles.isNotEmpty,
-                            onTap: allFiles.isEmpty
-                                ? null
-                                : () {
-                                    context
-                                        .read<SettingsProvider>()
-                                        .clearHistoryRecords(
-                                          allFiles.map(_keyOf),
-                                        );
-                                  },
-                            label: 'Clear History (records only)',
-                          ),
-                          const SizedBox(width: 8),
-                          TactileButton(
-                            type: TactileType.primary,
-                            height: 30,
-                            borderRadius: 7,
-                            bevelDepth: 2.5,
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 4,
-                            ),
-                            onTap: () =>
-                                AutomationBridge.instance.openOutputFolder(),
-                            icon: Icons.folder_open,
-                            label: 'Open Output Folder',
-                          ),
-                        ],
-                      ],
-                    ),
-                  ),
+                TactileButton(
+                  type: TactileType.primary,
+                  height: 30,
+                  borderRadius: 7,
+                  bevelDepth: 2.5,
+                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+                  onTap: () => AutomationBridge.instance.openOutputFolder(),
+                  icon: Icons.folder_open,
+                  label: 'Open Output Folder',
                 ),
               ],
-            ),
-
-            const SizedBox(height: 10),
-
-            // v2.39.0 (owner's spec): the projects strip — every
-            // project that has videos, with its video COUNT (so the
-            // owner can see how many projects exist) and an Open
-            // button that filters the list to ONLY that project.
-            // New projects appear here on their own as their first
-            // video is saved. While a project is open, a
-            // "← All videos" chip leads back. (Supersedes the
-            // v2.36.0 filter chips.)
-            if (!_localMode && projects.isNotEmpty) ...[
-              // v2.46.1 (owner-approved Sample 2): patti apni saaf
-              // soorat me hai — koi scrollbar, koi wheel nahi. Dono
-              // taraf gol ‹ › button hain; › par click karte raho,
-              // agle folders aate rahenge; ‹ se peeche. Jo taraf
-              // khatam ho jaye, us ka button halka pad jata hai.
-              Builder(
-                builder: (context) {
-                  WidgetsBinding.instance.addPostFrameCallback(
-                    (_) => _syncStripArrows(),
-                  );
-                  return Row(
-                    children: [
-                      _stripArrow(true, _stripCanPrev, () => _pageStrip(false)),
-                      const SizedBox(width: 6),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          controller: _projectsScrollController,
-                          scrollDirection: Axis.horizontal,
-                          child: Row(
-                            children: [
-                              if (activeFilter.isNotEmpty) ...[
-                                _projectChip(
-                                  '← All videos',
-                                  false,
-                                  () => setState(() => _projectFilter = ''),
-                                ),
-                                const SizedBox(width: 6),
-                              ],
-                              for (var i = 0; i < projects.length; i++) ...[
-                                if (i > 0) const SizedBox(width: 6),
-                                _projectCard(
-                                  projects[i],
-                                  projectCounts[projects[i]] ?? 0,
-                                  activeFilter == projects[i],
-                                  () => setState(
-                                    () => _projectFilter = projects[i],
-                                  ),
-                                ),
-                              ],
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      _stripArrow(false, _stripCanNext, () => _pageStrip(true)),
                     ],
-                  );
-                },
-              ),
-              const SizedBox(height: 10),
-            ],
-
-            // v2.30.0: hidden-by-Clear-History notice + recovery.
-            if (!_localMode && hiddenCount > 0) ...[
-              Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 10,
-                  vertical: 7,
-                ),
-                decoration: BoxDecoration(
-                  color: AppTheme.activeGold.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(8),
-                  border: Border.all(
-                    color: AppTheme.activeGold.withValues(alpha: 0.4),
                   ),
                 ),
-                child: Row(
-                  children: [
-                    Expanded(
-                      child: Text(
-                        '$hiddenCount video${hiddenCount == 1 ? '' : 's'} hidden — an earlier "Clear History" hid the records. The files are still in the output folder.',
-                        style: TextStyle(fontSize: 11, color: AppTheme.textDim),
-                      ),
-                    ),
-                    const SizedBox(width: 8),
-                    TextButton(
-                      onPressed: () => context
-                          .read<SettingsProvider>()
-                          .restoreHistoryRecords(),
-                      style: TextButton.styleFrom(
-                        foregroundColor: AppTheme.accentText,
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 4,
-                        ),
-                        visualDensity: VisualDensity.compact,
-                      ),
-                      child: const Text(
-                        'Show them',
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.bold,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
               ),
-              const SizedBox(height: 10),
             ],
+          ),
 
-            // The list — App mode: (fix list item 1) `entries` mixes
-            // section headers (String) with file rows (Map); the
-            // row index counts files only, so tile colours stay
-            // stable. Local mode: the scan list (own builder).
-            Expanded(
-              child: _localMode
-                  ? _buildLocalList()
-                  : _loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : entries.isEmpty
-                  ? Center(
-                      child: Text(
-                        // v2.30.0: an empty page must say WHY —
-                        // truly no files, everything hidden by a
-                        // past Clear, or just no search match.
-                        _files.isEmpty
-                            ? 'No videos yet — generated videos will appear here.'
-                            : activeFilter.isNotEmpty
-                            ? 'No videos of this project are showing — pick "← All videos" above or open another project.'
-                            : (hiddenCount == _files.length && _query.isEmpty)
-                            ? 'All videos are hidden by an earlier Clear History — tap "Show them" above to bring them back.'
-                            : 'No videos match your search.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(
-                          fontSize: 12,
-                          color: AppTheme.textFaint,
-                        ),
+          const SizedBox(height: 10),
+
+          // v2.39.0 (owner's spec): the projects strip — every
+          // project that has videos, with its video COUNT (so the
+          // owner can see how many projects exist) and an Open
+          // button that filters the list to ONLY that project.
+          // New projects appear here on their own as their first
+          // video is saved. While a project is open, a
+          // "← All videos" chip leads back. (Supersedes the
+          // v2.36.0 filter chips.)
+          if (!_localMode && projects.isNotEmpty) ...[
+            // v2.46.1 (owner-approved Sample 2): patti apni saaf
+            // soorat me hai — koi scrollbar, koi wheel nahi. Dono
+            // taraf gol ‹ › button hain; › par click karte raho,
+            // agle folders aate rahenge; ‹ se peeche. Jo taraf
+            // khatam ho jaye, us ka button halka pad jata hai.
+            Builder(builder: (context) {
+              WidgetsBinding.instance
+                  .addPostFrameCallback((_) => _syncStripArrows());
+              return Row(
+                children: [
+                  _stripArrow(true, _stripCanPrev, () => _pageStrip(false)),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: SingleChildScrollView(
+                      controller: _projectsScrollController,
+                      scrollDirection: Axis.horizontal,
+                      child: Row(
+                        children: [
+                          if (activeFilter.isNotEmpty) ...[
+                            _projectChip('← All videos', false,
+                                () => setState(() => _projectFilter = '')),
+                            const SizedBox(width: 6),
+                          ],
+                          for (var i = 0; i < projects.length; i++) ...[
+                            if (i > 0) const SizedBox(width: 6),
+                            _projectCard(
+                              projects[i],
+                              projectCounts[projects[i]] ?? 0,
+                              activeFilter == projects[i],
+                              () => setState(() => _projectFilter = projects[i]),
+                            ),
+                          ],
+                        ],
                       ),
-                    )
-                  : ListView.builder(
-                      controller: _listScrollController,
-                      itemCount: entries.length,
-                      itemBuilder: (context, index) {
-                        final e = entries[index];
-                        // Same 7px rhythm the separated list had.
-                        final topGap = index == 0 ? 0.0 : 7.0;
-                        if (e is String) {
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  _stripArrow(false, _stripCanNext, () => _pageStrip(true)),
+                ],
+              );
+            }),
+            const SizedBox(height: 10),
+          ],
+
+          // v2.30.0: hidden-by-Clear-History notice + recovery.
+          if (!_localMode && hiddenCount > 0) ...[
+            Container(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              decoration: BoxDecoration(
+                color: AppTheme.activeGold.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: AppTheme.activeGold.withValues(alpha: 0.4)),
+              ),
+              child: Row(
+                children: [
+                  Expanded(
+                    child: Text(
+                      '$hiddenCount video${hiddenCount == 1 ? '' : 's'} hidden — an earlier "Clear History" hid the records. The files are still in the output folder.',
+                      style: TextStyle(fontSize: 11, color: AppTheme.textDim),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  TextButton(
+                    onPressed: () =>
+                        context.read<SettingsProvider>().restoreHistoryRecords(),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppTheme.accentText,
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                      visualDensity: VisualDensity.compact,
+                    ),
+                    child: const Text(
+                      'Show them',
+                      style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(height: 10),
+          ],
+
+          // The list — App mode: (fix list item 1) `entries` mixes
+          // section headers (String) with file rows (Map); the
+          // row index counts files only, so tile colours stay
+          // stable. Local mode: the scan list (own builder).
+          Expanded(
+            child: _localMode
+                ? _buildLocalList()
+                : _loading
+                ? const Center(child: CircularProgressIndicator())
+                : entries.isEmpty
+                    ? Center(
+                        child: Text(
+                          // v2.30.0: an empty page must say WHY —
+                          // truly no files, everything hidden by a
+                          // past Clear, or just no search match.
+                          _files.isEmpty
+                              ? 'No videos yet — generated videos will appear here.'
+                              : activeFilter.isNotEmpty
+                                  ? 'No videos of this project are showing — pick "← All videos" above or open another project.'
+                                  : (hiddenCount == _files.length && _query.isEmpty)
+                                      ? 'All videos are hidden by an earlier Clear History — tap "Show them" above to bring them back.'
+                                      : 'No videos match your search.',
+                          textAlign: TextAlign.center,
+                          style: TextStyle(fontSize: 12, color: AppTheme.textFaint),
+                        ),
+                      )
+                    : ListView.builder(
+                        controller: _listScrollController,
+                        itemCount: entries.length,
+                        itemBuilder: (context, index) {
+                          final e = entries[index];
+                          // Same 7px rhythm the separated list had.
+                          final topGap = index == 0 ? 0.0 : 7.0;
+                          if (e is String) {
+                            return Padding(
+                              padding: EdgeInsets.only(top: topGap),
+                              child: _sectionHeader(e),
+                            );
+                          }
+                          final f = e as Map<String, dynamic>;
+                          // Tile colours count FILES only, so a
+                          // header never shifts a row's colour.
+                          final fileIndex = entries
+                                  .take(index + 1)
+                                  .whereType<Map<String, dynamic>>()
+                                  .length -
+                              1;
                           return Padding(
                             padding: EdgeInsets.only(top: topGap),
-                            child: _sectionHeader(e),
+                            child: _buildRow(f, fileIndex),
                           );
-                        }
-                        final f = e as Map<String, dynamic>;
-                        // Tile colours count FILES only, so a
-                        // header never shifts a row's colour.
-                        final fileIndex =
-                            entries
-                                .take(index + 1)
-                                .whereType<Map<String, dynamic>>()
-                                .length -
-                            1;
-                        return Padding(
-                          padding: EdgeInsets.only(top: topGap),
-                          child: _buildRow(f, fileIndex),
-                        );
-                      },
-                    ),
-            ),
-          ],
-        ),
+                        },
+                      ),
+          ),
+        ],
+      ),
       ),
     );
   }
@@ -959,11 +889,7 @@ class _HistoryViewState extends State<HistoryView> {
           children: [
             Text(
               value,
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w800,
-                color: AppTheme.textMain,
-              ),
+              style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800, color: AppTheme.textMain),
             ),
             const SizedBox(height: 2),
             // Responsive pass: the longest label ("TODAY'S SPEND
@@ -976,12 +902,7 @@ class _HistoryViewState extends State<HistoryView> {
                 label,
                 maxLines: 1,
                 softWrap: false,
-                style: TextStyle(
-                  fontSize: 9,
-                  fontWeight: FontWeight.w700,
-                  letterSpacing: 0.6,
-                  color: AppTheme.textFaint,
-                ),
+                style: TextStyle(fontSize: 9, fontWeight: FontWeight.w700, letterSpacing: 0.6, color: AppTheme.textFaint),
               ),
             ),
           ],
@@ -1033,11 +954,7 @@ class _HistoryViewState extends State<HistoryView> {
                         name,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.bold,
-                          color: AppTheme.textMain,
-                        ),
+                        style: TextStyle(fontSize: 12, fontWeight: FontWeight.bold, color: AppTheme.textMain),
                       ),
                     ),
                     const SizedBox(width: 8),
@@ -1049,11 +966,7 @@ class _HistoryViewState extends State<HistoryView> {
                   // v2.39.0: a Local PC row names the folder the
                   // file actually sits in; engine rows keep the
                   // project/output wording.
-                  '${local
-                      ? _folderNameOf(f)
-                      : project.isNotEmpty
-                      ? 'Project folder'
-                      : 'Output folder'} · ${_dateLabel(date)} · ${_sizeLabel(size)}',
+                  '${local ? _folderNameOf(f) : project.isNotEmpty ? 'Project folder' : 'Output folder'} · ${_dateLabel(date)} · ${_sizeLabel(size)}',
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
@@ -1062,14 +975,7 @@ class _HistoryViewState extends State<HistoryView> {
             ),
           ),
           const SizedBox(width: 10),
-          _metaColumn(
-            'FOLDER',
-            local
-                ? _folderNameOf(f)
-                : project.isNotEmpty
-                ? project
-                : 'Output',
-          ),
+          _metaColumn('FOLDER', local ? _folderNameOf(f) : project.isNotEmpty ? project : 'Output'),
           const SizedBox(width: 18),
           _metaColumn('SIZE', _sizeLabel(size)),
           const SizedBox(width: 12),
@@ -1084,11 +990,8 @@ class _HistoryViewState extends State<HistoryView> {
             // v2.39.0: a Local PC file plays from its own path
             // directly (the same route the old picks used).
             onTap: () => local
-                ? showInAppPlayer(
-                    context,
-                    title: name,
-                    filePath: f['path']?.toString(),
-                  )
+                ? showInAppPlayer(context,
+                    title: name, filePath: f['path']?.toString())
                 : showInAppPlayer(context, title: name, fileName: _relOf(f)),
           ),
           const SizedBox(width: 6),
@@ -1142,12 +1045,7 @@ class _HistoryViewState extends State<HistoryView> {
   // count, and an Open button. Open (or tapping the card) filters
   // the list to ONLY this project; the strip's "← All videos"
   // chip is the way back.
-  Widget _projectCard(
-    String name,
-    int count,
-    bool active,
-    VoidCallback onOpen,
-  ) {
+  Widget _projectCard(String name, int count, bool active, VoidCallback onOpen) {
     return InkWell(
       onTap: onOpen,
       borderRadius: BorderRadius.circular(10),
@@ -1167,11 +1065,9 @@ class _HistoryViewState extends State<HistoryView> {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.folder_outlined,
-              size: 15,
-              color: active ? AppTheme.accentText : AppTheme.textDim,
-            ),
+            Icon(Icons.folder_outlined,
+                size: 15,
+                color: active ? AppTheme.accentText : AppTheme.textDim),
             const SizedBox(width: 7),
             Column(
               crossAxisAlignment: CrossAxisAlignment.start,
@@ -1257,12 +1153,8 @@ class _HistoryViewState extends State<HistoryView> {
   Widget _originPill(String? origin) {
     final isFlow = origin == 'flow';
     final fg = isFlow ? AppTheme.accentText : AppTheme.textDim;
-    final bg = isFlow
-        ? AppTheme.accentGold.withValues(alpha: 0.08)
-        : AppTheme.overlay08;
-    final border = isFlow
-        ? AppTheme.accentGold.withValues(alpha: 0.55)
-        : AppTheme.borderSoft;
+    final bg = isFlow ? AppTheme.accentGold.withValues(alpha: 0.08) : AppTheme.overlay08;
+    final border = isFlow ? AppTheme.accentGold.withValues(alpha: 0.55) : AppTheme.borderSoft;
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
       decoration: BoxDecoration(
@@ -1288,12 +1180,7 @@ class _HistoryViewState extends State<HistoryView> {
       children: [
         Text(
           label,
-          style: TextStyle(
-            fontSize: 8.5,
-            fontWeight: FontWeight.w700,
-            letterSpacing: 0.7,
-            color: AppTheme.textFaint,
-          ),
+          style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w700, letterSpacing: 0.7, color: AppTheme.textFaint),
         ),
         const SizedBox(height: 2),
         // (Fix list item 1): a FOLDER value can now be a project
@@ -1305,11 +1192,7 @@ class _HistoryViewState extends State<HistoryView> {
             value,
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 11,
-              fontWeight: FontWeight.w600,
-              color: AppTheme.textDim,
-            ),
+            style: TextStyle(fontSize: 11, fontWeight: FontWeight.w600, color: AppTheme.textDim),
           ),
         ),
       ],

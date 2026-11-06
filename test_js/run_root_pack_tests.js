@@ -50,7 +50,7 @@ const {
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
 const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
-const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream } = require('../engine/flowAutomation');
+const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
 const cookiesDb = require('../engine/cookiesDb');
 
@@ -3060,10 +3060,12 @@ async function main() {
   //    ZEROCLICK18 ke baad ke teen fix):
   //   (a) sweep mode — parked row kabhi fail nahi:
   //       not-found -> pending + needs_check barkarar,
-  //       failTask NAHI; restart mode bilkul waisa hi
-  //       (not-found -> fail) — dono pin; account
-  //       ghayab par bhi sweep park rakhta hai; sweep
-  //       line me kept= (source pin);
+  //       failTask NAHI; restart mode ka purana
+  //       (not-found -> fail) pin v2.48.57 (PROJECT-
+  //       TRUTH change 4) me ULAT gaya — restart mode
+  //       bhi ab park karta hai (neeche wala hissa +
+  //       X57 block); account ghayab par bhi sweep
+  //       park rakhta hai; sweep line me kept= (pin);
   //   (b) probe tafseel — probeBlockReason (khalis):
   //       captcha flag, pehla marker, kuch na ho to
   //       null; classify ke purane faisle bilkul
@@ -3124,11 +3126,14 @@ async function main() {
     eq('V-SWEEP the row stays pending in sweep mode', dbState.get('t-park-1').status, 'pending');
     eq('V-SWEEP needs_check is restored to parked (1)', dbState.get('t-park-1').needsCheck, 1);
     ok('V-SWEEP the UI update says pending', updates.some(u => u.taskId === 't-park-1' && u.status === 'pending'));
-    // restart mode + not-found -> fail (purana bartav, pin)
+    // v2.48.57 (PROJECT-TRUTH change 4): restart mode +
+    // not-found -> PARKED (purana fail wala pin ulta —
+    // recovery ab kisi bhi mode me fail nahi karti)
     dbState.set('t-park-2', { status: 'pending', needsCheck: 1 });
     await pool._reconcileNeedsCheck([mkRow('t-park-2', 'acc-v')], '/tmp', {});
-    eq('V-SWEEP restart mode still fails a not-found row', JSON.stringify(failCalls), JSON.stringify(['t-park-2']));
-    eq('V-SWEEP restart mode clears needs_check on fail', dbState.get('t-park-2').needsCheck, 0);
+    eq('V-SWEEP restart mode no longer fails a not-found row (v2.48.57)', failCalls.length, 0);
+    eq('V-SWEEP restart mode keeps needs_check parked (v2.48.57)', dbState.get('t-park-2').needsCheck, 1);
+    ok('V-SWEEP restart-mode UI update says pending (v2.48.57)', updates.some(u => u.taskId === 't-park-2' && u.status === 'pending'));
     // sweep + account ghayab -> parked, fail NAHI
     failCalls.length = 0;
     dbState.set('t-park-3', { status: 'pending', needsCheck: 1 });
@@ -3734,6 +3739,35 @@ async function main() {
     await capE2._armFocusEmulation(clientBad);
     eq('X-EMU failure note fired', emuNotes2.length === 1 && emuNotes2[0].ok, false);
 
+    // v2.48.56 (X56): tile-state probe — DOM src +
+    // React fiber props se pate nikalna (nakli page).
+    {
+      const engProbe = new FlowAutomationEngine({ onLog: () => {} }, {});
+      engProbe._resolveTileIndexForTask = async () => 0;
+      const prevU = 'https://rr9---sn.googlevideo.com/videoplayback?expire=9&id=pv&itag=18&clen=110000';
+      const fullU = 'https://rr8---sn.googlevideo.com/videoplayback?expire=9&id=fl&itag=18&clen=1250000';
+      const vidEl = { tagName: 'VIDEO', src: prevU, getAttribute: () => null, dataset: {} };
+      const tileEl = {
+        tagName: 'DIV', getAttribute: () => null, dataset: {},
+        querySelectorAll: (sel) => (sel === '*' ? [vidEl] : []),
+        '__reactFiber$abc': { memoizedProps: { media: { playbackUrl: fullU } }, child: null, sibling: null }
+      };
+      engProbe.page = {
+        isClosed: () => false,
+        evaluate: async (fn, arg) => {
+          const prevDoc = global.document;
+          global.document = { querySelectorAll: () => [tileEl] };
+          try { return await fn(arg); } finally { global.document = prevDoc; }
+        }
+      };
+      const probeOut = await engProbe._probeTileStateUrls({ promptIndex: 0 }, undefined);
+      eq('X56-PROBE do pate mile', probeOut.length, 2);
+      eq('X56-PROBE dom wala preview mila', (probeOut.find(p => p.url === prevU) || {}).source, 'dom');
+      eq('X56-PROBE fiber wala poora mila', (probeOut.find(p => p.url === fullU) || {}).source, 'fiber');
+      const probeEmpty = await engProbe._probeTileStateUrls({ promptIndex: 0 }, undefined);
+      eq('X56-PROBE dobara bhi utne hi (dedupe page ke andar)', probeEmpty.length, 2);
+    }
+
     // v2.48.55 (X55 — Gemini ZIP-fix ke achhe points):
     // (1) nazar par captureKey ki mohar + string-claim.
     const capZ = new NetworkCapture({});
@@ -3827,6 +3861,186 @@ async function main() {
     eq('X55 prime returns true once <video> exists on the tile', p2, true);
     eq('X55 one-shot flag is set after real prime', engPrime._pipelinePrimedRun, true);
     eq('X55 prime called vid.play() on the next tile', vidPlayed, 1);
+  }
+
+  // ---------------------------------------------------------------------------
+  // X57. v2.48.57 (PROJECT-TRUTH): video SIRF apne
+  //      project me hoti hai —
+  //   (a) recovery grouping: recorded project_url wala
+  //       group seedha usi URL par khulta hai (har
+  //       (account, project) group par browser ek
+  //       baar); bina URL wali rows EK gallery pass
+  //       leti hain sab se purani row ke waqt ke saath;
+  //   (b) gallery entry: 'existing' (recovery) NEW
+  //       PROJECT kabhi nahi banata — faisla khalis
+  //       galleryEntryDecision + nakli page par amal;
+  //       date-time chunav sab se qareeb wala (baad ka
+  //       na ho) project leta hai;
+  //   (c) recovery me not-found -> parked, failTask
+  //       NAHI (restart mode bhi — change 4);
+  //   (d) setTaskProjectUrl ka asal DB round-trip
+  //       (alag process, throwaway data dir).
+  // ---------------------------------------------------------------------------
+  {
+    const { WorkerPool } = require('../engine/workerPool');
+    const { dbService } = require('../engine/db');
+    const savedDb = {
+      getAccount: dbService.getAccount,
+      failTask: dbService.failTask,
+      setTaskNeedsCheck: dbService.setTaskNeedsCheck,
+      getTask: dbService.getTask,
+      completeTask: dbService.completeTask
+    };
+    const savedEng = {
+      launch: FlowAutomationEngine.prototype.launchBrowserForAccount,
+      open: FlowAutomationEngine.prototype.openFlowStudio,
+      reconcile: FlowAutomationEngine.prototype.reconcileRecoveredTask,
+      close: FlowAutomationEngine.prototype.closeBrowser,
+      sweepFn: FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep
+    };
+    const dbState = new Map();
+    const failCalls = [];
+    const openCalls = [];
+    const updates = [];
+    dbService.getAccount = (id) => (id === 'acc-x' ? { id: 'acc-x', name: 'X Acc', googleName: 'X Acc' } : null);
+    dbService.failTask = (id) => { failCalls.push(id); const r = dbState.get(id); if (r) r.status = 'failed'; };
+    dbService.setTaskNeedsCheck = (id, v) => { const r = dbState.get(id); if (r) r.needsCheck = v; };
+    dbService.getTask = (id) => dbState.get(id) || null;
+    dbService.completeTask = () => {};
+    FlowAutomationEngine.prototype.launchBrowserForAccount = async () => true;
+    FlowAutomationEngine.prototype.openFlowStudio = async (settings) => { openCalls.push(settings || {}); return 'READY'; };
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = async () => ({ found: false });
+    FlowAutomationEngine.prototype.closeBrowser = async () => {};
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = () => {};
+    const pool = new WorkerPool({ onLog: () => {}, onTaskUpdate: (u) => updates.push(u) });
+    const U1 = 'https://flow.google.com/project/x57-proj-one';
+    const U2 = 'https://flow.google.com/project/x57-proj-two';
+    const mkRow = (id, url, created) => ({ id, assigned_account_id: 'acc-x', prompt_index: 0, prompt_text: 'x57 prompt', prompt_tag: '', project_url: url, created_at: created });
+    const rows = [
+      mkRow('x57-r1', U1, '2026-11-06 10:05:00'),
+      mkRow('x57-r2', U1, '2026-11-06 10:05:05'),
+      mkRow('x57-r3', '', '2026-11-06 09:17:00'),
+      mkRow('x57-r4', U2, '2026-11-06 08:13:00')
+    ];
+    for (const r of rows) dbState.set(r.id, { status: 'pending', needsCheck: 1 });
+    await pool._reconcileNeedsCheck(rows, '/tmp', {});
+    eq('X57-GROUP one gallery/recorded entry per (account, project) group', openCalls.length, 3);
+    eq('X57-GROUP the recorded U1 group opens its URL exactly once', openCalls.filter(c => c.projectUrl === U1).length, 1);
+    eq('X57-GROUP the recorded U2 group opens its URL exactly once', openCalls.filter(c => c.projectUrl === U2).length, 1);
+    const galleryCall = openCalls.find(c => !c.projectUrl);
+    ok('X57-GROUP the unrecorded rows get one gallery pass', !!galleryCall);
+    eq('X57-GROUP the gallery pass carries the oldest row time', galleryCall && galleryCall.recoveryTargetTime, Date.parse('2026-11-06T09:17:00Z'));
+    eq('X57-GROUP recorded beats gallery (no recorded group falls back to a target time)', openCalls.filter(c => c.projectUrl).every(c => c.recoveryTargetTime === undefined), true);
+    // (c) not-found in restart-mode recovery -> parked
+    eq('X57-PARK failTask is never called in recovery', failCalls.length, 0);
+    eq('X57-PARK every row stays pending', rows.every(r => dbState.get(r.id).status === 'pending'), true);
+    eq('X57-PARK every row keeps needs_check', rows.every(r => dbState.get(r.id).needsCheck === 1), true);
+    ok('X57-PARK the UI updates say pending', rows.every(r => updates.some(u => u.taskId === r.id && u.status === 'pending')));
+    dbService.getAccount = savedDb.getAccount;
+    dbService.failTask = savedDb.failTask;
+    dbService.setTaskNeedsCheck = savedDb.setTaskNeedsCheck;
+    dbService.getTask = savedDb.getTask;
+    dbService.completeTask = savedDb.completeTask;
+    FlowAutomationEngine.prototype.launchBrowserForAccount = savedEng.launch;
+    FlowAutomationEngine.prototype.openFlowStudio = savedEng.open;
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = savedEng.reconcile;
+    FlowAutomationEngine.prototype.closeBrowser = savedEng.close;
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = savedEng.sweepFn;
+  }
+  {
+    // (b) khalis faisle
+    const NOW = new Date(2026, 10, 6, 12, 0).getTime();
+    eq('X57-ID project id comes out of a full edit URL', projectIdOfUrl('https://flow.google.com/project/abc-123/edit/xyz'), 'abc-123');
+    eq('X57-ID a gallery URL has no project id', projectIdOfUrl('https://flow.google.com/'), '');
+    eq('X57-DT the Flow gallery datetime parses', parseGalleryDateTime('Nov 06 - 09:28', NOW), new Date(2026, 10, 6, 9, 28).getTime());
+    eq('X57-DT garbage text gives null', parseGalleryDateTime('some tile caption', NOW), null);
+    const gLinks = [
+      { href: '/project/new', text: 'Nov 06 - 10:10' },
+      { href: '/project/mid', text: 'Nov 06 - 09:28' },
+      { href: '/project/old', text: 'Nov 06 - 09:17' }
+    ];
+    const pickNear = pickGalleryProject(gLinks, new Date(2026, 10, 6, 9, 20).getTime(), NOW);
+    eq('X57-PICK the nearest not-after project wins', pickNear.index, 2);
+    eq('X57-PICK its source is gallery-datetime', pickNear.source, 'gallery-datetime');
+    const pickEarly = pickGalleryProject(gLinks, new Date(2026, 10, 6, 8, 0).getTime(), NOW);
+    eq('X57-PICK nothing not-after means the first link', pickEarly.index, 0);
+    eq('X57-PICK its source is gallery-first', pickEarly.source, 'gallery-first');
+    eq('X57-DEC existing with a New Project button but no links never creates', galleryEntryDecision({ hasNewBtn: true, links: [] }, false, 0, NOW).kind, 'none');
+    eq('X57-DEC existing with links enters a link', galleryEntryDecision({ hasNewBtn: true, links: gLinks }, false, 0, NOW).kind, 'link');
+    eq('X57-DEC fresh still prefers New Project', galleryEntryDecision({ hasNewBtn: true, links: gLinks }, true, 0, NOW).kind, 'new');
+    eq('X57-DEC fresh without a button falls back to the first link', galleryEntryDecision({ hasNewBtn: false, links: gLinks }, true, 0, NOW).index, 0);
+    eq('X57-DEC garbage survey is a safe none', galleryEntryDecision(null, false, 0, NOW).kind, 'none');
+  }
+  {
+    // (b2) nakli page par asal entry — recovery me
+    // New Project wala button maujood hote hue bhi
+    // click NAHI hota; date-time wala link khulta hai.
+    const engG = new FlowAutomationEngine({ onLog: () => {} }, { galleryEntryPollMs: 1 });
+    let clickedNew = 0;
+    const clickedLinks = [];
+    let currentUrl = 'https://flow.google.com/';
+    const newBtn = { innerText: 'New project', getAttribute: () => '', click: () => { clickedNew++; } };
+    const mkLink = (href, label) => ({
+      innerText: '',
+      getAttribute: (n) => (n === 'href' ? href : ''),
+      parentElement: { innerText: label },
+      click: () => { clickedLinks.push(href); currentUrl = `https://flow.google.com${href}`; }
+    });
+    let fakeLinks = [mkLink('/project/p-new', 'Nov 06 - 10:10'), mkLink('/project/p-old', 'Nov 06 - 09:17')];
+    engG.page = {
+      isClosed: () => false,
+      url: () => currentUrl,
+      goto: async (u) => { currentUrl = u; },
+      evaluate: async (fn, arg) => {
+        const prevDoc = global.document;
+        global.document = {
+          querySelector: () => null,
+          querySelectorAll: (sel) => (String(sel).includes('/project/') ? fakeLinks : [newBtn])
+        };
+        try { return await fn(arg); } finally { global.document = prevDoc; }
+      }
+    };
+    const entry = await engG._enterProjectFromGallery(false, new Date(2026, 10, 6, 9, 20).getTime());
+    eq('X57-PAGE recovery entered a project', entry.entered, true);
+    eq('X57-PAGE the datetime-matched project was the one opened', JSON.stringify(clickedLinks), JSON.stringify(['/project/p-old']));
+    eq('X57-PAGE the entry source is gallery-datetime', entry.source, 'gallery-datetime');
+    eq('X57-PAGE the New Project button was never clicked', clickedNew, 0);
+    // gallery khaali: koi link nahi, sirf New Project
+    fakeLinks = [];
+    clickedLinks.length = 0;
+    currentUrl = 'https://flow.google.com/';
+    const entryNone = await engG._enterProjectFromGallery(false, 0);
+    eq('X57-PAGE an empty gallery cannot be entered in recovery', entryNone.entered, false);
+    eq('X57-PAGE New Project is still never clicked', clickedNew, 0);
+  }
+  {
+    // (d) asal DB round-trip — alag process, throwaway
+    // data dir (is suite ki apni DB ko haath nahi).
+    const { execFileSync } = require('child_process');
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-x57-db-'));
+    const dbPath = JSON.stringify(path.join(__dirname, '..', 'engine', 'db.js'));
+    const script = `(async () => {
+      const { dbService } = require(${dbPath});
+      await dbService.ensureInit();
+      const rows = dbService.createBatchTasks('b-x57', ['x57 round trip prompt'], {});
+      const id = rows[0].id;
+      const before = dbService.getTask(id);
+      dbService.setTaskProjectUrl(id, 'https://flow.google.com/project/x57-rt');
+      const after = dbService.getTask(id);
+      console.log(JSON.stringify({ before: before.project_url || '', after: after.project_url || '' }));
+    })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+    let rt = null;
+    try {
+      const out = execFileSync(process.execPath, ['-e', script], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+      rt = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+    } catch (e) { rt = null; }
+    ok('X57-DB the round-trip child ran', !!rt);
+    eq('X57-DB a fresh task row has an empty project_url', rt && rt.before, '');
+    eq('X57-DB setTaskProjectUrl round-trips', rt && rt.after, 'https://flow.google.com/project/x57-rt');
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

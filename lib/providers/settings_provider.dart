@@ -57,6 +57,46 @@ class SettingsProvider with ChangeNotifier {
       ? '${(_updateSizeBytes / (1024 * 1024)).toStringAsFixed(1)} MB'
       : '';
 
+  // v2.49.0: Persistent Sidebar Account Filter (survives tab navigation)
+  String _selectedAccountFilter = 'all';
+  String get selectedAccountFilter => _selectedAccountFilter;
+  void setSelectedAccountFilter(String filter) {
+    if (_selectedAccountFilter == filter) return;
+    _selectedAccountFilter = filter;
+    notifyListeners();
+  }
+
+  // v2.49.0: Live Engine Connectivity Status & 1-Click Reconnect
+  bool _engineConnected = true;
+  bool _isReconnectingEngine = false;
+  bool get engineConnected => _engineConnected;
+  bool get isReconnectingEngine => _isReconnectingEngine;
+
+  void setEngineConnected(bool connected) {
+    if (_engineConnected == connected) return;
+    _engineConnected = connected;
+    notifyListeners();
+  }
+
+  Future<void> reconnectEngine() async {
+    if (_isReconnectingEngine) return;
+    _isReconnectingEngine = true;
+    notifyListeners();
+    try {
+      await AutomationBridge.instance.ensureEngineRunning();
+      final healthy = await AutomationBridge.instance.checkHealth();
+      _engineConnected = healthy;
+      if (healthy) {
+        await loadSettingsFromEngine();
+      }
+    } catch (_) {
+      _engineConnected = false;
+    } finally {
+      _isReconnectingEngine = false;
+      notifyListeners();
+    }
+  }
+
   SettingsProvider() {
     // v2.31.4: an MCP "install update" request (Muse, through the
     // connector) arrives over the bridge's event stream. It runs
@@ -95,6 +135,7 @@ class SettingsProvider with ChangeNotifier {
       final data = await AutomationBridge.instance.loadSettings();
       if (data != null) {
         _engineSettingsLoaded = true;
+        _engineConnected = true;
         if (data['appearance'] != null) _settings.appearance = data['appearance'].toString();
         // v2.29.0 (BROWSERS persistence): the parallel-browsers
         // count is restored from the engine settings — selecting it
@@ -206,7 +247,10 @@ class SettingsProvider with ChangeNotifier {
       }
 
       notifyListeners();
-    } catch (_) {}
+    } catch (_) {
+      _engineConnected = false;
+      notifyListeners();
+    }
   }
 
   void setNavView(String view) {

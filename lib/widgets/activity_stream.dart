@@ -9,8 +9,7 @@ import '../providers/settings_provider.dart';
 import 'tactile_components.dart';
 
 class ActivityStream extends StatefulWidget {
-  final double height;
-  const ActivityStream({super.key, this.height = 300.0});
+  const ActivityStream({super.key});
 
   @override
   State<ActivityStream> createState() => _ActivityStreamState();
@@ -77,19 +76,14 @@ class _ActivityStreamState extends State<ActivityStream> {
             : 'Ready';
 
     return Container(
-      height: widget.height,
+      height: 150,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: [
-          BoxShadow(
-            color: AppTheme.specularRim,
-            offset: const Offset(0, 1),
-            blurRadius: 0,
-          ),
-          const BoxShadow(color: Colors.black38, blurRadius: 14, offset: Offset(0, 5)),
+        boxShadow: const [
+          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
         ],
       ),
       child: Column(
@@ -339,19 +333,25 @@ class _ActivityStreamState extends State<ActivityStream> {
     required String label,
     required VoidCallback onTap,
   }) {
-    return TactileButton(
-      type: TactileType.secondary,
-      height: 24,
-      borderRadius: 12,
-      bevelDepth: 1.5,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      onTap: onTap,
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w600,
-          color: AppTheme.textDim,
+    final tip = label.toLowerCase().contains('copy')
+        ? 'Copy all logs to clipboard'
+        : 'Clear console logs';
+    return Tooltip(
+      message: tip,
+      child: TactileButton(
+        type: TactileType.secondary,
+        height: 24,
+        borderRadius: 12,
+        bevelDepth: 1.5,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        onTap: onTap,
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            color: AppTheme.textDim,
+          ),
         ),
       ),
     );

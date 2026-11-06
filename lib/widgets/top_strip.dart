@@ -29,16 +29,11 @@ class TopStrip extends StatelessWidget {
         gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: [
+        boxShadow: const [
           BoxShadow(
-            color: AppTheme.specularRim,
-            offset: const Offset(0, 1),
-            blurRadius: 0,
-          ),
-          const BoxShadow(
             color: Colors.black38,
-            blurRadius: 14,
-            offset: Offset(0, 5),
+            blurRadius: 12,
+            offset: Offset(0, 4),
           ),
         ],
       ),
@@ -92,21 +87,31 @@ class TopStrip extends StatelessWidget {
                   crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Text(
-                      'FlowStudio',
-                      style: TextStyle(
-                        fontSize: 14,
-                        fontWeight: FontWeight.bold,
-                        color: AppTheme.textMain,
+                    RichText(
+                      text: TextSpan(
+                        style: TextStyle(
+                          fontSize: 14,
+                          fontWeight: FontWeight.bold,
+                          color: AppTheme.textMain,
+                        ),
+                        children: [
+                          TextSpan(text: 'FlowStudio '),
+                          TextSpan(
+                            text: 'Lite',
+                            style: TextStyle(
+                              color: AppTheme.accentText,
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                     Text(
-                      'By MK',
+                      'Multi-Account Flow Studio',
                       style: TextStyle(
                         fontSize: 9.5,
-                        color: AppTheme.textDim,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.3,
+                        color: AppTheme.accentAmber,
+                        fontWeight: FontWeight.w500,
                       ),
                     ),
                   ],
@@ -115,7 +120,7 @@ class TopStrip extends StatelessWidget {
                 // Version Pill — Tactile 3D
                 TactileChip(
                   color: AppTheme.accentText,
-                  label: 'v2.48.55',
+                  label: 'v2.48.57',
                   height: 22,
                   borderRadius: 11,
                   bevelDepth: 1.5,
@@ -137,22 +142,91 @@ class TopStrip extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  // Total Credits
-                  Column(
-                    crossAxisAlignment: CrossAxisAlignment.end,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        'TOTAL CREDITS',
-                        style: TextStyle(
-                          fontSize: 8.5,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 0.8,
-                          color: AppTheme.textFaint,
+                  // Created by MK
+                  RichText(
+                    text: TextSpan(
+                      style: TextStyle(fontSize: 13, color: AppTheme.textDim),
+                      children: [
+                        TextSpan(text: 'Created by '),
+                        TextSpan(
+                          text: 'MK',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.textMain,
+                          ),
                         ),
-                      ),
-                    ],
+                      ],
+                    ),
                   ),
+                  const SizedBox(width: 12),
+
+                  // v2.49.0: Live Engine Connectivity Pill with 1-click Reconnect
+                  _buildEngineStatusPill(context),
+                  const SizedBox(width: 12),
+
+                  // Social Icons (WhatsApp, Chat, Support) — v2.34.0
+          // (Problem 12): an icon renders ONLY when its saved link
+          // is usable; an unconfigured or placeholder link shows
+          // nothing instead of opening a dead page.
+          Consumer<SettingsProvider>(
+            builder: (context, settingsProv, _) {
+              final s = settingsProv.settings;
+              final icons = <Widget>[];
+              if (isUsableSocialLink(s.whatsAppLink)) {
+                icons.add(_buildCircleIcon(
+                  icon: Icons.chat_bubble,
+                  color: AppTheme.whatsApp,
+                  tooltip: 'WhatsApp',
+                  onTap: () => context.read<SettingsProvider>().openSocial('whatsapp'),
+                ));
+              }
+              if (isUsableSocialLink(s.chatLink)) {
+                if (icons.isNotEmpty) icons.add(const SizedBox(width: 6));
+                icons.add(_buildCircleIcon(
+                  icon: Icons.message_outlined,
+                  color: AppTheme.textDim,
+                  tooltip: 'Chat',
+                  onTap: () => context.read<SettingsProvider>().openSocial('chat'),
+                ));
+              }
+              if (isUsableSocialLink(s.supportLink)) {
+                if (icons.isNotEmpty) icons.add(const SizedBox(width: 6));
+                icons.add(_buildCircleIcon(
+                  icon: Icons.headphones_outlined,
+                  color: AppTheme.textDim,
+                  tooltip: 'Support',
+                  onTap: () => context.read<SettingsProvider>().openSocial('support'),
+                ));
+              }
+              return Row(mainAxisSize: MainAxisSize.min, children: icons);
+            },
+          ),
+
+          const SizedBox(width: 14),
+          // Vertical Separator
+          Container(
+            width: 1,
+            height: 24,
+            color: AppTheme.borderSoft,
+          ),
+          const SizedBox(width: 14),
+
+          // Total Credits & Sync
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'TOTAL CREDITS',
+                style: TextStyle(
+                  fontSize: 8.5,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.8,
+                  color: AppTheme.textFaint,
+                ),
+              ),
+            ],
+          ),
           const SizedBox(width: 8),
           Text(
             // v2.46.3 (owner ka order): kul yog par bhi koi '~'
@@ -235,5 +309,118 @@ class TopStrip extends StatelessWidget {
     );
   }
 
+  Widget _buildCircleIcon({
+    required IconData icon,
+    required Color color,
+    required String tooltip,
+    VoidCallback? onTap,
+  }) {
+    return Tooltip(
+      message: tooltip,
+      child: TactileButton(
+        type: TactileType.icon,
+        shape: BoxShape.circle,
+        width: 28,
+        height: 28,
+        bevelDepth: 1.8,
+        padding: EdgeInsets.zero,
+        onTap: onTap,
+        child: Icon(icon, size: 14, color: color),
+      ),
+    );
+  }
+
+  // v2.49.0: Live Engine Connectivity Status Pill with 1-Click Reconnect
+  Widget _buildEngineStatusPill(BuildContext context) {
+    final settingsProv = context.watch<SettingsProvider>();
+    final connected = settingsProv.engineConnected;
+    final reconnecting = settingsProv.isReconnectingEngine;
+
+    if (connected && !reconnecting) {
+      return Tooltip(
+        message: 'Engine connected (v2.48.57) • Node.js automation active',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: AppTheme.greenBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.green.withValues(alpha: 0.35)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppTheme.green,
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppTheme.green.withValues(alpha: 0.6),
+                      blurRadius: 4,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                'Engine Active',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.green,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Disconnected or Reconnecting state
+    return Tooltip(
+      message: 'Node.js automation engine is offline. Click to reconnect.',
+      child: GestureDetector(
+        onTap: reconnecting ? null : () => settingsProv.reconnectEngine(),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: AppTheme.redBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.red.withValues(alpha: 0.45)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppTheme.red,
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppTheme.red.withValues(alpha: 0.6),
+                      blurRadius: 4,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                reconnecting ? 'Reconnecting…' : 'Engine Offline [🔄 Reconnect]',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: AppTheme.red,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 

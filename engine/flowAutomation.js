@@ -122,6 +122,93 @@ function attemptSummaryLogLine(info) {
 }
 
 /**
+ * v2.48.57 (PROJECT-TRUTH): Flow ke projects ki sachai —
+ * har video SIRF usi project me hoti hai jisme wo bani
+ * thi, aur Flow home har project ko uske banne ke
+ * date-time se dikhata hai ('Nov 06 - 09:28').
+ * Recovery ko wahi project kholna hai — naya ya sab se
+ * latest project me dhoondna bekaar hai (ZEROCLICK25:
+ * Resume ne ghalat/khaali project khol kar dono tasks
+ * FAILED mark kar diye the). Neeche ke teen helpers
+ * khalis hain (koi page nahi chhoote):
+ *   projectIdOfUrl(url)      -> project id ya ''
+ *   parseGalleryDateTime(t)  -> ms ya null
+ *   pickGalleryProject(...)  -> { index, source }
+ *   galleryEntryDecision(..) -> { kind, index, source }
+ * 'existing' (recovery) strategy me kind KABHI 'new'
+ * nahi hota — recovery naya project bana hi nahi sakti.
+ */
+function projectIdOfUrl(url) {
+  const m = String(url || '').match(/\/project\/([^/?#]+)/);
+  return m ? m[1] : '';
+}
+
+const GALLERY_MONTHS = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, oct: 9, nov: 10, dec: 11 };
+
+function parseGalleryDateTime(text, nowMs) {
+  const t = String(text || '');
+  const m = t.match(/\b(Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)[a-z]*\.?\s+(\d{1,2})(?:\s*,?\s*(\d{4}))?\b[^\d]{0,4}(\d{1,2}):(\d{2})\s*(AM|PM)?/i);
+  if (!m) return null;
+  const month = GALLERY_MONTHS[m[1].slice(0, 3).toLowerCase()];
+  if (month === undefined) return null;
+  const now = new Date(Number(nowMs) || Date.now());
+  let year = m[3] ? Number(m[3]) : now.getFullYear();
+  let hh = Number(m[4]) % 24;
+  const mm = Number(m[5]) % 60;
+  if (m[6]) {
+    const pm = m[6].toUpperCase() === 'PM';
+    if (pm && hh < 12) hh += 12;
+    if (!pm && hh === 12) hh = 0;
+  }
+  let dt = new Date(year, month, Number(m[2]), hh, mm).getTime();
+  if (!Number.isFinite(dt)) return null;
+  // Saal na diya ho aur tareekh aaj se bahut aage nikle
+  // (Dec ka project Jan me dekha) to pichla saal mano.
+  if (!m[3] && dt - now.getTime() > 31 * 24 * 3600 * 1000) {
+    dt = new Date(year - 1, month, Number(m[2]), hh, mm).getTime();
+  }
+  return dt;
+}
+
+function pickGalleryProject(links, targetMs, nowMs) {
+  const list = Array.isArray(links) ? links : [];
+  if (!list.length) return { index: -1, source: 'gallery-first' };
+  const target = Number(targetMs) || 0;
+  if (target > 0) {
+    let best = -1;
+    let bestDt = -Infinity;
+    list.forEach((l, i) => {
+      const dt = parseGalleryDateTime(l && l.text, nowMs);
+      if (dt === null) return;
+      // Gallery ki ghadi minute-resolution ki hai — wahi
+      // minute qubool (target + 59.999s tak).
+      if (dt <= target + 59999 && dt > bestDt) { bestDt = dt; best = i; }
+    });
+    if (best >= 0) return { index: best, source: 'gallery-datetime' };
+  }
+  return { index: 0, source: 'gallery-first' };
+}
+
+function galleryEntryDecision(survey, preferFresh, targetMs, nowMs) {
+  const s = survey && typeof survey === 'object' ? survey : {};
+  const links = Array.isArray(s.links) ? s.links : [];
+  if (preferFresh) {
+    if (s.hasNewBtn) return { kind: 'new', index: -1, source: null };
+    if (links.length) return { kind: 'link', index: 0, source: 'gallery-first' };
+    return { kind: 'none', index: -1, source: null };
+  }
+  // 'existing' (recovery): naya project KABHI nahi —
+  // link mile to wahi (date-time wala tarjeeh ke saath),
+  // na mile to 'none' (upar wala project-na-khula wala
+  // raasta tasks ko parked rakhta hai).
+  if (links.length) {
+    const pick = pickGalleryProject(links, targetMs, nowMs);
+    return { kind: 'link', index: pick.index, source: pick.source };
+  }
+  return { kind: 'none', index: -1, source: null };
+}
+
+/**
  * v2.48.52 (ROUTE 1A PACK): netload (CDP
  * Network.loadNetworkResource) koshish ki [ROOT]
  * line (khalis). Ek koshish = ek line: kaun sa host,
@@ -493,6 +580,10 @@ class FlowAutomationEngine {
     // ghata saken.
     this.mainpageViewportWaitMs = Number(options.mainpageViewportWaitMs) > 0 ? Number(options.mainpageViewportWaitMs) : 9000;
     this.mainpageViewportSettleMs = Number(options.mainpageViewportSettleMs) > 0 ? Number(options.mainpageViewportSettleMs) : 1200;
+    // v2.48.57 (PROJECT-TRUTH): gallery-entry ke poll ki
+    // muddat (production 1000ms) — constructor option
+    // taaki nakli-page test tez chal saken.
+    this.galleryEntryPollMs = Number(options.galleryEntryPollMs) > 0 ? Number(options.galleryEntryPollMs) : 1000;
     // v2.48.43 (HOVER + PATIENCE PACK): SABR ki khidki
     // — download attempt apne render-complete se itni
     // der (production 60s) main page par stream ka
@@ -1214,6 +1305,105 @@ class FlowAutomationEngine {
    * Navigate into the Flow project canvas.
    * Returns 'READY' | 'NEED_LOGIN' | 'EXHAUSTED' | 'LOW_CREDITS'.
    */
+  /**
+   * v2.48.57 (PROJECT-TRUTH change 1): is waqt page jis
+   * project me hai us ka saaf URL (…/project/<id> tak,
+   * /edit/... hata kar — wahi kaat jo headless editor
+   * wala raasta pehle se karta hai). Project me na ho
+   * to ''.
+   */
+  currentProjectUrl() {
+    try {
+      const u = this.page && !this.page.isClosed() ? (this.page.url() || '') : '';
+      if (u.includes('/project/')) return u.split('/edit/')[0];
+    } catch (e) {}
+    return '';
+  }
+
+  /**
+   * v2.48.57 (PROJECT-TRUTH changes 2+3): gallery se
+   * project ke andar jana. Faisla khalis
+   * galleryEntryDecision karta hai:
+   *  - preferFresh (aam run): pehle New Project, warna
+   *    pehla maujood link (bartav bilkul pehle jaisa).
+   *  - 'existing' (recovery): SIRF maujood project —
+   *    naya project KABHI nahi banta; date-time wala
+   *    chunav (targetMs) pehle, warna pehla link.
+   * Lautta hai { entered, source } — source sirf
+   * recovery ke liye matlab rakhta hai
+   * ('gallery-datetime' | 'gallery-first').
+   */
+  async _enterProjectFromGallery(preferFresh, targetMs) {
+    let source = null;
+    let lastHref = null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      let survey = null;
+      try {
+        survey = await this.page.evaluate(() => {
+          const newBtn = document.querySelector('button.new-project-button') ||
+            Array.from(document.querySelectorAll('button, div[role="button"]')).find(b => {
+              const txt = (b.innerText || '').toLowerCase();
+              const aria = (b.getAttribute('aria-label') || '').toLowerCase();
+              return txt.includes('new project') || aria.includes('new project') || txt.includes('create project');
+            });
+          const links = Array.from(document.querySelectorAll('a[href*="/project/"]')).map(a => {
+            let text = a.innerText || '';
+            let node = a;
+            for (let i = 0; i < 4 && node; i++) {
+              node = node.parentElement || node.parentNode || null;
+              if (node && node.innerText && /[A-Za-z]{3}\s+\d{1,2}/.test(node.innerText)) { text = node.innerText; break; }
+            }
+            return { href: a.getAttribute('href') || '', text: String(text).slice(0, 200) };
+          });
+          return { hasNewBtn: !!newBtn, links };
+        });
+      } catch (e) { survey = null; }
+      if (!survey || typeof survey !== 'object') survey = { hasNewBtn: false, links: [] };
+      const decision = galleryEntryDecision(survey, preferFresh, targetMs, Date.now());
+      if (decision.source) source = decision.source;
+      if (decision.kind === 'link' && survey.links[decision.index]) lastHref = survey.links[decision.index].href;
+      let actionResult = 'none-found';
+      if (decision.kind !== 'none') {
+        try {
+          const clicked = await this.page.evaluate((args) => {
+            if (args.kind === 'new') {
+              const b = document.querySelector('button.new-project-button') ||
+                Array.from(document.querySelectorAll('button, div[role="button"]')).find(x => {
+                  const txt = (x.innerText || '').toLowerCase();
+                  const aria = (x.getAttribute('aria-label') || '').toLowerCase();
+                  return txt.includes('new project') || aria.includes('new project') || txt.includes('create project');
+                });
+              if (b) { b.click(); return true; }
+              return false;
+            }
+            const links = Array.from(document.querySelectorAll('a[href*="/project/"]'));
+            const a = links[args.index];
+            if (a) { a.click(); return true; }
+            return false;
+          }, { kind: decision.kind, index: decision.index });
+          if (clicked) actionResult = decision.kind === 'new' ? 'clicked-new-project-button' : 'clicked-existing-project-link';
+        } catch (e) {}
+      }
+      this.log(`Attempt ${attempt}/3 to enter the project — ${actionResult === 'none-found' ? 'no New Project button or project link was found' : 'button/link found and clicked'}`, 'info');
+      let entered = false;
+      for (let w = 0; w < 10; w++) {
+        await sleep(this.galleryEntryPollMs || 1000);
+        if (this.page.url().includes('/project/')) { entered = true; break; }
+      }
+      if (entered) return { entered: true, source };
+      if (lastHref) {
+        const fullUrl = lastHref.startsWith('http') ? lastHref : `https://flow.google.com${lastHref}`;
+        this.log('Going in directly via the project link…', 'info');
+        try {
+          await this.page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
+          await this._waitForFlowSignal(3000);
+          if (this.page.url().includes('/project/')) return { entered: true, source };
+        } catch (e) {}
+      }
+    }
+    return { entered: false, source };
+  }
+
   async openFlowStudio(settings = {}) {
     this.currentSettings = settings;
     const url = 'https://flow.google.com/';
@@ -1271,65 +1461,47 @@ class FlowAutomationEngine {
 
     // 3. Projects gallery -> project canvas
     const preferFreshCanvas = settings.canvasStrategy !== 'existing';
+    // v2.48.57 (PROJECT-TRUTH change 2): recovery ke paas
+    // task ka RECORDED project URL ho to gallery me ghusna
+    // hi nahi — seedha usi project par jao aur project id
+    // verify karo. Wo project na khule to saaf error —
+    // gallery/new-project ki taraf girna KABHI nahi
+    // (video sirf usi project me hai; ghalat project me
+    // dhoondhna hi ZEROCLICK25 wali galti thi).
+    const recordedProjectUrl = typeof settings.projectUrl === 'string' ? settings.projectUrl.trim() : '';
+    if (recordedProjectUrl) {
+      const wantId = projectIdOfUrl(recordedProjectUrl);
+      if (!wantId || !this.page.url().includes(`/project/${wantId}`)) {
+        try { await this.page.goto(recordedProjectUrl, { waitUntil: 'domcontentloaded', timeout: 60000 }); } catch (e) {}
+        await this._waitForFlowSignal(5000);
+      }
+      if (wantId && this.page.url().includes(`/project/${wantId}`)) {
+        this.log(`[ROOT] recovery-project url=${recordedProjectUrl} source=recorded`, 'info');
+      } else {
+        throw new Error(`The recorded Flow project could not be opened (${recordedProjectUrl}) — recovery keeps its tasks pending for a later Resume.`);
+      }
+    }
     if (!this.page.url().includes('/project/')) {
       this.currentStage = 'Entering Project Canvas';
       this.log('Going into the Flow project from the gallery…', 'info');
 
-      let enteredCanvas = false;
-      for (let attempt = 1; attempt <= 3; attempt++) {
-        const actionResult = await this.page.evaluate((preferFresh) => {
-          const newBtn = document.querySelector('button.new-project-button') ||
-            Array.from(document.querySelectorAll('button, div[role="button"]')).find(b => {
-              const txt = (b.innerText || '').toLowerCase();
-              const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-              return txt.includes('new project') || aria.includes('new project') || txt.includes('create project');
-            });
-
-          const existingLink = document.querySelector('a[href*="/project/"]');
-
-          if (preferFresh && newBtn) { newBtn.click(); return 'clicked-new-project-button'; }
-          if (!preferFresh && existingLink) { existingLink.click(); return 'clicked-existing-project-link'; }
-          if (existingLink) { existingLink.click(); return 'fallback-clicked-existing-project-link'; }
-          if (newBtn) { newBtn.click(); return 'fallback-clicked-new-project-button'; }
-          return 'none-found';
-        }, preferFreshCanvas);
-
-        this.log(`Attempt ${attempt}/3 to enter the project — ${actionResult === 'none-found' ? 'no New Project button or project link was found' : 'button/link found and clicked'}`, 'info');
-
-        for (let w = 0; w < 10; w++) {
-          await sleep(1000);
-          if (this.page.url().includes('/project/')) {
-            enteredCanvas = true;
-            break;
-          }
-        }
-
-        if (enteredCanvas) break;
-
-        const directHref = await this.page.evaluate(() => {
-          const a = document.querySelector('a[href*="/project/"]');
-          return a ? a.getAttribute('href') : null;
-        });
-
-        if (directHref) {
-          const fullUrl = directHref.startsWith('http') ? directHref : `https://flow.google.com${directHref}`;
-          this.log('Going in directly via the project link…', 'info');
-          try {
-            await this.page.goto(fullUrl, { waitUntil: 'domcontentloaded', timeout: 45000 });
-            await this._waitForFlowSignal(3000);
-            if (this.page.url().includes('/project/')) {
-              enteredCanvas = true;
-              break;
-            }
-          } catch (e) {}
-        }
-      }
+      // v2.48.57 (PROJECT-TRUTH changes 2+3): gallery
+      // entry ab _enterProjectFromGallery me hai —
+      // 'existing' (recovery) naya project KABHI nahi
+      // banata; date-time wala chunav (recorded URL na
+      // ho to) recoveryTargetTime se hota hai.
+      const recoveryTargetMs = preferFreshCanvas ? 0
+        : (Number(settings.recoveryTargetTime) || Date.parse(settings.recoveryTargetTime || '') || 0);
+      const entry = await this._enterProjectFromGallery(preferFreshCanvas, recoveryTargetMs);
 
       if (!this.page.url().includes('/project/')) {
         throw new Error(`Could not enter Google Flow project canvas. Page remained on ${this.page.url()}. Ensure the account has accepted Google Flow terms and can create projects.`);
       }
 
       this.log('The Flow project is open — now at the work area.', 'success');
+      if (!preferFreshCanvas) {
+        this.log(`[ROOT] recovery-project url=${this.currentProjectUrl()} source=${entry.source || 'gallery-first'}`, 'info');
+      }
       // v2.48.8: proceed as soon as tiles or the prompt box are
       // actually there (was a blind 2.5-second sleep).
       try {
@@ -2723,14 +2895,28 @@ class FlowAutomationEngine {
         if (!lockedTileFingerprint) await sleep(2500);
       }
     } catch (e) {}
+    // v2.48.57 (PROJECT-TRUTH change 1): tile link hote
+    // hi is task ke project ka URL pakdo — video SIRF
+    // isi project me milegi, aur recovery ko yahi pata
+    // chahiye. Pool is value ko task ki DB row par
+    // record karta hai (setTaskProjectUrl). Tile link
+    // na ho to pool apne paas ke mauqe par page ka
+    // current project URL hi record kar deta hai (task
+    // usi project me submit hua tha).
+    let birthProjectUrl = '';
     if (lockedTileFingerprint) {
       this.claimedTileFingerprints.add(lockedTileFingerprint);
       this.log(`[Prompt #${promptIndex + 1}] Linked to its render tile (the tile identification/fingerprint matched).`, 'info');
+      birthProjectUrl = this.currentProjectUrl();
+      if (birthProjectUrl) {
+        this.log(`[ROOT] task-project task=${promptIndex} url=${birthProjectUrl}`, 'info');
+      }
     }
 
     const submittedTask = {
       status: 'SUBMITTED',
       videoId,
+      projectUrl: birthProjectUrl,
       // v2.8.0: network capture isi key se is task ko pehchanta hai
       // (videoId hi capture key hai — submit ke pal par tay hua).
       captureKey: videoId,
@@ -7792,6 +7978,99 @@ class FlowAutomationEngine {
    * aur wahan bhi na bane to FAIL. Prompt yahan KABHI
    * dobara submit nahi hota.
    */
+  /**
+   * v2.48.56 (STATE-PROBE): is task ki apni tile ke
+   * ANDAR ki haalaat parho — DOM attributes, media
+   * element properties, aur framework state (React
+   * props/fiber, Angular context) — aur jo bhi
+   * googlevideo pate milen, unhe un ke zariye (source)
+   * ke saath lautao. SIRF parhna hai: koi click nahi,
+   * koi play nahi, kuch khulta nahi; har cheez
+   * had-bandi (nodes/depth/budget) ke andar.
+   * ZEROCLICK24 ka sabak: page aksar tile ke liye
+   * full stream network par bhejti hi nahi — lekin
+   * tile ki apni state me us ka pata ho sakta hai.
+   * Lautta hai: [{url, source}] (zyada se zyada 40).
+   */
+  async _probeTileStateUrls(task, tileIndexHint) {
+    const pg = this.page;
+    if (!pg || pg.isClosed() || typeof pg.evaluate !== 'function') return [];
+    const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+    if (!Number.isInteger(idx) || idx < 0) return [];
+    let found = [];
+    try {
+      found = await pg.evaluate((i) => {
+        const out = [];
+        const seenUrl = new Set();
+        const push = (s, source) => {
+          try {
+            if (typeof s !== 'string' || !s) return;
+            const m = s.match(/https?:\/\/[^\s"'<>\\]+googlevideo\.com\/videoplayback[^\s"'<>\\]*/g);
+            if (!m) return;
+            for (const u of m) {
+              if (seenUrl.has(u)) continue;
+              seenUrl.add(u);
+              if (out.length < 40) out.push({ url: u, source });
+            }
+          } catch (e) {}
+        };
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const tile = tiles && tiles[i];
+          if (!tile) return out;
+          const els = [tile];
+          try { const all = tile.querySelectorAll('*'); for (let k = 0; k < all.length && k < 600; k++) els.push(all[k]); } catch (e) {}
+          for (const el of els) {
+            try {
+              if (el.getAttribute) {
+                for (const a of ['src', 'href', 'poster', 'data-src', 'data-url']) {
+                  const v = el.getAttribute(a);
+                  if (v) push(v, 'dom');
+                }
+              }
+              if (el.dataset) { for (const dk of Object.keys(el.dataset)) push(el.dataset[dk], 'dom'); }
+              if (el.currentSrc) push(el.currentSrc, 'dom');
+              if ((el.tagName === 'VIDEO' || el.tagName === 'IMG' || el.tagName === 'SOURCE') && el.src) push(el.src, 'dom');
+            } catch (e) {}
+          }
+          const SKIP = { stateNode: 1, _owner: 1, _debugOwner: 1, return: 1, alternate: 1, nextEffect: 1, firstEffect: 1, lastEffect: 1 };
+          const visited = new Set();
+          let budget = 6000;
+          const visit = (obj, depth, source) => {
+            if (budget-- <= 0 || depth > 6 || obj === null || obj === undefined) return;
+            const t = typeof obj;
+            if (t === 'string') { push(obj, source); return; }
+            if (t !== 'object') return;
+            if (visited.has(obj)) return;
+            visited.add(obj);
+            try { if (obj.nodeType) return; } catch (e) {}
+            try {
+              const keys = Object.keys(obj);
+              for (const k of keys) {
+                if (SKIP[k]) continue;
+                let v; try { v = obj[k]; } catch (e) { continue; }
+                visit(v, depth + 1, source);
+                if (budget <= 0) return;
+              }
+            } catch (e) {}
+          };
+          for (const el of els.slice(0, 80)) {
+            try {
+              const keys = Object.keys(el);
+              for (const k of keys) {
+                if (k.indexOf('__reactProps$') === 0 || k.indexOf('__reactInternalInstance$') === 0) visit(el[k], 0, 'props');
+                else if (k.indexOf('__reactFiber$') === 0) visit(el[k], 0, 'fiber');
+                else if (k.indexOf('__ngContext__') === 0) visit(el[k], 0, 'ng');
+              }
+            } catch (e) {}
+          }
+          return out;
+        } catch (e) { return out; }
+      }, idx);
+    } catch (e) { found = []; }
+    return Array.isArray(found) ? found : [];
+  }
+
   async _tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint) {
     const n = task.promptIndex + 1;
     const cap = this.netCapture;
@@ -8214,9 +8493,89 @@ class FlowAutomationEngine {
       } catch (e) {}
       return false;
     };
+    // v2.48.56 (STATE-PROBE): rpcfeed ka behen-qadam —
+    // pata kitab se nahi, is task ki APNI TILE ke andar
+    // ki haalaat se. Bandhan tile par hai (waqt par
+    // nahi), is liye pendingOthers bandish nahi; baaki
+    // sakhti saveGuard.mainpageStateProbePick me hai.
+    const tryStateProbe = async () => {
+      try {
+        if (this.isStopping || task.mediaSaved || !this.page) return false;
+        const rawProbe = await this._probeTileStateUrls(task, tileIndexHint);
+        if (!rawProbe || !rawProbe.length) {
+          this.log(`[ROOT] [Prompt #${n}] mainpage-stateprobe found=0 full=0`, 'info');
+          return false;
+        }
+        const probeCands = [];
+        const srcCount = {};
+        for (const r of rawProbe) {
+          if (!r || typeof r.url !== 'string') continue;
+          const info = networkCapture.rpcVideoUrlInfo(r.url);
+          if (!info) continue;
+          const src = typeof r.source === 'string' && r.source ? r.source : 'dom';
+          srcCount[src] = (srcCount[src] || 0) + 1;
+          probeCands.push({ url: r.url, clen: info.clen, itag: info.itag, source: src });
+        }
+        const probeFull = probeCands.filter(c => c.clen >= 500000);
+        const srcStr = Object.keys(srcCount).map(k => `${k}:${srcCount[k]}`).join(',');
+        this.log(`[ROOT] [Prompt #${n}] mainpage-stateprobe found=${probeCands.length} full=${probeFull.length} sources=${srcStr || '-'}`, 'info');
+        if (!probeFull.length) return false;
+        const claimedUrlsProbe = new Set();
+        try {
+          if (typeof cap.isMainpageClaimed === 'function') {
+            for (const c of probeCands) { if (cap.isMainpageClaimed(c.url)) claimedUrlsProbe.add(c.url); }
+          }
+        } catch (e) {}
+        const probePick = saveGuard.mainpageStateProbePick({
+          candidates: probeFull,
+          triedUrls,
+          claimedUrls: claimedUrlsProbe,
+          teacherUrl
+        });
+        if (probePick && probePick.skip) {
+          this.log(`[ROOT] [Prompt #${n}] mainpage-statefeed skipped reason=${probePick.skip}`, 'warn');
+          return false;
+        }
+        if (probePick && probePick.url) {
+          try { if (typeof cap.claimMainpageVideo === 'function') cap.claimMainpageVideo(probePick.url, { key: captureKey }); } catch (e) {}
+          this.log(`[ROOT] [Prompt #${n}] mainpage-statefeed host=${networkCapture.hostOf(probePick.url) || ''} clen=${probePick.clen} source=${probePick.source}`, 'info');
+          const probeRes = await this._netloadMainpageFull(task, probePick.url);
+          try { triedUrls.add(probePick.url); } catch (e) {}
+          if (probeRes && probeRes.buf && !task.mediaSaved) {
+            const probeEntry = {
+              url: probePick.url,
+              src: 'googlevideo',
+              byteLength: probeRes.buf.length,
+              headerOk: true,
+              partial: true,
+              status: probeRes.status || 0,
+              contentRange: '',
+              declaredLength: 0,
+              knownTotal: probePick.clen,
+              duplicate: false,
+              hash: null,
+              teacherHash,
+              bound: true,
+              bodyBytes: probeRes.buf.length,
+              at: Date.now(),
+              firstSeenAt: Date.now(),
+              seq: null,
+              claimedBy: null,
+              _netloadBody: probeRes.buf,
+              _netloadMeta: probeRes,
+              _noInPageFetch: true
+            };
+            const probeOutcome = await completeTracked(probeEntry, 'state-probe-netload');
+            if (probeOutcome === 'saved' || task.mediaSaved) return true;
+          }
+        }
+      } catch (e) {}
+      return false;
+    };
     // Watch se PEHLE wala mauqa — pata pehle se kitab
     // me ho to hover ka intezaar hi nahi.
     try { if (await tryRpcFeed(watchDeadline)) return true; } catch (e) {}
+    try { if (await tryStateProbe()) return true; } catch (e) {}
     try { await this._exitPrevMainpageHover(task); } catch (e) {}
     const scrolled = await this._scrollMainpageTileIntoView(task, tileIndexHint);
     this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=scroll (this video's tile ${scrolled ? 'was scrolled' : 'could not be scrolled'} into view on the main page; nothing opened, nothing clicked); watching up to ${Math.max(1, Math.round((watchDeadline - watchStart) / 1000))}s for its stream`, 'info');
@@ -8268,6 +8627,7 @@ class FlowAutomationEngine {
     // jagah barkarar hai, waisa hi mauqa watch se
     // PEHLE bhi milta hai.
     try { if (await tryRpcFeed(watchDeadline)) return true; } catch (e) {}
+    try { if (await tryStateProbe()) return true; } catch (e) {}
 
     // v2.48.49 (TOO-SMALL MEDIA-LOAD MAUQA —
     // ZEROCLICK16): bandhan tak kuch pahuncha hi
@@ -10521,4 +10881,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision };

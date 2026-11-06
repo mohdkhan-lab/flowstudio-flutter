@@ -2446,13 +2446,26 @@ class NetworkCapture {
           // pehle dikha pata hamesha ke liye bahar ho
           // jata tha).
           const prev = this._rpcVideoSightings.find(x => x.url === u);
-          if (prev) prev.lastSeenAt = now;
+          if (prev) {
+            prev.lastSeenAt = now;
+            // v2.48.55 (Gemini ZIP-fix se liya): nazar
+            // kis task ki khidki me aayi thi, us ki
+            // mohar — pehli nazar par na lagi ho to
+            // dobara nazar par laga do (aayinda ke
+            // saboot/attribution ke liye; pick ki
+            // sakht shartein is par nahi badalti).
+            if (!prev.captureKey) {
+              try { prev.captureKey = this._mainpageWindowKeyAt(now); } catch (e) {}
+            }
+          }
           continue;
         }
         this._rpcVideoSeen.add(u);
         const entry = {
           url: u, clen: info.clen, itag: info.itag,
-          firstSeenAt: now, lastSeenAt: now, consumedBy: null
+          firstSeenAt: now, lastSeenAt: now,
+          captureKey: this._mainpageWindowKeyAt(now),
+          consumedBy: null
         };
         this._rpcVideoSightings.push(entry);
         while (this._rpcVideoSightings.length > 50) this._rpcVideoSightings.shift();
@@ -2586,7 +2599,8 @@ class NetworkCapture {
       try {
         const rpcEntry = this._rpcVideoSightings.find(x => x.url === url);
         if (rpcEntry && !rpcEntry.consumedBy) {
-          rpcEntry.consumedBy = claim && claim.key != null ? String(claim.key) : 'claimed';
+          rpcEntry.consumedBy = (typeof claim === 'string' && claim) ? claim
+            : (claim && claim.key != null ? String(claim.key) : 'claimed');
         }
       } catch (e2) {}
     } catch (e) {}

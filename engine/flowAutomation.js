@@ -6342,8 +6342,26 @@ class FlowAutomationEngine {
           try {
             const tiles = document.querySelectorAll('flow-grid-tile-container');
             const el = tiles && tiles[tileIdx];
+            // v2.48.55 (Gemini ZIP-fix se liya): sirf
+            // pause kafi nahi — grid ke JS handlers me
+            // hover haalaat leave isharon se saaf hoti
+            // hai; container + <video> dono par bhejo.
+            if (el && typeof el.dispatchEvent === 'function') {
+              const outOpts = { bubbles: true, cancelable: true, composed: true, view: window };
+              const leaveOpts = { bubbles: false, cancelable: true, composed: true, view: window };
+              try { el.dispatchEvent(new PointerEvent('pointerout', outOpts)); } catch (e) {}
+              try { el.dispatchEvent(new PointerEvent('pointerleave', leaveOpts)); } catch (e) {}
+              try { el.dispatchEvent(new MouseEvent('mouseout', outOpts)); } catch (e) {}
+              try { el.dispatchEvent(new MouseEvent('mouseleave', leaveOpts)); } catch (e) {}
+            }
             const v = el && typeof el.querySelector === 'function' ? el.querySelector('video') : null;
-            if (v && typeof v.pause === 'function') v.pause();
+            if (v) {
+              if (typeof v.pause === 'function') v.pause();
+              if (typeof v.dispatchEvent === 'function') {
+                try { v.dispatchEvent(new PointerEvent('pointerout', { bubbles: true, cancelable: true, composed: true, view: window })); } catch (e) {}
+                try { v.dispatchEvent(new PointerEvent('pointerleave', { bubbles: false, cancelable: true, composed: true, view: window })); } catch (e) {}
+              }
+            }
           } catch (e) {}
         }, st.idx);
       } catch (e) {}
@@ -6364,6 +6382,14 @@ class FlowAutomationEngine {
           const el = tiles && tiles[tileIdx];
           if (!el || typeof el.scrollIntoView !== 'function') return false;
           el.scrollIntoView({ block: 'center', inline: 'nearest' });
+          // v2.48.55 (Gemini ZIP-fix se liya): scroll
+          // wale pal bhi tile ka <video> muted play —
+          // player jaage to stream ki guzaarish jaldi
+          // aati hai (baaki hover seedhiyon jaisa hi).
+          try {
+            const vid = el.querySelector('video');
+            if (vid) { vid.muted = true; const pr = vid.play(); if (pr && typeof pr.catch === 'function') pr.catch(() => {}); }
+          } catch (e) {}
           return true;
         } catch (e) { return false; }
       }, idx);
@@ -6414,6 +6440,19 @@ class FlowAutomationEngine {
           return true;
         } catch (e) { return false; }
       }, idx);
+      // v2.48.55 (Gemini ZIP-fix se liya): synthetic
+      // hover par bhi hover-state darj karo — exit
+      // machinery ko is tile ka bhi pata ho (pehle
+      // sirf pointer hover par darj hota tha).
+      if (r) {
+        try {
+          this._mpHoverState = {
+            key: task && (task.captureKey || task.videoId) ? String(task.captureKey || task.videoId) : String(task && Number.isFinite(task.promptIndex) ? task.promptIndex : ''),
+            idx,
+            promptIndex: task && Number.isFinite(task.promptIndex) ? task.promptIndex : 0
+          };
+        } catch (e) {}
+      }
       return !!r;
     } catch (e) {
       return false;
@@ -6440,6 +6479,15 @@ class FlowAutomationEngine {
           const tiles = document.querySelectorAll('flow-grid-tile-container');
           const el = tiles && tiles[tileIdx];
           if (!el || typeof el.getBoundingClientRect !== 'function') return null;
+          // v2.48.55 (Gemini ZIP-fix se liya): rect
+          // napne se pehle tile ko phir wast me lao +
+          // <video> muted play — rect taza bhi milega,
+          // player bhi jaaga rahega.
+          try { if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
+          try {
+            const vid = el.querySelector('video');
+            if (vid) { vid.muted = true; const pr = vid.play(); if (pr && typeof pr.catch === 'function') pr.catch(() => {}); }
+          } catch (e) {}
           const r = el.getBoundingClientRect();
           if (!r || !(r.width > 0) || !(r.height > 0)) return null;
           return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
@@ -8871,18 +8919,18 @@ class FlowAutomationEngine {
    * Best-effort — nakami khamosh hai.
    */
   async _primeNextPendingTile(task) {
-    if (this._pipelinePrimedRun) return;
+    if (this._pipelinePrimedRun) return false;
     const pg = this.page;
-    if (!pg || pg.isClosed() || typeof pg.evaluate !== 'function') return;
+    if (!pg || pg.isClosed() || typeof pg.evaluate !== 'function') return false;
     let next = null;
     try {
       for (const t of this._captureTasks.values()) {
         if (t && t !== task && !t.mediaSaved && !t.completed) { next = t; break; }
       }
     } catch (e) {}
-    if (!next) return;
+    if (!next) return false;
     const idx = await this._resolveTileIndexForTask(next, undefined);
-    if (!Number.isInteger(idx) || idx < 0) return;
+    if (!Number.isInteger(idx) || idx < 0) return false;
     let primed = false;
     try {
       primed = await pg.evaluate((i) => {
@@ -8892,11 +8940,15 @@ class FlowAutomationEngine {
           if (!tile) return false;
           try { tile.scrollIntoView({ block: 'center' }); } catch (e) {}
           const vid = tile.querySelector('video');
-          if (vid) {
-            try { vid.muted = true; } catch (e) {}
-            const p = vid.play();
-            if (p && typeof p.catch === 'function') p.catch(() => {});
-          }
+          // v2.48.55 (Gemini ZIP-fix se liya): <video>
+          // abhi bana hi nahi to prime bekaar hai —
+          // false lautao taaki one-shot flag is pal par
+          // zaya na ho; agli task ke download ke dauraan
+          // ye phir bulaya jayega (finishVideoAttempt).
+          if (!vid) return false;
+          try { vid.muted = true; } catch (e) {}
+          const p = vid.play();
+          if (p && typeof p.catch === 'function') p.catch(() => {});
           return true;
         } catch (e) { return false; }
       }, idx);
@@ -8905,6 +8957,7 @@ class FlowAutomationEngine {
       this._pipelinePrimedRun = true;
       try { this.log('[ROOT] mainpage-pipeline task=next-pending', 'info'); } catch (e) {}
     }
+    return !!primed;
   }
 
   /**

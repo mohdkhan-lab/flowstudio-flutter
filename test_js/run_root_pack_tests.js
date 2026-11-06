@@ -3733,6 +3733,100 @@ async function main() {
     const clientBad = { send: () => Promise.reject(new Error('no emulation')), on: () => {} };
     await capE2._armFocusEmulation(clientBad);
     eq('X-EMU failure note fired', emuNotes2.length === 1 && emuNotes2[0].ok, false);
+
+    // v2.48.55 (X55 — Gemini ZIP-fix ke achhe points):
+    // (1) nazar par captureKey ki mohar + string-claim.
+    const capZ = new NetworkCapture({});
+    capZ.mainpageWindows.set('k-z1', { start: 400000, done: false });
+    capZ._noteRpcVideoUrls([full], ['abc'], 400500);
+    const zSight = capZ.mainpageRpcBodySightings().find(sg => sg.url === full);
+    eq('X55-NOTE sighting stamped with the active window key', zSight && zSight.captureKey, 'k-z1');
+    const capW = new NetworkCapture({});
+    capW._noteRpcVideoUrls([prev], ['abc'], 500000);
+    eq('X55-NOTE no window means no stamp', (capW.mainpageRpcBodySightings().find(sg => sg.url === prev) || {}).captureKey, null);
+    capW.mainpageWindows.set('k-w9', { start: 501000, done: false });
+    capW._noteRpcVideoUrls([prev], ['abc'], 505000);
+    const wSight = capW.mainpageRpcBodySightings().find(sg => sg.url === prev);
+    eq('X55-NOTE repeat fills a missing stamp', wSight && wSight.captureKey, 'k-w9');
+    capW.claimMainpageVideo(prev, 'k-string-task');
+    eq('X55-NOTE a plain-string claim is recorded as-is', (capW.mainpageRpcBodySightings().find(sg => sg.url === prev) || {}).consumedBy, 'k-string-task');
+
+    // (2) CDP Network.loadingFinished preserves batchMeta.reqUrl query string (?rpcids=...)
+    const cdpRpcNotes = [];
+    const capCdp = new NetworkCapture({ onRpcVideoUrls: (info) => cdpRpcNotes.push(info) });
+    capCdp.arm();
+    const cdpHandlers = {};
+    const cdpClient = {
+      on: (ev, fn) => { cdpHandlers[ev] = fn; },
+      send: async (m) => {
+        if (m === 'Network.getResponseBody') {
+          return {
+            body: ')]}\'\n[["wrb.fr","jwpduf","[\"https://rr3---sn-qxaelnls.googlevideo.com/videoplayback?expire=999&id=cdp1&itag=18&clen=1350000\"]"]]',
+            base64Encoded: false
+          };
+        }
+        return {};
+      }
+    };
+    const fakeCdpPage = fakePage('cdp-batch', { cdpClient });
+    await capCdp._attachCdpWebSockets(fakeCdpPage);
+    cdpHandlers['Network.requestWillBeSent']({
+      requestId: 'req-batch-1',
+      request: {
+        url: 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=jwpduf&source-path=%2F',
+        method: 'POST',
+        postData: 'f.req=test'
+      }
+    });
+    cdpHandlers['Network.responseReceived']({
+      requestId: 'req-batch-1',
+      response: {
+        url: 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute?rpcids=jwpduf&source-path=%2F',
+        status: 200,
+        mimeType: 'application/json',
+        headers: {}
+      }
+    });
+    cdpHandlers['Network.loadingFinished']({ requestId: 'req-batch-1', encodedDataLength: 200 });
+    await flushX();
+    eq('X55 CDP batchexecute loadingFinished emits rpc video note', cdpRpcNotes.length, 1);
+    eq('X55 CDP batchexecute preserves rpcids from reqUrl', cdpRpcNotes[0] && cdpRpcNotes[0].rpcids.join(','), 'jwpduf');
+
+    // (3) _primeNextPendingTile does NOT burn one-shot flag when <video> is not mounted yet
+    const engPrime = new FlowAutomationEngine({ onLog: () => {} }, {});
+    let primeHasVid = false;
+    let vidPlayed = 0;
+    engPrime._resolveTileIndexForTask = async () => 1;
+    engPrime.page = {
+      isClosed: () => false,
+      evaluate: async (fn, arg) => {
+        const prevDoc = global.document;
+        global.document = {
+          querySelectorAll: () => [
+            {},
+            {
+              scrollIntoView: () => {},
+              querySelector: (sel) => (sel === 'video' && primeHasVid)
+                ? { muted: false, play: () => { vidPlayed++; return Promise.resolve(); } }
+                : null
+            }
+          ]
+        };
+        try { return await fn(arg); } finally { global.document = prevDoc; }
+      }
+    };
+    const tPrime1 = { promptIndex: 0, status: 'completed', mediaSaved: true };
+    const tPrime2 = { promptIndex: 1, status: 'generating', mediaSaved: false, completed: false, promptText: 'Prompt two' };
+    engPrime._captureTasks.set('k1', tPrime1);
+    engPrime._captureTasks.set('k2', tPrime2);
+    const p1 = await engPrime._primeNextPendingTile(tPrime1);
+    eq('X55 prime returns false when tile has no <video> yet', p1, false);
+    eq('X55 one-shot flag is not burned when <video> is missing', !!engPrime._pipelinePrimedRun, false);
+    primeHasVid = true;
+    const p2 = await engPrime._primeNextPendingTile(tPrime1);
+    eq('X55 prime returns true once <video> exists on the tile', p2, true);
+    eq('X55 one-shot flag is set after real prime', engPrime._pipelinePrimedRun, true);
+    eq('X55 prime called vid.play() on the next tile', vidPlayed, 1);
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

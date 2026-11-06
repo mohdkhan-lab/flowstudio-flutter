@@ -439,8 +439,12 @@ const dbService = {
     // settings kisi task ki settings_json se dobara banata
     // hai; flag wahan bach jaye to us batch ka pehla task
     // phir kabhi download na ho sake.
+    // v2.48.63 (Item C): flag ki nishani wali task id
+    // (_skipFirstTaskId) bhi bilkul waisi hi runtime-only
+    // hai — wahi wajah, wahi strip.
     const persistedSettings = { ...(settings || {}) };
     delete persistedSettings.skipFirstTaskDownload;
+    delete persistedSettings._skipFirstTaskId;
     const settingsJson = JSON.stringify(persistedSettings);
     (Array.isArray(prompts) ? prompts : []).forEach((p, idx) => {
       // v2.3.0: a prompt item may be a plain string (old callers) or

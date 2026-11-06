@@ -846,6 +846,19 @@ class WorkerPool {
       } else {
         batchId = `batch_${Date.now()}`;
         pendingTasks = dbService.createBatchTasks(batchId, prompts, settings);
+        // v2.48.63 (SKIP SCOPE — Item C): skip-flag ki
+        // nishani ab task ki PEHCHAN (DB id) hai, sirf is
+        // batch ke promptIndex-0 wale task par. .62 ka
+        // promptIndex wala usool usi run ke aakhri sweep
+        // me dusri batch ki pehli parked task ko bhi
+        // galti se skip kar deta tha (ZC30 wart). Ye
+        // nishani runtime-only hai — settings_json me
+        // kabhi nahi bachta (db.js strip), is liye Resume
+        // use dobara nahi jaga sakta.
+        if (settings && settings.skipFirstTaskDownload === true) {
+          const firstRow = pendingTasks.find(t => t && t.prompt_index === 0);
+          if (firstRow && firstRow.id) settings._skipFirstTaskId = firstRow.id;
+        }
       }
       this.currentBatchId = batchId;
       this.batchIds = new Set(pendingTasks.map(t => t.batch_id).filter(Boolean));
@@ -1610,6 +1623,17 @@ class WorkerPool {
             });
             this.onTaskUpdate({ taskId: rowTask.id, promptIndex: rowTask.prompt_index, promptText: rowTask.prompt_text, tag: rowTask.prompt_tag || '', status: 'failed', reason });
             noteTaskSettled(rowTask.id, 'failed');
+          } else if (outcome.status === 'skipped') {
+            // v2.48.63 (Item C — DRAIN STAND-DOWN): is run
+            // ki test-flag (skipFirstTaskDownload) wali
+            // task — download is run me jaan-boojh kar
+            // chhoda gaya tha. Yahi settle hai: entry
+            // dobara kataar me NAHI jati, koi Activity
+            // shor NAHI, koi 'download-failed' wali
+            // chetaavni NAHI. Row pehle se pending +
+            // needs_check hai (monitor ne park ki thi) —
+            // agla Resume (bina flag ke) sirf us ka
+            // download karega, koi naya charge nahi.
           } else {
             // download-failed, tile maujood: pending + needs_check
             // barkarar — agla Resume sirf download dobara try karega.
@@ -2083,6 +2107,47 @@ class WorkerPool {
                   this.onTaskUpdate({ taskId: nextTask.id, promptIndex: currentIdx, promptText: nextTask.prompt_text, status: 'pending' });
                   noteTaskSettled(nextTask.id, 'moved');
                   this.log(`Worker #${workerIndex + 1}: [${workerAccount.name}] cannot run Prompt #${currentIdx + 1} (${submitRes.status}). The prompt has been put back in the queue; as soon as this account's generating videos are downloaded, it will go to another account.`, 'warn');
+                  accountBlocked = true;
+                  break;
+                }
+
+                if (submitRes.status === 'SETTINGS_MISMATCH') {
+                  // v2.48.63 (SETTINGS TASDEEQ — Item B): the
+                  // prompt NEVER fired — the engine read Flow's
+                  // settings pill after configuring and it did
+                  // NOT match this run's settings (ZC30: a fresh
+                  // account's panel sat at 720p/8s and the run
+                  // burned 20 credits instead of 8). Pre-fire
+                  // family like LOW_CREDITS: release the claim,
+                  // re-queue at the front, browser stays open
+                  // until the in-flight window drains. The
+                  // DIFFERENCE: the fault is this account's
+                  // PANEL state, so the account is marked
+                  // unusable for the rest of THIS run — no
+                  // worker retries another prompt against the
+                  // same broken panel. Other accounts take the
+                  // task normally; if none remain, the leftover
+                  // tasks end with this reason (lastStartError).
+                  taskQueue.releaseSubmission(nextTask.id);
+                  taskQueue.requeueFront(nextTask);
+                  try { dbService.updateTaskProgress(nextTask.id, 'pending'); } catch (e) {}
+                  const mismatchFields = Array.isArray(submitRes.mismatchFields) && submitRes.mismatchFields.length > 0
+                    ? submitRes.mismatchFields.join(', ') : 'settings';
+                  const mismatchReason = `Flow's settings panel on this account did not match the run's settings (${mismatchFields}) — the prompt was NOT sent and no credits were spent.`;
+                  if (workerAccount) unusableAccounts.set(workerAccount.id, mismatchReason);
+                  if (!lastStartError) lastStartError = mismatchReason;
+                  recordActivity({
+                    category: 'errors', level: 'error', accountId: workerAccount ? workerAccount.id : null, accountName: workerAccount ? workerAccount.name : null,
+                    stage: 'settings',
+                    taskId: nextTask.id,
+                    promptIndex: currentIdx,
+                    reason: mismatchReason,
+                    detail: `Before Prompt #${currentIdx + 1} was sent, the engine read Flow's settings pill on [${workerAccount ? workerAccount.name : 'this account'}]${submitRes.pillText ? ` ("${submitRes.pillText}")` : ''} and it did not match this run's settings — mismatched: ${mismatchFields}. Sending anyway would have generated (and charged) at the WRONG settings, so the prompt was NOT sent and NO credits were spent. The prompt is back in the queue for another account, and this account is skipped for the rest of the run. Fix the account's Flow panel (mode / resolution / duration / size) before the next run.`,
+                    message: `Settings mismatch: Prompt #${currentIdx + 1} NOT sent — no credits spent${workerAccount ? ` · ${workerAccount.name}` : ''}`
+                  });
+                  this.onTaskUpdate({ taskId: nextTask.id, promptIndex: currentIdx, promptText: nextTask.prompt_text, status: 'pending' });
+                  noteTaskSettled(nextTask.id, 'moved');
+                  this.log(`Worker #${workerIndex + 1}: [${workerAccount.name}]'s Flow settings panel does not match this run's settings (${mismatchFields}) — Prompt #${currentIdx + 1} was NOT sent and no credits were spent. The prompt is back in the queue; this account is skipped for the rest of the run.`, 'error');
                   accountBlocked = true;
                   break;
                 }

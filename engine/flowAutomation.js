@@ -303,17 +303,105 @@ function resolutionStateSource() {
 /**
  * v2.48.62 (ZC30 TEST FLAG — skipFirstTaskDownload):
  * download ka marhala chhodna hai ya nahi — KHALIS
- * faisla. Sirf tab jab run ki settings me flag asal
- * `true` ho AUR task is run ka pehla prompt (index 0)
- * ho. Flag sirf MCP ke flowstudio_generate_in_app
+ * faisla. Flag sirf MCP ke flowstudio_generate_in_app
  * wale ek-run argument se aata hai (settings me
  * mustaqil kabhi nahi bachta — db ki settings_json
  * wali copy se ye hata diya jata hai, taaki Resume
  * use dobara na jaga sake).
+ * v2.48.63 (SCOPE FIX — ZC30 wart): .62 me shart
+ * `task.promptIndex === 0` thi — lekin promptIndex
+ * HAR batch ka apna hota hai, is liye usi run ke
+ * aakhri sweep ne dusri batch ki ek purani parked
+ * task (account (18) wali) ko bhi galti se skip kar
+ * diya. Ab nishani task ki PEHCHAN hai: workerPool
+ * batch bante hi settings par us task ki DB id
+ * `settings._skipFirstTaskId` laga deta hai, aur
+ * sirf WAHI task skip hoti hai (id bhi settings_json
+ * me nahi bachta — db.js strip).
  */
 function skipFirstDownloadApplies(settings, task) {
   return !!(settings && settings.skipFirstTaskDownload === true
-    && task && task.promptIndex === 0);
+    && settings._skipFirstTaskId != null
+    && task && task.taskId != null
+    && task.taskId === settings._skipFirstTaskId);
+}
+
+/**
+ * v2.48.63 (PASSIVE-FIRST — Item A): mainpage-harvest
+ * ka pehla, khamosh marhala is task par laagu hai ya
+ * nahi — KHALIS faisla. Shartein: task maujood ho,
+ * file pehle se save na hui ho, aur us ka render ISI
+ * engine session me mukammal hua ho (renderCompletedAt
+ * session ke aaghaz ke baad ka ho). Recovery tasks ka
+ * render is session me hua hi nahi hota (un par waqt
+ * darj hi nahi, ya purana hota hai) — wo is darwaze se
+ * bahar rehte hain, kyunke dobara khula project sirf
+ * chhota preview deta hai; wahan khamosh intezaar sirf
+ * sweep ka waqt khayega.
+ */
+function passiveClaimApplies(task, sessionStartedAt) {
+  return !!(task
+    && !task.mediaSaved
+    && Number.isFinite(task.renderCompletedAt)
+    && Number.isFinite(sessionStartedAt)
+    && task.renderCompletedAt >= sessionStartedAt);
+}
+
+/**
+ * v2.48.63 (SETTINGS TASDEEQ — Item B): Flow ki
+ * settings pill ke text ko parhna — KHALIS parser.
+ * Pill ki shaklein: 'Video · 720p · 8s crop_9_16 x1',
+ * 'Video · 360p · 4s crop_9_16 x1', image wali
+ * '🍌 Nano Banana 2.1 crop_16_9 x2'. Jo cheez text me
+ * na mile wo null rehti hai. Aspect 'crop_9_16' se
+ * '9:16' banta hai (aur 'crop_16_9' se '16:9').
+ * Lautta hai { isVideo, resolution, durationSec,
+ * aspect, count } — isVideo 'Video' lafz mile to
+ * true, 'Image'/'Banana' mile to false, warna null.
+ */
+function parseSettingsPill(text) {
+  const out = { isVideo: null, resolution: null, durationSec: null, aspect: null, count: null };
+  if (typeof text !== 'string' || !text.trim()) return out;
+  const t = text.replace(/\s+/g, ' ').trim();
+  if (/\bVideo\b/.test(t)) out.isVideo = true;
+  else if (/\bImage\b/.test(t) || t.includes('Banana')) out.isVideo = false;
+  const res = t.match(/(\d{3,4})p\b/i);
+  if (res) out.resolution = `${res[1]}p`;
+  const dur = t.match(/\b(\d+(?:\.\d+)?)s\b/);
+  if (dur) {
+    const v = Number(dur[1]);
+    if (Number.isFinite(v)) out.durationSec = v;
+  }
+  const asp = t.match(/crop_(\d+)_(\d+)/) || t.match(/\b(\d+):(\d+)\b/);
+  if (asp) out.aspect = `${asp[1]}:${asp[2]}`;
+  const cnt = t.match(/\bx(\d+)\b/i);
+  if (cnt) out.count = `x${cnt[1]}`;
+  return out;
+}
+
+/**
+ * v2.48.63 (SETTINGS TASDEEQ — Item B): mangi hui
+ * settings aur pill ki asal haalat ka muqabla —
+ * KHALIS faisla. requested = { mode: 'Video'|'Image',
+ * resolution: '360p'|null, durationSec: number|null,
+ * aspect: '9:16'|null } (null = is run ke liye wo
+ * cheez maayne nahi rakhti, muqabla nahi hota). Pill
+ * kisi cheez ko rakhta hi na ho to wo bhi ikhtilaf
+ * gina jata hai (pill padh sakne ki soorat me).
+ * Lautta hai ikhtilaf wale kheton ke naam
+ * ('mode'|'resolution'|'duration'|'aspect');
+ * khaali fehrist = poora muwafiq.
+ */
+function settingsPillMismatch(requested, pill) {
+  const out = [];
+  if (!requested || !pill) return out;
+  const wantVideo = requested.mode === 'Video' ? true
+    : (requested.mode === 'Image' ? false : null);
+  if (wantVideo !== null && pill.isVideo !== wantVideo) out.push('mode');
+  if (requested.resolution != null && pill.resolution !== requested.resolution) out.push('resolution');
+  if (requested.durationSec != null && pill.durationSec !== requested.durationSec) out.push('duration');
+  if (requested.aspect != null && pill.aspect !== requested.aspect) out.push('aspect');
+  return out;
 }
 
 /**
@@ -708,6 +796,22 @@ class FlowAutomationEngine {
     // bindings that landed before the task object was registered.
     this._captureTasks = new Map();
     this._earlyBackend = new Map();
+    // v2.48.63 (PASSIVE-FIRST — Item A): is engine
+    // session ka aaghaz — kisi task ka render ISI
+    // session me mukammal hua hai ya nahi, is ki
+    // pehchan passiveClaimApplies isi se karta hai.
+    // Engine har worker / recovery session ke liye
+    // naya banta hai (workerPool), is liye constructor
+    // ka pal hi session ka aaghaz hai.
+    this._sessionStartedAt = Date.now();
+    // v2.48.63 (SKIP SCOPE — Item C): jin taskIds ka
+    // download is session me test-flag se park ho
+    // chuka hai — un ke liye SKIPPED wali [ROOT] line
+    // sirf EK dafa; us ke baad downloadTaskMedia
+    // khamoshi se wahi { skipped:true } natija deta
+    // hai (ZC30 me drain/retry ne ~8 dafa wahi line
+    // dohrayi thi).
+    this._skipParkedTaskIds = new Set();
     // v2.48.13: direct-API pollers (videoId -> poll state). Har
     // submit ke baad ek poller us task ke workflow ki haal-jaanch
     // wali asal API request ko page ke andar se replay karke
@@ -2720,6 +2824,37 @@ class FlowAutomationEngine {
         } else {
           this.log(`Saari Flow settings lag gayi aur Flow ke UI me confirm bhi ho gayi: "${finalPillText || modeType}"`, 'success');
         }
+
+        // v2.48.63 (SETTINGS TASDEEQ — Item B): pill ka
+        // muqabla MANGI hui settings se — aakhri darwaza.
+        // ZC30 ka saboot: taaza account ka panel image
+        // mode me 720p/8s par baitha tha; resolution ke
+        // button 'not found' par sirf chetaavni aayi, koi
+        // Duration-confirmed line nahi aayi, aur run upar
+        // wali 'confirm ho gayi' line ke saath 360p/4s ki
+        // jagah 720p/8s par chala gaya — 8 ki jagah 20
+        // credits jale. Ab: pill PADH sakne par ikhtilaf
+        // ho to natija { settingsMismatch } caller tak
+        // jata hai aur submitPrompt prompt FIRE kiye
+        // bagair SETTINGS_MISMATCH lautata hai (koi
+        // credit nahi katta). Pill na padh sakein (null)
+        // to purani rawish barkarar — chetaavni ke saath
+        // aage. Per-step purani lines bilkul nahi badli;
+        // ye un ka badal nahi, aakhri darwaza hai.
+        if (modeType === 'Video' && finalPillText) {
+          const requestedPill = {
+            mode: modeType,
+            resolution: genResolution,
+            durationSec: parseInt(String(settings.duration || '6s'), 10) || null,
+            aspect: targetAspect
+          };
+          const pillMismatch = settingsPillMismatch(requestedPill, parseSettingsPill(finalPillText));
+          if (pillMismatch.length > 0) {
+            this.log(`[ROOT] settings-mismatch pill="${finalPillText}" fields=${pillMismatch.join(',')} — run stopped before any submit; no credits spent`, 'error');
+            this.log(`Flow's settings panel does not match this run's settings (${pillMismatch.join(', ')}) — the prompt was NOT sent and no credits were spent. This account will be skipped for the rest of the run.`, 'error');
+            return { ok: false, settingsMismatch: pillMismatch, pillText: finalPillText };
+          }
+        }
       } else {
         this.log('No settings pill was found on Flow — work will continue with the default settings.', 'warn');
       }
@@ -2730,9 +2865,10 @@ class FlowAutomationEngine {
   }
 
   // SUBMIT A SINGLE PROMPT (fire-and-forget: returns once Flow accepts it)
-  // Returns { status: 'SUBMITTED' | 'EXHAUSTED' | 'LOW_CREDITS' | 'VIOLATION' | 'STOPPED', ... }
-  // EXHAUSTED / LOW_CREDITS are only ever returned BEFORE the prompt fires,
-  // so the pool may safely re-queue the task on another account.
+  // Returns { status: 'SUBMITTED' | 'EXHAUSTED' | 'LOW_CREDITS' | 'VIOLATION' | 'STOPPED' | 'SETTINGS_MISMATCH', ... }
+  // EXHAUSTED / LOW_CREDITS / SETTINGS_MISMATCH are only ever returned
+  // BEFORE the prompt fires, so the pool may safely re-queue the task
+  // on another account.
   async submitPrompt(promptText, settings, promptIndex, totalPrompts) {
     if (this.isStopping) return { status: 'STOPPED' };
     // v1.1: from here on, video streams on this page may be results of our
@@ -2777,7 +2913,13 @@ class FlowAutomationEngine {
     // 1. Configure settings on the first prompt of this browser session
     // (hasConfiguredSettings is reset on every launch/close — audit fix #5).
     if (!this.hasConfiguredSettings) {
-      await this.configureGenerationSettings(settings);
+      const cfgRes = await this.configureGenerationSettings(settings);
+      if (cfgRes && Array.isArray(cfgRes.settingsMismatch)) {
+        // v2.48.63 (SETTINGS TASDEEQ): pre-fire nakami —
+        // prompt gaya hi nahi, credit kata hi nahi; pool
+        // task ko dusre account par bhej sakta hai.
+        return { status: 'SETTINGS_MISMATCH', mismatchFields: cfgRes.settingsMismatch, pillText: cfgRes.pillText || null };
+      }
       this.hasConfiguredSettings = true;
     }
 
@@ -2790,7 +2932,13 @@ class FlowAutomationEngine {
     const isVideoExpected = (settings.type || 'Video') === 'Video';
     if (isVideoExpected && currentPillText && (currentPillText.includes('Banana') || currentPillText.startsWith('Image'))) {
       this.log(`The Flow workspace has gone back to Image (${currentPillText}) — applying Video mode again…`, 'warn');
-      await this.configureGenerationSettings(settings);
+      const cfgRes2 = await this.configureGenerationSettings(settings);
+      if (cfgRes2 && Array.isArray(cfgRes2.settingsMismatch)) {
+        // v2.48.63 (SETTINGS TASDEEQ): dobara lagane ke
+        // baad bhi pill mangi hui settings se nahi mili —
+        // wohi pre-fire nakami, prompt FIRE nahi hoga.
+        return { status: 'SETTINGS_MISMATCH', mismatchFields: cfgRes2.settingsMismatch, pillText: cfgRes2.pillText || null };
+      }
     }
 
     // 2. Focus the ProseMirror prompt box and type the prompt
@@ -5902,6 +6050,17 @@ class FlowAutomationEngine {
     // kar task ko imaandari se parked (pending +
     // needs_check) rakhta hai.
     if (skipFirstDownloadApplies(settings, task)) {
+      // v2.48.63 (Item C — LATCH): pehli dafa line
+      // bolti hai aur taskId is session ki kitab me
+      // darj ho jata hai; us ke baad ke saare calls
+      // (drain, retry, final pass) khamoshi se wahi
+      // natija dete hain — koi shor nahi, koi dobara
+      // koshish nahi.
+      const skipKey = task.taskId;
+      if (skipKey != null && this._skipParkedTaskIds.has(skipKey)) {
+        return { ok: false, skipped: true, attempts: [] };
+      }
+      if (skipKey != null) this._skipParkedTaskIds.add(skipKey);
       const n = (task.promptIndex || 0) + 1;
       this.log(`[ROOT] [Prompt #${n}] download SKIPPED by test flag (skipFirstTaskDownload) — task stays parked; prompt NOT resubmitted; no download attempt counted`, 'info');
       return { ok: false, skipped: true, attempts: [] };
@@ -8552,6 +8711,20 @@ class FlowAutomationEngine {
     let tileSrcKind = null;
     try {
       const st = await this._readTileMediaState(task, tileIndexHint);
+      // v2.48.63 (Item D): tile-media wali line ab HAR
+      // attempt ki is pehli reading par yahin se nikalti
+      // hai — .62 wali line ready-poll loop ke andar thi
+      // (backend link pehle bandh jaye to loop pehli
+      // reading se pehle hi toot jata tha; ZC30 ke log
+      // me line bilkul ghayab rahi). Shakal purani wali
+      // hi hai; <video> na ho to har cheez '-'.
+      try {
+        const dw = st && st.videoWidth != null ? st.videoWidth : '-';
+        const dh = st && st.videoHeight != null ? st.videoHeight : '-';
+        const dd = st && st.duration != null ? st.duration : '-';
+        const dr = st && st.readyState != null ? st.readyState : '-';
+        this.log(`[ROOT] tile-media dims=${dw}x${dh} dur=${dd} ready=${dr}`, 'info');
+      } catch (e) {}
       const raw = st && st.url ? st.url : null;
       if (raw && flowContent.isFlowContentVideoUrl(raw)) { tileSrcKind = 'flow-content'; tileSrcUrl = raw; }
       else if (raw && networkCapture.isGooglevideoPlaybackUrl(raw)) { tileSrcKind = 'googlevideo'; tileSrcUrl = raw; }
@@ -9034,6 +9207,47 @@ class FlowAutomationEngine {
     // me ho to hover ka intezaar hi nahi.
     try { if (await tryRpcFeed(watchDeadline)) return true; } catch (e) {}
     try { if (await tryStateProbe()) return true; } catch (e) {}
+    // v2.48.63 (PASSIVE-FIRST — Item A): ZC30 ka saboot
+    // — download ka pehla marhala ab SIRF SUNTA hai.
+    // Is session me render hue task ki poori stream aam
+    // tor par render ke chand seconds baad KHUD network
+    // par aa jati hai; purana hover-watch (scroll /
+    // synthetic / pointer, ~59s tak) page ko chhed kar
+    // usi aane ko dusri tiles ke liye rok deta tha —
+    // pehli video ka watch dusri ki khidki band kar
+    // deta tha. Yahan page ko bilkul NAHI chheda jata
+    // (na scroll, na hover, na pointer, na focus):
+    // kitab me stream dikhte hi binding plan use isi
+    // task se bandh kar save kar deta hai. Download
+    // render ke saath hi shuru hota hai (owner ki
+    // standing demand) — bas pehla marhala khamosh hai.
+    // Khidki (render + 45s) guzar jaye aur stream na
+    // aaye to neeche wala purana hover escalation
+    // bilkul waisa hi chalta hai. Do-while ki shakal:
+    // khidki guzar chuki ho tab bhi binding plan EK
+    // dafa lazmi chalta hai — kataar me intezaar ke
+    // dauraan pakdi gayi stream bina kisi deri ke isi
+    // pal claim ho jati hai.
+    if (passiveClaimApplies(task, this._sessionStartedAt)) {
+      const passiveUntil = task.renderCompletedAt + 45000;
+      const passiveRemainMs = passiveUntil - Date.now();
+      if (passiveRemainMs > 1000) {
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: passive claim — watching the network only (no hover, no clicks) for up to ${Math.max(1, Math.round(passiveRemainMs / 1000))}s; the full stream is expected to arrive on its own`, 'info');
+      }
+      let passiveSaved = false;
+      let passiveAmbiguous = false;
+      do {
+        if (this.isStopping) break;
+        const pr = await tryBindingPlan({ watchStart });
+        if (pr === 'saved' || task.mediaSaved) { passiveSaved = true; break; }
+        if (pr === 'ambiguous') { passiveAmbiguous = true; break; }
+        if (Date.now() >= passiveUntil) break;
+        await sleep(250);
+      } while (Date.now() < passiveUntil);
+      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: passive claim finished — saved=${passiveSaved ? 'yes' : 'no'}`, 'info');
+      if (passiveAmbiguous) return failOut();
+      if (passiveSaved || task.mediaSaved) return true;
+    }
     try { await this._exitPrevMainpageHover(task); } catch (e) {}
     const scrolled = await this._scrollMainpageTileIntoView(task, tileIndexHint);
     this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=scroll (this video's tile ${scrolled ? 'was scrolled' : 'could not be scrolled'} into view on the main page; nothing opened, nothing clicked); watching up to ${Math.max(1, Math.round((watchDeadline - watchStart) / 1000))}s for its stream`, 'info');
@@ -10247,6 +10461,18 @@ class FlowAutomationEngine {
   async retryDownloadForTask(task, downloadFolder, settings) {
     const isImage = !!(settings && settings.type === 'Image');
     const n = (task.promptIndex || 0) + 1;
+    // v2.48.63 (Item C — DRAIN STAND-DOWN): test-flag
+    // se park hui task ke liye retry bhi yahin khamoshi
+    // se settle — na grid scan, na strategies. Pool
+    // 'skipped' natije ko is run ke liye settle samajh
+    // kar task ko pending + needs_check hi rehne deta
+    // hai (agla Resume bina flag ke sirf download
+    // karega). .62 me ye raasta har dafa poora scan +
+    // downloadTaskMedia tak jata tha aur wahi SKIPPED
+    // line baar baar dohraya karta tha.
+    if (skipFirstDownloadApplies(settings, task)) {
+      return { status: 'skipped', attempts: [] };
+    }
     // v2.8.0: sabse pehle BACKEND — isi session me is task se bandha
     // link ho (ya kataar/kram se bandh sake) to bina grid khoje
     // seedha fetch. Register bhi yahi hota hai, taaki is pal ke baad
@@ -10304,6 +10530,13 @@ class FlowAutomationEngine {
       dl = await this.downloadTaskMedia(task, downloadFolder, settings, task.tileIndex);
     } finally {
       this._downloadChannel = prevChannel || 'monitor';
+    }
+    // v2.48.63 (Item C): skipped bhi apni pehchan ke
+    // saath upar jata hai — 'download-failed' me ghul
+    // jaye to pool use dobara koshish ke qabil samajh
+    // kar cycle chala deta tha.
+    if (dl.skipped) {
+      return { status: 'skipped', attempts: backendAttempts.concat(dl.attempts) };
     }
     return dl.ok
       ? { status: 'downloaded', attempts: backendAttempts.concat(dl.attempts) }
@@ -11359,4 +11592,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption };

@@ -50,7 +50,7 @@ const {
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
 const { NetworkCapture, isGooglevideoPlaybackUrl, gvReqFields, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
-const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
+const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
 const cookiesDb = require('../engine/cookiesDb');
 
@@ -4619,36 +4619,60 @@ async function main() {
     ok('X62-DIMS the poll logs tile-media once', faSrc62.includes('[ROOT] tile-media dims=${w}x${h} dur=${d} ready=${r}'));
   }
 
-  // X62-SKIP: flag = pehle prompt ka download imaandari se
-  // parked — round kataar me dakhil hi nahi hota.
+  // X63-SKIP: (.62 ka block, .63 ki pehchan-wali shakal
+  // me) flag = nishani lagi task ka download imaandari
+  // se parked — round kataar me dakhil hi nahi hota.
+  // Nishani ab promptIndex nahi, task ki DB id hai
+  // (workerPool batch bante hi settings._skipFirstTaskId
+  // lagata hai): dusri batch ki pehli task — sweep wali
+  // purani parked task bhi — kabhi skip nahi hoti.
   {
-    eq('X62-SKIP flag + first prompt applies', skipFirstDownloadApplies({ skipFirstTaskDownload: true }, { promptIndex: 0 }), true);
-    eq('X62-SKIP flag + second prompt does not apply', skipFirstDownloadApplies({ skipFirstTaskDownload: true }, { promptIndex: 1 }), false);
-    eq('X62-SKIP no flag does not apply', skipFirstDownloadApplies({}, { promptIndex: 0 }), false);
-    eq('X62-SKIP flag false does not apply', skipFirstDownloadApplies({ skipFirstTaskDownload: false }, { promptIndex: 0 }), false);
-    eq('X62-SKIP junk inputs do not apply', skipFirstDownloadApplies(null, null), false);
-    const logs62 = [];
-    const eng62 = new FlowAutomationEngine({ onLog: (e) => logs62.push(e && e.message ? e.message : String(e)) });
-    let roundCalls62 = 0;
-    eng62._downloadTaskMediaRound = async () => { roundCalls62++; return { ok: true, attempts: ['stub'] }; };
-    const task62 = { promptIndex: 0, prompt: 'skip me', downloaded: false };
-    const skipped = await eng62.downloadTaskMedia(task62, '/tmp/x62-none', { skipFirstTaskDownload: true }, -1);
-    eq('X62-SKIP the result is not ok', skipped.ok, false);
-    eq('X62-SKIP the result says skipped', skipped.skipped, true);
-    eq('X62-SKIP the result carries no attempts', Array.isArray(skipped.attempts) ? skipped.attempts.length : -1, 0);
-    eq('X62-SKIP the download round NEVER ran (no attempt counted)', roundCalls62, 0);
-    eq('X62-SKIP downloaded is never set', task62.downloaded, false);
-    ok('X62-SKIP the skip is named in the root log', logs62.some(l => l.includes('download SKIPPED by test flag (skipFirstTaskDownload)')));
-    const task62b = { promptIndex: 1, prompt: 'keep me', downloaded: false };
-    const kept = await eng62.downloadTaskMedia(task62b, '/tmp/x62-none', { skipFirstTaskDownload: true }, -1);
-    eq('X62-SKIP the second prompt still downloads', kept.ok, true);
-    eq('X62-SKIP the round ran for the second prompt', roundCalls62, 1);
-    const task62c = { promptIndex: 0, prompt: 'no flag', downloaded: false };
-    const normal = await eng62.downloadTaskMedia(task62c, '/tmp/x62-none', {}, -1);
-    eq('X62-SKIP without the flag the first prompt downloads', normal.ok, true);
-    const faSrc62 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
-    ok('X62-SKIP the monitor handles skipped apart from failed', faSrc62.includes('if (dl.skipped) {') && faSrc62.includes('task.downloadSkipped = true;'));
-    ok('X62-SKIP the monitor parks via the deferred ledger', faSrc62.includes('this.onTaskDownloadDeferred(task, {'));
+    const stamped = { skipFirstTaskDownload: true, _skipFirstTaskId: 'task_A' };
+    eq('X63-SKIP flag + stamped id applies', skipFirstDownloadApplies(stamped, { taskId: 'task_A', promptIndex: 0 }), true);
+    eq('X63-SKIP flag + stamped id applies even off index 0', skipFirstDownloadApplies(stamped, { taskId: 'task_A', promptIndex: 3 }), true);
+    eq('X63-SKIP flag + another task id does not apply', skipFirstDownloadApplies(stamped, { taskId: 'task_B', promptIndex: 0 }), false);
+    eq('X63-SKIP flag + recovery task (own batch first, other id) does not apply', skipFirstDownloadApplies(stamped, { taskId: 'task_old_1', promptIndex: 0 }), false);
+    eq('X63-SKIP flag + no stamp does not apply', skipFirstDownloadApplies({ skipFirstTaskDownload: true }, { taskId: 'task_A', promptIndex: 0 }), false);
+    eq('X63-SKIP flag + task without id does not apply', skipFirstDownloadApplies(stamped, { promptIndex: 0 }), false);
+    eq('X63-SKIP no flag does not apply', skipFirstDownloadApplies({ _skipFirstTaskId: 'task_A' }, { taskId: 'task_A', promptIndex: 0 }), false);
+    eq('X63-SKIP flag false does not apply', skipFirstDownloadApplies({ skipFirstTaskDownload: false, _skipFirstTaskId: 'task_A' }, { taskId: 'task_A', promptIndex: 0 }), false);
+    eq('X63-SKIP junk inputs do not apply', skipFirstDownloadApplies(null, null), false);
+    const logs63 = [];
+    const eng63 = new FlowAutomationEngine({ onLog: (e) => logs63.push(e && e.message ? e.message : String(e)) });
+    let roundCalls63 = 0;
+    eng63._downloadTaskMediaRound = async () => { roundCalls63++; return { ok: true, attempts: ['stub'] }; };
+    const task63 = { taskId: 'task_A', promptIndex: 0, prompt: 'skip me', downloaded: false };
+    const skipped = await eng63.downloadTaskMedia(task63, '/tmp/x63-none', stamped, -1);
+    eq('X63-SKIP the result is not ok', skipped.ok, false);
+    eq('X63-SKIP the result says skipped', skipped.skipped, true);
+    eq('X63-SKIP the result carries no attempts', Array.isArray(skipped.attempts) ? skipped.attempts.length : -1, 0);
+    eq('X63-SKIP the download round NEVER ran (no attempt counted)', roundCalls63, 0);
+    eq('X63-SKIP downloaded is never set', task63.downloaded, false);
+    eq('X63-SKIP the skip line is spoken ONCE', logs63.filter(l => l.includes('download SKIPPED by test flag (skipFirstTaskDownload)')).length, 1);
+    // LATCH: dusra call bhi skipped, lekin line dobara NAHI.
+    const skippedAgain = await eng63.downloadTaskMedia(task63, '/tmp/x63-none', stamped, -1);
+    eq('X63-SKIP the latch keeps the result skipped', skippedAgain.skipped, true);
+    eq('X63-SKIP the latch keeps the round unrun', roundCalls63, 0);
+    eq('X63-SKIP the latch keeps the log silent', logs63.filter(l => l.includes('download SKIPPED by test flag (skipFirstTaskDownload)')).length, 1);
+    // Dusri task (sweep wali purani parked bhi) inhi
+    // settings par aaram se download hoti hai.
+    const task63b = { taskId: 'task_B', promptIndex: 0, prompt: 'keep me', downloaded: false };
+    const kept = await eng63.downloadTaskMedia(task63b, '/tmp/x63-none', stamped, -1);
+    eq('X63-SKIP another task id still downloads', kept.ok, true);
+    eq('X63-SKIP the round ran for the other task', roundCalls63, 1);
+    const task63c = { taskId: 'task_A', promptIndex: 0, prompt: 'no flag', downloaded: false };
+    const normal = await eng63.downloadTaskMedia(task63c, '/tmp/x63-none', {}, -1);
+    eq('X63-SKIP without the flag the stamped task downloads', normal.ok, true);
+    // Retry raasta: skip wali task ke liye grid scan se
+    // pehle hi 'skipped' — aur aam task ke liye barkarar.
+    const retrySkipped = await eng63.retryDownloadForTask(task63, '/tmp/x63-none', stamped);
+    eq('X63-SKIP retry stands down with skipped status', retrySkipped.status, 'skipped');
+    const faSrc63 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X63-SKIP the monitor handles skipped apart from failed', faSrc63.includes('if (dl.skipped) {') && faSrc63.includes('task.downloadSkipped = true;'));
+    ok('X63-SKIP the monitor parks via the deferred ledger', faSrc63.includes('this.onTaskDownloadDeferred(task, {'));
+    const wpSrc63 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'workerPool.js'), 'utf8');
+    ok('X63-SKIP the pool stamps the first task id', wpSrc63.includes('settings._skipFirstTaskId = firstRow.id'));
+    ok('X63-SKIP the pool settles skipped in the drain', wpSrc63.includes("outcome.status === 'skipped'"));
   }
 
   // X62-DB: flag settings_json me NAHI bachta (Resume use
@@ -4663,7 +4687,7 @@ async function main() {
     const script = `(async () => {
       const { dbService } = require(${dbPath});
       await dbService.ensureInit();
-      dbService.createBatchTasks('batch-x62', ['prompt one', 'prompt two'], { duration: '8s', aspectRatio: '9:16', model: 'Omni Flash', quality: '360p', project: 'ZC30PROJ', skipFirstTaskDownload: true });
+      dbService.createBatchTasks('batch-x62', ['prompt one', 'prompt two'], { duration: '8s', aspectRatio: '9:16', model: 'Omni Flash', quality: '360p', project: 'ZC30PROJ', skipFirstTaskDownload: true, _skipFirstTaskId: 'task_sham' });
       const rows = dbService.getPendingTasks('batch-x62');
       console.log(JSON.stringify(rows.map(r => ({ raw: r.settings_json, parsed: JSON.parse(r.settings_json || '{}') }))));
     })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
@@ -4675,9 +4699,93 @@ async function main() {
     ok('X62-DB the round-trip child ran', Array.isArray(rows62));
     eq('X62-DB both tasks were created', rows62 && rows62.length, 2);
     ok('X62-DB settings_json never carries the flag', !!rows62 && rows62.every(r => !('skipFirstTaskDownload' in r.parsed) && !r.raw.includes('skipFirstTaskDownload')));
+    ok('X63-DB settings_json never carries the stamped id', !!rows62 && rows62.every(r => !('_skipFirstTaskId' in r.parsed) && !r.raw.includes('_skipFirstTaskId')));
     eq('X62-DB the other settings survive (project)', rows62 && rows62[0].parsed.project, 'ZC30PROJ');
     eq('X62-DB the other settings survive (duration)', rows62 && rows62[0].parsed.duration, '8s');
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+  }
+
+  // X63-PILL: settings pill ka parser — teen asal
+  // shaklein + khaali/kachra. Aspect dono taraf
+  // normalize hota hai (crop_9_16 -> 9:16).
+  {
+    const p720 = parseSettingsPill('Video · 720p · 8s crop_9_16 x1');
+    eq('X63-PILL the 720p pill is video', p720.isVideo, true);
+    eq('X63-PILL the 720p pill resolution', p720.resolution, '720p');
+    eq('X63-PILL the 720p pill duration', p720.durationSec, 8);
+    eq('X63-PILL the 720p pill aspect normalizes', p720.aspect, '9:16');
+    eq('X63-PILL the 720p pill count', p720.count, 'x1');
+    const p360 = parseSettingsPill('Video · 360p · 4s crop_9_16 x1');
+    eq('X63-PILL the 360p pill is video', p360.isVideo, true);
+    eq('X63-PILL the 360p pill resolution', p360.resolution, '360p');
+    eq('X63-PILL the 360p pill duration', p360.durationSec, 4);
+    eq('X63-PILL the 360p pill aspect', p360.aspect, '9:16');
+    const pImg = parseSettingsPill('🍌 Nano Banana 2.1 crop_16_9 x2');
+    eq('X63-PILL the image pill is not video', pImg.isVideo, false);
+    eq('X63-PILL the image pill has no resolution', pImg.resolution, null);
+    eq('X63-PILL the image pill has no duration', pImg.durationSec, null);
+    eq('X63-PILL the image pill aspect normalizes the other way', pImg.aspect, '16:9');
+    eq('X63-PILL the image pill count', pImg.count, 'x2');
+    const pNull = parseSettingsPill(null);
+    eq('X63-PILL null input gives nulls (isVideo)', pNull.isVideo, null);
+    eq('X63-PILL null input gives nulls (resolution)', pNull.resolution, null);
+    eq('X63-PILL null input gives nulls (duration)', pNull.durationSec, null);
+    eq('X63-PILL null input gives nulls (aspect)', pNull.aspect, null);
+    const pJunk = parseSettingsPill('kuch bhi likha hai');
+    eq('X63-PILL garbage gives nulls (isVideo)', pJunk.isVideo, null);
+    eq('X63-PILL garbage gives nulls (resolution)', pJunk.resolution, null);
+    eq('X63-PILL garbage gives nulls (aspect)', pJunk.aspect, null);
+  }
+
+  // X63-MISMATCH: pill vs mangi hui settings — ZC30
+  // wala asal case, muwafiq case, aur sirf-aspect
+  // wala ikhtilaf. Gate ki wiring bhi pin hai.
+  {
+    const req360 = { mode: 'Video', resolution: '360p', durationSec: 4, aspect: '9:16' };
+    const zc30 = settingsPillMismatch(req360, parseSettingsPill('Video · 720p · 8s crop_9_16 x1'));
+    eq('X63-MISMATCH the ZC30 case names resolution', zc30.includes('resolution'), true);
+    eq('X63-MISMATCH the ZC30 case names duration', zc30.includes('duration'), true);
+    eq('X63-MISMATCH the ZC30 case names nothing else', zc30.length, 2);
+    eq('X63-MISMATCH a matching pill is clean', settingsPillMismatch(req360, parseSettingsPill('Video · 360p · 4s crop_9_16 x1')).length, 0);
+    const aspOnly = settingsPillMismatch(req360, parseSettingsPill('Video · 360p · 4s crop_16_9 x1'));
+    eq('X63-MISMATCH an aspect-only pill names aspect', aspOnly.length === 1 && aspOnly[0] === 'aspect', true);
+    const modeCase = settingsPillMismatch(req360, parseSettingsPill('🍌 Nano Banana 2.1 crop_16_9 x2'));
+    eq('X63-MISMATCH an image pill names mode first', modeCase[0], 'mode');
+    eq('X63-MISMATCH junk inputs are clean', settingsPillMismatch(null, null).length, 0);
+    const faSrc63b = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X63-MISMATCH the gate logs the root line', faSrc63b.includes('[ROOT] settings-mismatch pill="${finalPillText}" fields=${pillMismatch.join(\',\')}'));
+    ok('X63-MISMATCH submitPrompt returns the pre-fire status', faSrc63b.includes("return { status: 'SETTINGS_MISMATCH', mismatchFields: cfgRes.settingsMismatch"));
+    const wpSrc63b = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'workerPool.js'), 'utf8');
+    ok('X63-MISMATCH the pool handles the status', wpSrc63b.includes("submitRes.status === 'SETTINGS_MISMATCH'"));
+    ok('X63-MISMATCH the pool excludes the account for the run', wpSrc63b.includes('unusableAccounts.set(workerAccount.id, mismatchReason)'));
+    ok('X63-MISMATCH the pool requeues like other pre-fire failures', wpSrc63b.includes('taskQueue.requeueFront(nextTask);'));
+  }
+
+  // X63-PASSIVE: passive claim ka darwaza — is
+  // session me render hua task andar, baqi bahar.
+  {
+    const sess = 1000000;
+    eq('X63-PASSIVE an in-session render applies', passiveClaimApplies({ renderCompletedAt: sess + 5000, mediaSaved: false }, sess), true);
+    eq('X63-PASSIVE a render at the session start applies', passiveClaimApplies({ renderCompletedAt: sess, mediaSaved: false }, sess), true);
+    eq('X63-PASSIVE a missing render time does not apply', passiveClaimApplies({ mediaSaved: false }, sess), false);
+    eq('X63-PASSIVE a null render time does not apply', passiveClaimApplies({ renderCompletedAt: null, mediaSaved: false }, sess), false);
+    eq('X63-PASSIVE an older-than-session render does not apply', passiveClaimApplies({ renderCompletedAt: sess - 1, mediaSaved: false }, sess), false);
+    eq('X63-PASSIVE an already-saved task does not apply', passiveClaimApplies({ renderCompletedAt: sess + 5000, mediaSaved: true }, sess), false);
+    eq('X63-PASSIVE junk inputs do not apply', passiveClaimApplies(null, sess), false);
+    eq('X63-PASSIVE a junk session start does not apply', passiveClaimApplies({ renderCompletedAt: sess + 1, mediaSaved: false }, undefined), false);
+    const faSrc63c = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X63-PASSIVE the session start is stamped in the constructor', faSrc63c.includes('this._sessionStartedAt = Date.now();'));
+    ok('X63-PASSIVE the harvest gates on the predicate', faSrc63c.includes('if (passiveClaimApplies(task, this._sessionStartedAt)) {'));
+    ok('X63-PASSIVE the start line is pinned', faSrc63c.includes('mainpage-harvest: passive claim — watching the network only (no hover, no clicks) for up to'));
+    ok('X63-PASSIVE the end line is pinned', faSrc63c.includes('mainpage-harvest: passive claim finished — saved=${passiveSaved ? \'yes\' : \'no\'}'));
+  }
+
+  // X63-DIMS: tile-media line ab harvest attempt ki
+  // pehli reading par bhi hai (ZC30 me poll wali line
+  // ghayab rahi thi) — source pin.
+  {
+    const faSrc63d = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X63-DIMS the attempt-start line exists', faSrc63d.includes('[ROOT] tile-media dims=${dw}x${dh} dur=${dd} ready=${dr}'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

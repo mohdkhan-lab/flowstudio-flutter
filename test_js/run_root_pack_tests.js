@@ -50,7 +50,7 @@ const {
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
 const { NetworkCapture, isGooglevideoPlaybackUrl, gvReqFields, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
-const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
+const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
 const cookiesDb = require('../engine/cookiesDb');
 
@@ -4778,6 +4778,39 @@ async function main() {
     ok('X63-PASSIVE the harvest gates on the predicate', faSrc63c.includes('if (passiveClaimApplies(task, this._sessionStartedAt)) {'));
     ok('X63-PASSIVE the start line is pinned', faSrc63c.includes('mainpage-harvest: passive claim — watching the network only (no hover, no clicks) for up to'));
     ok('X63-PASSIVE the end line is pinned', faSrc63c.includes('mainpage-harvest: passive claim finished — saved=${passiveSaved ? \'yes\' : \'no\'}'));
+  }
+
+  // X64-RESIZE: tile-resize trigger ka darwaza
+  // passive wale darwaze ka hi doosra naam hai —
+  // is session ke taaza renders andar, baqi bahar.
+  // Baaki pins: helpers, tartib (passive ke baad,
+  // hover-exit se pehle) aur teeno log lines.
+  {
+    const sess = 1000000;
+    eq('X64-RESIZE the alias is the same function', resizeTriggerApplies, passiveClaimApplies);
+    eq('X64-RESIZE an in-session render applies', resizeTriggerApplies({ renderCompletedAt: sess + 5000, mediaSaved: false }, sess), true);
+    eq('X64-RESIZE a render at the session start applies', resizeTriggerApplies({ renderCompletedAt: sess, mediaSaved: false }, sess), true);
+    eq('X64-RESIZE a missing render time does not apply', resizeTriggerApplies({ mediaSaved: false }, sess), false);
+    eq('X64-RESIZE a null render time does not apply', resizeTriggerApplies({ renderCompletedAt: null, mediaSaved: false }, sess), false);
+    eq('X64-RESIZE an older-than-session render does not apply', resizeTriggerApplies({ renderCompletedAt: sess - 1, mediaSaved: false }, sess), false);
+    eq('X64-RESIZE an already-saved task does not apply', resizeTriggerApplies({ renderCompletedAt: sess + 5000, mediaSaved: true }, sess), false);
+    eq('X64-RESIZE junk inputs do not apply', resizeTriggerApplies(null, sess), false);
+    eq('X64-RESIZE a junk session start does not apply', resizeTriggerApplies({ renderCompletedAt: sess + 1, mediaSaved: false }, undefined), false);
+    const faSrc64 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X64-RESIZE the harvest gates on the predicate', faSrc64.includes('if (resizeTriggerApplies(task, this._sessionStartedAt)) {'));
+    ok('X64-RESIZE the enlarge helper exists', faSrc64.includes('async _enlargeMainpageTile(task, tileIndexHint) {'));
+    ok('X64-RESIZE the fullscreen helper exists', faSrc64.includes('async _fullscreenMainpageTile(task, tileIndexHint) {'));
+    ok('X64-RESIZE the restore helper exists', faSrc64.includes('async _restoreMainpageTile(task, tileIndexHint, savedStyles, enteredFullscreen) {'));
+    ok('X64-RESIZE the restore runs with the saved token', faSrc64.includes('await this._restoreMainpageTile(task, tileIndexHint, enl.token, fsEntered);'));
+    ok('X64-RESIZE fullscreen is requested on the tile video', faSrc64.includes('vid.requestFullscreen()'));
+    ok('X64-RESIZE restore exits fullscreen', faSrc64.includes('document.exitFullscreen()'));
+    ok('X64-RESIZE the css apply line is pinned', faSrc64.includes('mainpage-harvest: resize trigger applied method=css box=${enl.box || \'-\'} — watching up to 30s for the full stream'));
+    ok('X64-RESIZE the fullscreen apply line is pinned', faSrc64.includes('mainpage-harvest: resize trigger applied method=fullscreen box=${fs.box || \'-\'} — watching up to 30s for the full stream'));
+    ok('X64-RESIZE the skipped line is pinned', faSrc64.includes('mainpage-harvest: resize trigger skipped reason=${(enl && enl.reason) || \'no-tile\'}'));
+    ok('X64-RESIZE the end line is pinned', faSrc64.includes('mainpage-harvest: resize finished — saved=${resizeSaved ? \'yes\' : \'no\'}'));
+    const resizeIdx = faSrc64.indexOf('if (resizeTriggerApplies(task, this._sessionStartedAt)) {');
+    ok('X64-RESIZE the phase sits after the passive claim', resizeIdx > faSrc64.indexOf('mainpage-harvest: passive claim finished'));
+    ok('X64-RESIZE the phase sits before the hover escalation', resizeIdx > -1 && resizeIdx < faSrc64.indexOf('const scrolled = await this._scrollMainpageTileIntoView'));
   }
 
   // X63-DIMS: tile-media line ab harvest attempt ki

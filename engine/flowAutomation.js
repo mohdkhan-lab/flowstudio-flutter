@@ -348,6 +348,18 @@ function passiveClaimApplies(task, sessionStartedAt) {
 }
 
 /**
+ * v2.48.64 (TILE-RESIZE TRIGGER): resize wale
+ * marhale ka darwaza passive wale se bilkul waisa
+ * hi hai — sirf is session me render hue taaza
+ * tasks (recovery is se bahar; ZC32 ka pehla
+ * parhna generation-phase ka saaf parhna hai).
+ * Doosra naam is liye taaki harvest ki tartib aur
+ * test dono saaf parhe jaayein; faisla ek hi
+ * function karta hai.
+ */
+const resizeTriggerApplies = passiveClaimApplies;
+
+/**
  * v2.48.63 (SETTINGS TASDEEQ — Item B): Flow ki
  * settings pill ke text ko parhna — KHALIS parser.
  * Pill ki shaklein: 'Video · 720p · 8s crop_9_16 x1',
@@ -7321,6 +7333,147 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.64 (TILE-RESIZE TRIGGER): tile ko CSS se
+   * BADA karke dikhao — ZC31 ka saboot: tile ka
+   * <video> element 360x640 ka preview encode hi
+   * rakhta hai, aur Flow ka player encode apne
+   * display size ke hisaab se chunta hai (Gemini
+   * brief-3 §6.4 Rank 1). Container 720px/1280px,
+   * video 100%/100% — sab '!important' ke saath
+   * (grid ki apni classes jeet na jayein); position
+   * relative + uncha z-index taaki badi tile
+   * padosiyon ke neeche kat na jaye. Phir wahi muted
+   * play wala ishara jo baaki helpers dete hain.
+   * Download phir bhi backend se hi hota hai — ye
+   * sirf woh ghanti hai jo server ko asal file
+   * bhejne par majboor karti hai; koi click nahi,
+   * koi editor nahi.
+   * Asal inline styles (cssText) token me save
+   * hote hain — _restoreMainpageTile unhe hu-ba-hu
+   * wapas rakhta hai. Lautta hai: { applied:true,
+   * method:'css', box:'<video client W>x<H>', token }
+   * | { applied:false, reason:'no-tile'|'no-video' }.
+   */
+  async _enlargeMainpageTile(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return { applied: false, reason: 'no-tile' };
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return { applied: false, reason: 'no-tile' };
+      const r = await this.page.evaluate((tileIdx) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (!el) return { applied: false, reason: 'no-tile' };
+          const vid = el.querySelector('video');
+          if (!vid) return { applied: false, reason: 'no-video' };
+          const token = { tileCss: el.style.cssText || '', vidCss: vid.style.cssText || '' };
+          try {
+            el.style.setProperty('width', '720px', 'important');
+            el.style.setProperty('height', '1280px', 'important');
+            el.style.setProperty('position', 'relative', 'important');
+            el.style.setProperty('z-index', '9999', 'important');
+            vid.style.setProperty('width', '100%', 'important');
+            vid.style.setProperty('height', '100%', 'important');
+          } catch (e) {}
+          try {
+            vid.muted = true;
+            const pr = vid.play();
+            if (pr && typeof pr.catch === 'function') pr.catch(() => {});
+          } catch (e) {}
+          return { applied: true, method: 'css', box: `${vid.clientWidth || 0}x${vid.clientHeight || 0}`, token };
+        } catch (e) { return { applied: false, reason: 'no-tile' }; }
+      }, idx);
+      return r || { applied: false, reason: 'no-tile' };
+    } catch (e) {
+      return { applied: false, reason: 'no-tile' };
+    }
+  }
+
+  /**
+   * v2.48.64 (TILE-RESIZE TRIGGER): CSS wale
+   * marhale se ~15s tak stream na aaye aur tile ki
+   * videoWidth ab bhi <= 360 ho to EK dafa
+   * fullscreen wali seedhi — tile ke <video> par
+   * requestFullscreen(). Player ko sab se bada
+   * display milta hai; encode badalna ho to yahin
+   * badlega. Har khata andar hi dabayi jati hai
+   * (user-gesture wali pabandi par ye aaram se
+   * nakam ho sakta hai — tab watch CSS par hi aage
+   * badhta hai). Lautta hai: { entered:true, box }
+   * | { entered:false }.
+   */
+  async _fullscreenMainpageTile(task, tileIndexHint) {
+    try {
+      if (!this.page || this.page.isClosed()) return { entered: false };
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return { entered: false };
+      const r = await this.page.evaluate(async (tileIdx) => {
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (!el) return null;
+          const vid = el.querySelector('video');
+          if (!vid || typeof vid.requestFullscreen !== 'function') return null;
+          try { await vid.requestFullscreen(); } catch (e) { return null; }
+          try {
+            vid.muted = true;
+            const pr = vid.play();
+            if (pr && typeof pr.catch === 'function') pr.catch(() => {});
+          } catch (e) {}
+          return { entered: true, box: `${vid.clientWidth || 0}x${vid.clientHeight || 0}` };
+        } catch (e) { return null; }
+      }, idx);
+      return r || { entered: false };
+    } catch (e) {
+      return { entered: false };
+    }
+  }
+
+  /**
+   * v2.48.64 (TILE-RESIZE TRIGGER): resize wale
+   * marhale ki WAPSI — lazmi, har nikaas par. Save
+   * hue token ke cssText dono elements par hu-ba-hu
+   * wapas, aur is marhale ne fullscreen liya ho to
+   * us se nikaas bhi. Ye hover escalation se PEHLE
+   * chalta hai taaki baaki saare marhale untouched
+   * grid dekhein. Jo stream ek dafa maangi ja chuki
+   * ho wo network layer par pakdi rehti hai —
+   * restore use nahi rokta.
+   */
+  async _restoreMainpageTile(task, tileIndexHint, savedStyles, enteredFullscreen) {
+    try {
+      if (!this.page || this.page.isClosed()) return false;
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (!Number.isFinite(idx) || idx < 0) return false;
+      const r = await this.page.evaluate((tileIdx, saved, exitFs) => {
+        try {
+          let ok = false;
+          if (exitFs) {
+            try {
+              if (document.fullscreenElement && typeof document.exitFullscreen === 'function') {
+                const p = document.exitFullscreen();
+                if (p && typeof p.catch === 'function') p.catch(() => {});
+                ok = true;
+              }
+            } catch (e) {}
+          }
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const el = tiles && tiles[tileIdx];
+          if (el && saved) {
+            try { el.style.cssText = saved.tileCss || ''; ok = true; } catch (e) {}
+            const vid = el.querySelector('video');
+            if (vid) { try { vid.style.cssText = saved.vidCss || ''; } catch (e) {} }
+          }
+          return ok;
+        } catch (e) { return false; }
+      }, idx, savedStyles || null, !!enteredFullscreen);
+      return !!r;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
    * v2.48.52 (ROUTE 1A PACK): ek task ke netload
    * anjaam ki darj-shudaayi (attempt-summary ke
    * liye). Tartib: saved > rejected > error — ek
@@ -9247,6 +9400,86 @@ class FlowAutomationEngine {
       this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: passive claim finished — saved=${passiveSaved ? 'yes' : 'no'}`, 'info');
       if (passiveAmbiguous) return failOut();
       if (passiveSaved || task.mediaSaved) return true;
+    }
+    // v2.48.64 (TILE-RESIZE TRIGGER): passive ke baad
+    // wala marhala — tile ko BADA karke dikhao.
+    // ZC31 ka saboot: 360p par tile ka <video>
+    // element khud 360x640 ka preview encode rakhta
+    // hai; khamosh intezaar par bhi, hover par bhi
+    // sirf wahi chhota preview aata hai. Player
+    // encode apne display size se chunta hai
+    // (ZC30 me 720p par stream khud aa gayi thi) —
+    // is liye ab tile ko CSS se 720px/1280px tak
+    // bada karke 30s dekho: server ko asal file
+    // bhejni pade to yahin padegi, aur file phir bhi
+    // backend (googlevideo) se hi network layer par
+    // pakdi jayegi. ~15s tak kuch na aaye aur
+    // videoWidth ab bhi <= 360 ho to EK dafa
+    // fullscreen wali seedhi. Marhala khatam hote hi
+    // tile ki asal shakal hu-ba-hu wapas — neeche
+    // wala hover escalation untouched grid dekhta
+    // hai. Darwaza sirf is session ke taaza renders
+    // ke liye (resizeTriggerApplies); recovery is
+    // se bahar hai.
+    if (resizeTriggerApplies(task, this._sessionStartedAt)) {
+      const logResizeTileMedia = async () => {
+        try {
+          const stM = await this._readTileMediaState(task, tileIndexHint);
+          const mw = stM && stM.videoWidth != null ? stM.videoWidth : '-';
+          const mh = stM && stM.videoHeight != null ? stM.videoHeight : '-';
+          const md = stM && stM.duration != null ? stM.duration : '-';
+          const mr = stM && stM.readyState != null ? stM.readyState : '-';
+          this.log(`[ROOT] tile-media dims=${mw}x${mh} dur=${md} ready=${mr}`, 'info');
+        } catch (e) {}
+      };
+      let enl = null;
+      try { enl = await this._enlargeMainpageTile(task, tileIndexHint); } catch (e) { enl = null; }
+      if (!enl || !enl.applied) {
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize trigger skipped reason=${(enl && enl.reason) || 'no-tile'}`, 'info');
+      } else {
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize trigger applied method=css box=${enl.box || '-'} — watching up to 30s for the full stream`, 'info');
+        await logResizeTileMedia();
+        const resizeStart = Date.now();
+        const resizeDeadline = resizeStart + 30000;
+        const resizeHalfway = resizeStart + 15000;
+        let resizeSaved = false;
+        let resizeAmbiguous = false;
+        let fsTried = false;
+        let fsEntered = false;
+        for (;;) {
+          if (this.isStopping) break;
+          const rz = await tryBindingPlan({ watchStart });
+          if (rz === 'saved' || task.mediaSaved) { resizeSaved = true; break; }
+          if (rz === 'ambiguous') { resizeAmbiguous = true; break; }
+          const nowZ = Date.now();
+          if (nowZ >= resizeDeadline) break;
+          if (!fsTried && nowZ >= resizeHalfway) {
+            fsTried = true;
+            let vwNow = null;
+            try {
+              const stFs = await this._readTileMediaState(task, tileIndexHint);
+              if (stFs && Number.isFinite(stFs.videoWidth)) vwNow = stFs.videoWidth;
+            } catch (e) {}
+            if (vwNow != null && vwNow <= 360) {
+              let fs = null;
+              try { fs = await this._fullscreenMainpageTile(task, tileIndexHint); } catch (e) { fs = null; }
+              if (fs && fs.entered) {
+                fsEntered = true;
+                this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize trigger applied method=fullscreen box=${fs.box || '-'} — watching up to 30s for the full stream`, 'info');
+                await logResizeTileMedia();
+              }
+            }
+          }
+          await sleep(250);
+        }
+        // WAPSI lazmi hai — saved ho, ambiguous ho
+        // ya waqt khatam; hover escalation se pehle
+        // grid apni asal shakal me wapas.
+        try { await this._restoreMainpageTile(task, tileIndexHint, enl.token, fsEntered); } catch (e) {}
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize finished — saved=${resizeSaved ? 'yes' : 'no'}`, 'info');
+        if (resizeAmbiguous) return failOut();
+        if (resizeSaved || task.mediaSaved) return true;
+      }
     }
     try { await this._exitPrevMainpageHover(task); } catch (e) {}
     const scrolled = await this._scrollMainpageTileIntoView(task, tileIndexHint);
@@ -11592,4 +11825,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption };

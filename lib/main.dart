@@ -56,11 +56,17 @@ class FlowStudioApp extends StatelessWidget {
               appearance == 'dark' || (appearance == 'system' && platformDark);
           AppTheme.applyTheme(settingsProv.settings.theme, useDark);
           return MaterialApp(
-            title: 'FlowStudio Lite',
+            title: 'FlowStudio',
             debugShowCheckedModeBanner: false,
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
             themeMode: useDark ? ThemeMode.dark : ThemeMode.light,
+            builder: (context, child) => MediaQuery(
+              data: MediaQuery.of(context).copyWith(
+                textScaler: const TextScaler.linear(0.95),
+              ),
+              child: child!,
+            ),
             // Ease ThemeData-driven surfaces (framework widgets,
             // dialogs, menus — and the Scaffold backdrop, which
             // reads its colour from Theme.of) between palettes
@@ -269,9 +275,8 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
                   final compact = winW < 1150;
                   // v2.46.7: owner ne HTML tuner par khud numbers
                   // chune — section 330 (wide par 350).
-                  final sidebarWidth = compact
-                      ? 230.0
-                      : (winW > 1500 ? 250.0 : 230.0);
+                  // Custom size: Sidebar width 250 px
+                  final sidebarWidth = compact ? 230.0 : 250.0;
                   return Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
@@ -299,14 +304,14 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [
-                              // Top section: Prompts + Video Settings (Left) & Progress (Right)
+                              // Top section: Prompts + Video Settings (75%) & Progress (25%)
                               Expanded(
                                 child: Row(
                                   crossAxisAlignment: CrossAxisAlignment.stretch,
                                   children: [
-                                    // Prompts & Video Settings
+                                    // Prompts & Video Settings (Flex 3 = 75%)
                                     const Expanded(
-                                      flex: 6,
+                                      flex: 3,
                                       child: Column(
                                         crossAxisAlignment: CrossAxisAlignment.stretch,
                                         children: [
@@ -317,9 +322,9 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
                                       ),
                                     ),
                                     const SizedBox(width: 10),
-                                    // Progress Panel
+                                    // Progress Panel (Flex 1 = 25%)
                                     const Expanded(
-                                      flex: 4,
+                                      flex: 1,
                                       child: ProgressPanel(),
                                     ),
                                   ],
@@ -328,8 +333,12 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
 
                               const SizedBox(height: 10),
 
-                              // Bottom Activity Console Panel
-                              const ActivityStream(),
+                              // Bottom Activity Console Panel (Customized Height 300px)
+                              ActivityStream(
+                                height: constraints.maxHeight < 720
+                                    ? (constraints.maxHeight * 0.38).clamp(180.0, 300.0)
+                                    : 300.0,
+                              ),
                             ],
                           ),
                           ),

@@ -90,8 +90,13 @@ class _PromptsEditorState extends State<PromptsEditor> {
         gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.specularRim,
+            offset: const Offset(0, 1),
+            blurRadius: 0,
+          ),
+          const BoxShadow(color: Colors.black38, blurRadius: 14, offset: Offset(0, 5)),
         ],
       ),
       child: Column(
@@ -299,7 +304,7 @@ class _PromptsEditorState extends State<PromptsEditor> {
                 maxLines: null,
                 expands: true,
                 style: TextStyle(
-                  fontSize: 11.5,
+                  fontSize: 11.0,
                   height: 1.5,
                   color: AppTheme.textMain,
                   fontFamily: 'Consolas',

@@ -9,7 +9,8 @@ import '../providers/settings_provider.dart';
 import 'tactile_components.dart';
 
 class ActivityStream extends StatefulWidget {
-  const ActivityStream({super.key});
+  final double height;
+  const ActivityStream({super.key, this.height = 300.0});
 
   @override
   State<ActivityStream> createState() => _ActivityStreamState();
@@ -76,14 +77,19 @@ class _ActivityStreamState extends State<ActivityStream> {
             : 'Ready';
 
     return Container(
-      height: 150,
+      height: widget.height,
       padding: const EdgeInsets.all(10),
       decoration: BoxDecoration(
         gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.specularRim,
+            offset: const Offset(0, 1),
+            blurRadius: 0,
+          ),
+          const BoxShadow(color: Colors.black38, blurRadius: 14, offset: Offset(0, 5)),
         ],
       ),
       child: Column(

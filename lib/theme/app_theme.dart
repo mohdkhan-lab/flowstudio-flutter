@@ -109,20 +109,52 @@ class AppPalette {
         begin: Alignment.topCenter,
         end: Alignment.bottomCenter,
       );
+
+  // 3D Bevel, Specular Rim, & Hover Lighting (v2.48.14)
+  Color get bevelPrimary => dark
+      ? (id == 'gold'
+          ? const Color(0xFF5C2405)
+          : (id == 'sapphire'
+              ? const Color(0xFF172554)
+              : (id == 'obsidian'
+                  ? const Color(0xFF0F172A)
+                  : (id == 'emerald'
+                      ? const Color(0xFF064E3B)
+                      : const Color(0xFF0F172A)))))
+      : const Color(0xFF94A3B8);
+
+  Color get bevelSecondary => dark
+      ? (id == 'gold'
+          ? const Color(0xFF0A0704)
+          : (id == 'obsidian'
+              ? const Color(0xFF060910)
+              : const Color(0xFF080C14)))
+      : const Color(0xFFCBD5E1);
+
+  Color get specularRim => dark
+      ? (id == 'gold'
+          ? const Color(0x59FFEBB4)
+          : const Color(0x26FFFFFF))
+      : const Color(0x40FFFFFF);
+
+  Color get glowPrimary => accentGold;
 }
 
 class AppTheme {
   /// True when a dark palette is active.
   static bool dark = true;
 
-  /// The selected colour theme id (see [themeIds]).
-  static String themeId = 'macos';
+  /// The selected colour theme id (see [themeIds]). Defaults to Royal Velvet Gold.
+  static String themeId = 'gold';
 
   static const List<String> themeIds = [
+    'gold',
+    'obsidian',
+    'sapphire',
+    'matte',
     'macos',
     'midnight',
     'graphite',
-    'gold',
     'emerald',
     'purple',
     'slate',
@@ -130,15 +162,17 @@ class AppTheme {
     'teal',
     'rose',
     'crimson',
-    'matte',
     'ember',
   ];
 
   static const Map<String, String> themeNames = {
+    'gold': 'Royal Velvet Gold',
+    'obsidian': 'Obsidian Titanium',
+    'sapphire': 'Cyber Sapphire',
+    'matte': 'Matte Monolith',
     'macos': 'macOS Classic',
     'midnight': 'Midnight Blue',
     'graphite': 'Graphite + White',
-    'gold': 'Gold Premium',
     'emerald': 'Emerald',
     'purple': 'Royal Purple',
     'slate': 'Slate Pro',
@@ -146,23 +180,22 @@ class AppTheme {
     'teal': 'Ocean Teal',
     'rose': 'Rose',
     'crimson': 'Crimson',
-    'matte': 'Matte',
     'ember': 'Ember',
   };
 
-  static AppPalette _current = _macosDark;
+  static AppPalette _current = _darkPalettes['gold'] ?? _macosDark;
 
   /// The palette for theme [id] in the given mode. Unknown ids fall
   /// back to macOS Classic, so a bad stored value can never break the UI.
   static AppPalette paletteFor(String id, bool isDark) {
     final table = isDark ? _darkPalettes : _lightPalettes;
-    return table[id] ?? (isDark ? _macosDark : _macosLight);
+    return table[id] ?? (isDark ? (_darkPalettes['gold'] ?? _macosDark) : _macosLight);
   }
 
   /// Applies theme [id] + mode [isDark] as the live palette. Called
   /// from main.dart whenever either setting changes.
   static void applyTheme(String id, bool isDark) {
-    themeId = themeIds.contains(id) ? id : 'macos';
+    themeId = themeIds.contains(id) ? id : 'gold';
     dark = isDark;
     _current = paletteFor(themeId, isDark);
   }
@@ -240,16 +273,42 @@ class AppTheme {
     ),
     'gold': AppPalette(
       id: 'gold', dark: true,
-      bgBody: Color(0xFF1C1917), bg2: Color(0xFF241E18),
-      surface: Color(0xFF29241E), surfaceElevated: Color(0xFF362E24),
-      inputBg: Color(0xFF14110D),
-      border: Color(0xFF57492F), borderSoft: Color(0xFF362D1E),
-      accentGold: Color(0xFFEAB308), accentAmber: Color(0xFFF5C04E),
-      accentText: Color(0xFFF5C04E),
-      textMain: Color(0xFFFFF8E7), textDim: Color(0xFFB8A888),
-      textFaint: Color(0xFF97876B),
-      gradStart: Color(0xFFF5C04E), gradEnd: Color(0xFFB8860B),
-      panelTop: Color(0xFF362E24), panelBottom: Color(0xFF29241E),
+      bgBody: Color(0xFF080604), bg2: Color(0xFF140E08),
+      surface: Color(0xFF140E08), surfaceElevated: Color(0xFF231C14),
+      inputBg: Color(0xFF060402),
+      border: Color(0xFF5C3D10), borderSoft: Color(0xFF2E1F08),
+      accentGold: Color(0xFFF59E0B), accentAmber: Color(0xFFFBBF24),
+      accentText: Color(0xFFFEF3C7),
+      textMain: Color(0xFFFFFFFF), textDim: Color(0xFFD4AF37),
+      textFaint: Color(0xFFA3907C),
+      gradStart: Color(0xFFFBBF24), gradEnd: Color(0xFFB45309),
+      panelTop: Color(0xFF231C14), panelBottom: Color(0xFF0E0A06),
+    ),
+    'obsidian': AppPalette(
+      id: 'obsidian', dark: true,
+      bgBody: Color(0xFF05070C), bg2: Color(0xFF090E17),
+      surface: Color(0xFF0D131F), surfaceElevated: Color(0xFF131B2A),
+      inputBg: Color(0xFF070A10),
+      border: Color(0xFF2A364F), borderSoft: Color(0xFF1A2438),
+      accentGold: Color(0xFF3B82F6), accentAmber: Color(0xFF60A5FA),
+      accentText: Color(0xFF93C5FD),
+      textMain: Color(0xFFF8FAFC), textDim: Color(0xFF94A3B8),
+      textFaint: Color(0xFF64748B),
+      gradStart: Color(0xFF2563EB), gradEnd: Color(0xFF1D4ED8),
+      panelTop: Color(0xFF131B2A), panelBottom: Color(0xFF0D131F),
+    ),
+    'sapphire': AppPalette(
+      id: 'sapphire', dark: true,
+      bgBody: Color(0xFF030712), bg2: Color(0xFF060C18),
+      surface: Color(0xFF091324), surfaceElevated: Color(0xFF0F1E36),
+      inputBg: Color(0xFF040812),
+      border: Color(0xFF1D4ED8), borderSoft: Color(0xFF0F2E66),
+      accentGold: Color(0xFF38BDF8), accentAmber: Color(0xFF60A5FA),
+      accentText: Color(0xFF93C5FD),
+      textMain: Color(0xFFF1F5F9), textDim: Color(0xFF93C5FD),
+      textFaint: Color(0xFF475569),
+      gradStart: Color(0xFF3B82F6), gradEnd: Color(0xFF1D4ED8),
+      panelTop: Color(0xFF0F1E36), panelBottom: Color(0xFF091324),
     ),
     'emerald': AppPalette(
       id: 'emerald', dark: true,
@@ -349,16 +408,16 @@ class AppTheme {
     ),
     'matte': AppPalette(
       id: 'matte', dark: true,
-      bgBody: Color(0xFF232323), bg2: Color(0xFF2B2B2B),
-      surface: Color(0xFF333333), surfaceElevated: Color(0xFF404040),
-      inputBg: Color(0xFF2B2B2B),
-      border: Color(0xFF555555), borderSoft: Color(0xFF3D3D3D),
-      accentGold: Color(0xFF8B9096), accentAmber: Color(0xFFB9BEC4),
-      accentText: Color(0xFFB9BEC4),
-      textMain: Color(0xFFECECEC), textDim: Color(0xFFA8A8A8),
-      textFaint: Color(0xFF868686),
-      gradStart: Color(0xFFB9BEC4), gradEnd: Color(0xFF62666C),
-      panelTop: Color(0xFF404040), panelBottom: Color(0xFF333333),
+      bgBody: Color(0xFF0B0D11), bg2: Color(0xFF0E1015),
+      surface: Color(0xFF12141A), surfaceElevated: Color(0xFF191C24),
+      inputBg: Color(0xFF090A0D),
+      border: Color(0xFF3A404D), borderSoft: Color(0xFF222630),
+      accentGold: Color(0xFF38BDF8), accentAmber: Color(0xFF7DD3FC),
+      accentText: Color(0xFFBAE6FD),
+      textMain: Color(0xFFE2E8F0), textDim: Color(0xFF94A3B8),
+      textFaint: Color(0xFF64748B),
+      gradStart: Color(0xFF38BDF8), gradEnd: Color(0xFF0284C7),
+      panelTop: Color(0xFF191C24), panelBottom: Color(0xFF12141A),
     ),
     'ember': AppPalette(
       id: 'ember', dark: true,
@@ -415,6 +474,32 @@ class AppTheme {
       textFaint: Color(0xFFB3A173),
       gradStart: Color(0xFFE3B341), gradEnd: Color(0xFF9A7205),
       panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFDF4),
+    ),
+    'obsidian': AppPalette(
+      id: 'obsidian', dark: false,
+      bgBody: Color(0xFFECEFF4), bg2: Color(0xFFE2E7EF),
+      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
+      inputBg: Color(0xFFFFFFFF),
+      border: Color(0xFFC8D3E0), borderSoft: Color(0xFFE1E8F0),
+      accentGold: Color(0xFF2563EB), accentAmber: Color(0xFF60A5FA),
+      accentText: Color(0xFF1D4ED8),
+      textMain: Color(0xFF0F172A), textDim: Color(0xFF64748B),
+      textFaint: Color(0xFF94A3B8),
+      gradStart: Color(0xFF60A5FA), gradEnd: Color(0xFF2563EB),
+      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFF8FAFC),
+    ),
+    'sapphire': AppPalette(
+      id: 'sapphire', dark: false,
+      bgBody: Color(0xFFEBF3FF), bg2: Color(0xFFD6E7FF),
+      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
+      inputBg: Color(0xFFFFFFFF),
+      border: Color(0xFF93C5FD), borderSoft: Color(0xFFBFDBFE),
+      accentGold: Color(0xFF0284C7), accentAmber: Color(0xFF38BDF8),
+      accentText: Color(0xFF0369A1),
+      textMain: Color(0xFF082F49), textDim: Color(0xFF0284C7),
+      textFaint: Color(0xFF7DD3FC),
+      gradStart: Color(0xFF38BDF8), gradEnd: Color(0xFF0284C7),
+      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFF0F9FF),
     ),
     'emerald': AppPalette(
       id: 'emerald', dark: false,
@@ -578,6 +663,12 @@ class AppTheme {
 
   static LinearGradient get accentGrad => _current.accentGrad;
   static LinearGradient get panelGrad => _current.panelGrad;
+
+  // 3D Bevel, Specular Rim, & Hover Lighting (v2.48.14)
+  static Color get bevelPrimary => _current.bevelPrimary;
+  static Color get bevelSecondary => _current.bevelSecondary;
+  static Color get specularRim => _current.specularRim;
+  static Color get glowPrimary => _current.glowPrimary;
 
   static ThemeData get darkTheme {
     return ThemeData(

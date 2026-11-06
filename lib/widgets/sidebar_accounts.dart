@@ -37,7 +37,7 @@ class SidebarAccounts extends StatefulWidget {
   // (v2.46.6 se: 285 har size par, wide par 300); 285 default hai.
   final double width;
 
-  const SidebarAccounts({super.key, this.width = 230});
+  const SidebarAccounts({super.key, this.width = 250});
 
   @override
   State<SidebarAccounts> createState() => _SidebarAccountsState();
@@ -87,8 +87,13 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
         gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.specularRim,
+            offset: const Offset(0, 1),
+            blurRadius: 0,
+          ),
+          const BoxShadow(color: Colors.black38, blurRadius: 14, offset: Offset(0, 5)),
         ],
       ),
       child: Column(
@@ -133,15 +138,8 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
 
           const SizedBox(height: 4),
 
-          // Accounts List
-          // v2.46.8 (owner: "exact tuner jaisa"): list wala hissa
-          // ab lines ke hisaab se sikudta hai (Flexible +
-          // shrinkWrap) — lines khatam, hissa khatam; pehle
-          // Expanded ki wajah se ye hissa poori unchaai tak
-          // phaila rehta tha aur lines ke neeche bari khaali
-          // jagah dikhti thi. Zyada accounts hon to hissa
-          // uplabdh jagah par ruk kar andar scroll karta hai.
-          Flexible(
+          // Accounts List (Expanded to fill available space so bottom actions stay anchored at bottom)
+          Expanded(
             child: Container(
               // v2.30.0: 4 (was 6) — more of the row's width budget
               // goes to the account name column (see the row below).
@@ -162,7 +160,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                       ),
                     )
                   : ListView.separated(
-                      shrinkWrap: true,
+                      shrinkWrap: false,
                       itemCount: visibleAccounts.length,
                       separatorBuilder: (_, _) => const SizedBox(height: 6),
                       itemBuilder: (context, index) {
@@ -399,14 +397,11 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             ),
           ),
 
-          const SizedBox(height: 4),
+          const SizedBox(height: 6),
 
-          // (v2.29.0: the old "Add Cookies" button that sat below the
-          // accounts list is GONE — the cookie flow lives at the TOP
-          // of the sidebar now, per the owner's revision.)
-
-          // Action Grid: 2x2 with soft hover lift
+          // Action Grid: 2x2 with soft hover lift (ALWAYS PINNED TO BOTTOM)
           Column(
+            mainAxisSize: MainAxisSize.min,
             children: [
               Row(
                 children: [
@@ -451,19 +446,9 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
             ],
           ),
 
-          // (Fix list 2026-10-27, item 10): the live-counts status
-          // line that used to sit here ("N Live · N Checking · N
-          // Fail — ready to generate") is REMOVED on the owner's
-          // word — the filter boxes above already carry those
-          // counts. Nothing else read the line, so no code goes
-          // with it beyond the widget itself.
+          const SizedBox(height: 6),
 
-          const SizedBox(height: 4),
-
-          // v2.29.0 (owner final): the sidebar BOTTOM BAR — one row
-          // of two equal-width buttons, "⚙ Settings" on the LEFT
-          // and the Add Account button on the RIGHT (icon-only
-          // since fix list item 9).
+          // Sidebar Bottom Bar: "⚙ Settings"
           _buildBottomBar(context, isGenerate: isGenerate),
         ],
       ),
@@ -965,23 +950,27 @@ class _HoverPillBtnState extends State<_HoverPillBtn> {
           alignment: Alignment.center,
           transform: Matrix4.translationValues(0, translateY, 0),
           decoration: BoxDecoration(
-            color: _hovered ? AppTheme.blue.withValues(alpha: 0.18) : AppTheme.overlay08,
+            color: _hovered ? AppTheme.accentGold.withValues(alpha: 0.18) : AppTheme.overlay08,
             borderRadius: BorderRadius.circular(17),
             border: Border.all(
-              color: _hovered ? const Color(0xFF60A5FA) : AppTheme.blue.withValues(alpha: 0.65),
+              color: _hovered ? AppTheme.accentAmber : AppTheme.accentGold.withValues(alpha: 0.65),
               width: 1.2,
             ),
             boxShadow: [
-              // Style 6: 3D mechanical bevel
               BoxShadow(
-                color: const Color(0xFF1E3A8A),
+                color: AppTheme.specularRim,
+                offset: const Offset(0, 1),
+                blurRadius: 0,
+              ),
+              BoxShadow(
+                color: AppTheme.bevelPrimary,
                 offset: Offset(0, bevel),
                 blurRadius: 0,
               ),
               if (_hovered)
                 BoxShadow(
-                  color: AppTheme.blue.withValues(alpha: 0.35),
-                  blurRadius: 14,
+                  color: AppTheme.glowPrimary.withValues(alpha: 0.40),
+                  blurRadius: 16,
                   spreadRadius: 0.5,
                   offset: const Offset(0, 3.5),
                 ),
@@ -1043,22 +1032,27 @@ class _HoverRoundAddBtnState extends State<_HoverRoundAddBtn> {
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: _hovered
-                  ? AppTheme.blue.withValues(alpha: 0.25)
-                  : AppTheme.blue.withValues(alpha: 0.12),
+                  ? AppTheme.accentGold.withValues(alpha: 0.25)
+                  : AppTheme.accentGold.withValues(alpha: 0.12),
               border: Border.all(
-                color: _hovered ? const Color(0xFF60A5FA) : AppTheme.blue.withValues(alpha: 0.65),
+                color: _hovered ? AppTheme.accentAmber : AppTheme.accentGold.withValues(alpha: 0.65),
                 width: 1.2,
               ),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFF1E3A8A),
+                  color: AppTheme.specularRim,
+                  offset: const Offset(0, 1),
+                  blurRadius: 0,
+                ),
+                BoxShadow(
+                  color: AppTheme.bevelPrimary,
                   offset: Offset(0, bevel),
                   blurRadius: 0,
                 ),
                 if (_hovered)
                   BoxShadow(
-                    color: AppTheme.blue.withValues(alpha: 0.35),
-                    blurRadius: 14,
+                    color: AppTheme.glowPrimary.withValues(alpha: 0.40),
+                    blurRadius: 16,
                     spreadRadius: 0.5,
                     offset: const Offset(0, 3.5),
                   ),
@@ -1102,7 +1096,7 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
     final isActive = widget.isActive;
     final double translateY = _pressed ? 1.5 : (_hovered ? -2.5 : 0.0);
     final double bevel = _pressed ? 0.8 : (_hovered ? 3.7 : 2.5);
-    final bevelColor = isActive ? const Color(0xFF1E3A8A) : const Color(0xFF0F172A);
+    final bevelColor = isActive ? AppTheme.bevelPrimary : AppTheme.bevelSecondary;
 
     return Expanded(
       child: MouseRegion(
@@ -1125,16 +1119,21 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
             transform: Matrix4.translationValues(0, translateY, 0),
             decoration: BoxDecoration(
               color: isActive
-                  ? AppTheme.blue.withValues(alpha: _hovered ? 0.22 : 0.14)
+                  ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.22 : 0.14)
                   : (_hovered ? AppTheme.surfaceElevated : AppTheme.overlay08),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
                 color: isActive
-                    ? AppTheme.blue
-                    : (_hovered ? const Color(0xFF60A5FA) : AppTheme.borderSoft),
+                    ? AppTheme.accentGold
+                    : (_hovered ? AppTheme.accentAmber : AppTheme.borderSoft),
                 width: isActive ? 1.2 : 1.0,
               ),
               boxShadow: [
+                BoxShadow(
+                  color: AppTheme.specularRim,
+                  offset: const Offset(0, 1),
+                  blurRadius: 0,
+                ),
                 BoxShadow(
                   color: bevelColor,
                   offset: Offset(0, bevel),
@@ -1143,8 +1142,8 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
                 if (_hovered)
                   BoxShadow(
                     color: isActive
-                        ? AppTheme.blue.withValues(alpha: 0.35)
-                        : const Color(0xFF38BDF8).withValues(alpha: 0.25),
+                        ? AppTheme.glowPrimary.withValues(alpha: 0.35)
+                        : AppTheme.accentGold.withValues(alpha: 0.25),
                     blurRadius: 14,
                     spreadRadius: 0.5,
                     offset: const Offset(0, 3.5),
@@ -1210,26 +1209,26 @@ class _HoverableAccountCardState extends State<_HoverableAccountCard> {
         transform: Matrix4.translationValues(0, _hovered ? -2.5 : 0.0, 0),
         decoration: BoxDecoration(
           color: active
-              ? AppTheme.blue.withValues(alpha: _hovered ? 0.20 : 0.12)
+              ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.20 : 0.10)
               : (_hovered ? AppTheme.surfaceElevated : AppTheme.surfaceElevated),
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
             color: active
-                ? AppTheme.blue
-                : (_hovered ? const Color(0xFF60A5FA) : AppTheme.borderSoft),
+                ? AppTheme.accentGold
+                : (_hovered ? AppTheme.accentAmber : AppTheme.borderSoft),
             width: active ? 1.3 : 1.0,
           ),
           boxShadow: [
             BoxShadow(
-              color: active ? const Color(0xFF1E3A8A) : const Color(0xFF0F172A),
+              color: active ? AppTheme.bevelPrimary : AppTheme.bevelSecondary,
               offset: Offset(0, _hovered ? 3.4 : 2.2),
               blurRadius: 0,
             ),
             if (_hovered)
               BoxShadow(
                 color: active
-                    ? AppTheme.blue.withValues(alpha: 0.35)
-                    : const Color(0xFF38BDF8).withValues(alpha: 0.20),
+                    ? AppTheme.glowPrimary.withValues(alpha: 0.35)
+                    : AppTheme.accentGold.withValues(alpha: 0.20),
                 blurRadius: 14,
                 spreadRadius: 0.5,
                 offset: const Offset(0, 3.5),
@@ -1268,8 +1267,6 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
     final enabled = widget.onTap != null;
     final double translateY = (_pressed && enabled) ? 1.5 : ((_hovered && enabled) ? -2.5 : 0.0);
     final double bevel = (_pressed && enabled) ? 0.8 : ((_hovered && enabled) ? 3.7 : 2.5);
-    // Dark mechanical bevel across ALL buttons (no red box bevel!)
-    const bevelColor = Color(0xFF0F172A);
 
     return MouseRegion(
       onEnter: (_) {
@@ -1302,25 +1299,24 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
           alignment: Alignment.center,
           transform: Matrix4.translationValues(0, translateY, 0),
           decoration: BoxDecoration(
-            // Clean dark slate background — NO red fill brick!
             color: _hovered && enabled ? AppTheme.surfaceElevated : AppTheme.overlay08,
             borderRadius: BorderRadius.circular(6),
             border: Border.all(
               color: _hovered && enabled
-                  ? (widget.isRed ? const Color(0xFFEF4444) : const Color(0xFF60A5FA))
+                  ? (widget.isRed ? const Color(0xFFEF4444) : AppTheme.accentAmber)
                   : AppTheme.borderSoft,
             ),
             boxShadow: [
               BoxShadow(
-                color: enabled ? bevelColor : Colors.black26,
+                color: enabled ? (widget.isRed ? const Color(0xFF450A0A) : AppTheme.bevelSecondary) : Colors.black26,
                 offset: Offset(0, bevel),
                 blurRadius: 0,
               ),
               if (_hovered && enabled)
                 BoxShadow(
                   color: widget.isRed
-                      ? AppTheme.red.withValues(alpha: 0.30)
-                      : const Color(0xFF38BDF8).withValues(alpha: 0.25),
+                      ? AppTheme.red.withValues(alpha: 0.35)
+                      : AppTheme.accentGold.withValues(alpha: 0.25),
                   blurRadius: 14,
                   spreadRadius: 0.5,
                   offset: const Offset(0, 3.5),
@@ -1382,26 +1378,22 @@ class _HoverBottomSettingsBtnState extends State<_HoverBottomSettingsBtn> {
           alignment: Alignment.center,
           transform: Matrix4.translationValues(0, translateY, 0),
           decoration: BoxDecoration(
-            // Clean dark slate background — NO brown fill brick!
             color: _hovered ? AppTheme.surfaceElevated : AppTheme.overlay08,
             borderRadius: BorderRadius.circular(8),
             border: Border.all(
               color: active
-                  ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.8 : 0.5)
-                  : (_hovered ? const Color(0xFF60A5FA) : AppTheme.borderSoft),
+                  ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.9 : 0.6)
+                  : (_hovered ? AppTheme.accentAmber : AppTheme.borderSoft),
             ),
             boxShadow: [
-              // Clean dark bevel — NO brown shadow (0xFF78350F)!
               BoxShadow(
-                color: const Color(0xFF0F172A),
+                color: AppTheme.bevelSecondary,
                 offset: Offset(0, bevel),
                 blurRadius: 0,
               ),
               if (_hovered)
                 BoxShadow(
-                  color: active
-                      ? AppTheme.accentGold.withValues(alpha: 0.30)
-                      : const Color(0xFF38BDF8).withValues(alpha: 0.25),
+                  color: AppTheme.accentGold.withValues(alpha: 0.35),
                   blurRadius: 14,
                   spreadRadius: 0.5,
                   offset: const Offset(0, 3.5),

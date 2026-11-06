@@ -53,7 +53,7 @@ class TactileButton extends StatefulWidget {
     this.width,
     this.padding,
     this.borderRadius = 8.0,
-    this.bevelDepth = 2.5,
+    this.bevelDepth = 3.5,
     this.enabled = true,
     this.isActive = false,
     this.customBg,
@@ -76,7 +76,7 @@ class _TactileButtonState extends State<TactileButton> {
   Widget build(BuildContext context) {
     final bool isInteractive = widget.enabled && widget.onTap != null;
 
-    // Resolve color palette by TactileType — strictly preserving dark theme
+    // Resolve color palette by TactileType — strictly harmonized with active theme
     Gradient? gradient;
     Color bgColor;
     Color borderColor;
@@ -87,58 +87,55 @@ class _TactileButtonState extends State<TactileButton> {
     switch (widget.type) {
       case TactileType.primary:
         gradient = isInteractive ? AppTheme.accentGrad : null;
-        bgColor = isInteractive ? AppTheme.blue : AppTheme.surfaceElevated;
+        bgColor = isInteractive ? AppTheme.accentGold : AppTheme.surfaceElevated;
         borderColor = isInteractive
-            ? (_isHovered ? const Color(0xFF60A5FA) : const Color(0xFF3B82F6))
+            ? (_isHovered ? AppTheme.accentAmber : AppTheme.accentGold)
             : AppTheme.borderSoft;
-        bevelColor = isInteractive ? const Color(0xFF1E3A8A) : const Color(0xFF0F172A);
-        glowColor = const Color(0xFF2563EB);
-        textColor = Colors.white;
+        bevelColor = isInteractive ? AppTheme.bevelPrimary : AppTheme.bevelSecondary;
+        glowColor = AppTheme.glowPrimary;
+        textColor = (AppTheme.dark && AppTheme.themeId == 'gold') ? Colors.black : Colors.white;
         break;
 
       case TactileType.pill:
         gradient = widget.isActive ? AppTheme.accentGrad : null;
         bgColor = widget.isActive
-            ? AppTheme.blue
-            : (_isHovered ? AppTheme.blue.withValues(alpha: 0.16) : AppTheme.overlay08);
+            ? AppTheme.accentGold
+            : (_isHovered ? AppTheme.accentGold.withValues(alpha: 0.16) : AppTheme.overlay08);
         borderColor = widget.isActive
-            ? const Color(0xFF3B82F6)
-            : (_isHovered ? AppTheme.blue : AppTheme.borderSoft);
+            ? AppTheme.accentAmber
+            : (_isHovered ? AppTheme.accentGold : AppTheme.borderSoft);
         bevelColor = widget.isActive
-            ? const Color(0xFF1E3A8A)
-            : const Color(0xFF0F172A);
-        glowColor = AppTheme.blue;
+            ? AppTheme.bevelPrimary
+            : AppTheme.bevelSecondary;
+        glowColor = AppTheme.accentGold;
         textColor = widget.isActive
-            ? Colors.white
+            ? ((AppTheme.dark && AppTheme.themeId == 'gold') ? Colors.black : Colors.white)
             : (_isHovered ? Colors.white : AppTheme.textDim);
         break;
 
       case TactileType.gold:
         gradient = null;
-        // Clean dark slate background — NO brown/gold fill bricks
-        bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.overlay10;
+        bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.surface;
         borderColor = _isHovered ? AppTheme.accentGold : AppTheme.accentGold.withValues(alpha: 0.5);
-        bevelColor = const Color(0xFF0F172A);
+        bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.accentGold;
         textColor = AppTheme.accentText;
         break;
 
       case TactileType.danger:
         gradient = null;
-        // Clean dark slate background — NOT solid red fill
-        bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.overlay10;
-        borderColor = _isHovered ? AppTheme.red.withValues(alpha: 0.8) : AppTheme.borderSoft;
-        bevelColor = const Color(0xFF0F172A);
+        bgColor = _isHovered ? const Color(0xFF381515) : AppTheme.surface;
+        borderColor = _isHovered ? AppTheme.red : AppTheme.borderSoft;
+        bevelColor = const Color(0xFF450A0A);
         glowColor = AppTheme.red;
         textColor = isInteractive ? AppTheme.red : AppTheme.red.withValues(alpha: 0.45);
         break;
 
       case TactileType.stop:
         gradient = null;
-        // Clean dark slate background — subtle red accent text/icon only
         bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.overlay10;
         borderColor = _isHovered ? const Color(0xFF475569) : AppTheme.borderSoft;
-        bevelColor = const Color(0xFF0F172A);
+        bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.red;
         textColor = isInteractive
             ? (_isHovered ? Colors.white : AppTheme.red)
@@ -147,10 +144,9 @@ class _TactileButtonState extends State<TactileButton> {
 
       case TactileType.pause:
         gradient = null;
-        // Clean dark slate background — subtle amber accent text/icon only
         bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.overlay10;
         borderColor = _isHovered ? const Color(0xFF475569) : AppTheme.borderSoft;
-        bevelColor = const Color(0xFF0F172A);
+        bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.accentGold;
         textColor = isInteractive
             ? (_isHovered ? Colors.white : AppTheme.accentGold)
@@ -160,23 +156,22 @@ class _TactileButtonState extends State<TactileButton> {
       case TactileType.icon:
         gradient = null;
         bgColor = widget.isActive
-            ? AppTheme.blue.withValues(alpha: 0.20)
-            : (_isHovered ? AppTheme.surfaceElevated : AppTheme.overlay10);
+            ? AppTheme.accentGold.withValues(alpha: 0.20)
+            : (_isHovered ? AppTheme.surfaceElevated : AppTheme.surface);
         borderColor = widget.isActive
-            ? AppTheme.blue
-            : (_isHovered ? const Color(0xFF60A5FA) : AppTheme.borderSoft);
-        bevelColor = const Color(0xFF0F172A);
-        glowColor = AppTheme.blue;
+            ? AppTheme.accentGold
+            : (_isHovered ? AppTheme.accentAmber : AppTheme.borderSoft);
+        bevelColor = AppTheme.bevelSecondary;
+        glowColor = AppTheme.accentGold;
         textColor = widget.isActive || _isHovered ? AppTheme.accentText : AppTheme.textDim;
         break;
 
       case TactileType.secondary:
         gradient = null;
-        // Clean dark slate background — NO red or brown fills
-        bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.overlay10;
-        borderColor = _isHovered ? const Color(0xFF475569) : AppTheme.borderSoft;
-        bevelColor = const Color(0xFF0F172A);
-        glowColor = const Color(0xFF38BDF8);
+        bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.surface;
+        borderColor = _isHovered ? AppTheme.accentGold.withValues(alpha: 0.6) : AppTheme.borderSoft;
+        bevelColor = AppTheme.bevelSecondary;
+        glowColor = AppTheme.accentGold;
         textColor = isInteractive
             ? (_isHovered ? Colors.white : AppTheme.textMain)
             : AppTheme.textDim.withValues(alpha: 0.55);
@@ -191,16 +186,16 @@ class _TactileButtonState extends State<TactileButton> {
     if (widget.customTextColor != null) textColor = widget.customTextColor!;
 
     // Physical 3D calculations:
-    // Hover: smooth 2.5px lift up, bottom bevel expands
-    // Pressed: 1.5px tactile click down, bottom bevel compresses
+    // Hover: smooth 3.0px lift up, bottom bevel expands
+    // Pressed: 2.0px tactile click down, bottom bevel compresses
     final double translateY;
     final double activeBevel;
     if (_isPressed && isInteractive) {
-      translateY = 1.5;
+      translateY = 2.0;
       activeBevel = 0.8;
     } else if (_isHovered && isInteractive) {
-      translateY = -2.5;
-      activeBevel = widget.bevelDepth + 1.2;
+      translateY = -3.0;
+      activeBevel = widget.bevelDepth + 1.5;
     } else {
       translateY = 0.0;
       activeBevel = widget.bevelDepth;
@@ -249,24 +244,31 @@ class _TactileButtonState extends State<TactileButton> {
               width: 1.0,
             ),
             boxShadow: [
+              // Layer 0: Top Edge Specular Rim Reflection
+              BoxShadow(
+                color: AppTheme.specularRim,
+                offset: const Offset(0, 1),
+                blurRadius: 0,
+                spreadRadius: 0,
+              ),
               // Layer 1: Solid Mechanical 3D Bottom Bevel (depth)
               BoxShadow(
-                color: isInteractive ? bevelColor : const Color(0xFF0F172A).withValues(alpha: 0.6),
+                color: isInteractive ? bevelColor : AppTheme.bevelSecondary.withValues(alpha: 0.6),
                 offset: Offset(0, activeBevel),
                 blurRadius: 0,
                 spreadRadius: 0,
               ),
-              // Layer 2: Luxury Soft Glow on hover
+              // Layer 2: Next-Level Luxury Soft Glow on hover
               if (_isHovered && isInteractive)
                 BoxShadow(
-                  color: glowColor.withValues(alpha: 0.35),
-                  blurRadius: 14,
-                  spreadRadius: 0.5,
+                  color: glowColor.withValues(alpha: 0.45),
+                  blurRadius: 20,
+                  spreadRadius: 1.0,
                   offset: const Offset(0, 3.5),
                 )
               else if (!_isPressed && isInteractive)
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.30),
+                  color: Colors.black.withValues(alpha: 0.35),
                   blurRadius: 3,
                   offset: const Offset(0, 1.5),
                 ),

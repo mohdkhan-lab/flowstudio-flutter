@@ -39,8 +39,13 @@ class VideoSettingsBar extends StatelessWidget {
         gradient: AppTheme.panelGrad,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.specularRim,
+            offset: const Offset(0, 1),
+            blurRadius: 0,
+          ),
+          const BoxShadow(color: Colors.black38, blurRadius: 14, offset: Offset(0, 5)),
         ],
       ),
       child: LayoutBuilder(
@@ -201,10 +206,10 @@ class VideoSettingsBar extends StatelessWidget {
               // Generate Button — Tactile 3D (Mechanical Bevel + 2.0px Lift)
               TactileButton(
                 type: TactileType.primary,
-                height: 38,
-                padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 20),
-                borderRadius: 8,
-                bevelDepth: 3.5,
+                height: 54,
+                padding: EdgeInsets.symmetric(horizontal: compact ? 14 : 24),
+                borderRadius: 10,
+                bevelDepth: 4.0,
                 enabled: !isRunning,
                 onTap: !isRunning
                     ? () => generator.startGeneration(
@@ -216,14 +221,15 @@ class VideoSettingsBar extends StatelessWidget {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    const Icon(Icons.play_arrow, size: 15, color: Colors.white),
-                    const SizedBox(width: 4),
+                    Icon(Icons.play_arrow_rounded, size: compact ? 18 : 22, color: Colors.white),
+                    const SizedBox(width: 6),
                     Text(
                       isRunning ? 'Running...' : 'Generate',
-                      style: const TextStyle(
-                        fontSize: 12.5,
+                      style: TextStyle(
+                        fontSize: compact ? 13.0 : 14.5,
                         fontWeight: FontWeight.w800,
                         color: Colors.white,
+                        letterSpacing: 0.5,
                       ),
                     ),
                   ],

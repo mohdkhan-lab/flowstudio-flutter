@@ -23,7 +23,7 @@ class AppSettings {
 
   AppSettings({
     this.appearance = 'dark',
-    this.theme = 'macos',
+    this.theme = 'gold',
     this.model = 'Omni Flash',
     this.duration = '4s',
     this.aspectRatio = '9:16',

@@ -382,11 +382,11 @@ class _PromptsEditorState extends State<PromptsEditor> {
                           ),
                         ),
                         const Spacer(),
-                        if (generator.rawText.isEmpty) ...[
+                        if (_controller.text.isEmpty) ...[
                           Tooltip(
                             message: 'Load sample prompts for instant testing',
                             child: TactileButton(
-                              type: TactileType.ghost,
+                              type: TactileType.secondary,
                               borderRadius: 6,
                               padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
                               onTap: () {
@@ -397,14 +397,14 @@ class _PromptsEditorState extends State<PromptsEditor> {
                               child: Row(
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
-                                  Icon(Icons.bolt, size: 12, color: AppTheme.accent),
+                                  Icon(Icons.bolt, size: 12, color: AppTheme.accentGold),
                                   const SizedBox(width: 2),
                                   Text(
                                     'Sample',
                                     style: TextStyle(
                                       fontSize: 10,
                                       fontWeight: FontWeight.w600,
-                                      color: AppTheme.accent,
+                                      color: AppTheme.accentGold,
                                     ),
                                   ),
                                 ],

@@ -303,7 +303,7 @@ class AutomationBridge {
         '-ExecutionPolicy',
         'Bypass',
         '-Command',
-        r'Get-CimInstance Win32_Process -Filter "Name = ''chrome.exe''" | Where-Object { $_.CommandLine -like "*flowstudio*" -or $_.CommandLine -like "*flow_profile*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }',
+        r'''Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" | Where-Object { $_.CommandLine -like "*flowstudio*" -or $_.CommandLine -like "*flow_profile*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }''',
       ]);
     } catch (_) {}
   }

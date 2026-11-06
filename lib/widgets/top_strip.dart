@@ -338,7 +338,7 @@ class TopStrip extends StatelessWidget {
 
     if (connected && !reconnecting) {
       return Tooltip(
-        message: 'Engine connected (v2.48.57) • Node.js automation active',
+        message: 'Engine connected (v2.48.64) • Node.js automation active',
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(

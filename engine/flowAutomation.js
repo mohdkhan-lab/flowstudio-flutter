@@ -7792,6 +7792,99 @@ class FlowAutomationEngine {
    * aur wahan bhi na bane to FAIL. Prompt yahan KABHI
    * dobara submit nahi hota.
    */
+  /**
+   * v2.48.56 (STATE-PROBE): is task ki apni tile ke
+   * ANDAR ki haalaat parho — DOM attributes, media
+   * element properties, aur framework state (React
+   * props/fiber, Angular context) — aur jo bhi
+   * googlevideo pate milen, unhe un ke zariye (source)
+   * ke saath lautao. SIRF parhna hai: koi click nahi,
+   * koi play nahi, kuch khulta nahi; har cheez
+   * had-bandi (nodes/depth/budget) ke andar.
+   * ZEROCLICK24 ka sabak: page aksar tile ke liye
+   * full stream network par bhejti hi nahi — lekin
+   * tile ki apni state me us ka pata ho sakta hai.
+   * Lautta hai: [{url, source}] (zyada se zyada 40).
+   */
+  async _probeTileStateUrls(task, tileIndexHint) {
+    const pg = this.page;
+    if (!pg || pg.isClosed() || typeof pg.evaluate !== 'function') return [];
+    const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+    if (!Number.isInteger(idx) || idx < 0) return [];
+    let found = [];
+    try {
+      found = await pg.evaluate((i) => {
+        const out = [];
+        const seenUrl = new Set();
+        const push = (s, source) => {
+          try {
+            if (typeof s !== 'string' || !s) return;
+            const m = s.match(/https?:\/\/[^\s"'<>\\]+googlevideo\.com\/videoplayback[^\s"'<>\\]*/g);
+            if (!m) return;
+            for (const u of m) {
+              if (seenUrl.has(u)) continue;
+              seenUrl.add(u);
+              if (out.length < 40) out.push({ url: u, source });
+            }
+          } catch (e) {}
+        };
+        try {
+          const tiles = document.querySelectorAll('flow-grid-tile-container');
+          const tile = tiles && tiles[i];
+          if (!tile) return out;
+          const els = [tile];
+          try { const all = tile.querySelectorAll('*'); for (let k = 0; k < all.length && k < 600; k++) els.push(all[k]); } catch (e) {}
+          for (const el of els) {
+            try {
+              if (el.getAttribute) {
+                for (const a of ['src', 'href', 'poster', 'data-src', 'data-url']) {
+                  const v = el.getAttribute(a);
+                  if (v) push(v, 'dom');
+                }
+              }
+              if (el.dataset) { for (const dk of Object.keys(el.dataset)) push(el.dataset[dk], 'dom'); }
+              if (el.currentSrc) push(el.currentSrc, 'dom');
+              if ((el.tagName === 'VIDEO' || el.tagName === 'IMG' || el.tagName === 'SOURCE') && el.src) push(el.src, 'dom');
+            } catch (e) {}
+          }
+          const SKIP = { stateNode: 1, _owner: 1, _debugOwner: 1, return: 1, alternate: 1, nextEffect: 1, firstEffect: 1, lastEffect: 1 };
+          const visited = new Set();
+          let budget = 6000;
+          const visit = (obj, depth, source) => {
+            if (budget-- <= 0 || depth > 6 || obj === null || obj === undefined) return;
+            const t = typeof obj;
+            if (t === 'string') { push(obj, source); return; }
+            if (t !== 'object') return;
+            if (visited.has(obj)) return;
+            visited.add(obj);
+            try { if (obj.nodeType) return; } catch (e) {}
+            try {
+              const keys = Object.keys(obj);
+              for (const k of keys) {
+                if (SKIP[k]) continue;
+                let v; try { v = obj[k]; } catch (e) { continue; }
+                visit(v, depth + 1, source);
+                if (budget <= 0) return;
+              }
+            } catch (e) {}
+          };
+          for (const el of els.slice(0, 80)) {
+            try {
+              const keys = Object.keys(el);
+              for (const k of keys) {
+                if (k.indexOf('__reactProps$') === 0 || k.indexOf('__reactInternalInstance$') === 0) visit(el[k], 0, 'props');
+                else if (k.indexOf('__reactFiber$') === 0) visit(el[k], 0, 'fiber');
+                else if (k.indexOf('__ngContext__') === 0) visit(el[k], 0, 'ng');
+              }
+            } catch (e) {}
+          }
+          return out;
+        } catch (e) { return out; }
+      }, idx);
+    } catch (e) { found = []; }
+    return Array.isArray(found) ? found : [];
+  }
+
   async _tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint) {
     const n = task.promptIndex + 1;
     const cap = this.netCapture;
@@ -8214,9 +8307,89 @@ class FlowAutomationEngine {
       } catch (e) {}
       return false;
     };
+    // v2.48.56 (STATE-PROBE): rpcfeed ka behen-qadam —
+    // pata kitab se nahi, is task ki APNI TILE ke andar
+    // ki haalaat se. Bandhan tile par hai (waqt par
+    // nahi), is liye pendingOthers bandish nahi; baaki
+    // sakhti saveGuard.mainpageStateProbePick me hai.
+    const tryStateProbe = async () => {
+      try {
+        if (this.isStopping || task.mediaSaved || !this.page) return false;
+        const rawProbe = await this._probeTileStateUrls(task, tileIndexHint);
+        if (!rawProbe || !rawProbe.length) {
+          this.log(`[ROOT] [Prompt #${n}] mainpage-stateprobe found=0 full=0`, 'info');
+          return false;
+        }
+        const probeCands = [];
+        const srcCount = {};
+        for (const r of rawProbe) {
+          if (!r || typeof r.url !== 'string') continue;
+          const info = networkCapture.rpcVideoUrlInfo(r.url);
+          if (!info) continue;
+          const src = typeof r.source === 'string' && r.source ? r.source : 'dom';
+          srcCount[src] = (srcCount[src] || 0) + 1;
+          probeCands.push({ url: r.url, clen: info.clen, itag: info.itag, source: src });
+        }
+        const probeFull = probeCands.filter(c => c.clen >= 500000);
+        const srcStr = Object.keys(srcCount).map(k => `${k}:${srcCount[k]}`).join(',');
+        this.log(`[ROOT] [Prompt #${n}] mainpage-stateprobe found=${probeCands.length} full=${probeFull.length} sources=${srcStr || '-'}`, 'info');
+        if (!probeFull.length) return false;
+        const claimedUrlsProbe = new Set();
+        try {
+          if (typeof cap.isMainpageClaimed === 'function') {
+            for (const c of probeCands) { if (cap.isMainpageClaimed(c.url)) claimedUrlsProbe.add(c.url); }
+          }
+        } catch (e) {}
+        const probePick = saveGuard.mainpageStateProbePick({
+          candidates: probeFull,
+          triedUrls,
+          claimedUrls: claimedUrlsProbe,
+          teacherUrl
+        });
+        if (probePick && probePick.skip) {
+          this.log(`[ROOT] [Prompt #${n}] mainpage-statefeed skipped reason=${probePick.skip}`, 'warn');
+          return false;
+        }
+        if (probePick && probePick.url) {
+          try { if (typeof cap.claimMainpageVideo === 'function') cap.claimMainpageVideo(probePick.url, { key: captureKey }); } catch (e) {}
+          this.log(`[ROOT] [Prompt #${n}] mainpage-statefeed host=${networkCapture.hostOf(probePick.url) || ''} clen=${probePick.clen} source=${probePick.source}`, 'info');
+          const probeRes = await this._netloadMainpageFull(task, probePick.url);
+          try { triedUrls.add(probePick.url); } catch (e) {}
+          if (probeRes && probeRes.buf && !task.mediaSaved) {
+            const probeEntry = {
+              url: probePick.url,
+              src: 'googlevideo',
+              byteLength: probeRes.buf.length,
+              headerOk: true,
+              partial: true,
+              status: probeRes.status || 0,
+              contentRange: '',
+              declaredLength: 0,
+              knownTotal: probePick.clen,
+              duplicate: false,
+              hash: null,
+              teacherHash,
+              bound: true,
+              bodyBytes: probeRes.buf.length,
+              at: Date.now(),
+              firstSeenAt: Date.now(),
+              seq: null,
+              claimedBy: null,
+              _netloadBody: probeRes.buf,
+              _netloadMeta: probeRes,
+              _noInPageFetch: true
+            };
+            const probeOutcome = await completeTracked(probeEntry, 'state-probe-netload');
+            if (probeOutcome === 'saved' || task.mediaSaved) return true;
+          }
+        }
+      } catch (e) {}
+      return false;
+    };
     // Watch se PEHLE wala mauqa — pata pehle se kitab
     // me ho to hover ka intezaar hi nahi.
     try { if (await tryRpcFeed(watchDeadline)) return true; } catch (e) {}
+    try { if (await tryStateProbe()) return true; } catch (e) {}
     try { await this._exitPrevMainpageHover(task); } catch (e) {}
     const scrolled = await this._scrollMainpageTileIntoView(task, tileIndexHint);
     this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=scroll (this video's tile ${scrolled ? 'was scrolled' : 'could not be scrolled'} into view on the main page; nothing opened, nothing clicked); watching up to ${Math.max(1, Math.round((watchDeadline - watchStart) / 1000))}s for its stream`, 'info');
@@ -8268,6 +8441,7 @@ class FlowAutomationEngine {
     // jagah barkarar hai, waisa hi mauqa watch se
     // PEHLE bhi milta hai.
     try { if (await tryRpcFeed(watchDeadline)) return true; } catch (e) {}
+    try { if (await tryStateProbe()) return true; } catch (e) {}
 
     // v2.48.49 (TOO-SMALL MEDIA-LOAD MAUQA —
     // ZEROCLICK16): bandhan tak kuch pahuncha hi

@@ -3734,6 +3734,35 @@ async function main() {
     await capE2._armFocusEmulation(clientBad);
     eq('X-EMU failure note fired', emuNotes2.length === 1 && emuNotes2[0].ok, false);
 
+    // v2.48.56 (X56): tile-state probe — DOM src +
+    // React fiber props se pate nikalna (nakli page).
+    {
+      const engProbe = new FlowAutomationEngine({ onLog: () => {} }, {});
+      engProbe._resolveTileIndexForTask = async () => 0;
+      const prevU = 'https://rr9---sn.googlevideo.com/videoplayback?expire=9&id=pv&itag=18&clen=110000';
+      const fullU = 'https://rr8---sn.googlevideo.com/videoplayback?expire=9&id=fl&itag=18&clen=1250000';
+      const vidEl = { tagName: 'VIDEO', src: prevU, getAttribute: () => null, dataset: {} };
+      const tileEl = {
+        tagName: 'DIV', getAttribute: () => null, dataset: {},
+        querySelectorAll: (sel) => (sel === '*' ? [vidEl] : []),
+        '__reactFiber$abc': { memoizedProps: { media: { playbackUrl: fullU } }, child: null, sibling: null }
+      };
+      engProbe.page = {
+        isClosed: () => false,
+        evaluate: async (fn, arg) => {
+          const prevDoc = global.document;
+          global.document = { querySelectorAll: () => [tileEl] };
+          try { return await fn(arg); } finally { global.document = prevDoc; }
+        }
+      };
+      const probeOut = await engProbe._probeTileStateUrls({ promptIndex: 0 }, undefined);
+      eq('X56-PROBE do pate mile', probeOut.length, 2);
+      eq('X56-PROBE dom wala preview mila', (probeOut.find(p => p.url === prevU) || {}).source, 'dom');
+      eq('X56-PROBE fiber wala poora mila', (probeOut.find(p => p.url === fullU) || {}).source, 'fiber');
+      const probeEmpty = await engProbe._probeTileStateUrls({ promptIndex: 0 }, undefined);
+      eq('X56-PROBE dobara bhi utne hi (dedupe page ke andar)', probeEmpty.length, 2);
+    }
+
     // v2.48.55 (X55 — Gemini ZIP-fix ke achhe points):
     // (1) nazar par captureKey ki mohar + string-claim.
     const capZ = new NetworkCapture({});

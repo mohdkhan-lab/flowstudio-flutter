@@ -906,4 +906,39 @@ function cascadeVerdict(input) {
   return { firstSeen, preEditorUrl: beforeEditor ? 'yes' : 'no' };
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, MAINPAGE_MIN_CANDIDATE_BYTES, mainpageCandidateGate, mainpageKnownTotalOf, mainpageTooSmallMediaPick, mainpageRpcBodyPick, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };
+// v2.48.56 (STATE-PROBE): tile ke ANDAR ki haalaat
+// (DOM/props/fiber) se nikle hue pate — ye bandhan
+// waqt-khidki par nahi, TILE par hai: pata usi task
+// ki apni tile ke andar se aaya hai. Isi liye
+// pendingOthers bandish yahan nahi (wo waqt-wali
+// nazron ke liye thi); lekin baaki sakhti poori:
+// sirf poori-size (clen >= 500000), teacher nahi,
+// claimed nahi, aazmaya hua nahi — aur agar ek se
+// zyada bache to 'ambiguous' (ZEROCLICK2 ka sabak:
+// andaze se galat video kabhi nahi uthana).
+function mainpageStateProbePick(o) {
+  o = o || {};
+  const cands = Array.isArray(o.candidates) ? o.candidates : [];
+  const tried = o.triedUrls instanceof Set
+    ? o.triedUrls
+    : new Set(Array.isArray(o.triedUrls) ? o.triedUrls : []);
+  const claimed = o.claimedUrls instanceof Set
+    ? o.claimedUrls
+    : new Set(Array.isArray(o.claimedUrls) ? o.claimedUrls : []);
+  const teacherUrl = typeof o.teacherUrl === 'string' && o.teacherUrl ? o.teacherUrl : null;
+  const usable = [];
+  for (const c of cands) {
+    if (!c || typeof c.url !== 'string' || !c.url) continue;
+    if (!Number.isFinite(c.clen) || Math.floor(c.clen) < 500000) continue;
+    if (teacherUrl && c.url === teacherUrl) continue;
+    if (claimed.has(c.url)) continue;
+    if (tried.has(c.url)) continue;
+    if (usable.some(u => u.url === c.url)) continue;
+    usable.push({ url: c.url, clen: Math.floor(c.clen), itag: typeof c.itag === 'string' ? c.itag : '', source: typeof c.source === 'string' ? c.source : '' });
+  }
+  if (!usable.length) return { skip: 'none', count: 0 };
+  if (usable.length > 1) return { skip: 'ambiguous', count: usable.length };
+  return usable[0];
+}
+
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, MAINPAGE_MIN_CANDIDATE_BYTES, mainpageCandidateGate, mainpageKnownTotalOf, mainpageTooSmallMediaPick, mainpageRpcBodyPick, mainpageStateProbePick, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };

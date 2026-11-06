@@ -12,7 +12,7 @@
 // "all 2 saved" de di thi.
 // Usage: node test_js/run_save_guard_tests.js
 
-const { contentHash, checkDuplicate, recordSave, claimedByOtherTask, mainpageRpcBodyPick } = require('../engine/saveGuard');
+const { contentHash, checkDuplicate, recordSave, claimedByOtherTask, mainpageRpcBodyPick, mainpageStateProbePick } = require('../engine/saveGuard');
 const { buildSequenceReport } = require('../engine/sequenceReport');
 
 let passed = 0;
@@ -175,6 +175,30 @@ function ok(name, cond) {
   const refreshed = mainpageRpcBodyPick({ ...base, sightings: [S({ firstSeenAt: 80000, lastSeenAt: 100000 })] });
   ok('RPC old first-seen but fresh last-seen is picked', !!refreshed && !!refreshed.url);
   eq('RPC old first AND last seen is skipped', mainpageRpcBodyPick({ ...base, sightings: [S({ firstSeenAt: 80000, lastSeenAt: 85000 })] }), null);
+}
+
+// v2.48.56 (STATE-PROBE pick): tile ke andar se
+// nikle pate — sakht shartein.
+{
+  const FULL1 = 'https://rr1---sn.googlevideo.com/videoplayback?expire=9&id=s1&itag=18&clen=1200000';
+  const FULL2 = 'https://rr2---sn.googlevideo.com/videoplayback?expire=9&id=s2&itag=18&clen=1300000';
+  const PREV = 'https://rr3---sn.googlevideo.com/videoplayback?expire=9&id=s3&itag=18&clen=100000';
+  const cand = (url, clen, source) => ({ url, clen, itag: '18', source: source || 'fiber' });
+  const one = mainpageStateProbePick({ candidates: [cand(FULL1, 1200000)] });
+  eq('SP ek poora ummeedwaar chuna gaya', one && one.url, FULL1);
+  eq('SP source saath aaya', one && one.source, 'fiber');
+  const two = mainpageStateProbePick({ candidates: [cand(FULL1, 1200000), cand(FULL2, 1300000)] });
+  eq('SP do poore hon to ambiguous', two && two.skip, 'ambiguous');
+  const prevOnly = mainpageStateProbePick({ candidates: [cand(PREV, 100000)] });
+  eq('SP sirf preview ho to none', prevOnly && prevOnly.skip, 'none');
+  const claimed = mainpageStateProbePick({ candidates: [cand(FULL1, 1200000)], claimedUrls: new Set([FULL1]) });
+  eq('SP claimed pata ummeedwaar nahi', claimed && claimed.skip, 'none');
+  const teacher = mainpageStateProbePick({ candidates: [cand(FULL1, 1200000)], teacherUrl: FULL1 });
+  eq('SP teacher pata ummeedwaar nahi', teacher && teacher.skip, 'none');
+  const tried = mainpageStateProbePick({ candidates: [cand(FULL1, 1200000)], triedUrls: new Set([FULL1]) });
+  eq('SP aazmaya hua pata ummeedwaar nahi', tried && tried.skip, 'none');
+  const dup = mainpageStateProbePick({ candidates: [cand(FULL1, 1200000), cand(FULL1, 1200000)] });
+  eq('SP duplicate pata ek hi gina jata hai', dup && dup.url, FULL1);
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

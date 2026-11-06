@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
+import 'tactile_components.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/settings_provider.dart';
 import '../models/account.dart';
@@ -45,6 +46,13 @@ class SidebarAccounts extends StatefulWidget {
 
 class _SidebarAccountsState extends State<SidebarAccounts> {
   String _selectedFilter = 'all'; // all, checking, live, fail
+  final ScrollController _accountsScrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _accountsScrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -159,10 +167,18 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                         style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
                       ),
                     )
-                  : ListView.separated(
-                      shrinkWrap: false,
-                      itemCount: visibleAccounts.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 6),
+                  : RawScrollbar(
+                      controller: _accountsScrollController,
+                      thumbVisibility: true,
+                      thickness: 3.5,
+                      radius: const Radius.circular(3),
+                      thumbColor: AppTheme.accentGold.withValues(alpha: 0.45),
+                      minThumbLength: 30,
+                      child: ListView.separated(
+                        controller: _accountsScrollController,
+                        shrinkWrap: false,
+                        itemCount: visibleAccounts.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 6),
                       itemBuilder: (context, index) {
                         final acc = visibleAccounts[index];
                         final word = _statusWord(acc);
@@ -394,6 +410,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                         );
                       },
                     ),
+                  ),
             ),
           ),
 
@@ -565,17 +582,23 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
         title: Text('Delete Selected Accounts', style: TextStyle(fontSize: 14, color: AppTheme.textMain)),
         content: Text('Are you sure you want to delete all selected accounts from FlowStudio?', style: TextStyle(fontSize: 12, color: AppTheme.textDim)),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text('Cancel', style: TextStyle(color: AppTheme.textDim)),
+          TactileButton(
+            type: TactileType.secondary,
+            height: 32,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            label: 'Cancel',
+            onTap: () => Navigator.pop(ctx),
           ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.red, foregroundColor: Colors.white),
-            onPressed: () {
+          const SizedBox(width: 8),
+          TactileButton(
+            type: TactileType.danger,
+            height: 32,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            label: 'Delete',
+            onTap: () {
               Navigator.pop(ctx);
               context.read<AccountsProvider>().deleteSelected();
             },
-            child: const Text('Delete'),
           ),
         ],
       ),
@@ -837,34 +860,28 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
               children: [
                 Text('${imported.credits} credits', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppTheme.textDim)),
                 const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: () => context.read<AccountsProvider>().syncAccountById(imported.id),
-                  icon: const Icon(Icons.sync, size: 12),
-                  label: const Text('Sync', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppTheme.textMain,
-                    side: BorderSide(color: AppTheme.borderSoft),
-                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-                    visualDensity: VisualDensity.compact,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
-                  ),
+                TactileButton(
+                  type: TactileType.secondary,
+                  height: 24,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  icon: Icons.sync,
+                  iconSize: 12,
+                  label: 'Sync',
+                  onTap: () => context.read<AccountsProvider>().syncAccountById(imported.id),
                 ),
               ],
             ),
           ] else
-            ElevatedButton(
-              onPressed: () async {
+            TactileButton(
+              type: TactileType.primary,
+              height: 28,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              label: 'Import this profile',
+              onTap: () async {
                 await context.read<AccountsProvider>().importChromeProfile(dir);
                 if (context.mounted) Navigator.pop(context);
               },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.accentGold,
-                foregroundColor: AppTheme.onAccent,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                visualDensity: VisualDensity.compact,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
-              ),
-              child: const Text('Import this profile', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
+            ),
             ),
         ],
       ),

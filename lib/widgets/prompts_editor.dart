@@ -435,26 +435,27 @@ class _PromptsEditorState extends State<PromptsEditor> {
           ],
         ),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text('Cancel', style: TextStyle(color: AppTheme.textDim)),
+          TactileButton(
+            type: TactileType.secondary,
+            height: 32,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            label: 'Cancel',
+            onTap: () => Navigator.pop(ctx),
           ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(
-              backgroundColor: AppTheme.accentGold,
-              foregroundColor: Colors.black,
-            ),
-            onPressed: () {
+          const SizedBox(width: 8),
+          TactileButton(
+            type: TactileType.primary,
+            height: 32,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            label: 'Add Tag',
+            onTap: () {
               final newTag = tagCtrl.text.trim();
               if (newTag.isNotEmpty) {
                 context.read<SettingsProvider>().addCustomTag(newTag);
-                // v2.34.0 (Problem 9): the provider is the only
-                // place the selection lives — no widget copy.
                 context.read<GeneratorProvider>().setSelectedTag(newTag);
                 Navigator.pop(ctx);
               }
             },
-            child: const Text('Add Tag', style: TextStyle(fontWeight: FontWeight.bold)),
           ),
         ],
       ),

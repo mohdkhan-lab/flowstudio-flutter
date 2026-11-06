@@ -690,6 +690,63 @@ function mainpageTooSmallMediaPick(input) {
  *     'none'; bind sirf pehli do par. count =
  *     ummeedwaaron ki kul tadaad.
  */
+/**
+ * v2.48.53 (RPC-BODY FEED — Gemini brief-2 §5.1/§5.3):
+ * batchexecute jawab ke andar mili googlevideo nazar
+ * (networkCapture ki rpc-body kitab) me se is task ke
+ * liye EK mauqa chuno (khalis). Attribution sakht hai —
+ * galat video save karna miss se badtar hai
+ * (ZEROCLICK2 ka sabak):
+ *   - nazar ka clen (server ka elaan-shuda kul size)
+ *     floor (default 500,000) se kam na ho — chhota
+ *     preview encode is raste ka ummeedwaar hi nahi;
+ *   - nazar kisi aur task ke naam consumed na ho,
+ *     is attempt me tried na ho, teacher ka pata na
+ *     ho;
+ *   - nazar ki pehli-nazar is task ki khidki me ho:
+ *     [renderDoneAt - 5000, attemptDeadline] (koi
+ *     hadd na di gayi ho to wo taraf khuli);
+ *   - is pal capture me koi AUR pending download
+ *     khidki ho (pendingOthers > 0) to pick NAHI —
+ *     pata kis ka hai, ye dhundla hai;
+ *   - khidki me 1 se zyada ummeedwaar ho to pick
+ *     NAHI (ambiguous) — tartib ka andaza nahi
+ *     lagega.
+ * Lautta hai: { url, clen, itag, firstSeenAt } |
+ * { skip: 'pending-others' | 'ambiguous', count } |
+ * null (koi ummeedwaar hi nahi — khamoshi).
+ */
+function mainpageRpcBodyPick(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const list = Array.isArray(o.sightings) ? o.sightings : [];
+  const tried = o.triedUrls instanceof Set
+    ? o.triedUrls
+    : new Set(Array.isArray(o.triedUrls) ? o.triedUrls : []);
+  const teacherUrl = typeof o.teacherUrl === 'string' && o.teacherUrl ? o.teacherUrl : null;
+  const renderDoneAt = Number.isFinite(o.renderDoneAt) ? o.renderDoneAt : null;
+  const deadline = Number.isFinite(o.attemptDeadline) ? o.attemptDeadline : null;
+  const pendingOthers = Number.isFinite(o.pendingOthers) ? Math.max(0, Math.floor(o.pendingOthers)) : 0;
+  const minClen = Number.isFinite(o.minClen) && o.minClen > 0 ? Math.floor(o.minClen) : 500000;
+  const inWindow = [];
+  for (const s of list) {
+    if (!s || typeof s.url !== 'string' || !s.url) continue;
+    if (!Number.isFinite(s.clen) || s.clen < minClen) continue;
+    if (s.consumedBy) continue;
+    if (teacherUrl && s.url === teacherUrl) continue;
+    if (tried.has(s.url)) continue;
+    const seenAt = Number.isFinite(s.firstSeenAt) ? s.firstSeenAt
+      : (Number.isFinite(s.at) ? s.at : 0);
+    if (!(seenAt > 0)) continue;
+    if (renderDoneAt !== null && seenAt < renderDoneAt - 5000) continue;
+    if (deadline !== null && seenAt > deadline) continue;
+    inWindow.push({ url: s.url, clen: Math.floor(s.clen), itag: typeof s.itag === 'string' ? s.itag : '', firstSeenAt: seenAt });
+  }
+  if (inWindow.length === 0) return null;
+  if (pendingOthers > 0) return { skip: 'pending-others', count: inWindow.length };
+  if (inWindow.length > 1) return { skip: 'ambiguous', count: inWindow.length };
+  return inWindow[0];
+}
+
 function mainpageBindingPlan(input) {
   const o = input && typeof input === 'object' ? input : {};
   const seqOf = (c) => (Number.isFinite(c.seq) ? c.seq : null);
@@ -838,4 +895,4 @@ function cascadeVerdict(input) {
   return { firstSeen, preEditorUrl: beforeEditor ? 'yes' : 'no' };
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, MAINPAGE_MIN_CANDIDATE_BYTES, mainpageCandidateGate, mainpageKnownTotalOf, mainpageTooSmallMediaPick, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, MAINPAGE_MIN_CANDIDATE_BYTES, mainpageCandidateGate, mainpageKnownTotalOf, mainpageTooSmallMediaPick, mainpageRpcBodyPick, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };

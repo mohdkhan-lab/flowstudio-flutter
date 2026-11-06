@@ -48,7 +48,7 @@ const {
   cascadeVerdict
 } = require('../engine/saveGuard');
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
-const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite } = require('../engine/networkCapture');
+const { NetworkCapture, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
 const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
@@ -3643,6 +3643,80 @@ async function main() {
     await capW3._armFetchRw(clientW3);
     eq('W-RW a failing enable disables with one note', disabledNotes3.length, 1);
     eq('W-RW the enable failure reason is named', disabledNotes3[0] && disabledNotes3[0].reason, 'enable-failed');
+  }
+
+  // -------------------------------------------------------------------------
+  // v2.48.53 (X — RPC-BODY SCAN + 1B SABOOT + FOCUS): rpcVideoUrlInfo
+  // (khalis), _noteRpcVideoUrls (dedupe + pehli-nazar ki khabar + kitab),
+  // Fetch rewrite ki khabar (asal badlaav par hi), focus-emulation arm.
+  // -------------------------------------------------------------------------
+  {
+    const full = 'https://rr3---sn-qxaelnls.googlevideo.com/videoplayback?expire=999&id=abc&itag=18&clen=1193629&dur=4.032';
+    const prev = 'https://rr4---sn-u1qxac-5i.googlevideo.com/videoplayback?expire=999&id=def&itag=18&clen=98237';
+    const infoF = rpcVideoUrlInfo(full);
+    eq('X-INFO full url clen parsed', infoF && infoF.clen, 1193629);
+    eq('X-INFO full url itag parsed', infoF && infoF.itag, '18');
+    eq('X-INFO preview url clen parsed', (rpcVideoUrlInfo(prev) || {}).clen, 98237);
+    eq('X-INFO non-googlevideo is null', rpcVideoUrlInfo('https://flow.google.com/project/x'), null);
+    eq('X-INFO missing clen stays null', (rpcVideoUrlInfo('https://rr1---sn-x.googlevideo.com/videoplayback?id=a&itag=18') || {}).clen, null);
+    eq('X-INFO garbage is null', rpcVideoUrlInfo('not a url'), null);
+
+    const notes = [];
+    const capX = new NetworkCapture({ onRpcVideoUrls: (info) => notes.push(info) });
+    const added1 = capX._noteRpcVideoUrls([full, prev, 'https://flow.google.com/x'], ['jwpduf'], 100000);
+    eq('X-NOTE two googlevideo urls recorded', added1, 2);
+    eq('X-NOTE one note for the body', notes.length, 1);
+    eq('X-NOTE note carries both clens', notes[0] && notes[0].items.map(i => i.clen).join(','), '1193629,98237');
+    eq('X-NOTE note carries the rpcid', notes[0] && notes[0].rpcids.join(','), 'jwpduf');
+    const added2 = capX._noteRpcVideoUrls([full], ['jwpduf'], 100500);
+    eq('X-NOTE a repeat url is not recorded again', added2, 0);
+    eq('X-NOTE no second note for a repeat', notes.length, 1);
+    const sights = capX.mainpageRpcBodySightings();
+    eq('X-NOTE sightings list holds both', sights.length, 2);
+    eq('X-NOTE first sighting keeps first-seen time', sights[0] && sights[0].firstSeenAt, 100000);
+    capX.mainpageMarkRpcBodyConsumed(full, 'task-key-1');
+    eq('X-NOTE consume marks the sighting', (capX.mainpageRpcBodySightings().find(s => s.url === full) || {}).consumedBy, 'task-key-1');
+    sights[0].consumedBy = 'mutated-copy';
+    eq('X-NOTE sightings copies do not leak inside', (capX.mainpageRpcBodySightings().find(s => s.url === prev) || {}).consumedBy, null);
+
+    // Fetch rewrite ki khabar: sirf asal badlaav par, host/origRange/stripped ke saath.
+    const flushX = () => new Promise(r => setTimeout(r, 15));
+    const rwNotes = [];
+    const capR = new NetworkCapture({ onFetchRwRewrite: (info) => rwNotes.push(info) });
+    const sentR = [];
+    const handlersR = {};
+    const clientR = {
+      sent: sentR,
+      handlers: handlersR,
+      on: (ev, fn) => { handlersR[ev] = fn; },
+      send: (method, params) => { sentR.push({ method, params }); return Promise.resolve({}); }
+    };
+    await capR._armFetchRw(clientR);
+    handlersR['Fetch.requestPaused']({ requestId: 'x1', request: { url: 'https://rr1---sn-x.googlevideo.com/videoplayback?expire=999&id=a&range=0-50&itag=18', headers: { Range: 'bytes=0-50' } } });
+    await flushX();
+    eq('X-RW one rewrite note for a changed request', rwNotes.length, 1);
+    eq('X-RW note names the host', rwNotes[0] && rwNotes[0].host, 'rr1---sn-x.googlevideo.com');
+    eq('X-RW note names the original range', rwNotes[0] && rwNotes[0].origRange, 'bytes=0-50');
+    eq('X-RW note names the stripped param', rwNotes[0] && rwNotes[0].stripped.join(','), 'range');
+    handlersR['Fetch.requestPaused']({ requestId: 'x2', request: { url: 'https://rr1---sn-x.googlevideo.com/videoplayback?expire=999&id=a&itag=18', headers: { Range: 'bytes=0-' } } });
+    await flushX();
+    eq('X-RW no note when nothing changes', rwNotes.length, 1);
+
+    // Focus emulation: ek client par ek dafa, nakami par bhi ek khabar.
+    const emuNotes = [];
+    const capE = new NetworkCapture({ onFocusEmulation: (info) => emuNotes.push(info) });
+    const emuSent = [];
+    const clientE = { send: (m, p) => { emuSent.push({ m, p }); return Promise.resolve({}); }, on: () => {} };
+    await capE._armFocusEmulation(clientE);
+    eq('X-EMU enable sent once', emuSent.filter(s => s.m === 'Emulation.setFocusEmulationEnabled').length, 1);
+    eq('X-EMU ok note fired', emuNotes.length === 1 && emuNotes[0].ok, true);
+    await capE._armFocusEmulation(clientE);
+    eq('X-EMU same client is not armed twice', emuSent.length, 1);
+    const emuNotes2 = [];
+    const capE2 = new NetworkCapture({ onFocusEmulation: (info) => emuNotes2.push(info) });
+    const clientBad = { send: () => Promise.reject(new Error('no emulation')), on: () => {} };
+    await capE2._armFocusEmulation(clientBad);
+    eq('X-EMU failure note fired', emuNotes2.length === 1 && emuNotes2[0].ok, false);
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

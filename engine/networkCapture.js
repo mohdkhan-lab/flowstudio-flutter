@@ -561,6 +561,28 @@ function segmentKeyOf(url) {
 }
 
 /**
+ * v2.48.53 (RPC-BODY SCAN): ek googlevideo videoplayback
+ * URL ke query se us ki pehchan (khalis): clen = server
+ * ka elaan-shuda kul size (bytes), itag = encode ki
+ * pehchan. googlevideo URL na ho to null. clen maujood
+ * na ho / parkha na ja sake to clen null rehta hai —
+ * andaze se size kabhi nahi banta.
+ */
+function rpcVideoUrlInfo(url) {
+  try {
+    if (!isGooglevideoPlaybackUrl(url)) return null;
+    const u = new URL(String(url || ''));
+    const rawClen = u.searchParams.get('clen');
+    let clen = null;
+    if (rawClen !== null && rawClen !== '') {
+      const parsed = Number(rawClen);
+      if (Number.isFinite(parsed) && parsed > 0) clen = Math.floor(parsed);
+    }
+    return { clen, itag: u.searchParams.get('itag') || '' };
+  } catch (e) { return null; }
+}
+
+/**
  * v2.48.52 (ROUTE 1A PACK): googlevideo URL se range
  * mehdood karne wale query hisse (range / rn / rbuf)
  * hatao (khalis). Google ke media player aksar HTTP
@@ -665,6 +687,26 @@ class NetworkCapture {
     // band hona khamosh hai (vyavhaar wahi rehta hai:
     // darkhwastein bina badlaav continue hoti hain).
     this.onFetchRwDisabled = typeof opts.onFetchRwDisabled === 'function' ? opts.onFetchRwDisabled : null;
+    // v2.48.53 (RPC-BODY SCAN): batchexecute jawab ke
+    // andar pehli dafa dikha googlevideo address —
+    // engine use '[ROOT] rpc-video-urls' line me
+    // badalta hai (sirf host/clen/itag bahar jata hai;
+    // asal URL kabhi nahi). Callback na ho to khabar
+    // khamosh hai.
+    this.onRpcVideoUrls = typeof opts.onRpcVideoUrls === 'function' ? opts.onRpcVideoUrls : null;
+    // v2.48.53 (ROUTE 1B SABOOT): Fetch rewrite asal
+    // me kisi darkhwast ko badle to us ki khabar —
+    // engine '[ROOT] mainpage-fetchrw rewritten' line
+    // banata hai. Ginti ki hadd (20) is liye ke line
+    // saboot hai, shor nahi.
+    this.onFetchRwRewrite = typeof opts.onFetchRwRewrite === 'function' ? opts.onFetchRwRewrite : null;
+    this._fetchRwLogCount = 0;
+    // v2.48.53 (FOCUS EMULATION): page ke CDP client
+    // par focus-emulation lagne ki khabar — engine
+    // '[ROOT] focus-emulation enabled/failed' line
+    // banata hai. Har client par sirf ek dafa koshish.
+    this.onFocusEmulation = typeof opts.onFocusEmulation === 'function' ? opts.onFocusEmulation : null;
+    this._focusEmuClient = null;
     // Rewrite ki haalat: _fetchRwDisabled ek dafa
     // band to is capture (poore session) ke liye band
     // — reset() use saaf NAHI karta (band hona run-
@@ -879,6 +921,19 @@ class NetworkCapture {
     // (ZEROCLICK16: sirf chhote previews aaye the aur
     // completion kabhi engage hi nahi hua tha).
     this._mainpageTooSmall = [];
+    // v2.48.53 (RPC-BODY SCAN): batchexecute jawabon
+    // ke andar mile googlevideo addresses ki kitab —
+    // { url, clen, itag, firstSeenAt, consumedBy },
+    // hadd 50, URL par ek hi entry (pehli nazar
+    // barkarar). _rpcVideoSeen wahi URL dobara darj
+    // hone se rokta hai (status-poll jawab har chand
+    // second me wahi pate dohrate hain — khabar sirf
+    // PEHLI nazar ki hai). Bandhan/claim is kitab se
+    // NAHI banta — engine ka rpc-feed mauqa sakht
+    // attribution par inhe sirf netload tak le jata
+    // hai (saveGuard.mainpageRpcBodyPick).
+    this._rpcVideoSightings = [];
+    this._rpcVideoSeen = new Set();
     // v2.48.50 (item 18 — SEGMENT ASSEMBLY): logical
     // stream key -> us ke URLs ka Set. Do googlevideo
     // URL jo sirf query me alag hon lekin rasta (path)
@@ -1429,7 +1484,38 @@ class NetworkCapture {
       // capture bilkul aaj ki tarah chalta hai aur
       // disabled wali khabar engine tak jati hai).
       try { await this._armFetchRw(client); } catch (err) {}
+      // v2.48.53 (FOCUS EMULATION): isi client par
+      // focus-emulation bhi lagao (best-effort) —
+      // background window me Blink media/hover
+      // throttling ka ilaaj (Gemini brief-2 §5.5
+      // rank 1; ZEROCLICK16/18/19 ki run-variance).
+      try { await this._armFocusEmulation(client); } catch (err) {}
     } catch (err) {}
+  }
+
+  /**
+   * v2.48.53 (FOCUS EMULATION): is page ke CDP client
+   * par Emulation.setFocusEmulationEnabled(true) —
+   * har client par sirf EK dafa. Page hamesha
+   * 'foreground focus' wala bartav karti hai, chahe
+   * asal window peeche hi kyon na ho. Nakami par
+   * sirf khabar — capture bilkul aaj ki tarah chalta
+   * hai. Ye function kabhi throw nahi karta.
+   */
+  async _armFocusEmulation(client) {
+    try {
+      if (!client || typeof client.send !== 'function') return;
+      if (this._focusEmuClient === client) return;
+      this._focusEmuClient = client;
+      await client.send('Emulation.setFocusEmulationEnabled', { enabled: true });
+      try {
+        if (typeof this.onFocusEmulation === 'function') this.onFocusEmulation({ ok: true });
+      } catch (e) {}
+    } catch (e) {
+      try {
+        if (typeof this.onFocusEmulation === 'function') this.onFocusEmulation({ ok: false });
+      } catch (e2) {}
+    }
   }
 
   /**
@@ -1492,6 +1578,26 @@ class NetworkCapture {
         const req = (ev && ev.request) || {};
         const rw = fetchRwRewrite(req.url, req.headers);
         if (!rw) { await cont({ requestId }); return; }
+        // v2.48.53 (ROUTE 1B SABOOT): rewrite asal me
+        // laga — engine ko khabar (hadd 20 linein) taaki
+        // agle run ke log se pakka ho ki kis darkhwast
+        // ka range badla gaya (ZEROCLICK21 me ye khabar
+        // ghayab thi, attribution andaza reh gaya tha).
+        try {
+          if (typeof this.onFetchRwRewrite === 'function' && this._fetchRwLogCount < 20) {
+            this._fetchRwLogCount++;
+            let origRange = null;
+            const hdrs = req.headers && typeof req.headers === 'object' ? req.headers : {};
+            for (const name of Object.keys(hdrs)) {
+              if (String(name).toLowerCase() === 'range') { origRange = String(hdrs[name]); break; }
+            }
+            this.onFetchRwRewrite({
+              host: hostOf(req.url) || '',
+              origRange,
+              stripped: rangeStripOf(req.url).stripped
+            });
+          }
+        } catch (e) {}
         await cont({ requestId, url: rw.url, headers: rw.headers });
       } catch (e) {
         // Rewrite ka hisaab bigda — darkhwast bina
@@ -2308,6 +2414,64 @@ class NetworkCapture {
     } catch (err) {}
   }
 
+  /**
+   * v2.48.53 (RPC-BODY SCAN): batchexecute jawab ke
+   * andar mile URLs me se googlevideo addresses darj
+   * karo. Sirf PEHLI nazar darj + khabar hoti hai —
+   * wahi pata dobara aaye to khamoshi (poll jawab
+   * dohrate rehte hain). Lautta hai: naye darj hue
+   * addresses ki ginti. Ye function kabhi throw nahi
+   * karta.
+   */
+  _noteRpcVideoUrls(urls, rpcids, at) {
+    let added = 0;
+    try {
+      const list = Array.isArray(urls) ? urls : [];
+      const now = Number.isFinite(at) ? at : Date.now();
+      const fresh = [];
+      for (const u of list) {
+        if (typeof u !== 'string' || !u) continue;
+        const info = rpcVideoUrlInfo(u);
+        if (!info) continue;
+        if (this._rpcVideoSeen.has(u)) continue;
+        this._rpcVideoSeen.add(u);
+        const entry = {
+          url: u, clen: info.clen, itag: info.itag,
+          firstSeenAt: now, consumedBy: null
+        };
+        this._rpcVideoSightings.push(entry);
+        while (this._rpcVideoSightings.length > 50) this._rpcVideoSightings.shift();
+        fresh.push({ host: hostOf(u) || '', clen: info.clen, itag: info.itag });
+        added++;
+      }
+      if (fresh.length && typeof this.onRpcVideoUrls === 'function') {
+        try {
+          this.onRpcVideoUrls({
+            rpcids: Array.isArray(rpcids) ? rpcids.slice(0, 4) : [],
+            items: fresh
+          });
+        } catch (e) {}
+      }
+    } catch (e) {}
+    return added;
+  }
+
+  /** v2.48.53: rpc-body kitab ki nakal (engine ka rpc-feed pick isi par chalta hai). */
+  mainpageRpcBodySightings() {
+    try {
+      return this._rpcVideoSightings.map(e => ({ ...e }));
+    } catch (e) { return []; }
+  }
+
+  /** v2.48.53: ek rpc-body nazar ko kisi task ke pick ke naam darj karo (dobara pick nahi hogi). */
+  mainpageMarkRpcBodyConsumed(url, captureKey) {
+    try {
+      if (!url || !captureKey) return;
+      const e = this._rpcVideoSightings.find(x => x.url === url);
+      if (e) e.consumedBy = captureKey;
+    } catch (err) {}
+  }
+
   /** v2.48.41: mainpage kitab ki nakal (purane se naye ki taraf; buffer kabhi andar nahi). */
   mainpageEntries() {
     try {
@@ -2955,6 +3119,12 @@ class NetworkCapture {
     } catch (e) {}
     if (!this.armed) return [];
     const found = scanBatchExecuteBody(Buffer.from(meta.text, 'latin1'), this.patterns);
+    // v2.48.53 (RPC-BODY SCAN): behti (streaming)
+    // batchexecute jawab ke jama text me googlevideo
+    // address dikhe to rpc-body kitab me darj karo
+    // (dedupe URL par hai — har tukda dobara scan
+    // hota hai, khabar sirf pehli nazar ki).
+    try { this._noteRpcVideoUrls(found.allUrls || [], rpcidsOf(meta.reqUrl || ''), at); } catch (e) {}
     const newly = [];
     for (const id of found.ids) { const b = this._bindId(id, at); if (b) newly.push(b); }
     for (const u of found.mediaUrls) {
@@ -3016,6 +3186,14 @@ class NetworkCapture {
               this.batchStats.urlShapes[shape] = (this.batchStats.urlShapes[shape] || 0) + 1;
             }
           }
+          // v2.48.53 (RPC-BODY SCAN): inhi nikle hue
+          // addresses me googlevideo ho to rpc-body
+          // kitab me darj + pehli-nazar ki khabar —
+          // Gemini brief-2 §5.1 ka sawal (kya poori
+          // file ka pata page ki darkhwast se PEHLE
+          // backend jawab me aa jata hai?) isi se
+          // pakka hoga.
+          try { this._noteRpcVideoUrls(extra.allUrls || [], rpcidsOf(evt.url), at); } catch (e) {}
         } catch (e) {}
       }
       // v2.48.23: baaki (non-batchexecute) bodies ke links ki
@@ -3132,4 +3310,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo };

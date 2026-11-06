@@ -12,7 +12,7 @@
 // "all 2 saved" de di thi.
 // Usage: node test_js/run_save_guard_tests.js
 
-const { contentHash, checkDuplicate, recordSave, claimedByOtherTask } = require('../engine/saveGuard');
+const { contentHash, checkDuplicate, recordSave, claimedByOtherTask, mainpageRpcBodyPick } = require('../engine/saveGuard');
 const { buildSequenceReport } = require('../engine/sequenceReport');
 
 let passed = 0;
@@ -139,6 +139,34 @@ function ok(name, cond) {
     hashOf: (p) => (p === '/disk/#00-03.mp4' ? null : 'same-for-a-and-b')
   });
   eq('SEQ null hash excluded, real pair still caught', partial.duplicateContent.length, 1);
+}
+
+// ---------------------------------------------------------------------------
+// v2.48.53: mainpageRpcBodyPick — rpc-body nazar ki sakht attribution
+// ---------------------------------------------------------------------------
+{
+  const S = (over) => Object.assign({
+    url: 'https://rr3---sn-x.googlevideo.com/videoplayback?id=a&itag=18&clen=1193629',
+    clen: 1193629, itag: '18', firstSeenAt: 100000, consumedBy: null
+  }, over || {});
+  const base = { sightings: [S()], triedUrls: new Set(), teacherUrl: null, renderDoneAt: 95000, attemptDeadline: 160000, pendingOthers: 0 };
+
+  eq('RPC empty list is null', mainpageRpcBodyPick({ sightings: [], triedUrls: new Set() }), null);
+  const one = mainpageRpcBodyPick(base);
+  ok('RPC single in-window candidate is picked', !!one && one.clen === 1193629 && one.itag === '18');
+  eq('RPC below-floor clen is not a candidate', mainpageRpcBodyPick({ ...base, sightings: [S({ clen: 98237 })] }), null);
+  eq('RPC missing clen is not a candidate', mainpageRpcBodyPick({ ...base, sightings: [S({ clen: null })] }), null);
+  eq('RPC consumed sighting is skipped', mainpageRpcBodyPick({ ...base, sightings: [S({ consumedBy: 'other-task' })] }), null);
+  eq('RPC tried url is skipped', mainpageRpcBodyPick({ ...base, triedUrls: new Set([S().url]) }), null);
+  eq('RPC teacher url is skipped', mainpageRpcBodyPick({ ...base, teacherUrl: S().url }), null);
+  eq('RPC seen before the window is skipped', mainpageRpcBodyPick({ ...base, sightings: [S({ firstSeenAt: 80000 })] }), null);
+  eq('RPC seen after the deadline is skipped', mainpageRpcBodyPick({ ...base, sightings: [S({ firstSeenAt: 200000 })] }), null);
+  const pend = mainpageRpcBodyPick({ ...base, pendingOthers: 1 });
+  eq('RPC another pending download blocks the pick', pend && pend.skip, 'pending-others');
+  const amb = mainpageRpcBodyPick({ ...base, sightings: [S(), S({ url: 'https://rr5---sn-y.googlevideo.com/videoplayback?id=b&itag=18&clen=1200000', clen: 1200000, firstSeenAt: 101000 })] });
+  eq('RPC two in-window candidates are ambiguous', amb && amb.skip, 'ambiguous');
+  const edge = mainpageRpcBodyPick({ ...base, sightings: [S({ firstSeenAt: 90000 })] });
+  ok('RPC window start is renderDoneAt-5000 inclusive', !!edge && !!edge.url);
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

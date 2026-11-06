@@ -369,6 +369,38 @@ class FlowAutomationEngine {
           const reason = String((info && info.reason) || 'error').replace(/\s+/g, ' ').trim().slice(0, 60) || 'error';
           this.log(`[ROOT] mainpage-fetchrw disabled reason=${reason}`, 'warn');
         } catch (e) {}
+      },
+      // v2.48.53 (RPC-BODY SCAN): batchexecute jawab
+      // ke andar pehli dafa dikha googlevideo address
+      // — sirf host/clen/itag (asal URL kabhi nahi).
+      onRpcVideoUrls: (info) => {
+        try {
+          const items = info && Array.isArray(info.items) ? info.items : [];
+          if (!items.length) return;
+          const rpcids = info && Array.isArray(info.rpcids) && info.rpcids.length ? info.rpcids.join(',') : '-';
+          const clens = items.map(i => (i && Number.isFinite(i.clen)) ? Math.floor(i.clen) : '-').join(',');
+          const itags = items.map(i => (i && i.itag) ? String(i.itag) : '-').join(',');
+          this.log(`[ROOT] rpc-video-urls rpcid=${rpcids} count=${items.length} clens=${clens} itags=${itags}`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.53 (ROUTE 1B SABOOT): Fetch rewrite asal
+      // me kisi darkhwast par laga — kis host par, asal
+      // Range kya tha, kaunsa param hata.
+      onFetchRwRewrite: (info) => {
+        try {
+          const host = String((info && info.host) || '').slice(0, 60) || '-';
+          const origRange = info && info.origRange ? String(info.origRange).replace(/\s+/g, ' ').slice(0, 40) : 'none';
+          const stripped = info && Array.isArray(info.stripped) && info.stripped.length ? info.stripped.join(',') : 'none';
+          this.log(`[ROOT] mainpage-fetchrw rewritten host=${host} origRange=${origRange} stripped=${stripped} newRange=bytes=0-`, 'info');
+        } catch (e) {}
+      },
+      // v2.48.53 (FOCUS EMULATION): page ke CDP client
+      // par focus-emulation lag gaya / nahi laga.
+      onFocusEmulation: (info) => {
+        try {
+          if (info && info.ok) this.log(`[ROOT] focus-emulation enabled`, 'info');
+          else this.log(`[ROOT] focus-emulation failed`, 'warn');
+        } catch (e) {}
       }
     });
     // v2.48.36 (ROOT PACK — A): download-stage ka tala —
@@ -6241,6 +6273,42 @@ class FlowAutomationEngine {
    * liye bandhta hai (bulane wala faisla karta hai).
    * Lautta hai: true (scroll hua) | false.
    */
+  /**
+   * v2.48.53 (CLEAN HOVER-EXIT — Gemini brief-2 §5.5
+   * rank 2): agli task ki hover watch se pehle
+   * pichhli tile se SAAF exit — us ke <video> ko
+   * pause, pointer (1,1) par, 300ms saans. Khayal ye
+   * hai ke Flow ka ek-waqt-ek active-preview
+   * controller pichhli tile par chipka rehta hai to
+   * agli tile ki poori stream kabhi nahi aati
+   * (ZEROCLICK11–21: dusri task ki stream 0/10).
+   * Kuch khulta nahi, click nahi hota. Ye function
+   * kabhi throw nahi karta.
+   */
+  async _exitPrevMainpageHover(task) {
+    try {
+      const st = this._mpHoverState;
+      if (!st) return;
+      const myKey = task && (task.captureKey || task.videoId) ? String(task.captureKey || task.videoId) : String(task && Number.isFinite(task.promptIndex) ? task.promptIndex : '');
+      if (st.key && myKey && st.key === myKey) return;
+      this._mpHoverState = null;
+      if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return;
+      try {
+        await this.page.evaluate((tileIdx) => {
+          try {
+            const tiles = document.querySelectorAll('flow-grid-tile-container');
+            const el = tiles && tiles[tileIdx];
+            const v = el && typeof el.querySelector === 'function' ? el.querySelector('video') : null;
+            if (v && typeof v.pause === 'function') v.pause();
+          } catch (e) {}
+        }, st.idx);
+      } catch (e) {}
+      try { if (this.page.mouse && typeof this.page.mouse.move === 'function') await this.page.mouse.move(1, 1); } catch (e) {}
+      await sleep(300);
+      this.log(`[ROOT] mainpage-hover-exit prev=#${(Number.isFinite(st.promptIndex) ? st.promptIndex : 0) + 1}`, 'info');
+    } catch (e) {}
+  }
+
   async _scrollMainpageTileIntoView(task, tileIndexHint) {
     try {
       if (!this.page || this.page.isClosed()) return false;
@@ -6322,6 +6390,19 @@ class FlowAutomationEngine {
       }, idx);
       if (!pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return false;
       await this.page.mouse.move(pt.x, pt.y);
+      // v2.48.53 (CLEAN HOVER-EXIT): ye tile ab is
+      // engine ki 'hover wali tile' hai — agli task ki
+      // harvest se pehle _exitPrevMainpageHover isi
+      // nishani par saaf exit karega (Gemini brief-2
+      // §5.5 rank 2: pichhli tile ka hover/decoder
+      // chipka rahe to agli tile upgrade nahi hoti).
+      try {
+        this._mpHoverState = {
+          key: task && (task.captureKey || task.videoId) ? String(task.captureKey || task.videoId) : String(task && Number.isFinite(task.promptIndex) ? task.promptIndex : ''),
+          idx,
+          promptIndex: task && Number.isFinite(task.promptIndex) ? task.promptIndex : 0
+        };
+      } catch (e) {}
       return true;
     } catch (e) {
       return false;
@@ -7943,6 +8024,10 @@ class FlowAutomationEngine {
     const watchStart = Date.now();
     let watchDeadline = windowStart + patienceMs;
     if (watchDeadline < watchStart + floorMs) watchDeadline = watchStart + floorMs;
+    // v2.48.53 (CLEAN HOVER-EXIT): is task ki watch
+    // se pehle pichhli tile se saaf exit (pause +
+    // pointer bahar + saans) — §5.5 rank 2.
+    try { await this._exitPrevMainpageHover(task); } catch (e) {}
     const scrolled = await this._scrollMainpageTileIntoView(task, tileIndexHint);
     this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=scroll (this video's tile ${scrolled ? 'was scrolled' : 'could not be scrolled'} into view on the main page; nothing opened, nothing clicked); watching up to ${Math.max(1, Math.round((watchDeadline - watchStart) / 1000))}s for its stream`, 'info');
     let level = 'scroll';
@@ -7988,6 +8073,69 @@ class FlowAutomationEngine {
       if (r === 'saved') return true;
       if (r === 'ambiguous') return failOut();
     }
+    // v2.48.53 (RPC-BODY FEED — Gemini brief-2
+    // §5.1/§5.3): bandhan tak kuch pahuncha hi nahi,
+    // lekin batchexecute jawab ke andar is task ki
+    // khidki me koi POORA (clen >= 500,000) googlevideo
+    // pata pehle se aa chuka ho to failOut se pehle
+    // usi pate par NETLOAD (Route 1A) ko EK mauqa do —
+    // UI trigger ka intezaar hi khatam. Attribution
+    // saveGuard.mainpageRpcBodyPick ki sakht sharton
+    // par hai (khidki + akela ummeedwaar + koi aur
+    // pending download nahi); shartain puri na hon to
+    // sirf 'skipped' line — pata haath nahi lagta.
+    // Body mil jaye to wahi bandhi-entry wali
+    // completion (saare darwaze bilkul waisi hi).
+    try {
+      const rpcSightings = typeof cap.mainpageRpcBodySightings === 'function'
+        ? cap.mainpageRpcBodySightings() : [];
+      if (rpcSightings.length && !this.isStopping && !task.mediaSaved) {
+        const pendingOthersRpc = typeof cap.mainpagePendingOthers === 'function'
+          ? cap.mainpagePendingOthers(captureKey) : 0;
+        const rpcPick = saveGuard.mainpageRpcBodyPick({
+          sightings: rpcSightings,
+          triedUrls,
+          teacherUrl,
+          renderDoneAt: Number.isFinite(task.renderCompletedAt) ? task.renderCompletedAt : null,
+          attemptDeadline: watchDeadline,
+          pendingOthers: pendingOthersRpc
+        });
+        if (rpcPick && rpcPick.skip) {
+          this.log(`[ROOT] [Prompt #${n}] mainpage-rpcfeed skipped reason=${rpcPick.skip}`, 'warn');
+        } else if (rpcPick && rpcPick.url) {
+          try { if (typeof cap.mainpageMarkRpcBodyConsumed === 'function') cap.mainpageMarkRpcBodyConsumed(rpcPick.url, captureKey || task.captureKey || task.videoId || null); } catch (e) {}
+          this.log(`[ROOT] [Prompt #${n}] mainpage-rpcfeed host=${networkCapture.hostOf(rpcPick.url) || ''} clen=${rpcPick.clen}`, 'info');
+          const rpcRes = await this._netloadMainpageFull(task, rpcPick.url);
+          if (rpcRes && rpcRes.buf && !task.mediaSaved) {
+            const rpcEntry = {
+              url: rpcPick.url,
+              src: 'googlevideo',
+              byteLength: rpcRes.buf.length,
+              headerOk: true,
+              partial: true,
+              status: rpcRes.status || 0,
+              contentRange: '',
+              declaredLength: 0,
+              knownTotal: rpcPick.clen,
+              duplicate: false,
+              hash: null,
+              teacherHash,
+              bound: true,
+              bodyBytes: rpcRes.buf.length,
+              at: Date.now(),
+              firstSeenAt: rpcPick.firstSeenAt,
+              seq: null,
+              claimedBy: null,
+              _netloadBody: rpcRes.buf,
+              _netloadMeta: rpcRes,
+              _noInPageFetch: true
+            };
+            const rpcOutcome = await completeTracked(rpcEntry, 'rpc-body-netload');
+            if (rpcOutcome === 'saved' || task.mediaSaved) return true;
+          }
+        }
+      }
+    } catch (e) {}
     // v2.48.49 (TOO-SMALL MEDIA-LOAD MAUQA —
     // ZEROCLICK16): bandhan tak kuch pahuncha hi
     // nahi, lekin is attempt ki khidki me is task ki

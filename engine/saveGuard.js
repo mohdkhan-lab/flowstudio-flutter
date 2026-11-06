@@ -723,6 +723,9 @@ function mainpageRpcBodyPick(input) {
     ? o.triedUrls
     : new Set(Array.isArray(o.triedUrls) ? o.triedUrls : []);
   const teacherUrl = typeof o.teacherUrl === 'string' && o.teacherUrl ? o.teacherUrl : null;
+  const claimed = o.claimedUrls instanceof Set
+    ? o.claimedUrls
+    : new Set(Array.isArray(o.claimedUrls) ? o.claimedUrls : []);
   const renderDoneAt = Number.isFinite(o.renderDoneAt) ? o.renderDoneAt : null;
   const deadline = Number.isFinite(o.attemptDeadline) ? o.attemptDeadline : null;
   const pendingOthers = Number.isFinite(o.pendingOthers) ? Math.max(0, Math.floor(o.pendingOthers)) : 0;
@@ -734,12 +737,20 @@ function mainpageRpcBodyPick(input) {
     if (s.consumedBy) continue;
     if (teacherUrl && s.url === teacherUrl) continue;
     if (tried.has(s.url)) continue;
-    const seenAt = Number.isFinite(s.firstSeenAt) ? s.firstSeenAt
-      : (Number.isFinite(s.at) ? s.at : 0);
+    if (claimed.has(s.url)) continue;
+    // v2.48.54 (GEMINI ZIP-REVIEW fix 2): khidki ka
+    // waqt AAKHRI nazar (lastSeenAt) par — pata render
+    // se pehle pehli dafa dikha ho lekin attempt ke
+    // dauraan dobara dikhta raha ho to wo is task ka
+    // hi hai; sirf pehli nazar par shart lagane se wo
+    // hamesha ke liye bahar ho jata tha.
+    const seenAt = Number.isFinite(s.lastSeenAt) ? s.lastSeenAt
+      : (Number.isFinite(s.firstSeenAt) ? s.firstSeenAt
+        : (Number.isFinite(s.at) ? s.at : 0));
     if (!(seenAt > 0)) continue;
     if (renderDoneAt !== null && seenAt < renderDoneAt - 5000) continue;
     if (deadline !== null && seenAt > deadline) continue;
-    inWindow.push({ url: s.url, clen: Math.floor(s.clen), itag: typeof s.itag === 'string' ? s.itag : '', firstSeenAt: seenAt });
+    inWindow.push({ url: s.url, clen: Math.floor(s.clen), itag: typeof s.itag === 'string' ? s.itag : '', firstSeenAt: Number.isFinite(s.firstSeenAt) ? s.firstSeenAt : seenAt });
   }
   if (inWindow.length === 0) return null;
   if (pendingOthers > 0) return { skip: 'pending-others', count: inWindow.length };

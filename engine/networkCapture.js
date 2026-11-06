@@ -1378,8 +1378,13 @@ class NetworkCapture {
                     this._checkMintCarries((batchMeta && batchMeta.method) || 'POST', 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute', null, buf, this._reqTemplateFromCdpMeta(batchMeta));
                   }
                 } catch (err) {}
+                // v2.48.54 (GEMINI ZIP-REVIEW fix 4): asal
+                // darkhwast ka URL do (us me ?rpcids= hota
+                // hai) — warna is raaste ke jawabon par
+                // rpcidsOf hamesha khali aur rpc-video-urls
+                // line me rpcid=- chhapta tha.
                 this.ingestResponse({
-                  url: 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute',
+                  url: (batchMeta && batchMeta.reqUrl) || 'https://flow.google.com/_/AiSandboxAngularFrontend/data/batchexecute',
                   contentType: 'application/json',
                   bodyBuffer: buf,
                   at: Date.now()
@@ -2433,11 +2438,21 @@ class NetworkCapture {
         if (typeof u !== 'string' || !u) continue;
         const info = rpcVideoUrlInfo(u);
         if (!info) continue;
-        if (this._rpcVideoSeen.has(u)) continue;
+        if (this._rpcVideoSeen.has(u)) {
+          // v2.48.54 (GEMINI ZIP-REVIEW fix 2): dobara
+          // nazar — nayi entry nahi, lekin maujooda
+          // entry ki lastSeenAt taza karo (pick ki
+          // khidki isi par chalti hai; warna render se
+          // pehle dikha pata hamesha ke liye bahar ho
+          // jata tha).
+          const prev = this._rpcVideoSightings.find(x => x.url === u);
+          if (prev) prev.lastSeenAt = now;
+          continue;
+        }
         this._rpcVideoSeen.add(u);
         const entry = {
           url: u, clen: info.clen, itag: info.itag,
-          firstSeenAt: now, consumedBy: null
+          firstSeenAt: now, lastSeenAt: now, consumedBy: null
         };
         this._rpcVideoSightings.push(entry);
         while (this._rpcVideoSightings.length > 50) this._rpcVideoSightings.shift();
@@ -2562,6 +2577,18 @@ class NetworkCapture {
           label: claim.label != null ? String(claim.label) : null
         });
       }
+      // v2.48.54 (GEMINI ZIP-REVIEW fix 1): ye pata ab
+      // kisi task ke naam bandh gaya — rpc-body kitab
+      // me bhi use consumed darj karo, warna agli task
+      // ka rpcfeed pick use phir ummeedwaar samajh kar
+      // 'ambiguous' ho sakta tha (ya duplicate utha
+      // sakta tha).
+      try {
+        const rpcEntry = this._rpcVideoSightings.find(x => x.url === url);
+        if (rpcEntry && !rpcEntry.consumedBy) {
+          rpcEntry.consumedBy = claim && claim.key != null ? String(claim.key) : 'claimed';
+        }
+      } catch (e2) {}
     } catch (e) {}
   }
 
@@ -2594,7 +2621,15 @@ class NetworkCapture {
       const t = Number.isFinite(start) ? start : Date.now();
       const prev = this.mainpageWindows.get(key);
       if (!prev) this.mainpageWindows.set(key, { start: t, done: false });
-      else if (t < prev.start) prev.start = t;
+      else {
+        if (t < prev.start) prev.start = t;
+        // v2.48.54 (fix 3 ka saathi): band khidki wali
+        // task dobara koshish par aaye (Resume/sweep) to
+        // khidki phir khul jati hai — band hona sirf us
+        // marhale ke settle par tha, hamesha ke liye
+        // nahi.
+        if (prev.done) prev.done = false;
+      }
       for (const [k, w] of this.mainpageWindows) {
         if (k !== key && Number.isFinite(w.start) && t - w.start > 6 * 60 * 60 * 1000) {
           this.mainpageWindows.delete(k);

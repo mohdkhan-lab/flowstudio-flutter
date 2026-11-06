@@ -167,6 +167,14 @@ function ok(name, cond) {
   eq('RPC two in-window candidates are ambiguous', amb && amb.skip, 'ambiguous');
   const edge = mainpageRpcBodyPick({ ...base, sightings: [S({ firstSeenAt: 90000 })] });
   ok('RPC window start is renderDoneAt-5000 inclusive', !!edge && !!edge.url);
+  // v2.48.54 (fix 1b): claimedUrls — claimed pata ummeedwaar hi nahi
+  eq('RPC claimed url is skipped', mainpageRpcBodyPick({ ...base, claimedUrls: new Set([S().url]) }), null);
+  const afterClaim = mainpageRpcBodyPick({ ...base, sightings: [S(), S({ url: 'https://rr5---sn-y.googlevideo.com/videoplayback?id=b&itag=18&clen=1200000', clen: 1200000, firstSeenAt: 101000 })], claimedUrls: new Set([S().url]) });
+  ok('RPC claimed first url leaves the fresh one pickable', !!afterClaim && afterClaim.clen === 1200000);
+  // v2.48.54 (fix 2): khidki aakhri nazar (lastSeenAt) par chalti hai
+  const refreshed = mainpageRpcBodyPick({ ...base, sightings: [S({ firstSeenAt: 80000, lastSeenAt: 100000 })] });
+  ok('RPC old first-seen but fresh last-seen is picked', !!refreshed && !!refreshed.url);
+  eq('RPC old first AND last seen is skipped', mainpageRpcBodyPick({ ...base, sightings: [S({ firstSeenAt: 80000, lastSeenAt: 85000 })] }), null);
 }
 
 console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

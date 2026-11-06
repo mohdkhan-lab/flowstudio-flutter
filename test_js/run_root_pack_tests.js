@@ -934,6 +934,9 @@ async function main() {
     eq('BIND-NC a fresh window pends again', nc.mainpagePendingOthers('k-w1'), 1);
     nc.mainpageMarkWindowDone('k-w3');
     eq('BIND-NC a done window is no longer pending', nc.mainpagePendingOthers('k-w1'), 0);
+    nc.mainpageNoteWindow('k-w3', t1 + 4000);
+    eq('BIND-NC a re-noted done window pends again (.54 fix-3 saathi)', nc.mainpagePendingOthers('k-w1'), 1);
+    nc.mainpageMarkWindowDone('k-w3');
     const nc2 = new NetworkCapture({});
     nc2.noteRenderCompleted('k-rc');
     eq('BIND-NC render-complete registers the window', nc2.mainpageWindowsList().length, 1);
@@ -3678,6 +3681,19 @@ async function main() {
     eq('X-NOTE consume marks the sighting', (capX.mainpageRpcBodySightings().find(s => s.url === full) || {}).consumedBy, 'task-key-1');
     sights[0].consumedBy = 'mutated-copy';
     eq('X-NOTE sightings copies do not leak inside', (capX.mainpageRpcBodySightings().find(s => s.url === prev) || {}).consumedBy, null);
+
+    // v2.48.54 (fix 2): repeat nazar par lastSeenAt taza hoti
+    // hai, pehli nazar ka waqt barkarar rehta hai; (fix 1)
+    // claim par bhi rpc kitab me consumed darj hota hai.
+    const capY = new NetworkCapture({});
+    capY._noteRpcVideoUrls([full], ['abc'], 200000);
+    capY._noteRpcVideoUrls([full], ['abc'], 206000);
+    const ySights = capY.mainpageRpcBodySightings();
+    eq('X-NOTE54 repeat keeps one sighting', ySights.length, 1);
+    eq('X-NOTE54 first-seen preserved on repeat', ySights[0] && ySights[0].firstSeenAt, 200000);
+    eq('X-NOTE54 last-seen refreshed on repeat', ySights[0] && ySights[0].lastSeenAt, 206000);
+    capY.claimMainpageVideo(full, { key: 'task-key-9', label: '9' });
+    eq('X-NOTE54 claim marks the rpc sighting consumed', (capY.mainpageRpcBodySightings().find(sg => sg.url === full) || {}).consumedBy, 'task-key-9');
 
     // Fetch rewrite ki khabar: sirf asal badlaav par, host/origRange/stripped ke saath.
     const flushX = () => new Promise(r => setTimeout(r, 15));

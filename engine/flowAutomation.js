@@ -5455,6 +5455,25 @@ class FlowAutomationEngine {
         }
       } catch (e) {}
     }
+    // v2.48.54 (GEMINI ZIP-REVIEW fix 3): aakhri
+    // round bhi fail — is task ki mainpage khidki AB
+    // band karo. Pehle khidki sirf save par band
+    // hoti thi; fail par wo khuli reh jati aur baad
+    // wali tasks ke rpcfeed/binding hisaab me ye
+    // PARK ho chuki task hamesha 'pending' ginni
+    // jati thi. Asal pending tasks ki reservation
+    // barkarar hai — ye band sirf settle ke baad
+    // hota hai, aur dobara koshish (Resume/sweep)
+    // par khidki phir khul jati hai (noteWindow).
+    try {
+      if (result && !result.ok && !task.mediaSaved && roundNo >= ROUND_CAP) {
+        const wKey = task.captureKey || task.videoId || null;
+        if (this.netCapture && wKey && typeof this.netCapture.mainpageMarkWindowDone === 'function') {
+          this.netCapture.mainpageMarkWindowDone(wKey);
+          this.log(`[ROOT] [Prompt #${n}] mainpage-window-closed reason=attempts-exhausted`, 'info');
+        }
+      }
+    } catch (e) {}
     return result;
   }
 
@@ -6291,6 +6310,31 @@ class FlowAutomationEngine {
       if (!st) return;
       const myKey = task && (task.captureKey || task.videoId) ? String(task.captureKey || task.videoId) : String(task && Number.isFinite(task.promptIndex) ? task.promptIndex : '');
       if (st.key && myKey && st.key === myKey) return;
+      await this._exitMainpageHoverState();
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.54 (GEMINI ZIP-REVIEW fix 5 — hissa):
+   * apni hi tile ka hover bhi harvest khatam hote
+   * hi chhodo — agli task ki baari tak pointer wahi
+   * chipka na rahe (ZC23 me #1 ke save ke baad ~11s
+   * wahi ruka raha tha).
+   */
+  async _exitOwnMainpageHover(task) {
+    try {
+      const st = this._mpHoverState;
+      if (!st) return;
+      const myKey = task && (task.captureKey || task.videoId) ? String(task.captureKey || task.videoId) : String(task && Number.isFinite(task.promptIndex) ? task.promptIndex : '');
+      if (!st.key || !myKey || st.key !== myKey) return;
+      await this._exitMainpageHoverState();
+    } catch (e) {}
+  }
+
+  async _exitMainpageHoverState() {
+    try {
+      const st = this._mpHoverState;
+      if (!st) return;
       this._mpHoverState = null;
       if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return;
       try {
@@ -6354,6 +6398,19 @@ class FlowAutomationEngine {
           try { el.dispatchEvent(new MouseEvent('mouseover', opts)); } catch (e) {}
           try { el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false, cancelable: true, view: window })); } catch (e) {}
           try { el.dispatchEvent(new MouseEvent('mousemove', opts)); } catch (e) {}
+          // v2.48.54 (GEMINI ZIP-REVIEW fix 5 — polish):
+          // PointerEvent wale ishare bhi (kuch grid
+          // handlers sirf yahi sunte hain) + tile ke
+          // <video> ko muted play — player apni stream
+          // kheenchna shuru kare to capture use dekhta
+          // hai. Click kabhi nahi, kuch khulta nahi.
+          try { el.dispatchEvent(new PointerEvent('pointerover', opts)); } catch (e) {}
+          try { el.dispatchEvent(new PointerEvent('pointerenter', { bubbles: false, cancelable: true, view: window })); } catch (e) {}
+          try { el.dispatchEvent(new PointerEvent('pointermove', opts)); } catch (e) {}
+          try {
+            const vid = el.querySelector('video');
+            if (vid) { vid.muted = true; const pr = vid.play(); if (pr && typeof pr.catch === 'function') pr.catch(() => {}); }
+          } catch (e) {}
           return true;
         } catch (e) { return false; }
       }, idx);
@@ -6389,7 +6446,10 @@ class FlowAutomationEngine {
         } catch (e) { return null; }
       }, idx);
       if (!pt || !Number.isFinite(pt.x) || !Number.isFinite(pt.y)) return false;
-      await this.page.mouse.move(pt.x, pt.y);
+      // v2.48.54 (fix 5 — polish): kenare se wast tak
+      // naram harkat (steps) — teleport par kuch hover
+      // handlers jaagte hi nahi.
+      await this.page.mouse.move(pt.x, pt.y, { steps: 5 });
       // v2.48.53 (CLEAN HOVER-EXIT): ye tile ab is
       // engine ki 'hover wali tile' hai — agli task ki
       // harvest se pehle _exitPrevMainpageHover isi
@@ -8027,6 +8087,88 @@ class FlowAutomationEngine {
     // v2.48.53 (CLEAN HOVER-EXIT): is task ki watch
     // se pehle pichhli tile se saaf exit (pause +
     // pointer bahar + saans) — §5.5 rank 2.
+    // v2.48.54 (RPC-BODY FEED — bandha hua helper):
+    // .53 me ye mauqa sirf hover watch ke BAAD milta
+    // tha; ab wahi mauqa watch se PEHLE bhi ek dafa
+    // milta hai — batchexecute jawab me pata pehle se
+    // maujood ho to UI trigger ka intezaar hi khatam.
+    // Shartein bilkul wahi sakht hain (saveGuard.
+    // mainpageRpcBodyPick): khidki + akela ummeedwaar
+    // + koi aur pending download nahi + claimed/tried/
+    // teacher na ho; shart tootne par sirf 'skipped'
+    // line. Lautta hai: true (save ho gaya) | false.
+    const tryRpcFeed = async (deadline) => {
+      try {
+        const rpcSightings = typeof cap.mainpageRpcBodySightings === 'function'
+          ? cap.mainpageRpcBodySightings() : [];
+        if (rpcSightings.length && !this.isStopping && !task.mediaSaved) {
+          const pendingOthersRpc = typeof cap.mainpagePendingOthers === 'function'
+            ? cap.mainpagePendingOthers(captureKey) : 0;
+          // v2.48.54 (fix 1 ka dusra hissa): jo pate
+          // pehle hi kisi task ke naam claimed hain wo
+          // ummeedwaar hi nahi — pick ko un ki fehrist
+          // bhi do (claim par kitab me consumed darj
+          // hona is ke saath dusri hifazat hai).
+          const claimedUrls = new Set();
+          try {
+            if (typeof cap.isMainpageClaimed === 'function') {
+              for (const sg of rpcSightings) {
+                if (sg && sg.url && cap.isMainpageClaimed(sg.url)) claimedUrls.add(sg.url);
+              }
+            }
+          } catch (e) {}
+          const rpcPick = saveGuard.mainpageRpcBodyPick({
+            sightings: rpcSightings,
+            triedUrls,
+            claimedUrls,
+            teacherUrl,
+            renderDoneAt: Number.isFinite(task.renderCompletedAt) ? task.renderCompletedAt : null,
+            attemptDeadline: deadline,
+            pendingOthers: pendingOthersRpc
+          });
+          if (rpcPick && rpcPick.skip) {
+            this.log(`[ROOT] [Prompt #${n}] mainpage-rpcfeed skipped reason=${rpcPick.skip}`, 'warn');
+            return false;
+          }
+          if (rpcPick && rpcPick.url) {
+            try { if (typeof cap.mainpageMarkRpcBodyConsumed === 'function') cap.mainpageMarkRpcBodyConsumed(rpcPick.url, captureKey || task.captureKey || task.videoId || null); } catch (e) {}
+            this.log(`[ROOT] [Prompt #${n}] mainpage-rpcfeed host=${networkCapture.hostOf(rpcPick.url) || ''} clen=${rpcPick.clen}`, 'info');
+            const rpcRes = await this._netloadMainpageFull(task, rpcPick.url);
+            if (rpcRes && rpcRes.buf && !task.mediaSaved) {
+              const rpcEntry = {
+                url: rpcPick.url,
+                src: 'googlevideo',
+                byteLength: rpcRes.buf.length,
+                headerOk: true,
+                partial: true,
+                status: rpcRes.status || 0,
+                contentRange: '',
+                declaredLength: 0,
+                knownTotal: rpcPick.clen,
+                duplicate: false,
+                hash: null,
+                teacherHash,
+                bound: true,
+                bodyBytes: rpcRes.buf.length,
+                at: Date.now(),
+                firstSeenAt: rpcPick.firstSeenAt,
+                seq: null,
+                claimedBy: null,
+                _netloadBody: rpcRes.buf,
+                _netloadMeta: rpcRes,
+                _noInPageFetch: true
+              };
+              const rpcOutcome = await completeTracked(rpcEntry, 'rpc-body-netload');
+              if (rpcOutcome === 'saved' || task.mediaSaved) return true;
+            }
+          }
+        }
+      } catch (e) {}
+      return false;
+    };
+    // Watch se PEHLE wala mauqa — pata pehle se kitab
+    // me ho to hover ka intezaar hi nahi.
+    try { if (await tryRpcFeed(watchDeadline)) return true; } catch (e) {}
     try { await this._exitPrevMainpageHover(task); } catch (e) {}
     const scrolled = await this._scrollMainpageTileIntoView(task, tileIndexHint);
     this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: hover trigger level=scroll (this video's tile ${scrolled ? 'was scrolled' : 'could not be scrolled'} into view on the main page; nothing opened, nothing clicked); watching up to ${Math.max(1, Math.round((watchDeadline - watchStart) / 1000))}s for its stream`, 'info');
@@ -8073,69 +8215,12 @@ class FlowAutomationEngine {
       if (r === 'saved') return true;
       if (r === 'ambiguous') return failOut();
     }
-    // v2.48.53 (RPC-BODY FEED — Gemini brief-2
-    // §5.1/§5.3): bandhan tak kuch pahuncha hi nahi,
-    // lekin batchexecute jawab ke andar is task ki
-    // khidki me koi POORA (clen >= 500,000) googlevideo
-    // pata pehle se aa chuka ho to failOut se pehle
-    // usi pate par NETLOAD (Route 1A) ko EK mauqa do —
-    // UI trigger ka intezaar hi khatam. Attribution
-    // saveGuard.mainpageRpcBodyPick ki sakht sharton
-    // par hai (khidki + akela ummeedwaar + koi aur
-    // pending download nahi); shartain puri na hon to
-    // sirf 'skipped' line — pata haath nahi lagta.
-    // Body mil jaye to wahi bandhi-entry wali
-    // completion (saare darwaze bilkul waisi hi).
-    try {
-      const rpcSightings = typeof cap.mainpageRpcBodySightings === 'function'
-        ? cap.mainpageRpcBodySightings() : [];
-      if (rpcSightings.length && !this.isStopping && !task.mediaSaved) {
-        const pendingOthersRpc = typeof cap.mainpagePendingOthers === 'function'
-          ? cap.mainpagePendingOthers(captureKey) : 0;
-        const rpcPick = saveGuard.mainpageRpcBodyPick({
-          sightings: rpcSightings,
-          triedUrls,
-          teacherUrl,
-          renderDoneAt: Number.isFinite(task.renderCompletedAt) ? task.renderCompletedAt : null,
-          attemptDeadline: watchDeadline,
-          pendingOthers: pendingOthersRpc
-        });
-        if (rpcPick && rpcPick.skip) {
-          this.log(`[ROOT] [Prompt #${n}] mainpage-rpcfeed skipped reason=${rpcPick.skip}`, 'warn');
-        } else if (rpcPick && rpcPick.url) {
-          try { if (typeof cap.mainpageMarkRpcBodyConsumed === 'function') cap.mainpageMarkRpcBodyConsumed(rpcPick.url, captureKey || task.captureKey || task.videoId || null); } catch (e) {}
-          this.log(`[ROOT] [Prompt #${n}] mainpage-rpcfeed host=${networkCapture.hostOf(rpcPick.url) || ''} clen=${rpcPick.clen}`, 'info');
-          const rpcRes = await this._netloadMainpageFull(task, rpcPick.url);
-          if (rpcRes && rpcRes.buf && !task.mediaSaved) {
-            const rpcEntry = {
-              url: rpcPick.url,
-              src: 'googlevideo',
-              byteLength: rpcRes.buf.length,
-              headerOk: true,
-              partial: true,
-              status: rpcRes.status || 0,
-              contentRange: '',
-              declaredLength: 0,
-              knownTotal: rpcPick.clen,
-              duplicate: false,
-              hash: null,
-              teacherHash,
-              bound: true,
-              bodyBytes: rpcRes.buf.length,
-              at: Date.now(),
-              firstSeenAt: rpcPick.firstSeenAt,
-              seq: null,
-              claimedBy: null,
-              _netloadBody: rpcRes.buf,
-              _netloadMeta: rpcRes,
-              _noInPageFetch: true
-            };
-            const rpcOutcome = await completeTracked(rpcEntry, 'rpc-body-netload');
-            if (rpcOutcome === 'saved' || task.mediaSaved) return true;
-          }
-        }
-      }
-    } catch (e) {}
+    // v2.48.54: rpc-feed mauqa ab bandha hua helper
+    // (tryRpcFeed, upar) hai — watch ke baad ki ye
+    // jagah barkarar hai, waisa hi mauqa watch se
+    // PEHLE bhi milta hai.
+    try { if (await tryRpcFeed(watchDeadline)) return true; } catch (e) {}
+
     // v2.48.49 (TOO-SMALL MEDIA-LOAD MAUQA —
     // ZEROCLICK16): bandhan tak kuch pahuncha hi
     // nahi, lekin is attempt ki khidki me is task ki
@@ -9073,6 +9158,9 @@ class FlowAutomationEngine {
           attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'the main-page harvest hit a problem — grid replay ran next' });
           return false;
         }
+        // v2.48.54 (fix 5 — hissa): mainpage marhala
+        // khatam — is task ka hover isi pal chhodo.
+        finally { try { await this._exitOwnMainpageHover(task); } catch (e) {} }
       })();
       await Promise.all([hhRun, mpRun]);
       task._raceActive = false;

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
+import 'tactile_components.dart';
 import '../providers/accounts_provider.dart';
 import '../providers/settings_provider.dart';
 import '../models/account.dart';
@@ -44,7 +45,13 @@ class SidebarAccounts extends StatefulWidget {
 }
 
 class _SidebarAccountsState extends State<SidebarAccounts> {
-  String _selectedFilter = 'all'; // all, checking, live, fail
+  final ScrollController _accountsScrollController = ScrollController();
+
+  @override
+  void dispose() {
+    _accountsScrollController.dispose();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -59,22 +66,30 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     final checkingCount = allAccounts.where((a) => a.status == AccountStatus.checking).length;
     // v2.46.0: Live ki ginati bhi file-scope wali asal pehchan se.
     final liveCount = allAccounts.where(_isLiveAcc).length;
-    // v2.29.0: a "Need Login" account is NOT a failure — it is
-    // excluded from the Fail count/filter and gets its own amber
-    // LOGIN chip (it used to be lumped into FAIL by its 0 credits).
-    // v2.46.0: FAIL ab SIRF asal problem hai (engine ka error) —
-    // credits khatam (outOfCredits) ya kam (lowCredits) FAIL nahi
-    // hain; un ke apne lafz hain (No Credits / Low Credits).
-    bool isFail(GoogleAccount a) => a.status == AccountStatus.error;
+    final loginRequiredCount = allAccounts.where((a) => a.status == AccountStatus.loginRequired).length;
+    bool isFail(GoogleAccount a) => a.status == AccountStatus.error || a.status == AccountStatus.disabled;
     final failCount = allAccounts.where(isFail).length;
 
+    // v2.49.0 (Option 2: Smart Dynamic Adaptive Filter):
+    // Verification ke dauran checkingCount > 0 ➔ 3rd box "Checking" (Pulse 🔵) dikhata hai.
+    // Idle time par ➔ 3rd box "Expired" (Login Required 🟡) dikhata hai.
+    final isCheckingNow = checkingCount > 0;
+    final thirdKey = isCheckingNow ? 'checking' : 'login';
+    final thirdLabel = isCheckingNow ? 'Checking' : 'Expired';
+    final thirdCount = isCheckingNow ? checkingCount : loginRequiredCount;
+    final selectedFilter = settingsProv.selectedAccountFilter;
+
     final visibleAccounts = allAccounts.where((acc) {
-      if (_selectedFilter == 'checking') return acc.status == AccountStatus.checking;
-      if (_selectedFilter == 'live') return _isLiveAcc(acc);
-      if (_selectedFilter == 'fail') return isFail(acc);
+      if (selectedFilter == 'checking') return acc.status == AccountStatus.checking;
+      if (selectedFilter == 'live') return _isLiveAcc(acc);
+      if (selectedFilter == 'login' || selectedFilter == 'expired') {
+        return acc.status == AccountStatus.loginRequired;
+      }
+      if (selectedFilter == 'fail') return isFail(acc);
       return true;
     }).toList();
 
+    final allSelected = allAccounts.isNotEmpty && allAccounts.every((a) => a.isChecked);
     final selectedCount = allAccounts.where((a) => a.isChecked).length;
 
     return Container(
@@ -118,16 +133,46 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
 
           const SizedBox(height: 4),
 
-          // v2.27.0 (design): filter boxes — label on top, big count below.
+          // v2.49.0 (Option 2: Smart Dynamic Adaptive Filter Grid):
+          // Order: All | Live | Checking (in-flight) / Expired (idle) | Fail
           Row(
             children: [
-              _buildFilterBtn('All', allAccounts.length, 'all'),
+              _buildFilterBtn(
+                context,
+                'All',
+                allAccounts.length,
+                'all',
+                tooltip: 'Show all ${allAccounts.length} cookies',
+              ),
               const SizedBox(width: 5),
-              _buildFilterBtn('Checking', checkingCount, 'checking'),
+              _buildFilterBtn(
+                context,
+                'Live',
+                liveCount,
+                'live',
+                accentColor: AppTheme.green,
+                tooltip: 'Show $liveCount generation-ready cookies',
+              ),
               const SizedBox(width: 5),
-              _buildFilterBtn('Live', liveCount, 'live'),
+              _buildFilterBtn(
+                context,
+                thirdLabel,
+                thirdCount,
+                thirdKey,
+                accentColor: isCheckingNow ? const Color(0xFF38BDF8) : const Color(0xFFF5B301),
+                tooltip: isCheckingNow
+                    ? '$checkingCount cookies currently verifying'
+                    : '$loginRequiredCount expired cookies requiring login',
+              ),
               const SizedBox(width: 5),
-              _buildFilterBtn('Fail', failCount, 'fail'),
+              _buildFilterBtn(
+                context,
+                'Fail',
+                failCount,
+                'fail',
+                accentColor: AppTheme.red,
+                tooltip: 'Show $failCount failed or invalid cookies',
+              ),
             ],
           ),
 
@@ -141,7 +186,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
           // phaila rehta tha aur lines ke neeche bari khaali
           // jagah dikhti thi. Zyada accounts hon to hissa
           // uplabdh jagah par ruk kar andar scroll karta hai.
-          Flexible(
+          Expanded(
             child: Container(
               // v2.30.0: 4 (was 6) — more of the row's width budget
               // goes to the account name column (see the row below).
@@ -152,20 +197,22 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                 border: Border.all(color: AppTheme.borderSoft),
               ),
               child: visibleAccounts.isEmpty
-                  ? Center(
-                      child: Text(
-                        allAccounts.isEmpty
-                            ? 'No accounts yet — press "+ Add Cookies" above, or "+ Add Account" below to sign in.'
-                            : 'No accounts in this state.',
-                        textAlign: TextAlign.center,
-                        style: TextStyle(fontSize: 11, color: AppTheme.textFaint),
-                      ),
-                    )
-                  : ListView.separated(
-                      shrinkWrap: true,
-                      itemCount: visibleAccounts.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 6),
-                      itemBuilder: (context, index) {
+                  ? (allAccounts.isEmpty
+                      ? _buildEmptyAccountsState(context, accountsProv)
+                      : _buildEmptyFilterState(context, settingsProv, selectedFilter))
+                  : RawScrollbar(
+                      controller: _accountsScrollController,
+                      thumbVisibility: true,
+                      thickness: 3.5,
+                      radius: const Radius.circular(3),
+                      thumbColor: AppTheme.accentGold.withValues(alpha: 0.45),
+                      minThumbLength: 30,
+                      child: ListView.separated(
+                        controller: _accountsScrollController,
+                        shrinkWrap: false,
+                        itemCount: visibleAccounts.length,
+                        separatorBuilder: (_, _) => const SizedBox(height: 6),
+                        itemBuilder: (context, index) {
                         final acc = visibleAccounts[index];
                         final word = _statusWord(acc);
                         final browserOn = acc.isActive && acc.browserShown;
@@ -364,28 +411,33 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                   // toggle, baaki par Chrome kholna;
                                   // parked browser screen par ho to
                                   // kinara neela ("on" look).
-                                  InkWell(
-                                    onTap: () => acc.isActive
-                                        ? accountsProv.toggleBrowser(acc.id)
-                                        : accountsProv.openChrome(acc.id),
-                                    customBorder: const CircleBorder(),
-                                    child: Container(
-                                      // v2.46.7 (owner ke tuner
-                                      // numbers): button 34 -> 26.
-                                      width: 26,
-                                      height: 26,
-                                      alignment: Alignment.center,
-                                      decoration: BoxDecoration(
-                                        color: AppTheme.surfaceElevated,
-                                        shape: BoxShape.circle,
-                                        border: Border.all(
-                                          color: browserOn ? AppTheme.blue : AppTheme.borderSoft,
+                                  Tooltip(
+                                    message: acc.isActive
+                                        ? 'Toggle Chrome window'
+                                        : 'Open Chrome profile in browser',
+                                    child: InkWell(
+                                      onTap: () => acc.isActive
+                                          ? accountsProv.toggleBrowser(acc.id)
+                                          : accountsProv.openChrome(acc.id),
+                                      customBorder: const CircleBorder(),
+                                      child: Container(
+                                        // v2.46.7 (owner ke tuner
+                                        // numbers): button 34 -> 26.
+                                        width: 26,
+                                        height: 26,
+                                        alignment: Alignment.center,
+                                        decoration: BoxDecoration(
+                                          color: AppTheme.surfaceElevated,
+                                          shape: BoxShape.circle,
+                                          border: Border.all(
+                                            color: browserOn ? AppTheme.accentGold : AppTheme.borderSoft,
+                                          ),
                                         ),
-                                      ),
-                                      child: Icon(
-                                        Icons.north_east,
-                                        size: 12,
-                                        color: AppTheme.accentText,
+                                        child: Icon(
+                                          Icons.north_east,
+                                          size: 12,
+                                          color: AppTheme.accentText,
+                                        ),
                                       ),
                                     ),
                                   ),
@@ -396,6 +448,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                         );
                       },
                     ),
+                  ),
             ),
           ),
 
@@ -413,6 +466,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                   Expanded(
                     child: _HoverActionGridBtn(
                       label: 'Sync Selected',
+                      tooltip: 'Sync cookies and credits for selected accounts',
                       isDim: selectedCount == 0,
                       onTap: selectedCount > 0 ? () => accountsProv.syncSelected() : null,
                     ),
@@ -421,6 +475,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                   Expanded(
                     child: _HoverActionGridBtn(
                       label: 'Delete Selected',
+                      tooltip: 'Delete selected accounts from storage',
                       isDim: selectedCount == 0,
                       isRed: true,
                       onTap: selectedCount > 0 ? () => _confirmDeleteSelected(context) : null,
@@ -434,6 +489,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                   Expanded(
                     child: _HoverActionGridBtn(
                       label: 'Verify All',
+                      tooltip: 'Check status and credits of all accounts in parallel',
                       isDim: false,
                       onTap: () => accountsProv.syncAll(),
                     ),
@@ -441,9 +497,18 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                   const SizedBox(width: 6),
                   Expanded(
                     child: _HoverActionGridBtn(
-                      label: 'Clear Selection',
-                      isDim: false,
-                      onTap: () => accountsProv.clearSelection(),
+                      label: allSelected ? 'Deselect All' : 'Select All',
+                      tooltip: allSelected ? 'Deselect all accounts' : 'Select all accounts',
+                      isDim: allAccounts.isEmpty,
+                      onTap: allAccounts.isEmpty
+                          ? null
+                          : () {
+                              if (allSelected) {
+                                accountsProv.clearSelection();
+                              } else {
+                                accountsProv.selectAll();
+                              }
+                            },
                     ),
                   ),
                 ],
@@ -496,13 +561,133 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
 
   // v2.27.0 (design): filter box — small label on top, big count below;
   // the selected box carries the accent border + a tinted background.
-  Widget _buildFilterBtn(String label, int count, String key) {
-    final isActive = _selectedFilter == key;
+  Widget _buildFilterBtn(
+    BuildContext context,
+    String label,
+    int count,
+    String key, {
+    Color? accentColor,
+    String? tooltip,
+  }) {
+    final settingsProv = context.watch<SettingsProvider>();
+    final isActive = settingsProv.selectedAccountFilter == key;
     return _HoverFilterBtn(
       label: label,
       count: count,
       isActive: isActive,
-      onTap: () => setState(() => _selectedFilter = key),
+      accentColor: accentColor,
+      tooltip: tooltip,
+      onTap: () => context.read<SettingsProvider>().setSelectedAccountFilter(key),
+    );
+  }
+
+  // v2.49.0: Modern Aesthetic Empty-State Card when 0 accounts exist
+  Widget _buildEmptyAccountsState(BuildContext context, AccountsProvider accountsProv) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 44,
+              height: 44,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppTheme.accentGold.withValues(alpha: 0.12),
+                border: Border.all(color: AppTheme.borderHighlight),
+              ),
+              child: Icon(
+                Icons.cookie_outlined,
+                size: 22,
+                color: AppTheme.accentGold,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'No Accounts Loaded',
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.w800,
+                color: AppTheme.textMain,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'Import JSON or Netscape cookies to begin generating.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 10.5,
+                color: AppTheme.textFaint,
+                height: 1.4,
+              ),
+            ),
+            const SizedBox(height: 14),
+            TactileButton(
+              type: TactileType.primary,
+              height: 32,
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              label: '+ Import Cookies',
+              onTap: () => accountsProv.pickAndImportCookieFiles(),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // v2.49.0: Modern Aesthetic Empty-State Card when a filter has 0 matches
+  Widget _buildEmptyFilterState(BuildContext context, SettingsProvider settingsProv, String filterName) {
+    final displayFilter = filterName.toUpperCase();
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppTheme.overlay10,
+                border: Border.all(color: AppTheme.borderSoft),
+              ),
+              child: Icon(
+                Icons.filter_list_off_rounded,
+                size: 20,
+                color: AppTheme.textDim,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              'No $displayFilter Accounts',
+              style: TextStyle(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+                color: AppTheme.textMain,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              'No accounts currently match this filter.',
+              textAlign: TextAlign.center,
+              style: TextStyle(
+                fontSize: 10,
+                color: AppTheme.textFaint,
+              ),
+            ),
+            const SizedBox(height: 12),
+            TactileButton(
+              type: TactileType.secondary,
+              height: 28,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              label: 'Show All Accounts',
+              onTap: () => settingsProv.setSelectedAccountFilter('all'),
+            ),
+          ],
+        ),
+      ),
     );
   }
 
@@ -580,17 +765,23 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
         title: Text('Delete Selected Accounts', style: TextStyle(fontSize: 14, color: AppTheme.textMain)),
         content: Text('Are you sure you want to delete all selected accounts from FlowStudio?', style: TextStyle(fontSize: 12, color: AppTheme.textDim)),
         actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx),
-            child: Text('Cancel', style: TextStyle(color: AppTheme.textDim)),
+          TactileButton(
+            type: TactileType.secondary,
+            height: 32,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            label: 'Cancel',
+            onTap: () => Navigator.pop(ctx),
           ),
-          ElevatedButton(
-            style: ElevatedButton.styleFrom(backgroundColor: AppTheme.red, foregroundColor: Colors.white),
-            onPressed: () {
+          const SizedBox(width: 8),
+          TactileButton(
+            type: TactileType.danger,
+            height: 32,
+            padding: const EdgeInsets.symmetric(horizontal: 16),
+            label: 'Delete',
+            onTap: () {
               Navigator.pop(ctx);
               context.read<AccountsProvider>().deleteSelected();
             },
-            child: const Text('Delete'),
           ),
         ],
       ),
@@ -852,34 +1043,27 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
               children: [
                 Text('${imported.credits} credits', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppTheme.textDim)),
                 const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: () => context.read<AccountsProvider>().syncAccountById(imported.id),
-                  icon: const Icon(Icons.sync, size: 12),
-                  label: const Text('Sync', style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.bold)),
-                  style: OutlinedButton.styleFrom(
-                    foregroundColor: AppTheme.textMain,
-                    side: BorderSide(color: AppTheme.borderSoft),
-                    padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 3),
-                    visualDensity: VisualDensity.compact,
-                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
-                  ),
+                TactileButton(
+                  type: TactileType.secondary,
+                  height: 24,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  icon: Icons.sync,
+                  iconSize: 12,
+                  label: 'Sync',
+                  onTap: () => context.read<AccountsProvider>().syncAccountById(imported.id),
                 ),
               ],
             ),
           ] else
-            ElevatedButton(
-              onPressed: () async {
+            TactileButton(
+              type: TactileType.primary,
+              height: 28,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              label: 'Import this profile',
+              onTap: () async {
                 await context.read<AccountsProvider>().importChromeProfile(dir);
                 if (context.mounted) Navigator.pop(context);
               },
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppTheme.accentGold,
-                foregroundColor: AppTheme.onAccent,
-                padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 6),
-                visualDensity: VisualDensity.compact,
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(7)),
-              ),
-              child: const Text('Import this profile', style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold)),
             ),
         ],
       ),
@@ -953,46 +1137,49 @@ class _HoverPillBtnState extends State<_HoverPillBtn> {
         _pressed = false;
       }),
       cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTapDown: (_) => setState(() => _pressed = true),
-        onTapUp: (_) => setState(() => _pressed = false),
-        onTapCancel: () => setState(() => _pressed = false),
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-          height: 34,
-          alignment: Alignment.center,
-          transform: Matrix4.translationValues(0, translateY, 0),
-          decoration: BoxDecoration(
-            color: _hovered ? AppTheme.blue.withValues(alpha: 0.18) : AppTheme.overlay08,
-            borderRadius: BorderRadius.circular(17),
-            border: Border.all(
-              color: _hovered ? const Color(0xFF60A5FA) : AppTheme.blue.withValues(alpha: 0.65),
-              width: 1.2,
-            ),
-            boxShadow: [
-              // Style 6: 3D mechanical bevel
-              BoxShadow(
-                color: const Color(0xFF1E3A8A),
-                offset: Offset(0, bevel),
-                blurRadius: 0,
+      child: Tooltip(
+        message: 'Import cookies from file or clipboard',
+        child: GestureDetector(
+          onTapDown: (_) => setState(() => _pressed = true),
+          onTapUp: (_) => setState(() => _pressed = false),
+          onTapCancel: () => setState(() => _pressed = false),
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            height: 34,
+            alignment: Alignment.center,
+            transform: Matrix4.translationValues(0, translateY, 0),
+            decoration: BoxDecoration(
+              color: _hovered ? AppTheme.accentGold.withValues(alpha: 0.18) : AppTheme.overlay08,
+              borderRadius: BorderRadius.circular(17),
+              border: Border.all(
+                color: _hovered ? AppTheme.accentGold : AppTheme.borderHighlight,
+                width: 1.2,
               ),
-              if (_hovered)
+              boxShadow: [
+                // Style 6: 3D mechanical bevel
                 BoxShadow(
-                  color: AppTheme.blue.withValues(alpha: 0.35),
-                  blurRadius: 14,
-                  spreadRadius: 0.5,
-                  offset: const Offset(0, 3.5),
+                  color: AppTheme.bevelPrimary,
+                  offset: Offset(0, bevel),
+                  blurRadius: 0,
                 ),
-            ],
-          ),
-          child: Text(
-            widget.label,
-            style: TextStyle(
-              fontSize: 12,
-              fontWeight: FontWeight.bold,
-              color: _hovered ? Colors.white : AppTheme.accentText,
+                if (_hovered)
+                  BoxShadow(
+                    color: AppTheme.glowPrimary.withValues(alpha: 0.35),
+                    blurRadius: 14,
+                    spreadRadius: 0.5,
+                    offset: const Offset(0, 3.5),
+                  ),
+              ],
+            ),
+            child: Text(
+              widget.label,
+              style: TextStyle(
+                fontSize: 12,
+                fontWeight: FontWeight.bold,
+                color: _hovered ? Colors.white : AppTheme.accentText,
+              ),
             ),
           ),
         ),
@@ -1043,21 +1230,21 @@ class _HoverRoundAddBtnState extends State<_HoverRoundAddBtn> {
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: _hovered
-                  ? AppTheme.blue.withValues(alpha: 0.25)
-                  : AppTheme.blue.withValues(alpha: 0.12),
+                  ? AppTheme.accentGold.withValues(alpha: 0.25)
+                  : AppTheme.accentGold.withValues(alpha: 0.12),
               border: Border.all(
-                color: _hovered ? const Color(0xFF60A5FA) : AppTheme.blue.withValues(alpha: 0.65),
+                color: _hovered ? AppTheme.accentGold : AppTheme.borderHighlight,
                 width: 1.2,
               ),
               boxShadow: [
                 BoxShadow(
-                  color: const Color(0xFF1E3A8A),
+                  color: AppTheme.bevelPrimary,
                   offset: Offset(0, bevel),
                   blurRadius: 0,
                 ),
                 if (_hovered)
                   BoxShadow(
-                    color: AppTheme.blue.withValues(alpha: 0.35),
+                    color: AppTheme.glowPrimary.withValues(alpha: 0.35),
                     blurRadius: 14,
                     spreadRadius: 0.5,
                     offset: const Offset(0, 3.5),
@@ -1081,12 +1268,16 @@ class _HoverFilterBtn extends StatefulWidget {
   final int count;
   final bool isActive;
   final VoidCallback onTap;
+  final Color? accentColor;
+  final String? tooltip;
 
   const _HoverFilterBtn({
     required this.label,
     required this.count,
     required this.isActive,
     required this.onTap,
+    this.accentColor,
+    this.tooltip,
   });
 
   @override
@@ -1102,76 +1293,83 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
     final isActive = widget.isActive;
     final double translateY = _pressed ? 1.5 : (_hovered ? -2.5 : 0.0);
     final double bevel = _pressed ? 0.8 : (_hovered ? 3.7 : 2.5);
-    final bevelColor = isActive ? const Color(0xFF1E3A8A) : const Color(0xFF0F172A);
+    final bevelColor = isActive ? AppTheme.bevelPrimary : AppTheme.bevelSecondary;
+    final activeTint = widget.accentColor ?? AppTheme.accentGold;
 
     return Expanded(
-      child: MouseRegion(
-        onEnter: (_) => setState(() => _hovered = true),
-        onExit: (_) => setState(() {
-          _hovered = false;
-          _pressed = false;
-        }),
-        cursor: SystemMouseCursors.click,
-        child: GestureDetector(
-          onTapDown: (_) => setState(() => _pressed = true),
-          onTapUp: (_) => setState(() => _pressed = false),
-          onTapCancel: () => setState(() => _pressed = false),
-          onTap: widget.onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOutCubic,
-            padding: const EdgeInsets.symmetric(vertical: 5),
-            alignment: Alignment.center,
-            transform: Matrix4.translationValues(0, translateY, 0),
-            decoration: BoxDecoration(
-              color: isActive
-                  ? AppTheme.blue.withValues(alpha: _hovered ? 0.22 : 0.14)
-                  : (_hovered ? AppTheme.surfaceElevated : AppTheme.overlay08),
-              borderRadius: BorderRadius.circular(8),
-              border: Border.all(
+      child: Tooltip(
+        message: widget.tooltip ?? widget.label,
+        waitDuration: const Duration(milliseconds: 350),
+        child: MouseRegion(
+          onEnter: (_) => setState(() => _hovered = true),
+          onExit: (_) => setState(() {
+            _hovered = false;
+            _pressed = false;
+          }),
+          cursor: SystemMouseCursors.click,
+          child: GestureDetector(
+            onTapDown: (_) => setState(() => _pressed = true),
+            onTapUp: (_) => setState(() => _pressed = false),
+            onTapCancel: () => setState(() => _pressed = false),
+            onTap: widget.onTap,
+            child: AnimatedContainer(
+              duration: const Duration(milliseconds: 180),
+              curve: Curves.easeOutCubic,
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              alignment: Alignment.center,
+              transform: Matrix4.translationValues(0, translateY, 0),
+              decoration: BoxDecoration(
                 color: isActive
-                    ? AppTheme.blue
-                    : (_hovered ? const Color(0xFF60A5FA) : AppTheme.borderSoft),
-                width: isActive ? 1.2 : 1.0,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: bevelColor,
-                  offset: Offset(0, bevel),
-                  blurRadius: 0,
+                    ? activeTint.withValues(alpha: _hovered ? 0.25 : 0.16)
+                    : (_hovered ? AppTheme.surfaceElevated : AppTheme.overlay08),
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(
+                  color: isActive
+                      ? activeTint
+                      : (_hovered ? (widget.accentColor ?? AppTheme.accentAmber) : AppTheme.borderSoft),
+                  width: isActive ? 1.2 : 1.0,
                 ),
-                if (_hovered)
+                boxShadow: [
                   BoxShadow(
-                    color: isActive
-                        ? AppTheme.blue.withValues(alpha: 0.35)
-                        : const Color(0xFF38BDF8).withValues(alpha: 0.25),
-                    blurRadius: 14,
-                    spreadRadius: 0.5,
-                    offset: const Offset(0, 3.5),
+                    color: bevelColor,
+                    offset: Offset(0, bevel),
+                    blurRadius: 0,
                   ),
-              ],
-            ),
-            child: Column(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  widget.label,
-                  style: TextStyle(
-                    fontSize: 9,
-                    fontWeight: FontWeight.w700,
-                    color: isActive ? Colors.white : (_hovered ? Colors.white : AppTheme.textDim),
+                  if (_hovered)
+                    BoxShadow(
+                      color: isActive
+                          ? activeTint.withValues(alpha: 0.35)
+                          : (widget.accentColor ?? AppTheme.glowPrimary).withValues(alpha: 0.25),
+                      blurRadius: 14,
+                      spreadRadius: 0.5,
+                      offset: const Offset(0, 3.5),
+                    ),
+                ],
+              ),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    widget.label,
+                    style: TextStyle(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w700,
+                      color: isActive ? Colors.white : (_hovered ? Colors.white : AppTheme.textDim),
+                    ),
                   ),
-                ),
-                const SizedBox(height: 1),
-                Text(
-                  '${widget.count}',
-                  style: TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w800,
-                    color: isActive ? AppTheme.accentText : (_hovered ? Colors.white : AppTheme.textDim),
+                  const SizedBox(height: 1),
+                  Text(
+                    '${widget.count}',
+                    style: TextStyle(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w800,
+                      color: isActive
+                          ? Colors.white
+                          : (_hovered ? Colors.white : (widget.accentColor ?? AppTheme.textDim)),
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -1244,12 +1442,14 @@ class _HoverableAccountCardState extends State<_HoverableAccountCard> {
 
 class _HoverActionGridBtn extends StatefulWidget {
   final String label;
+  final String? tooltip;
   final bool isDim;
   final bool isRed;
   final VoidCallback? onTap;
 
   const _HoverActionGridBtn({
     required this.label,
+    this.tooltip,
     this.isDim = false,
     this.isRed = false,
     this.onTap,
@@ -1268,8 +1468,7 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
     final enabled = widget.onTap != null;
     final double translateY = (_pressed && enabled) ? 1.5 : ((_hovered && enabled) ? -2.5 : 0.0);
     final double bevel = (_pressed && enabled) ? 0.8 : ((_hovered && enabled) ? 3.7 : 2.5);
-    // Dark mechanical bevel across ALL buttons (no red box bevel!)
-    const bevelColor = Color(0xFF0F172A);
+    final bevelColor = AppTheme.bevelSecondary;
 
     return MouseRegion(
       onEnter: (_) {
@@ -1284,57 +1483,60 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
         }
       },
       cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      child: GestureDetector(
-        onTapDown: (_) {
-          if (enabled) setState(() => _pressed = true);
-        },
-        onTapUp: (_) {
-          if (_pressed) setState(() => _pressed = false);
-        },
-        onTapCancel: () {
-          if (_pressed) setState(() => _pressed = false);
-        },
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-          height: 30,
-          alignment: Alignment.center,
-          transform: Matrix4.translationValues(0, translateY, 0),
-          decoration: BoxDecoration(
-            // Clean dark slate background — NO red fill brick!
-            color: _hovered && enabled ? AppTheme.surfaceElevated : AppTheme.overlay08,
-            borderRadius: BorderRadius.circular(6),
-            border: Border.all(
-              color: _hovered && enabled
-                  ? (widget.isRed ? const Color(0xFFEF4444) : const Color(0xFF60A5FA))
-                  : AppTheme.borderSoft,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: enabled ? bevelColor : Colors.black26,
-                offset: Offset(0, bevel),
-                blurRadius: 0,
+      child: Tooltip(
+        message: widget.tooltip ?? widget.label,
+        child: GestureDetector(
+          onTapDown: (_) {
+            if (enabled) setState(() => _pressed = true);
+          },
+          onTapUp: (_) {
+            if (_pressed) setState(() => _pressed = false);
+          },
+          onTapCancel: () {
+            if (_pressed) setState(() => _pressed = false);
+          },
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            height: 30,
+            alignment: Alignment.center,
+            transform: Matrix4.translationValues(0, translateY, 0),
+            decoration: BoxDecoration(
+              // Clean dark slate background — NO red fill brick!
+              color: _hovered && enabled ? AppTheme.surfaceElevated : AppTheme.overlay08,
+              borderRadius: BorderRadius.circular(6),
+              border: Border.all(
+                color: _hovered && enabled
+                    ? (widget.isRed ? AppTheme.red : AppTheme.accentAmber)
+                    : AppTheme.borderSoft,
               ),
-              if (_hovered && enabled)
+              boxShadow: [
                 BoxShadow(
-                  color: widget.isRed
-                      ? AppTheme.red.withValues(alpha: 0.30)
-                      : const Color(0xFF38BDF8).withValues(alpha: 0.25),
-                  blurRadius: 14,
-                  spreadRadius: 0.5,
-                  offset: const Offset(0, 3.5),
+                  color: enabled ? (widget.isRed ? AppTheme.red.withValues(alpha: 0.3) : bevelColor) : Colors.black26,
+                  offset: Offset(0, bevel),
+                  blurRadius: 0,
                 ),
-            ],
-          ),
-          child: Text(
-            widget.label,
-            style: TextStyle(
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-              color: widget.isRed
-                  ? (widget.isDim ? const Color(0x80F87171) : AppTheme.red)
-                  : (widget.isDim ? AppTheme.textFaint : (_hovered ? Colors.white : AppTheme.textMain)),
+                if (_hovered && enabled)
+                  BoxShadow(
+                    color: widget.isRed
+                        ? AppTheme.red.withValues(alpha: 0.30)
+                        : AppTheme.glowPrimary.withValues(alpha: 0.25),
+                    blurRadius: 14,
+                    spreadRadius: 0.5,
+                    offset: const Offset(0, 3.5),
+                  ),
+              ],
+            ),
+            child: Text(
+              widget.label,
+              style: TextStyle(
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+                color: widget.isRed
+                    ? (widget.isDim ? const Color(0x80F87171) : AppTheme.red)
+                    : (widget.isDim ? AppTheme.textFaint : (_hovered ? Colors.white : AppTheme.textMain)),
+              ),
             ),
           ),
         ),
@@ -1370,50 +1572,52 @@ class _HoverBottomSettingsBtnState extends State<_HoverBottomSettingsBtn> {
         _pressed = false;
       }),
       cursor: SystemMouseCursors.click,
-      child: GestureDetector(
-        onTapDown: (_) => setState(() => _pressed = true),
-        onTapUp: (_) => setState(() => _pressed = false),
-        onTapCancel: () => setState(() => _pressed = false),
-        onTap: widget.onTap,
-        child: AnimatedContainer(
-          duration: const Duration(milliseconds: 180),
-          curve: Curves.easeOutCubic,
-          height: 31,
-          alignment: Alignment.center,
-          transform: Matrix4.translationValues(0, translateY, 0),
-          decoration: BoxDecoration(
-            // Clean dark slate background — NO brown fill brick!
-            color: _hovered ? AppTheme.surfaceElevated : AppTheme.overlay08,
-            borderRadius: BorderRadius.circular(8),
-            border: Border.all(
-              color: active
-                  ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.8 : 0.5)
-                  : (_hovered ? const Color(0xFF60A5FA) : AppTheme.borderSoft),
-            ),
-            boxShadow: [
-              // Clean dark bevel — NO brown shadow (0xFF78350F)!
-              BoxShadow(
-                color: const Color(0xFF0F172A),
-                offset: Offset(0, bevel),
-                blurRadius: 0,
+      child: Tooltip(
+        message: active ? 'Return to Main Studio Screen (Esc)' : 'Open Settings & Appearance (Ctrl + ,)',
+        child: GestureDetector(
+          onTapDown: (_) => setState(() => _pressed = true),
+          onTapUp: (_) => setState(() => _pressed = false),
+          onTapCancel: () => setState(() => _pressed = false),
+          onTap: widget.onTap,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            height: 31,
+            alignment: Alignment.center,
+            transform: Matrix4.translationValues(0, translateY, 0),
+            decoration: BoxDecoration(
+              // Clean dark slate background — NO brown fill brick!
+              color: _hovered ? AppTheme.surfaceElevated : AppTheme.overlay08,
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(
+                color: active
+                    ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.8 : 0.5)
+                    : (_hovered ? AppTheme.accentAmber : AppTheme.borderSoft),
               ),
-              if (_hovered)
+              boxShadow: [
                 BoxShadow(
-                  color: active
-                      ? AppTheme.accentGold.withValues(alpha: 0.30)
-                      : const Color(0xFF38BDF8).withValues(alpha: 0.25),
-                  blurRadius: 14,
-                  spreadRadius: 0.5,
-                  offset: const Offset(0, 3.5),
+                  color: AppTheme.bevelSecondary,
+                  offset: Offset(0, bevel),
+                  blurRadius: 0,
                 ),
-            ],
-          ),
-          child: Text(
-            active ? '← Back to Studio' : '⚙ Settings',
-            style: TextStyle(
-              fontSize: 11.5,
-              fontWeight: active ? FontWeight.bold : FontWeight.w600,
-              color: active ? AppTheme.accentText : (_hovered ? Colors.white : AppTheme.textDim),
+                if (_hovered)
+                  BoxShadow(
+                    color: active
+                        ? AppTheme.accentGold.withValues(alpha: 0.30)
+                        : AppTheme.glowPrimary.withValues(alpha: 0.25),
+                    blurRadius: 14,
+                    spreadRadius: 0.5,
+                    offset: const Offset(0, 3.5),
+                  ),
+              ],
+            ),
+            child: Text(
+              active ? '← Back to Studio' : '⚙ Settings',
+              style: TextStyle(
+                fontSize: 11.5,
+                fontWeight: active ? FontWeight.bold : FontWeight.w600,
+                color: active ? AppTheme.accentText : (_hovered ? Colors.white : AppTheme.textDim),
+              ),
             ),
           ),
         ),

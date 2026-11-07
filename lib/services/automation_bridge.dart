@@ -14,7 +14,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '2.48.65';
+  static const String appVersion = '2.48.64';
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();
@@ -269,12 +269,43 @@ class AutomationBridge {
       // The reply can die together with the engine — that is the
       // expected outcome here, not an error.
     }
-    _nodeProcess?.kill();
+    await killEngineProcessTree();
+    await cleanupZombieBrowsers();
     for (var i = 0; i < 40; i++) {
       if (!await checkHealth()) return true;
       await Future.delayed(const Duration(milliseconds: 250));
     }
     return !await checkHealth();
+  }
+
+  /// v2.49.0: Kills the Node engine AND its entire child process tree
+  /// (including any child Puppeteer chrome.exe instances) on Windows.
+  Future<void> killEngineProcessTree() async {
+    final pid = _nodeProcess?.pid;
+    if (pid != null && Platform.isWindows) {
+      try {
+        await Process.run('taskkill', ['/F', '/T', '/PID', '$pid']);
+      } catch (_) {
+        _nodeProcess?.kill();
+      }
+    } else {
+      _nodeProcess?.kill();
+    }
+  }
+
+  /// v2.49.0: Safely sweeps only orphaned Chrome instances that were spawned
+  /// by FlowStudio (identifying by flowstudio/flow_profile in command line).
+  Future<void> cleanupZombieBrowsers() async {
+    if (!Platform.isWindows) return;
+    try {
+      await Process.run('powershell', [
+        '-NoProfile',
+        '-ExecutionPolicy',
+        'Bypass',
+        '-Command',
+        r'''Get-CimInstance Win32_Process -Filter "Name = 'chrome.exe'" | Where-Object { $_.CommandLine -like "*flowstudio*" -or $_.CommandLine -like "*flow_profile*" } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }''',
+      ]);
+    } catch (_) {}
   }
 
   /// v2.41.0 (Fix list C, item 3): record one app-side step (an
@@ -1101,7 +1132,13 @@ class AutomationBridge {
   void dispose() {
     _disposed = true;
     _sseSubscription?.cancel();
-    _nodeProcess?.kill();
+    final pid = _nodeProcess?.pid;
+    if (pid != null && Platform.isWindows) {
+      Process.run('taskkill', ['/F', '/T', '/PID', '$pid']);
+      cleanupZombieBrowsers();
+    } else {
+      _nodeProcess?.kill();
+    }
   }
 }
 

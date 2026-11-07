@@ -333,19 +333,25 @@ class _ActivityStreamState extends State<ActivityStream> {
     required String label,
     required VoidCallback onTap,
   }) {
-    return TactileButton(
-      type: TactileType.secondary,
-      height: 24,
-      borderRadius: 12,
-      bevelDepth: 1.5,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-      onTap: onTap,
-      child: Text(
-        label,
-        style: TextStyle(
-          fontSize: 10,
-          fontWeight: FontWeight.w600,
-          color: AppTheme.textDim,
+    final tip = label.toLowerCase().contains('copy')
+        ? 'Copy all logs to clipboard'
+        : 'Clear console logs';
+    return Tooltip(
+      message: tip,
+      child: TactileButton(
+        type: TactileType.secondary,
+        height: 24,
+        borderRadius: 12,
+        bevelDepth: 1.5,
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+        onTap: onTap,
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 10,
+            fontWeight: FontWeight.w600,
+            color: AppTheme.textDim,
+          ),
         ),
       ),
     );

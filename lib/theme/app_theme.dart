@@ -98,6 +98,12 @@ class AppPalette {
   Color get overlay20 =>
       dark ? const Color(0x20FFFFFF) : const Color(0x1F000000);
 
+  // 3D tactile elevation and bevel shadow tokens (theme-adaptive)
+  Color get bevelPrimary => dark ? const Color(0xFF0A0E17) : border;
+  Color get bevelSecondary => dark ? const Color(0xFF060910) : borderSoft;
+  Color get borderHighlight => accentGold.withValues(alpha: dark ? 0.45 : 0.35);
+  Color get glowPrimary => accentGold;
+
   LinearGradient get accentGrad => LinearGradient(
         colors: [gradStart, gradEnd],
         begin: Alignment.topLeft,
@@ -575,6 +581,12 @@ class AppTheme {
   static Color get overlay08 => _current.overlay08;
   static Color get overlay10 => _current.overlay10;
   static Color get overlay20 => _current.overlay20;
+
+  // Tactile 3D and highlight tokens
+  static Color get bevelPrimary => _current.bevelPrimary;
+  static Color get bevelSecondary => _current.bevelSecondary;
+  static Color get borderHighlight => _current.borderHighlight;
+  static Color get glowPrimary => _current.glowPrimary;
 
   static LinearGradient get accentGrad => _current.accentGrad;
   static LinearGradient get panelGrad => _current.panelGrad;

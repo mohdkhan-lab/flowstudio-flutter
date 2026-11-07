@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:media_kit/media_kit.dart';
 import 'theme/app_theme.dart';
@@ -231,9 +232,70 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
     );
   }
 
+  /// Desktop Keyboard Shortcuts
+  void _handleKeyboardGenerate(BuildContext context) {
+    final gen = context.read<GeneratorProvider>();
+    final accounts = context.read<AccountsProvider>();
+    final activity = context.read<ActivityProvider>();
+    final settingsProv = context.read<SettingsProvider>();
+    if (!gen.isRunning) {
+      gen.startGeneration(
+        accounts: accounts,
+        activity: activity,
+        settings: settingsProv,
+      );
+    } else {
+      gen.stopGeneration(activity);
+    }
+  }
+
+  void _handleEscape(BuildContext context) {
+    final settingsProv = context.read<SettingsProvider>();
+    if (settingsProv.currentView != 'generate') {
+      settingsProv.setNavView('generate');
+    }
+    final notifProv = context.read<NotificationsProvider>();
+    if (notifProv.panelOpen) {
+      notifProv.closePanel();
+    }
+  }
+
+  void _handleToggleSettings(BuildContext context) {
+    final settingsProv = context.read<SettingsProvider>();
+    final next = settingsProv.currentView == 'settings' ? 'generate' : 'settings';
+    settingsProv.setNavView(next);
+  }
+
+  void _handleToggleSelectAll(BuildContext context) {
+    final focusWidget = FocusManager.instance.primaryFocus?.context?.widget;
+    if (focusWidget is EditableText) {
+      return; // Keep standard text selection inside textfields
+    }
+    final accountsProv = context.read<AccountsProvider>();
+    final allSelected = accountsProv.accounts.isNotEmpty &&
+        accountsProv.accounts.every((a) => a.isChecked);
+    if (allSelected) {
+      accountsProv.clearSelection();
+    } else {
+      accountsProv.selectAll();
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.enter, control: true): () => _handleKeyboardGenerate(context),
+        const SingleActivator(LogicalKeyboardKey.enter, meta: true): () => _handleKeyboardGenerate(context),
+        const SingleActivator(LogicalKeyboardKey.comma, control: true): () => _handleToggleSettings(context),
+        const SingleActivator(LogicalKeyboardKey.comma, meta: true): () => _handleToggleSettings(context),
+        const SingleActivator(LogicalKeyboardKey.keyA, control: true): () => _handleToggleSelectAll(context),
+        const SingleActivator(LogicalKeyboardKey.keyA, meta: true): () => _handleToggleSelectAll(context),
+        const SingleActivator(LogicalKeyboardKey.escape): () => _handleEscape(context),
+      },
+      child: Focus(
+        autofocus: true,
+        child: Scaffold(
       // The backdrop colour comes from ThemeData (whose
       // scaffoldBackgroundColor IS AppTheme.bgBody) instead of the
       // static token directly: reading Theme.of registers a
@@ -353,6 +415,8 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
             const Positioned.fill(child: NotificationOverlay()),
           ],
         ),
+      ),
+    ),
       ),
     );
   }

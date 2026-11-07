@@ -144,23 +144,27 @@ class TopStrip extends StatelessWidget {
                 children: [
                   // Created by MK
                   RichText(
-            text: TextSpan(
-              style: TextStyle(fontSize: 13, color: AppTheme.textDim),
-              children: [
-                TextSpan(text: 'Created by '),
-                TextSpan(
-                  text: 'MK',
-                  style: TextStyle(
-                    fontWeight: FontWeight.bold,
-                    color: AppTheme.textMain,
+                    text: TextSpan(
+                      style: TextStyle(fontSize: 13, color: AppTheme.textDim),
+                      children: [
+                        TextSpan(text: 'Created by '),
+                        TextSpan(
+                          text: 'MK',
+                          style: TextStyle(
+                            fontWeight: FontWeight.bold,
+                            color: AppTheme.textMain,
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 14),
+                  const SizedBox(width: 12),
 
-          // Social Icons (WhatsApp, Chat, Support) — v2.34.0
+                  // v2.49.0: Live Engine Connectivity Pill with 1-click Reconnect
+                  _buildEngineStatusPill(context),
+                  const SizedBox(width: 12),
+
+                  // Social Icons (WhatsApp, Chat, Support) — v2.34.0
           // (Problem 12): an icon renders ONLY when its saved link
           // is usable; an unconfigured or placeholder link shows
           // nothing instead of opening a dead page.
@@ -322,6 +326,99 @@ class TopStrip extends StatelessWidget {
         padding: EdgeInsets.zero,
         onTap: onTap,
         child: Icon(icon, size: 14, color: color),
+      ),
+    );
+  }
+
+  // v2.49.0: Live Engine Connectivity Status Pill with 1-Click Reconnect
+  Widget _buildEngineStatusPill(BuildContext context) {
+    final settingsProv = context.watch<SettingsProvider>();
+    final connected = settingsProv.engineConnected;
+    final reconnecting = settingsProv.isReconnectingEngine;
+
+    if (connected && !reconnecting) {
+      return Tooltip(
+        message: 'Engine connected (v2.48.65) • Node.js automation active',
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: AppTheme.greenBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.green.withValues(alpha: 0.35)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppTheme.green,
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppTheme.green.withValues(alpha: 0.6),
+                      blurRadius: 4,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                'Engine Active',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w700,
+                  color: AppTheme.green,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    // Disconnected or Reconnecting state
+    return Tooltip(
+      message: 'Node.js automation engine is offline. Click to reconnect.',
+      child: GestureDetector(
+        onTap: reconnecting ? null : () => settingsProv.reconnectEngine(),
+        child: Container(
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          decoration: BoxDecoration(
+            color: AppTheme.redBg,
+            borderRadius: BorderRadius.circular(8),
+            border: Border.all(color: AppTheme.red.withValues(alpha: 0.45)),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppTheme.red,
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppTheme.red.withValues(alpha: 0.6),
+                      blurRadius: 4,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 5),
+              Text(
+                reconnecting ? 'Reconnecting…' : 'Engine Offline [🔄 Reconnect]',
+                style: TextStyle(
+                  fontSize: 10,
+                  fontWeight: FontWeight.w800,
+                  color: AppTheme.red,
+                ),
+              ),
+            ],
+          ),
+        ),
       ),
     );
   }

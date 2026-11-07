@@ -50,7 +50,7 @@ const {
 const { classifyVerbatimProbe } = require('../engine/mintReplay');
 const { NetworkCapture, isGooglevideoPlaybackUrl, gvReqFields, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo } = require('../engine/networkCapture');
 const { DOWNLOAD_ROUTE_ORDER } = require('../engine/downloadRouteOrder');
-const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
+const { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption } = require('../engine/flowAutomation');
 const headlessHarvest = require('../engine/headlessHarvest');
 const cookiesDb = require('../engine/cookiesDb');
 
@@ -4783,8 +4783,11 @@ async function main() {
   // X64-RESIZE: tile-resize trigger ka darwaza
   // passive wale darwaze ka hi doosra naam hai —
   // is session ke taaza renders andar, baqi bahar.
-  // Baaki pins: helpers, tartib (passive ke baad,
-  // hover-exit se pehle) aur teeno log lines.
+  // v2.48.65: resize MARHALA harvest se hata diya
+  // gaya (ZC32 par falsify); helpers dead code ke
+  // tor par maujood hain, is liye sirf un ke pins
+  // bache hain — marhale wale pins X65-POINTER me
+  // chale gaye.
   {
     const sess = 1000000;
     eq('X64-RESIZE the alias is the same function', resizeTriggerApplies, passiveClaimApplies);
@@ -4797,20 +4800,78 @@ async function main() {
     eq('X64-RESIZE junk inputs do not apply', resizeTriggerApplies(null, sess), false);
     eq('X64-RESIZE a junk session start does not apply', resizeTriggerApplies({ renderCompletedAt: sess + 1, mediaSaved: false }, undefined), false);
     const faSrc64 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
-    ok('X64-RESIZE the harvest gates on the predicate', faSrc64.includes('if (resizeTriggerApplies(task, this._sessionStartedAt)) {'));
+    ok('X64-RESIZE the harvest no longer runs the resize phase', !faSrc64.includes('if (resizeTriggerApplies(task, this._sessionStartedAt)) {'));
     ok('X64-RESIZE the enlarge helper exists', faSrc64.includes('async _enlargeMainpageTile(task, tileIndexHint) {'));
     ok('X64-RESIZE the fullscreen helper exists', faSrc64.includes('async _fullscreenMainpageTile(task, tileIndexHint) {'));
     ok('X64-RESIZE the restore helper exists', faSrc64.includes('async _restoreMainpageTile(task, tileIndexHint, savedStyles, enteredFullscreen) {'));
-    ok('X64-RESIZE the restore runs with the saved token', faSrc64.includes('await this._restoreMainpageTile(task, tileIndexHint, enl.token, fsEntered);'));
     ok('X64-RESIZE fullscreen is requested on the tile video', faSrc64.includes('vid.requestFullscreen()'));
     ok('X64-RESIZE restore exits fullscreen', faSrc64.includes('document.exitFullscreen()'));
-    ok('X64-RESIZE the css apply line is pinned', faSrc64.includes('mainpage-harvest: resize trigger applied method=css box=${enl.box || \'-\'} — watching up to 30s for the full stream'));
-    ok('X64-RESIZE the fullscreen apply line is pinned', faSrc64.includes('mainpage-harvest: resize trigger applied method=fullscreen box=${fs.box || \'-\'} — watching up to 30s for the full stream'));
-    ok('X64-RESIZE the skipped line is pinned', faSrc64.includes('mainpage-harvest: resize trigger skipped reason=${(enl && enl.reason) || \'no-tile\'}'));
-    ok('X64-RESIZE the end line is pinned', faSrc64.includes('mainpage-harvest: resize finished — saved=${resizeSaved ? \'yes\' : \'no\'}'));
-    const resizeIdx = faSrc64.indexOf('if (resizeTriggerApplies(task, this._sessionStartedAt)) {');
-    ok('X64-RESIZE the phase sits after the passive claim', resizeIdx > faSrc64.indexOf('mainpage-harvest: passive claim finished'));
-    ok('X64-RESIZE the phase sits before the hover escalation', resizeIdx > -1 && resizeIdx < faSrc64.indexOf('const scrolled = await this._scrollMainpageTileIntoView'));
+  }
+
+  // X65-POINTER: Rank-2 pointer trigger ka
+  // darwaza passive wale darwaze ka hi doosra
+  // naam hai — is session ke taaza renders
+  // andar, recovery bahar. Baaki pins: helper,
+  // hifazat (helper ke andar koi .click( nahi;
+  // down -> move-off -> up isi tartib me),
+  // tartib (passive ke baad, hover se pehle)
+  // aur teeno log lines.
+  {
+    const sess = 1000000;
+    eq('X65-POINTER the alias is the same function', pointerTriggerApplies, passiveClaimApplies);
+    eq('X65-POINTER an in-session render applies', pointerTriggerApplies({ renderCompletedAt: sess + 5000, mediaSaved: false }, sess), true);
+    eq('X65-POINTER a render at the session start applies', pointerTriggerApplies({ renderCompletedAt: sess, mediaSaved: false }, sess), true);
+    eq('X65-POINTER a missing render time does not apply', pointerTriggerApplies({ mediaSaved: false }, sess), false);
+    eq('X65-POINTER a null render time does not apply', pointerTriggerApplies({ renderCompletedAt: null, mediaSaved: false }, sess), false);
+    eq('X65-POINTER an older-than-session render does not apply', pointerTriggerApplies({ renderCompletedAt: sess - 1, mediaSaved: false }, sess), false);
+    eq('X65-POINTER an already-saved task does not apply', pointerTriggerApplies({ renderCompletedAt: sess + 5000, mediaSaved: true }, sess), false);
+    eq('X65-POINTER junk inputs do not apply', pointerTriggerApplies(null, sess), false);
+    eq('X65-POINTER a junk session start does not apply', pointerTriggerApplies({ renderCompletedAt: sess + 1, mediaSaved: false }, undefined), false);
+    const faSrc65 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X65-POINTER the harvest gates on the predicate', faSrc65.includes('if (pointerTriggerApplies(task, this._sessionStartedAt)) {'));
+    ok('X65-POINTER the press helper exists', faSrc65.includes('async _pressMainpageTile(task, tileIndexHint) {'));
+    ok('X65-POINTER the applied line is pinned', faSrc65.includes('mainpage-harvest: pointer trigger applied box=${prs.box || \'-\'} — watching up to 30s for the full stream'));
+    ok('X65-POINTER the skipped line is pinned', faSrc65.includes('mainpage-harvest: pointer trigger skipped reason=${(prs && prs.reason) || \'error\'}'));
+    ok('X65-POINTER the end line is pinned', faSrc65.includes('mainpage-harvest: pointer finished — saved=${pointerSaved ? \'yes\' : \'no\'}'));
+    const pressStart = faSrc65.indexOf('async _pressMainpageTile(task, tileIndexHint) {');
+    const pressEnd = faSrc65.indexOf('\n  async _', pressStart + 10);
+    const pressSlice = faSrc65.slice(pressStart, pressEnd > -1 ? pressEnd : pressStart + 6000);
+    ok('X65-POINTER the press never clicks anything', pressStart > -1 && !pressSlice.includes('.click('));
+    const downIdx = pressSlice.indexOf('await this.page.mouse.down();');
+    const moveOffIdx = pressSlice.indexOf('await this.page.mouse.move(geo.ox, geo.oy, { steps: 10 });');
+    const upIdx = pressSlice.indexOf('await this.page.mouse.up();');
+    ok('X65-POINTER down, move-off, up — in that order', downIdx > -1 && moveOffIdx > downIdx && upIdx > moveOffIdx);
+    const pointerIdx = faSrc65.indexOf('if (pointerTriggerApplies(task, this._sessionStartedAt)) {');
+    ok('X65-POINTER the phase sits after the passive claim', pointerIdx > faSrc65.indexOf('mainpage-harvest: passive claim finished'));
+    ok('X65-POINTER the phase sits before the hover escalation', pointerIdx > -1 && pointerIdx < faSrc65.indexOf('const scrolled = await this._scrollMainpageTileIntoView'));
+  }
+
+  // X65-SAMPLE: below-floor diagnostic sample ka
+  // KHALIS faisla + naam — teeno shartein ek
+  // saath (wajah below-floor, header asal video,
+  // latch khula); naam par takraar ho to -2, -3.
+  // Baaki pins: latch ki ibtida, hook ki jagah
+  // (rejected wale branch me, rejected line se
+  // pehle) aur log line.
+  {
+    eq('X65-SAMPLE below-floor + good header + open latch captures', belowfloorSampleDecision('below-floor', true, false), true);
+    eq('X65-SAMPLE a bad header does not capture', belowfloorSampleDecision('below-floor', false, false), false);
+    eq('X65-SAMPLE a set latch does not capture', belowfloorSampleDecision('below-floor', true, true), false);
+    eq('X65-SAMPLE another reason does not capture', belowfloorSampleDecision('too-small', true, false), false);
+    eq('X65-SAMPLE a missing reason does not capture', belowfloorSampleDecision(undefined, true, false), false);
+    eq('X65-SAMPLE the base name', belowfloorSampleName(3, 123456, () => false), 'BELOWFLOOR-SAMPLE-prompt3-123456.mp4');
+    eq('X65-SAMPLE the first collision gets -2', belowfloorSampleName(3, 123456, (nm) => nm === 'BELOWFLOOR-SAMPLE-prompt3-123456.mp4'), 'BELOWFLOOR-SAMPLE-prompt3-123456-2.mp4');
+    eq('X65-SAMPLE two collisions get -3', belowfloorSampleName(3, 123456, (nm) => !nm.endsWith('-3.mp4')), 'BELOWFLOOR-SAMPLE-prompt3-123456-3.mp4');
+    eq('X65-SAMPLE a junk existsFn still names', belowfloorSampleName(1, 10, null), 'BELOWFLOOR-SAMPLE-prompt1-10.mp4');
+    const faSrc65b = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    ok('X65-SAMPLE the latch starts unset', faSrc65b.includes('this._belowfloorSampleSaved = false;'));
+    ok('X65-SAMPLE the decision call is pinned', faSrc65b.includes('belowfloorSampleDecision(verdict.reason, downloadFetch.looksLikeVideoBuffer(buf), this._belowfloorSampleSaved)'));
+    ok('X65-SAMPLE the saved line is pinned', faSrc65b.includes('belowfloor-sample saved name=${sampleName} bytes=${buf.length} prompt=${n} (diagnostic only — NOT a task save)'));
+    ok('X65-SAMPLE the write is a plain side file', faSrc65b.includes('fs.writeFileSync(path.join(downloadFolder, sampleName), buf);'));
+    const rejIdx = faSrc65b.indexOf("if (verdict.action !== 'save') {");
+    const sampleIdx = faSrc65b.indexOf('belowfloor-sample saved name=');
+    ok('X65-SAMPLE the hook sits inside the rejected branch', rejIdx > -1 && sampleIdx > rejIdx);
+    ok('X65-SAMPLE the hook sits before the rejected line', sampleIdx > -1 && sampleIdx < faSrc65b.indexOf('mainpage-harvest candidate rejected'));
   }
 
   // X63-DIMS: tile-media line ab harvest attempt ki

@@ -225,13 +225,23 @@ function galleryEntryDecision(survey, preferFresh, targetMs, nowMs) {
  * (projectUrl) bhi ho sakti hai aur kachi DB shakal
  * (project_url) bhi — dono qubool hain.
  */
-function recoveryEntryPlan(recordedUrl, registryRow) {
+function recoveryEntryPlan(recordedUrl, registryRow, targetMs) {
   const rec = String(recordedUrl || '').trim();
   if (rec) return { kind: 'recorded', projectUrl: rec, source: 'recorded' };
   const regUrl = registryRow
     ? String(registryRow.projectUrl || registryRow.project_url || '').trim()
     : '';
   if (regUrl) return { kind: 'registry', projectUrl: regUrl, source: 'registry' };
+  // v2.48.70 (ITEM B): teesra argument (group ki sab se
+  // purani row ka waqt) diya gaya ho aur wo bhi na ho
+  // to row UNMAPPED hai — na recorded URL, na registry,
+  // na date-time. Aisi row ke liye koi account NAHI
+  // khulta (gallery ka andaza hamesha ke liye khatam).
+  // Teesra argument na diya jaye to purana bartav
+  // ('gallery') bilkul waisa hi (pinned faisle).
+  if (targetMs !== undefined && !(Number(targetMs) > 0)) {
+    return { kind: 'unmapped', projectUrl: '', source: null };
+  }
   return { kind: 'gallery', projectUrl: '', source: null };
 }
 
@@ -383,6 +393,40 @@ const pointerTriggerApplies = passiveClaimApplies;
  */
 function belowfloorSampleDecision(reason, headerOk, latchSet) {
   return reason === 'below-floor' && !!headerOk && !latchSet;
+}
+
+/**
+ * v2.48.70 (ITEM A): duration-tasdeeq fail karne wali
+ * body bhi session ka pehla diagnostic sample rakhti
+ * hai (wahi latch, wahi BELOWFLOOR-SAMPLE naam) —
+ * reject ki wajah ab 'below-floor' ki jagah
+ * 'short-duration' / 'unparseable' hoti hai, lekin
+ * jaanch ki file isiliye aur bhi zaroori hai.
+ */
+function failedVerificationSampleDecision(reason, headerOk, latchSet) {
+  return (reason === 'short-duration' || reason === 'unparseable') && !!headerOk && !latchSet;
+}
+
+/**
+ * v2.48.70 (ITEM B): RECOVERY entry par gallery ka
+ * 'gallery-first' andaza (sab se pehla/latest project)
+ * KHATAM — jab recovery ke paas ek TARGET waqt hai aur
+ * date-time wala chunav us se match na kha sake, to
+ * pehla project andaze se NAHI khulega: faisla 'none'
+ * (entry nakam -> rows parked, kabhi fail nahi).
+ * Target hi na ho (targetMs 0) to ye helper purana
+ * bartav rakhta hai — aisi recovery pool ab bhejti hi
+ * nahi (.70 me wo rows pehle hi 'unmapped' gin kar
+ * bina account khole park hoti hain); engine helper
+ * ka apna intezaar-wala bartav (X58-WAIT) is se
+ * nahi badalta. Fresh run par ye lagta hi nahi.
+ */
+function recoveryGalleryGuard(decision, targetMs) {
+  const d = decision && typeof decision === 'object' ? decision : { kind: 'none', index: -1, source: null };
+  if (d.source === 'gallery-first' && Number(targetMs) > 0) {
+    return { kind: 'none', index: -1, source: 'gallery-first-blocked' };
+  }
+  return d;
 }
 
 /**
@@ -1828,7 +1872,18 @@ class FlowAutomationEngine {
         });
       } catch (e) { survey = null; }
       if (!survey || typeof survey !== 'object') survey = { hasNewBtn: false, links: [] };
-      const decision = galleryEntryDecision(survey, preferFresh, targetMs, Date.now());
+      let decision = galleryEntryDecision(survey, preferFresh, targetMs, Date.now());
+      // v2.48.70 (ITEM B): RECOVERY entry par gallery-first
+      // andaza khatam — date-time se chuna hua project hi
+      // khulega; andaza lage to entry 'none' (rows parked
+      // rehte hain, galat project kabhi nahi khulta).
+      if (!preferFresh) {
+        const guarded = recoveryGalleryGuard(decision, targetMs);
+        if (guarded !== decision) {
+          this.log('[ROOT] recovery-entry gallery-first guess refused (v2.48.70) — only a date-time matched project may be opened', 'warn');
+        }
+        decision = guarded;
+      }
       if (decision.source) source = decision.source;
       // v2.48.62 (GALLERY ENTRY LOG): fresh run ka faisla
       // maujooda project par gir jaye to wo sach log me
@@ -4063,6 +4118,27 @@ class FlowAutomationEngine {
     }
   }
 
+  /**
+   * v2.48.70 (ITEM A/D): is task ki EXPECTED duration
+   * (seconds) — pehle task ki apni kitab (Item D:
+   * birth par darj expected_duration_sec, warna usi
+   * row ka duration), phir run ke settings. Kuch na
+   * mile to 0 (tasdeeq 'no-expectation' par chalegi —
+   * header hi darwaza rahega).
+   */
+  _expectedDurationSec(task, settings) {
+    try {
+      const t = task && typeof task === 'object' ? task : {};
+      const direct = Number(t.expected_duration_sec || t.expectedDurationSec);
+      if (Number.isFinite(direct) && direct > 0) return direct;
+      const fromRow = downloadFetch.parseDurationSeconds(t.duration);
+      if (fromRow > 0) return fromRow;
+      const fromSettings = downloadFetch.parseDurationSeconds(settings && settings.duration);
+      if (fromSettings > 0) return fromSettings;
+    } catch (e) {}
+    return 0;
+  }
+
   async _saveBufferForTask(task, downloadFolder, settings, buffer, sourceUrl, raceRoute) {
     if (!fs.existsSync(downloadFolder)) {
       fs.mkdirSync(downloadFolder, { recursive: true });
@@ -4119,12 +4195,34 @@ class FlowAutomationEngine {
     if (!isImageMode && buffer && downloadFetch.looksLikeVideoBuffer(buffer)) {
       const floorBytes = downloadFetch.minBytesForDuration(settings && settings.duration);
       if (buffer.length < floorBytes) {
-        const durSec = downloadFetch.parseDurationSeconds(settings && settings.duration);
-        const durLabel = durSec ? `${durSec}s` : String((settings && settings.duration) || 'unknown');
-        this.log(`[QUALITY-GATE] [Prompt #${task.promptIndex + 1}] preview-quality buffer rejected (${buffer.length} < floor ${floorBytes} for ${durLabel}) — routes continue`, 'warn');
-        task._saveRejectedReason = 'quality-gate';
-        releaseRaceClaim();
-        return false;
+        // v2.48.70 (ITEM A): floor se neeche wale buffer
+        // ka faisla ab SIZE se nahi, file ki apni
+        // DURATION se hota hai — 2026-11-07 ko sabit
+        // hua ke Flow ke chhote encode mukammal
+        // full-duration files hote hain (583,688B =
+        // 10.0078s; 116,200B = 3.9706s). Tasdeeq pass
+        // ho to save hota hai ([ROOT] small-save line
+        // ke saath); fail ho (short-duration /
+        // unparseable) to purana quality-gate inkaar
+        // bilkul waisa hi. .29 wali size-taabeer is
+        // pack me duration-proof se badal gayi hai.
+        const expectedSec = this._expectedDurationSec(task, settings);
+        const verification = saveGuard.bodyVerification({ buffer, headerOk: true, expectedSec });
+        // Sirf ASAL duration-match ('ok') hi floor ki
+        // jagah le sakta hai — 'no-expectation' (koi
+        // expected duration hi nahi) par purana inkaar
+        // hi rehta hai: bina kasauti ke chhoti file
+        // kabhi seedha save nahi hoti.
+        if (verification.ok && verification.reason === 'ok') {
+          this.log(`[ROOT] small-save accepted prompt=${task.promptIndex + 1} bytes=${buffer.length} dur=${verification.durationSec}s expected=${expectedSec}s via=${raceRoute || 'sequential'}`, 'success');
+        } else {
+          const durSec = downloadFetch.parseDurationSeconds(settings && settings.duration);
+          const durLabel = durSec ? `${durSec}s` : String((settings && settings.duration) || 'unknown');
+          this.log(`[QUALITY-GATE] [Prompt #${task.promptIndex + 1}] preview-quality buffer rejected (${buffer.length} < floor ${floorBytes} for ${durLabel}; verification=${verification.reason}) — routes continue`, 'warn');
+          task._saveRejectedReason = 'quality-gate';
+          releaseRaceClaim();
+          return false;
+        }
       }
     }
     // v2.48.35 (CONTENT-HASH GUARD): is run me kisi AUR task
@@ -6198,6 +6296,11 @@ class FlowAutomationEngine {
       try {
         if (this.netCapture) {
           this.netCapture.harvestFloorBytes = downloadFetch.minBytesForDuration(settings && settings.duration);
+          // v2.48.70 (ITEM A): expected duration bhi
+          // capture ko de do — harvest darwaze floor ki
+          // jagah duration-tasdeeq bhi istemal kar sakte
+          // hain (networkCapture._verifiedAcceptFor).
+          this.netCapture.harvestExpectedDurationSec = this._expectedDurationSec(task, settings);
         }
       } catch (e) {}
       // v2.48.38 (EDITOR-HARVEST PACK): harvest-audit ki
@@ -7890,6 +7993,16 @@ class FlowAutomationEngine {
       let dup = false;
       try { dup = !!saveGuard.checkDuplicate(b, captureKey || null).dup; } catch (e) { dup = false; }
       const hdrOk = downloadFetch.looksLikeVideoBuffer(b);
+      // v2.48.70 (ITEM A): is body ki duration-tasdeeq
+      // task ki expected duration ke khilaf — verdict
+      // ke andar size floor ki jagah yahi kasauti hai
+      // (teacher/duplicate/partial darwaze bilkul
+      // waisay hi pehle chalte hain).
+      const verification = saveGuard.bodyVerification({
+        buffer: b,
+        headerOk: hdrOk,
+        expectedSec: this._expectedDurationSec(task, settings)
+      });
       return saveGuard.mainpageHarvestVerdict({
         bound: true,
         url: entry.url,
@@ -7897,6 +8010,7 @@ class FlowAutomationEngine {
         byteLength: b.length,
         floorBytes,
         headerOk: hdrOk,
+        verification,
         // v2.48.52 (gate fix): kul size maloom ho to
         // partial = rakhe bytes kul se kam — status
         // 206 ke bawajood bytes kul ke barabar hon
@@ -7960,7 +8074,8 @@ class FlowAutomationEngine {
       // aur bahao bilkul waisa hi, ummeedwaar
       // rejected hi rehta hai. Likhna nakam ho to
       // khamoshi — run par koi asar nahi.
-      if (belowfloorSampleDecision(verdict.reason, downloadFetch.looksLikeVideoBuffer(buf), this._belowfloorSampleSaved)) {
+      if (belowfloorSampleDecision(verdict.reason, downloadFetch.looksLikeVideoBuffer(buf), this._belowfloorSampleSaved)
+        || failedVerificationSampleDecision(verdict.reason, downloadFetch.looksLikeVideoBuffer(buf), this._belowfloorSampleSaved)) {
         try {
           const sampleName = belowfloorSampleName(n, buf.length, (nm) => fs.existsSync(path.join(downloadFolder, nm)));
           fs.writeFileSync(path.join(downloadFolder, sampleName), buf);
@@ -8714,6 +8829,7 @@ class FlowAutomationEngine {
       let hpage = session.page;
       const setupCapture = () => {
         try { if (hcap) hcap.harvestFloorBytes = downloadFetch.minBytesForDuration(settings && settings.duration); } catch (e) {}
+        try { if (hcap) hcap.harvestExpectedDurationSec = this._expectedDurationSec(task, settings); } catch (e) {}
         try { if (hcap) hcap.beginSubmission(captureKey, Date.now()); } catch (e) {}
       };
       setupCapture();
@@ -11973,4 +12089,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption };

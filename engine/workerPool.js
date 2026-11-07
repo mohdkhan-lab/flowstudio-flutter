@@ -565,8 +565,52 @@ class WorkerPool {
   async _reconcileNeedsCheck(checkRows, downloadFolder, settings, opts = {}) {
     const sweepMode = !!(opts && opts.sweepMode);
     const handled = new Set();
+    // v2.48.70 (ITEMS B+C): is recovery pass ke ankde —
+    // sweep summary line aur Progress visibility inhi
+    // se banti hai. lastRecoveryStats har call par
+    // dobara banta hai (bulane wala call ke baad padhta
+    // hai).
+    const stats = { unmapped: 0, capped: 0 };
+    this._lastRecoveryStats = stats;
+    // v2.48.70 (ITEM B — BOUNDED ATTEMPTS): jin rows ki
+    // download koshishein 3 rounds poori kar chuki hain
+    // (persisted download_attempts), un par recovery
+    // dobara account NAHI kholti — sweep ki tarah ab
+    // Resume/restart rasta bhi unhe sirf PARK karta hai
+    // (wajah ke saath). Row ki apni kitab (selection ke
+    // waqt ki download_attempts) hi ginati hai; field na
+    // ho to DB se taza count. Owner ka explicit
+    // per-task Retry rasta is se bahar hai (bilkul
+    // nahi chhua gaya).
+    const attemptsOf = (r) => {
+      const n = Number(r && r.download_attempts);
+      if (Number.isFinite(n)) return n;
+      try { return dbService.getDownloadAttemptCount(r.id); } catch (e) { return 0; }
+    };
+    const activeRows = [];
+    for (const row of (Array.isArray(checkRows) ? checkRows : [])) {
+      if (attemptsOf(row) >= 3) {
+        handled.add(row.id);
+        stats.capped += 1;
+        const reason = 'Recovery: this video\'s download has already been tried 3 times, so it stays parked (pending, check-only) and no account was opened for it. It was NOT failed and NOT re-submitted.';
+        try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
+        this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
+        this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'recovery', phase: 'parked', accountName: '', projectId: '', reason: 'Parked — download attempts used up (3)' });
+        try {
+          recordActivity({
+            category: 'generation', level: 'warn', accountId: row.assigned_account_id || null,
+            accountName: '', stage: 'recovery', taskId: row.id,
+            promptIndex: typeof row.prompt_index === 'number' ? row.prompt_index : null,
+            detail: reason,
+            message: `Recovery: Prompt #${(row.prompt_index || 0) + 1} parked — download attempts used up (3); no account opened`
+          });
+        } catch (e) {}
+        continue;
+      }
+      activeRows.push(row);
+    }
     const byAccount = new Map();
-    for (const row of checkRows) {
+    for (const row of activeRows) {
       const key = row.assigned_account_id || '';
       if (!byAccount.has(key)) byAccount.set(key, []);
       byAccount.get(key).push(row);
@@ -601,6 +645,8 @@ class WorkerPool {
           const reason = 'Recovered after restart, but the account it was running on no longer exists. It was NOT re-submitted and NOT failed — it stays pending (check-only) until the account is available again.';
           try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
           this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
+          // v2.48.70 (ITEM C): Progress me bhi dikhe.
+          this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'recovery', phase: 'parked', accountName: '', projectId: '', reason: 'Parked — its account no longer exists' });
         }
         continue;
       }
@@ -618,7 +664,56 @@ class WorkerPool {
         byProject.get(key).push(row);
       }
 
+      // v2.48.70 (ITEM B): plan PEHLE, browser BAAD me —
+      // har group ka entryPlan (recorded / registry /
+      // gallery / UNMAPPED) koi browser khulne se pehle
+      // tay hota hai. UNMAPPED group (na recorded URL,
+      // na registry hit, na row ka waqt) ke liye is
+      // account par browser BILKUL nahi khulta — rows
+      // 'Unmapped' nishani ke saath parked rehti hain.
+      const groupPlans = [];
       for (const [projectUrl, group] of byProject) {
+        let targetMs = 0;
+        for (const r of group) {
+          const t = rowCreatedMs(r);
+          if (t > 0 && (targetMs === 0 || t < targetMs)) targetMs = t;
+        }
+        let registryRow = null;
+        if (!projectUrl && targetMs > 0) {
+          try { registryRow = dbService.findProjectForTime(accountId, targetMs); } catch (e) { registryRow = null; }
+        }
+        const entryPlan = recoveryEntryPlan(projectUrl, registryRow, targetMs);
+        groupPlans.push({ projectUrl, group, targetMs, entryPlan });
+      }
+      for (const gp of groupPlans) {
+        if (gp.entryPlan.kind !== 'unmapped') continue;
+        for (const row of gp.group) {
+          handled.add(row.id);
+          stats.unmapped += 1;
+          const reason = 'Recovery: this task has no recorded Flow project (no project URL, no registry entry and no usable date-time), so no account was opened for it — blindly opening projects is exactly what this check must not do. It stays pending (check-only / parked) and was NOT failed and NOT re-submitted.';
+          try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
+          this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
+          this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'recovery', phase: 'unmapped', accountName: account.name, projectId: '', reason: 'Unmapped — no project record' });
+          try {
+            recordActivity({
+              category: 'generation', level: 'warn', accountId: account.id,
+              accountName: account.googleName || account.name,
+              stage: 'recovery', taskId: row.id,
+              promptIndex: typeof row.prompt_index === 'number' ? row.prompt_index : null,
+              detail: reason,
+              message: `Recovery: Prompt #${(row.prompt_index || 0) + 1} unmapped — no project record, no account opened (parked)`
+            });
+          } catch (e) {}
+          this.log(`Recovery: Prompt #${row.prompt_index + 1} has no recorded project on [${account.name}] — no account was opened for it. Kept parked (pending, check-only) as Unmapped.`, 'warn');
+        }
+      }
+      const openablePlans = groupPlans.filter(gp => gp.entryPlan.kind !== 'unmapped');
+      if (openablePlans.length === 0) continue;
+
+      // v2.48.70 (ITEM B): engine + browser is ACCOUNT
+      // ke liye EK hi baar — har project group usi ek
+      // khuli hui browser me bari bari khulta hai (purana
+      // har-group-naya-browser chakar khatam).
       const engine = new FlowAutomationEngine({
         onLog: (data) => { this.onLog({ ...data, message: `[Recovery]: ${data.message}` }); },
         onTaskCompleted: (task, result) => {
@@ -655,57 +750,58 @@ class WorkerPool {
       });
 
       try {
-        let ready = false;
+        // v2.48.70 (ITEM B): browser is account ke liye
+        // EK baar launch hota hai; saare openable groups
+        // usi me bari bari khulte hain.
         const launched = await engine.launchBrowserForAccount(account, downloadFolder).catch(() => false);
-        if (launched) {
-          // v2.48.57 (PROJECT-TRUTH change 2): recorded
-          // URL ho to seedha usi project par (gallery
-          // bilkul nahi); na ho to gallery pass ke liye
-          // is group ki sab se purani row ka waqt do —
-          // date-time wala chunav usi se hoga.
-          // v2.48.58 (RECOVERY-NO-CREDIT-GATE change 1):
-          // downloadOnly hamesha laga kar bhejo — ye
-          // recovery koi credit NAHI kharch karti, is
-          // liye openFlowStudio ka credit gate yahan
-          // NAHI rukna chahiye (ZEROCLICK26: (22) ke 2
-          // credits par 10 parked tasks ruk gaye the).
-          // v2.48.60 (PROJECT REGISTRY): entry ka
-          // tartib ab teen darjon ka hai — recorded
-          // (task ki apni darj-shuda URL) > registry
-          // (is account ki kitab me group ki sab se
-          // purani row ke waqt ke qareeb-not-after
-          // project) > gallery-datetime (screen-scrape
-          // wala purana andaza, sirf tab jab registry
-          // me kuch na ho — .60 se pehle ke projects).
-          // Faisla khalis recoveryEntryPlan karta hai;
-          // registry ki query yahan DB se aati hai aur
-          // koi khata use 'koi hit nahi' hi samjhta hai.
-          let targetMs = 0;
-          for (const r of group) {
-            const t = rowCreatedMs(r);
-            if (t > 0 && (targetMs === 0 || t < targetMs)) targetMs = t;
+        for (const gp of openablePlans) {
+          const group = gp.group;
+          const entryPlan = gp.entryPlan;
+          const projectId = entryPlan.projectUrl ? projectIdOfUrl(entryPlan.projectUrl) : '';
+          const projectLabel = entryPlan.projectUrl
+            ? `project ${projectId || entryPlan.projectUrl}`
+            : 'the date-time matched project';
+          // v2.48.70 (ITEM C): group ki recovery shuru —
+          // har row Progress me 'Recovering' card ban
+          // jati hai (account + project ke naam ke saath).
+          for (const row of group) {
+            this.onTaskUpdate({
+              taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text,
+              status: 'recovery', phase: 'start', accountName: account.name, projectId,
+              reason: `Recovering — ${account.name} / ${projectLabel}`
+            });
           }
-          let registryRow = null;
-          if (!projectUrl && targetMs > 0) {
-            try { registryRow = dbService.findProjectForTime(accountId, targetMs); } catch (e) { registryRow = null; }
+          let ready = false;
+          if (launched) {
+            // v2.48.57/58/60 ki entry tarteeb bilkul
+            // waisi hi — farq sirf itna ke plan ab group
+            // loop se PEHLE bana tha (upar groupPlans),
+            // taaki UNMAPPED groups par browser khulne
+            // ka sawal hi na uthe. downloadOnly hamesha
+            // (recovery credit NAHI kharch karti).
+            let openSettings;
+            if (entryPlan.kind === 'recorded' || entryPlan.kind === 'registry') {
+              openSettings = { ...settings, canvasStrategy: 'existing', projectUrl: entryPlan.projectUrl, downloadOnly: true };
+              if (entryPlan.kind === 'registry') openSettings.projectUrlSource = 'registry';
+            } else {
+              openSettings = { ...settings, canvasStrategy: 'existing', downloadOnly: true };
+              if (gp.targetMs > 0) openSettings.recoveryTargetTime = gp.targetMs;
+            }
+            const st = await engine.openFlowStudio(openSettings).catch(() => null);
+            ready = (st === 'READY');
           }
-          const entryPlan = recoveryEntryPlan(projectUrl, registryRow);
-          let openSettings;
-          if (entryPlan.kind === 'recorded' || entryPlan.kind === 'registry') {
-            openSettings = { ...settings, canvasStrategy: 'existing', projectUrl: entryPlan.projectUrl, downloadOnly: true };
-            if (entryPlan.kind === 'registry') openSettings.projectUrlSource = 'registry';
-          } else {
-            openSettings = { ...settings, canvasStrategy: 'existing', downloadOnly: true };
-            if (targetMs > 0) openSettings.recoveryTargetTime = targetMs;
+          if (!ready) {
+            this.log(`Recovery: [${account.name}]'s Flow project could not be opened, so ${group.length} old tasks will stay pending — press Resume later to check again. Nothing was resubmitted.`, 'warn');
+            for (const row of group) {
+              handled.add(row.id);
+              this.onTaskUpdate({
+                taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text,
+                status: 'recovery', phase: 'parked', accountName: account.name, projectId,
+                reason: 'Parked — the project could not be opened'
+              });
+            }
+            continue;
           }
-          const st = await engine.openFlowStudio(openSettings).catch(() => null);
-          ready = (st === 'READY');
-        }
-        if (!ready) {
-          this.log(`Recovery: [${account.name}]'s Flow project could not be opened, so ${group.length} old tasks will stay pending — press Resume later to check again. Nothing was resubmitted.`, 'warn');
-          for (const row of group) handled.add(row.id);
-          continue;
-        }
 
         for (const row of group) {
           handled.add(row.id);
@@ -724,6 +820,12 @@ class WorkerPool {
           try { dbService.setTaskNeedsCheck(row.id, 0); } catch (e) {}
           if (res && res.found && res.downloaded) {
             this.log(`Recovery: Prompt #${row.prompt_index + 1}'s video already existed in [${account.name}]'s Flow project — that same one was downloaded. No credits were deducted again.`, 'success');
+            // v2.48.70 (ITEM C): Progress card 'Saved'.
+            this.onTaskUpdate({
+              taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text,
+              status: 'recovery', phase: 'saved', accountName: account.name, projectId,
+              reason: 'Saved'
+            });
           } else if (res && res.found) {
             // v2.48.0 (deep-audit fix #9): tile FOUND but the download
             // did not complete — PARK, do not fail. This now matches
@@ -738,6 +840,22 @@ class WorkerPool {
             const reason = 'Recovered after restart: this prompt\'s tile exists in the Flow project but its video could not be downloaded this time (it may still be rendering, or the download routes failed). It was NOT re-submitted and NOT failed — it stays pending (check-only); on the next Resume only its download will be tried again, with no new charge.';
             try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
             this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
+            // v2.48.70 (ITEM C): Progress card + Activity.
+            this.onTaskUpdate({
+              taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text,
+              status: 'recovery', phase: 'parked', accountName: account.name, projectId,
+              reason: 'Parked — tile found, download did not complete'
+            });
+            try {
+              recordActivity({
+                category: 'generation', level: 'warn', accountId: account.id,
+                accountName: account.googleName || account.name,
+                stage: 'recovery', taskId: row.id,
+                promptIndex: typeof row.prompt_index === 'number' ? row.prompt_index : null,
+                detail: reason,
+                message: `Recovery: Prompt #${row.prompt_index + 1} parked — tile found in ${projectLabel}, download did not complete`
+              });
+            } catch (e) {}
             this.log(`Recovery: Prompt #${row.prompt_index + 1}'s tile was found in the project, but its download did not complete this time. Kept pending (check-only) for a download-only retry on the next Resume — NOT failed, NOT resubmitted.`, 'warn');
           } else if (sweepMode) {
             // v2.48.51 (item 1): sweep mode me tile
@@ -750,10 +868,30 @@ class WorkerPool {
             // hai — upar wala unconditional
             // setTaskNeedsCheck(0) yahan wapas 1 kar
             // diya jata hai. failTask KABHI nahi.
-            const reason = 'End-of-run sweep: no matching video was found in the account\'s latest Flow project (this task may belong to an older project), so it stays pending (check-only / parked) for a later Resume. It was NOT failed and NOT re-submitted.';
+            // v2.48.70 (ITEM B): wajah ab usi project ka
+            // NAAM leti hai jo asal me check hua (recorded
+            // / registry / date-time) — 'latest project'
+            // wala purana andaza khatam, kyunke sweep ab
+            // latest project kholti hi nahi.
+            const reason = `End-of-run sweep: no matching video was found in ${projectLabel} on this account (checked ${sweepMode ? 'in the sweep' : 'just now'}), so it stays pending (check-only / parked) for a later Resume. It was NOT failed and NOT re-submitted.`;
             try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
             this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
-            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in the latest project during the sweep. Kept parked (pending, check-only) — NOT failed, NOT resubmitted.`, 'warn');
+            this.onTaskUpdate({
+              taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text,
+              status: 'recovery', phase: 'parked', accountName: account.name, projectId,
+              reason: `Parked — not found in ${projectLabel}`
+            });
+            try {
+              recordActivity({
+                category: 'generation', level: 'warn', accountId: account.id,
+                accountName: account.googleName || account.name,
+                stage: 'recovery', taskId: row.id,
+                promptIndex: typeof row.prompt_index === 'number' ? row.prompt_index : null,
+                detail: reason,
+                message: `Recovery: Prompt #${row.prompt_index + 1} parked — not found in ${projectLabel} (sweep)`
+              });
+            } catch (e) {}
+            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in ${projectLabel} during the sweep. Kept parked (pending, check-only) — NOT failed, NOT resubmitted.`, 'warn');
           } else {
             // v2.48.57 (PROJECT-TRUTH change 4): tile NA
             // milna ab restart mode me bhi FAIL NAHI hai
@@ -768,19 +906,35 @@ class WorkerPool {
             // ke explicit Retry raaston ke liye rehta
             // hai (is function ke bahar — unhahe NAHI
             // chhua gaya).
-            const reason = 'Recovery check: no matching video was found in the Flow project that was opened (the video may live in another of this account\'s projects — Flow lists projects by their date-time). It was NOT re-submitted and NOT failed — it stays pending (check-only); on the next Resume only its download will be tried again, with no new charge.';
+            const reason = `Recovery check: no matching video was found in ${projectLabel} (the video may live in another of this account's projects — Flow lists projects by their date-time). It was NOT re-submitted and NOT failed — it stays pending (check-only); on the next Resume only its download will be tried again, with no new charge.`;
             try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
             this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
-            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in the Flow project. Kept pending (check-only) — NOT failed, NOT resubmitted.`, 'warn');
+            // v2.48.70 (ITEM C): Progress card + Activity.
+            this.onTaskUpdate({
+              taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text,
+              status: 'recovery', phase: 'parked', accountName: account.name, projectId,
+              reason: `Parked — not found in ${projectLabel}`
+            });
+            try {
+              recordActivity({
+                category: 'generation', level: 'warn', accountId: account.id,
+                accountName: account.googleName || account.name,
+                stage: 'recovery', taskId: row.id,
+                promptIndex: typeof row.prompt_index === 'number' ? row.prompt_index : null,
+                detail: reason,
+                message: `Recovery: Prompt #${row.prompt_index + 1} parked — not found in ${projectLabel}`
+              });
+            } catch (e) {}
+            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in ${projectLabel}. Kept pending (check-only) — NOT failed, NOT resubmitted.`, 'warn');
           }
         }
+        } // v2.48.70: (account, project) group khatam
       } finally {
         await engine.closeBrowser().catch(() => {});
         // v2.31.3: recovery is a run too — arm the 5-minute watcher
         // sweep for this browser (see releaseDownloadWatchers).
         try { engine.scheduleDownloadWatcherSweep(); } catch (e) {}
       }
-      } // v2.48.57: (account, project) group khatam
     }
     return handled;
   }
@@ -2492,7 +2646,8 @@ class WorkerPool {
               } catch (e) { kept++; }
             }
           }
-          this.log(`[ROOT] resume-sweep tasks=${parked.length} saved=${saved} kept=${kept}${skippedExhausted > 0 ? ` skipped=${skippedExhausted}` : ''}`, saved > 0 ? 'success' : 'info');
+          const recStats = this._lastRecoveryStats || {};
+          this.log(`[ROOT] resume-sweep tasks=${parked.length} saved=${saved} kept=${kept}${skippedExhausted > 0 ? ` skipped=${skippedExhausted}` : ''}${recStats.unmapped ? ` unmapped=${recStats.unmapped}` : ''}${recStats.capped ? ` capped=${recStats.capped}` : ''}`, saved > 0 ? 'success' : 'info');
         } catch (e) {}
       }
 

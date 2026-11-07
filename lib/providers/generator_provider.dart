@@ -20,6 +20,14 @@ enum GenerationState {
 class GeneratorProvider with ChangeNotifier {
   String _promptsRawText = '';
   List<PromptItem> _items = [];
+  // v2.48.70 (Item C): check-only RECOVERY cards — keyed by
+  // engine task id, fed by 'recovery' task-updated events
+  // (start / saved / parked / unmapped). Deliberately NOT
+  // part of _items: recovery rows belong to older batches,
+  // must never enter the Prompts box, and must not disturb
+  // a later Generate run's own cards.
+  final List<PromptItem> _recoveryItems = [];
+  final Map<String, PromptItem> _recoveryByTaskId = {};
   GenerationState _state = GenerationState.idle;
   final int _currentIndex = 0;
   // v2.30.3 (phantom progress fix): true only once a run has
@@ -188,6 +196,13 @@ class GeneratorProvider with ChangeNotifier {
     // already covered by the video-completed event.
     AutomationBridge.instance.onTaskUpdated = (data) {
       _stampEngineEvent();
+      // v2.48.70 (Item C): recovery updates feed their own
+      // cards — they must not be matched against this run's
+      // items (a recovered prompt is not in the Prompts box).
+      if (data['status']?.toString() == 'recovery') {
+        _applyRecoveryUpdate(data);
+        return;
+      }
       final item = _matchTaskItem(data);
       if (item == null) return;
       final statusStr = data['status']?.toString() ?? '';
@@ -493,6 +508,59 @@ class GeneratorProvider with ChangeNotifier {
 
   String get promptsRawText => _promptsRawText;
   List<PromptItem> get items => List.unmodifiable(_items);
+
+  /// v2.48.70 (Item C): the recovery cards for the
+  /// Progress panel's RECOVERY section.
+  List<PromptItem> get recoveryItems => List.unmodifiable(_recoveryItems);
+
+  /// v2.48.70 (Item C): one 'recovery' task-updated event
+  /// from the engine. The pool emits phase 'start' when a
+  /// parked task's project check begins (with the account
+  /// and project it will open), then exactly one outcome:
+  /// 'saved', 'parked' (reason on the card) or 'unmapped'
+  /// (no project record — no account was opened).
+  void _applyRecoveryUpdate(Map<String, dynamic> data) {
+    final taskId = data['taskId']?.toString() ?? '';
+    if (taskId.isEmpty) return;
+    final phase = data['phase']?.toString() ?? 'start';
+    final rawIndex = data['promptIndex'];
+    final promptIndex = rawIndex is num ? rawIndex.toInt() : 0;
+    var item = _recoveryByTaskId[taskId];
+    if (item == null) {
+      item = PromptItem(
+        index: promptIndex + 1,
+        text: data['promptText']?.toString() ?? '',
+        status: PromptStatus.recovering,
+      );
+      _recoveryByTaskId[taskId] = item;
+      _recoveryItems.add(item);
+      // Bounded: only the newest 50 recovery cards stay.
+      while (_recoveryItems.length > 50) {
+        final dropped = _recoveryItems.removeAt(0);
+        _recoveryByTaskId.removeWhere((_, v) => identical(v, dropped));
+      }
+    }
+    final accName = data['accountName']?.toString();
+    if (accName != null && accName.isNotEmpty) item.accountName = accName;
+    final reason = data['reason']?.toString();
+    switch (phase) {
+      case 'saved':
+        item.status = PromptStatus.completed;
+        item.progress = 1.0;
+        item.error = null;
+        break;
+      case 'parked':
+      case 'unmapped':
+        item.status = PromptStatus.parked;
+        item.error = reason;
+        break;
+      default:
+        item.status = PromptStatus.recovering;
+        item.error = reason;
+        break;
+    }
+    notifyListeners();
+  }
 
   /// v2.30.3: whether a run has been started for the current item
   /// set (see _runStarted). The Progress panel shows run cards only

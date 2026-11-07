@@ -4882,6 +4882,232 @@ async function main() {
     ok('X63-DIMS the attempt-start line exists', faSrc63d.includes('[ROOT] tile-media dims=${dw}x${dh} dur=${dd} ready=${dr}'));
   }
 
+  // ---------------------------------------------------------------------------
+  // X70. v2.48.70 (OWNER REQUIREMENTS PACK):
+  //   A. size floor -> DURATION VERIFICATION: sub-500k
+  //      valid full-duration body accepted; 40%-duration
+  //      body rejected 'short-duration'; unparseable
+  //      rejected; teacher/duplicate guards bilkul waisay
+  //      hi; verification-fail body bhi pehla diagnostic
+  //      sample rakhti hai (nayi decision helper).
+  //   B. TARGETED RECOVERY: recorded-URL row kabhi
+  //      gallery nahi jati; unmapped row par koi account
+  //      NAHI khulta (counted 'unmapped'); ek project ki
+  //      do rows = ek hi project open; not-found sahi
+  //      project me sweep + Resume dono me PARK (fail
+  //      kabhi nahi); download_attempts >= 3 wali row
+  //      Resume rasta bhi skip karta hai (capped).
+  //   C. VISIBILITY: recovery start/outcome updates usi
+  //      onTaskUpdate stream par aate hain jo UI padhti
+  //      hai (status 'recovery', phase + account + project).
+  //   D. IDENTITY CARD: createBatchTasks birth par
+  //      expected_duration_sec + prompt_fingerprint
+  //      darj karta hai (asal DB round-trip).
+  //   E. ONE SETTINGS TRUTH (fallback): DB store me
+  //      likhi settings -> hint -> effective run settings
+  //      chain (wahi chain jo 4s/10s waqie ko pakadti) +
+  //      bridge/Dart source pins.
+  // ---------------------------------------------------------------------------
+  {
+    const sg = require('../engine/saveGuard');
+    const { failedVerificationSampleDecision, recoveryGalleryGuard } = require('../engine/flowAutomation');
+    const mkMp4 = (durMs, timescale = 1000, version = 0) => {
+      const ftyp = Buffer.alloc(16); ftyp.writeUInt32BE(16, 0); ftyp.write('ftyp', 4); ftyp.write('isom', 8);
+      let mvhd;
+      if (version === 1) {
+        mvhd = Buffer.alloc(8 + 112); mvhd.writeUInt32BE(120, 0); mvhd.write('mvhd', 4);
+        mvhd.writeUInt8(1, 8);
+        mvhd.writeUInt32BE(timescale, 8 + 20); mvhd.writeBigUInt64BE(BigInt(durMs * timescale / 1000), 8 + 24);
+      } else {
+        mvhd = Buffer.alloc(8 + 100); mvhd.writeUInt32BE(108, 0); mvhd.write('mvhd', 4);
+        mvhd.writeUInt32BE(timescale, 8 + 12); mvhd.writeUInt32BE(Math.round(durMs * timescale / 1000), 8 + 16);
+      }
+      const moov = Buffer.concat([Buffer.alloc(8), mvhd]); moov.writeUInt32BE(moov.length, 0); moov.write('moov', 4);
+      return Buffer.concat([ftyp, moov]);
+    };
+    // (A) khalis tasdeeq
+    eq('X70-A mvhd v0 duration parses', sg.mp4DurationSeconds(mkMp4(10008)), 10.008);
+    eq('X70-A mvhd v1 duration parses', sg.mp4DurationSeconds(mkMp4(4000, 1000, 1)), 4);
+    eq('X70-A garbage has no duration', sg.mp4DurationSeconds(Buffer.from('not an mp4 at all, nope')), null);
+    const fullSmall = mkMp4(3970);
+    const vOk = sg.bodyVerification({ buffer: fullSmall, headerOk: true, expectedSec: 4 });
+    eq('X70-A a sub-500k full-duration body verifies ok', vOk.ok, true);
+    eq('X70-A its duration reads back', vOk.durationSec, 3.97);
+    eq('X70-A a 40%-duration body is short-duration', sg.bodyVerification({ buffer: mkMp4(1600), headerOk: true, expectedSec: 4 }).reason, 'short-duration');
+    eq('X70-A exactly 85% still passes', sg.bodyVerification({ buffer: mkMp4(3400), headerOk: true, expectedSec: 4 }).ok, true);
+    eq('X70-A an unparseable body is rejected unparseable', sg.bodyVerification({ buffer: Buffer.from('ftyp-but-no-moov-here'), headerOk: true, expectedSec: 4 }).reason, 'unparseable');
+    // (A) verdict integration — chhota lekin mukammal = save
+    const VU = 'https://flow-content.google/video/x70-fresh';
+    const VT = 'https://flow-content.google/video/x70-teacher';
+    const verdictSmall = sg.mainpageHarvestVerdict({ bound: true, url: VU, teacherUrl: VT, byteLength: 116200, floorBytes: 500000, headerOk: true, verification: vOk });
+    eq('X70-A verdict accepts the small verified body', verdictSmall.action, 'save');
+    // (engine mukammal body par partial:false de kar
+    // bulata hai — waisa hi yahan)
+    eq('X70-A verdict rejects a short body as short-duration', sg.mainpageHarvestVerdict({ bound: true, url: VU, teacherUrl: VT, byteLength: 116200, floorBytes: 500000, headerOk: true, partial: false, verification: sg.bodyVerification({ buffer: mkMp4(1600), headerOk: true, expectedSec: 4 }) }).reason, 'short-duration');
+    eq('X70-A verdict rejects an unparseable body below the floor', sg.mainpageHarvestVerdict({ bound: true, url: VU, teacherUrl: VT, byteLength: 116200, floorBytes: 500000, headerOk: true, partial: false, verification: sg.bodyVerification({ buffer: Buffer.from('ftyp-but-no-moov-here'), headerOk: true, expectedSec: 4 }) }).reason, 'unparseable');
+    eq('X70-A an unparseable body above the floor keeps the legacy gates', sg.mainpageHarvestVerdict({ bound: true, url: VU, teacherUrl: VT, byteLength: 600000, floorBytes: 500000, headerOk: true, partial: false, verification: sg.bodyVerification({ buffer: Buffer.from('ftyp-but-no-moov-here'), headerOk: true, expectedSec: 4 }) }).action, 'save');
+    eq('X70-A the teacher guard still wins over verification', sg.mainpageHarvestVerdict({ bound: true, url: VT, teacherUrl: VT, byteLength: 116200, floorBytes: 500000, headerOk: true, verification: vOk }).reason, 'teacher-url');
+    eq('X70-A the duplicate guard still wins over verification', sg.mainpageHarvestVerdict({ bound: true, url: VU, teacherUrl: VT, byteLength: 116200, floorBytes: 500000, headerOk: true, duplicate: true, verification: vOk }).reason, 'duplicate-content');
+    eq('X70-A without verification the old floor verdict stands', sg.mainpageHarvestVerdict({ bound: true, url: VU, teacherUrl: VT, byteLength: 116200, floorBytes: 500000, headerOk: true }).action, 'fetch-full');
+    eq('X70-A verifiedAccept skips the generic floor', sg.harvestGenericGates({ byteLength: 116200, floorBytes: 500000, headerOk: true, verifiedAccept: true }).ok, true);
+    eq('X70-A the generic floor stands without it', sg.harvestGenericGates({ byteLength: 116200, floorBytes: 500000, headerOk: true }).reason, 'below-floor');
+    // (A) sample: verification-fail bhi pehla sample rakhta hai
+    eq('X70-A a short-duration body still earns the diagnostic sample', failedVerificationSampleDecision('short-duration', true, false), true);
+    eq('X70-A an unparseable body still earns the diagnostic sample', failedVerificationSampleDecision('unparseable', true, false), true);
+    eq('X70-A a bad header earns no sample', failedVerificationSampleDecision('short-duration', false, false), false);
+    eq('X70-A a set latch earns no sample', failedVerificationSampleDecision('short-duration', true, true), false);
+    eq('X70-A belowfloorSampleDecision itself is unchanged for new reasons', belowfloorSampleDecision('short-duration', true, false), false);
+    // (B) khalis faisle
+    eq('X70-B plan with a time but no record is gallery', recoveryEntryPlan('', null, 1700000000000).kind, 'gallery');
+    eq('X70-B plan with no record and no time is unmapped', recoveryEntryPlan('', null, 0).kind, 'unmapped');
+    eq('X70-B a recorded URL beats unmapped', recoveryEntryPlan('https://flow.google.com/project/x70-p', null, 0).kind, 'recorded');
+    const gf = recoveryGalleryGuard({ kind: 'link', index: 0, source: 'gallery-first' }, 1700000000000);
+    eq('X70-B the gallery-first guess is refused when a target time exists', gf.kind, 'none');
+    eq('X70-B with no target time the engine helper keeps its legacy pick (the pool never sends those rows)', recoveryGalleryGuard({ kind: 'link', index: 0, source: 'gallery-first' }, 0).kind, 'link');
+    eq('X70-B a date-time pick passes the guard untouched', recoveryGalleryGuard({ kind: 'link', index: 2, source: 'gallery-datetime' }, 1700000000000).index, 2);
+  }
+  {
+    // (B)+(C) asal WorkerPool, jaali db + jaali engine.
+    const { WorkerPool } = require('../engine/workerPool');
+    const { dbService } = require('../engine/db');
+    const savedDb = {
+      getAccount: dbService.getAccount,
+      failTask: dbService.failTask,
+      setTaskNeedsCheck: dbService.setTaskNeedsCheck,
+      getTask: dbService.getTask,
+      completeTask: dbService.completeTask,
+      findProjectForTime: dbService.findProjectForTime
+    };
+    const savedEng = {
+      launch: FlowAutomationEngine.prototype.launchBrowserForAccount,
+      open: FlowAutomationEngine.prototype.openFlowStudio,
+      reconcile: FlowAutomationEngine.prototype.reconcileRecoveredTask,
+      close: FlowAutomationEngine.prototype.closeBrowser,
+      sweepFn: FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep
+    };
+    const dbState = new Map();
+    const failCalls = [];
+    const openCalls = [];
+    const updates = [];
+    let launchCalls = 0;
+    let reconcileResult = { found: false };
+    dbService.getAccount = (id) => (id === 'acc-70' ? { id: 'acc-70', name: 'X70 Acc', googleName: 'X70 Acc' } : null);
+    dbService.failTask = (id) => { failCalls.push(id); };
+    dbService.setTaskNeedsCheck = (id, v) => { const r = dbState.get(id); if (r) r.needsCheck = v; };
+    dbService.getTask = (id) => dbState.get(id) || null;
+    dbService.completeTask = () => {};
+    dbService.findProjectForTime = () => null;
+    FlowAutomationEngine.prototype.launchBrowserForAccount = async () => { launchCalls += 1; return true; };
+    FlowAutomationEngine.prototype.openFlowStudio = async (settings) => { openCalls.push(settings || {}); return 'READY'; };
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = async () => reconcileResult;
+    FlowAutomationEngine.prototype.closeBrowser = async () => {};
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = () => {};
+    const pool = new WorkerPool({ onLog: () => {}, onTaskUpdate: (u) => updates.push(u) });
+    const U = 'https://flow.google.com/project/x70-proj';
+    const mkRow = (id, extra) => Object.assign({ id, assigned_account_id: 'acc-70', prompt_index: 0, prompt_text: 'x70 prompt', prompt_tag: '', project_url: '', created_at: '', download_attempts: 0 }, extra || {});
+    // (i)+(iii) do rows, ek hi recorded project -> ek launch, ek open, koi gallery pass nahi
+    dbState.set('x70-r1', { status: 'pending', needsCheck: 1 });
+    dbState.set('x70-r2', { status: 'pending', needsCheck: 1 });
+    await pool._reconcileNeedsCheck([mkRow('x70-r1', { project_url: U }), mkRow('x70-r2', { project_url: U })], '/tmp', {}, { sweepMode: true });
+    eq('X70-B two rows in one project launch the browser once', launchCalls, 1);
+    eq('X70-B two rows in one project open it once', openCalls.length, 1);
+    eq('X70-B the recorded URL is what opens', openCalls[0] && openCalls[0].projectUrl, U);
+    ok('X70-B a recorded row never triggers a gallery entry', openCalls.every(c => !!c.projectUrl));
+    // (iv) not-found sahi project me — sweep mode: park, fail kabhi nahi
+    eq('X70-B sweep not-found never fails', failCalls.length, 0);
+    eq('X70-B sweep not-found stays parked', dbState.get('x70-r1').needsCheck, 1);
+    // (C) visibility: start + parked updates UI wali stream par
+    ok('X70-C a recovery start update names the account and project', updates.some(u => u.taskId === 'x70-r1' && u.status === 'recovery' && u.phase === 'start' && u.accountName === 'X70 Acc' && u.projectId === 'x70-proj'));
+    ok('X70-C a parked outcome update is emitted', updates.some(u => u.taskId === 'x70-r1' && u.status === 'recovery' && u.phase === 'parked'));
+    // (iv-b) Resume (non-sweep) mode me bhi not-found park hi hai
+    updates.length = 0; openCalls.length = 0; launchCalls = 0;
+    dbState.set('x70-r3', { status: 'pending', needsCheck: 1 });
+    await pool._reconcileNeedsCheck([mkRow('x70-r3', { project_url: U })], '/tmp', {});
+    eq('X70-B resume-mode not-found never fails either', failCalls.length, 0);
+    eq('X70-B resume-mode not-found stays parked', dbState.get('x70-r3').needsCheck, 1);
+    // saved outcome -> recovery 'saved' update
+    updates.length = 0;
+    reconcileResult = { found: true, downloaded: true };
+    dbState.set('x70-r4', { status: 'pending', needsCheck: 1 });
+    await pool._reconcileNeedsCheck([mkRow('x70-r4', { project_url: U })], '/tmp', {});
+    ok('X70-C a saved outcome update is emitted', updates.some(u => u.taskId === 'x70-r4' && u.status === 'recovery' && u.phase === 'saved'));
+    reconcileResult = { found: false };
+    // (ii) unmapped row: koi launch nahi, counted unmapped
+    updates.length = 0; openCalls.length = 0; launchCalls = 0;
+    dbState.set('x70-r5', { status: 'pending', needsCheck: 1 });
+    await pool._reconcileNeedsCheck([mkRow('x70-r5', {})], '/tmp', {}, { sweepMode: true });
+    eq('X70-B an unmapped row opens NO account', launchCalls, 0);
+    eq('X70-B an unmapped row opens NO project', openCalls.length, 0);
+    eq('X70-B the unmapped row is counted unmapped', pool._lastRecoveryStats && pool._lastRecoveryStats.unmapped, 1);
+    ok('X70-C an unmapped outcome update is emitted', updates.some(u => u.taskId === 'x70-r5' && u.status === 'recovery' && u.phase === 'unmapped'));
+    eq('X70-B the unmapped row stays parked, not failed', dbState.get('x70-r5').needsCheck, 1);
+    eq('X70-B failTask was never called in the whole X70 recovery block', failCalls.length, 0);
+    // (v) attempts cap: download_attempts >= 3 -> Resume rasta bhi skip (capped)
+    updates.length = 0; launchCalls = 0;
+    dbState.set('x70-r6', { status: 'pending', needsCheck: 1 });
+    await pool._reconcileNeedsCheck([mkRow('x70-r6', { project_url: U, download_attempts: 3 })], '/tmp', {});
+    eq('X70-B a capped row opens NO account on the Resume path', launchCalls, 0);
+    eq('X70-B the capped row is counted capped', pool._lastRecoveryStats && pool._lastRecoveryStats.capped, 1);
+    ok('X70-C a capped row shows as parked with its reason', updates.some(u => u.taskId === 'x70-r6' && u.status === 'recovery' && u.phase === 'parked'));
+    // stubs wapas
+    dbService.getAccount = savedDb.getAccount;
+    dbService.failTask = savedDb.failTask;
+    dbService.setTaskNeedsCheck = savedDb.setTaskNeedsCheck;
+    dbService.getTask = savedDb.getTask;
+    dbService.completeTask = savedDb.completeTask;
+    dbService.findProjectForTime = savedDb.findProjectForTime;
+    FlowAutomationEngine.prototype.launchBrowserForAccount = savedEng.launch;
+    FlowAutomationEngine.prototype.openFlowStudio = savedEng.open;
+    FlowAutomationEngine.prototype.reconcileRecoveredTask = savedEng.reconcile;
+    FlowAutomationEngine.prototype.closeBrowser = savedEng.close;
+    FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = savedEng.sweepFn;
+  }
+  {
+    // (D) asal DB round-trip — alag process, throwaway dir.
+    const { execFileSync } = require('child_process');
+    const os = require('os');
+    const fs = require('fs');
+    const path = require('path');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-x70-db-'));
+    const dbPath = JSON.stringify(path.join(__dirname, '..', 'engine', 'db.js'));
+    const script = `(async () => {
+      const { dbService } = require(${dbPath});
+      await dbService.ensureInit();
+      const rows = dbService.createBatchTasks('b-x70', ['A red Bicycle, riding fast!'], { duration: '10s', model: 'Omni Flash' });
+      const t = dbService.getTask(rows[0].id);
+      console.log(JSON.stringify({ exp: t.expected_duration_sec, fp: t.prompt_fingerprint, dur: t.duration }));
+    })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+    let rt = null;
+    try {
+      const out = execFileSync(process.execPath, ['-e', script], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+      rt = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+    } catch (e) { rt = null; }
+    ok('X70-D the identity-card child ran', !!rt);
+    eq('X70-D expected duration is recorded at birth', rt && rt.exp, 10);
+    eq('X70-D the prompt fingerprint is recorded at birth', rt && rt.fp, 'a red bicycle riding fast');
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+  }
+  {
+    // (E) settings-truth chain: DB store -> hint -> effective.
+    const st = require('../engine/settingsTruth');
+    const dbMap = { default_model: 'Omni Flash', default_duration: '10s', default_aspect_ratio: '9:16', default_quality: '360p' };
+    const eff = st.effectiveRunSettings(dbMap, {}, { model: 'Omni Flash', duration: '4s', aspectRatio: '9:16', quality: '720p' });
+    eq('X70-E a DB-written duration reaches the effective run settings', eff.duration, '10s');
+    eq('X70-E a DB-written quality reaches the effective run settings', eff.quality, '360p');
+    eq('X70-E explicit config still beats the DB', st.effectiveRunSettings(dbMap, { duration: '6s' }, {}).duration, '6s');
+    const hint = st.uiGenerateSettingsHint({ model: 'Omni Flash', duration: '10s', aspectRatio: '', quality: null });
+    eq('X70-E the UI hint carries the DB duration', hint.duration, '10s');
+    eq('X70-E the UI hint drops empty fields', Object.keys(hint).length, 2);
+    const fs = require('fs');
+    const path = require('path');
+    const bridgeSrc = fs.readFileSync(path.join(__dirname, '..', 'engine_bridge.js'), 'utf8');
+    ok('X70-E the bridge pushes the settings hint on start-ui', bridgeSrc.includes('settings: settingsHint') && bridgeSrc.includes('uiGenerateSettingsHint'));
+    ok('X70-E the bridge start path uses the one settings truth', bridgeSrc.includes('settingsTruth.effectiveRunSettings'));
+    const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'main.dart'), 'utf8');
+    ok('X70-E Dart applies the pushed duration before the run', mainSrc.includes("pushed['duration']") && mainSrc.includes('settings.updateDuration(duration)'));
+    ok('X70-E Dart applies the pushed model before the run', mainSrc.includes("pushed['model']") && mainSrc.includes('settings.updateModel(model)'));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

@@ -5,6 +5,12 @@ enum PromptStatus {
   downloading,
   completed,
   failed,
+  // v2.48.70 (Item C): check-only recovery cards in the
+  // Progress panel — 'recovering' while a parked task's
+  // project is being checked, 'parked' when the outcome
+  // leaves it pending (with the reason on the card).
+  recovering,
+  parked,
 }
 
 class PromptItem {

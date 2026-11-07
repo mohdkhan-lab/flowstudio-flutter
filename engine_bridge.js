@@ -67,6 +67,7 @@ const {
   checkImportedAccount,
 } = require('./engine/cookieImport');
 const { WorkerPool } = require('./engine/workerPool');
+const settingsTruth = require('./engine/settingsTruth');
 const browserMode = require('./engine/browserMode');
 const promptParser = require('./engine/promptParser');
 const historyOrigin = require('./engine/historyOrigin');
@@ -169,7 +170,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.69';
+const APP_VERSION = '2.48.70';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -1270,11 +1271,27 @@ async function startBridge() {
         // bhejta hai, jahan se ye run ki settings me aata
         // hai. Mustaqil app setting NAHI hai.
         const skipFirstTaskDownload = body.skipFirstTaskDownload === true;
+        // v2.48.70 (ITEM E — fallback): MCP se likhi hui
+        // settings (DB app_settings) is run ke saath PUSH
+        // bhi hoti hain — Dart inhe apne SettingsProvider
+        // par apply karke phir run shuru karta hai, taaki
+        // in-app run aur MCP ki kitab EK hi sach bolen
+        // (2026-11-07: MCP 10s banam app 4s wala waqia).
+        // Khali hint par Dart kuch nahi badalta.
+        let settingsHint = {};
+        try {
+          settingsHint = settingsTruth.uiGenerateSettingsHint({
+            model: dbService.getSetting('default_model', ''),
+            duration: dbService.getSetting('default_duration', ''),
+            aspectRatio: dbService.getSetting('default_aspect', ''),
+            quality: dbService.getSetting('default_quality', '')
+          });
+        } catch (e) { settingsHint = {}; }
         broadcastEvent('automation-log', {
           message: `🔌 MCP • Muse started a run from the app screen (${prompts.length} prompts)`,
           level: 'info',
         });
-        broadcastEvent('mcp-ui-generate-request', { prompts, tag, project, skipFirstTaskDownload });
+        broadcastEvent('mcp-ui-generate-request', { prompts, tag, project, skipFirstTaskDownload, settings: settingsHint });
         return sendJson(200, { ok: true, started: true, prompts: prompts.length });
       }
 
@@ -1396,11 +1413,23 @@ async function startBridge() {
         // back to scene001-style names while the UI promised tag
         // names. The selected pattern + tag now reach the engine.
         const namingPattern = config.namingPattern || dbService.getSetting('default_naming', 'tag');
+        // v2.48.70 (ITEM E): effective settings ab ek hi
+        // khalis hisaab se (engine/settingsTruth) — tarteeb
+        // bilkul waisi hi (explicit > DB default > hardcoded
+        // fallback), farq sirf itna ke quality bhi ab DB
+        // default_quality se aati hai (pehle hardcoded
+        // '720p' hi sach thi, DB wali value nazar-andaz).
+        const effective = settingsTruth.effectiveRunSettings({
+          default_model: dbService.getSetting('default_model', ''),
+          default_duration: dbService.getSetting('default_duration', ''),
+          default_aspect_ratio: dbService.getSetting('default_aspect', ''),
+          default_quality: dbService.getSetting('default_quality', '')
+        }, config, { model: 'Omni Flash', duration: '4s', aspectRatio: '9:16', quality: '720p' });
         const settings = {
-          model: config.model || dbService.getSetting('default_model', 'Omni Flash'),
-          duration: config.duration || dbService.getSetting('default_duration', '4s'),
-          aspectRatio: config.aspectRatio || dbService.getSetting('default_aspect', '9:16'),
-          quality: config.quality || '720p',
+          model: effective.model,
+          duration: effective.duration,
+          aspectRatio: effective.aspectRatio,
+          quality: effective.quality,
           naming: namingPattern,
           namingPattern: namingPattern,
           customNamingPrefix: config.tag || '',

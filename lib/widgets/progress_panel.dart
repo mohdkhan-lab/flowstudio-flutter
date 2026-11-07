@@ -64,6 +64,11 @@ class ProgressPanel extends StatelessWidget {
       case PromptStatus.pending:
       case PromptStatus.queued:
         return ('QUEUED', AppTheme.textFaint);
+      // v2.48.70 (Item C): recovery cards.
+      case PromptStatus.recovering:
+        return ('RECOVERING', AppTheme.activeGold);
+      case PromptStatus.parked:
+        return ('PARKED', AppTheme.textFaint);
     }
   }
 
@@ -148,22 +153,116 @@ class ProgressPanel extends StatelessWidget {
 
           // Content
           Expanded(
-            child: !showRunCards
-                ? Center(
-                    child: Text(
-                      'No prompts yet — paste prompts on the left,\nthen press Generate.',
-                      textAlign: TextAlign.center,
-                      style: TextStyle(fontSize: 11, color: AppTheme.textFaint, height: 1.5),
-                    ),
-                  )
-                : ListView.separated(
-                    itemCount: items.length,
-                    separatorBuilder: (_, _) => const SizedBox(height: 6),
-                    itemBuilder: (context, index) {
-                      final item = items[index];
-                      return _buildCard(context, item, generator.selectedTag);
-                    },
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // v2.48.70 (Item C): RECOVERY section —
+                // check-only recovery (Resume / sweep /
+                // MCP-driven) shows its own live cards
+                // here, even when no Generate run is on
+                // screen. Bounded height; the list inside
+                // scrolls, the panel layout never grows.
+                if (generator.recoveryItems.isNotEmpty) ...[
+                  Row(
+                    children: [
+                      Text(
+                        'RECOVERY',
+                        style: TextStyle(
+                          fontSize: 10,
+                          fontWeight: FontWeight.w800,
+                          letterSpacing: 1.2,
+                          color: AppTheme.textFaint,
+                        ),
+                      ),
+                      const SizedBox(width: 6),
+                      Text(
+                        '${generator.recoveryItems.length} check-only',
+                        style: TextStyle(fontSize: 10, color: AppTheme.textFaint),
+                      ),
+                    ],
                   ),
+                  const SizedBox(height: 6),
+                  ConstrainedBox(
+                    constraints: const BoxConstraints(maxHeight: 132),
+                    child: ListView.separated(
+                      shrinkWrap: true,
+                      itemCount: generator.recoveryItems.length,
+                      separatorBuilder: (_, _) => const SizedBox(height: 4),
+                      itemBuilder: (context, index) =>
+                          _recoveryRow(generator.recoveryItems[index]),
+                    ),
+                  ),
+                  const SizedBox(height: 8),
+                ],
+                Expanded(
+                  child: !showRunCards
+                      ? Center(
+                          child: Text(
+                            'No prompts yet — paste prompts on the left,\nthen press Generate.',
+                            textAlign: TextAlign.center,
+                            style: TextStyle(fontSize: 11, color: AppTheme.textFaint, height: 1.5),
+                          ),
+                        )
+                      : ListView.separated(
+                          itemCount: items.length,
+                          separatorBuilder: (_, _) => const SizedBox(height: 6),
+                          itemBuilder: (context, index) {
+                            final item = items[index];
+                            return _buildCard(context, item, generator.selectedTag);
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // v2.48.70 (Item C): one compact recovery row — status
+  // pill, prompt number, and the engine's own status line
+  // ("Recovering — <account> / project <id>", "Saved",
+  // "Parked — <reason>", "Unmapped — no project record").
+  Widget _recoveryRow(PromptItem item) {
+    final pill = _pillFor(item.status);
+    final detail = item.status == PromptStatus.completed
+        ? 'Saved${item.accountName != null && item.accountName!.isNotEmpty ? ' — ${item.accountName}' : ''}'
+        : (item.error ?? item.accountName ?? '');
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: AppTheme.borderSoft.withValues(alpha: 0.25),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: AppTheme.borderSoft),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
+            decoration: BoxDecoration(
+              color: pill.$2.withValues(alpha: 0.14),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: pill.$2.withValues(alpha: 0.45)),
+            ),
+            child: Text(
+              pill.$1,
+              style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w800, color: pill.$2, letterSpacing: 0.4),
+            ),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            'Prompt #${item.index}',
+            style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700),
+          ),
+          const SizedBox(width: 6),
+          Expanded(
+            child: Text(
+              detail,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(fontSize: 10, color: AppTheme.textFaint),
+            ),
           ),
         ],
       ),

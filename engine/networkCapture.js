@@ -1018,6 +1018,12 @@ class NetworkCapture {
     // floor yahan rakh deta hai (downloadFetch wala hisaab);
     // 0 = floor nahi (aam darwaze hi laagu).
     this.harvestFloorBytes = 0;
+    // v2.48.70 (ITEM A): is capture ke tasks ki expected
+    // duration (seconds) — engine har download round se
+    // pehle set karta hai. > 0 ho to harvest darwaze size
+    // floor ki jagah duration-tasdeeq (saveGuard.
+    // bodyVerification) se bhi guzar sakte hain.
+    this.harvestExpectedDurationSec = 0;
   }
 
   arm() { this.armed = true; }
@@ -2000,16 +2006,30 @@ class NetworkCapture {
    *     wahan faisla dobara poora chalta hai.
    * Koi bhi nakami = koi candidate nahi (khamoshi se).
    */
+  /** v2.48.70 (ITEM A): is body ki duration-tasdeeq is
+   *  capture ki expected duration ke khilaf pass hai
+   *  kya — expected set na ho to hamesha false (purana
+   *  size-floor rasta hi chalta hai). */
+  _verifiedAcceptFor(buffer, headerOk) {
+    try {
+      const expected = Number(this.harvestExpectedDurationSec) || 0;
+      if (expected <= 0) return false;
+      const v = saveGuard.bodyVerification({ buffer, headerOk, expectedSec: expected });
+      return !!(v && v.ok && v.reason === 'ok');
+    } catch (e) { return false; }
+  }
+
   _retainHarvestBody(url, buffer, at) {
     try {
       if (!url || !Buffer.isBuffer(buffer) || buffer.length === 0) return false;
       const t = Number.isFinite(at) ? at : Date.now();
       const headerOk = downloadFetch.looksLikeVideoBuffer(buffer);
       const floor = this.harvestFloorBytes || 0;
+      const verifiedAccept = this._verifiedAcceptFor(buffer, headerOk);
       const key = this.keyByUrl.get(url) || null;
       if (key) {
         const v = saveGuard.harvestCandidateVerdict({
-          bound: true, byteLength: buffer.length, floorBytes: floor, headerOk
+          bound: true, byteLength: buffer.length, floorBytes: floor, headerOk, verifiedAccept
         });
         if (!v.accept) return false;
         if (!this.harvestBodies.has(key)) {
@@ -2018,7 +2038,7 @@ class NetworkCapture {
         return true;
       }
       const g = saveGuard.harvestGenericGates({
-        byteLength: buffer.length, floorBytes: floor, headerOk
+        byteLength: buffer.length, floorBytes: floor, headerOk, verifiedAccept
       });
       if (!g.ok) return false;
       if (!this._harvestByUrl.has(url) && this._harvestByUrl.size >= 2) {
@@ -2048,11 +2068,13 @@ class NetworkCapture {
       const held = this._harvestByUrl.get(bound.url);
       if (!held) return null;
       this._harvestByUrl.delete(bound.url);
+      const heldHeaderOk = downloadFetch.looksLikeVideoBuffer(held.buffer);
       const v = saveGuard.harvestCandidateVerdict({
         bound: true,
         byteLength: held.buffer.length,
         floorBytes: this.harvestFloorBytes || 0,
-        headerOk: downloadFetch.looksLikeVideoBuffer(held.buffer)
+        headerOk: heldHeaderOk,
+        verifiedAccept: this._verifiedAcceptFor(held.buffer, heldHeaderOk)
       });
       if (!v.accept) return null;
       const entry = { url: bound.url, buffer: held.buffer, at: held.at };

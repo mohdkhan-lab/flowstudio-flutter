@@ -184,6 +184,27 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
     if (data['skipFirstTaskDownload'] == true) {
       generator.armSkipFirstTaskDownloadOnce();
     }
+    // v2.48.70 (Item E — one settings truth, fallback route):
+    // the bridge pushes the CURRENT engine-side settings
+    // (the same store MCP writes go to) with the request.
+    // Apply them to SettingsProvider BEFORE the run starts,
+    // through the provider's own updaters (they also persist
+    // back to the engine store), so an MCP-started in-app
+    // run uses the settings MCP last wrote — not whatever
+    // the app happened to hold in memory. Absent/empty
+    // fields leave the app's values exactly as they were.
+    final pushed = data['settings'];
+    if (pushed is Map) {
+      final settings = context.read<SettingsProvider>();
+      final model = pushed['model']?.toString().trim() ?? '';
+      if (model.isNotEmpty) settings.updateModel(model);
+      final duration = pushed['duration']?.toString().trim() ?? '';
+      if (duration.isNotEmpty) settings.updateDuration(duration);
+      final aspect = pushed['aspectRatio']?.toString().trim() ?? '';
+      if (aspect.isNotEmpty) settings.updateAspectRatio(aspect);
+      final quality = pushed['quality']?.toString().trim() ?? '';
+      if (quality.isNotEmpty) settings.updateQuality(quality);
+    }
     generator.startGeneration(
       accounts: context.read<AccountsProvider>(),
       activity: context.read<ActivityProvider>(),

@@ -1,6 +1,10 @@
 const initSqlJs = require('sql.js');
 const fs = require('fs');
 const path = require('path');
+// v2.48.70 (ITEM D): birth-par identity card ke liye
+// khalis helpers (dono bina-dependency ke hain).
+const { parseDurationSeconds } = require('./downloadFetch');
+const { tileFingerprint } = require('./tileIdentity');
 
 /**
  * FlowStudio Lite — SQLite (sql.js) storage.
@@ -255,6 +259,15 @@ function initSchema() {
   // date-time), so check-only recovery must re-open THIS project —
   // recorded at submit time by the pool (dbService.setTaskProjectUrl).
   addColumnIfMissing('queue_tasks', "project_url TEXT DEFAULT ''");
+  // v2.48.70 (ITEM D — IDENTITY CARD): har task ke birth
+  // par do aur sachaiyan darj hoti hain — expected
+  // duration (seconds me; Item A ki tasdeeq isi ke
+  // khilaf hoti hai) aur prompt fingerprint (wahi
+  // normalized shakl jo tile-binding istemal karti
+  // hai). Purani rows par 0 / '' rehta hai — un ke liye
+  // duration column / runtime hisaab fallback hai.
+  addColumnIfMissing('queue_tasks', 'expected_duration_sec REAL DEFAULT 0');
+  addColumnIfMissing('queue_tasks', "prompt_fingerprint TEXT DEFAULT ''");
 
   recoveredInterruptedCount = recoverInterruptedTasks();
   persistDirty = true;
@@ -463,9 +476,18 @@ const dbService = {
           }
         : { text: String(p || ''), tag: '', index: undefined };
       const promptIndex = Number.isInteger(item.index) ? item.index : idx;
+      // v2.48.70 (ITEM D): identity card ke do hisse
+      // birth par hi bhar do — expected duration
+      // (settings se parse) aur prompt fingerprint.
+      const expectedDurationSec = (() => {
+        try { return parseDurationSeconds(settings && settings.duration) || 0; } catch (e) { return 0; }
+      })();
+      const promptFingerprint = (() => {
+        try { return tileFingerprint(item.text, ''); } catch (e) { return ''; }
+      })();
       run(`
-        INSERT INTO queue_tasks (id, batch_id, prompt_text, prompt_index, prompt_tag, settings_json, status, duration, aspect_ratio, model, quality)
-        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?)
+        INSERT INTO queue_tasks (id, batch_id, prompt_text, prompt_index, prompt_tag, settings_json, status, duration, aspect_ratio, model, quality, expected_duration_sec, prompt_fingerprint)
+        VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)
       `, [
         `task_${now}_${idx + 1}`,
         batchId,
@@ -476,7 +498,9 @@ const dbService = {
         (settings && settings.duration) || '6s',
         (settings && settings.aspectRatio) || '9:16',
         (settings && settings.model) || 'Omni Flash',
-        (settings && settings.quality) || '360p'
+        (settings && settings.quality) || '360p',
+        expectedDurationSec,
+        promptFingerprint
       ]);
     });
     return this.getPendingTasks(batchId);

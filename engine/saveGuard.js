@@ -103,6 +103,112 @@ function claimedByOtherTask(ownerKey, taskKey) {
 }
 
 // ---------------------------------------------------------------------------
+// v2.48.70 (ITEM A — DURATION VERIFICATION): the byte-size
+// floor is REPLACED as the acceptance test by the file's
+// own declared duration. Field proof (2026-11-07): Flow's
+// below-floor streams are COMPLETE full-duration files —
+// a 583,688-byte body was a full 10.0078s multi-shot
+// video and a 116,200-byte body a full 3.9706s one — the
+// old floor rejected them purely on size. A candidate now
+// passes when its MP4 mvhd duration is at least
+// DURATION_MATCH_RATIO of the task's expected duration.
+// Teacher/duplicate/partial guards are NOT touched by
+// this — verification only replaces the SIZE test.
+// ---------------------------------------------------------------------------
+
+/** Ek file apni expected duration ka kam az kam itna
+ *  hissa ho to mukammal mani jayegi (85%). */
+const DURATION_MATCH_RATIO = 0.85;
+
+/**
+ * MP4 buffer ke mvhd se duration (seconds) nikalo.
+ * Khalis box-walk: top-level boxes -> moov -> mvhd
+ * (version 0 aur 1 dono). Koi bhi structural kharabi ho
+ * to null (kabhi throw nahi). Sirf MP4 (ftyp) ke liye;
+ * WebM ke liye null lautta hai.
+ */
+function mp4DurationSeconds(buffer) {
+  try {
+    if (!Buffer.isBuffer(buffer) || buffer.length < 16) return null;
+    const readU32 = (off) => buffer.readUInt32BE(off);
+    const boxEnd = (start, size, limit) => {
+      if (size === 1) {
+        if (start + 16 > limit) return -1;
+        const big = buffer.readBigUInt64BE(start + 8);
+        return big > BigInt(Number.MAX_SAFE_INTEGER) ? -1 : start + Number(big);
+      }
+      if (size === 0) return limit;
+      if (size < 8) return -1;
+      return start + size;
+    };
+    const findBox = (from, to, wanted) => {
+      let p = from;
+      while (p + 8 <= to) {
+        const size = readU32(p);
+        const type = buffer.toString('latin1', p + 4, p + 8);
+        const end = boxEnd(p, size, to);
+        if (end < 0 || end > to) return null;
+        if (type === wanted) {
+          const headerLen = size === 1 ? 16 : 8;
+          return { contentStart: p + headerLen, contentEnd: end };
+        }
+        if (end <= p) return null;
+        p = end;
+      }
+      return null;
+    };
+    const moov = findBox(0, buffer.length, 'moov');
+    if (!moov) return null;
+    const mvhd = findBox(moov.contentStart, moov.contentEnd, 'mvhd');
+    if (!mvhd) return null;
+    const s = mvhd.contentStart;
+    if (s + 4 > mvhd.contentEnd) return null;
+    const version = buffer[s];
+    let timescale = 0;
+    let duration = 0;
+    if (version === 1) {
+      if (s + 32 > mvhd.contentEnd) return null;
+      timescale = readU32(s + 20);
+      duration = Number(buffer.readBigUInt64BE(s + 24));
+    } else {
+      if (s + 20 > mvhd.contentEnd) return null;
+      timescale = readU32(s + 12);
+      duration = readU32(s + 16);
+    }
+    if (!Number.isFinite(timescale) || timescale <= 0) return null;
+    if (!Number.isFinite(duration) || duration < 0) return null;
+    const seconds = duration / timescale;
+    return Number.isFinite(seconds) && seconds >= 0 ? seconds : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Ek candidate body ki duration-tasdeeq. input =
+ * { buffer, headerOk, expectedSec }. Natija
+ * { ok, reason, durationSec } — reason: 'ok' |
+ * 'no-expectation' (expected na ho to duration kasauti
+ * nahi — header hi darwaza hai) | 'bad-header' |
+ * 'unparseable' (MP4 parse na ho — kabhi accept nahi) |
+ * 'short-duration' (duration expected ke 85% se kam).
+ */
+function bodyVerification(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  if (!o.headerOk) return { ok: false, reason: 'bad-header', durationSec: null };
+  const durationSec = mp4DurationSeconds(o.buffer);
+  if (durationSec == null) return { ok: false, reason: 'unparseable', durationSec: null };
+  const expected = Number(o.expectedSec);
+  if (!Number.isFinite(expected) || expected <= 0) {
+    return { ok: true, reason: 'no-expectation', durationSec };
+  }
+  if (durationSec >= expected * DURATION_MATCH_RATIO) {
+    return { ok: true, reason: 'ok', durationSec };
+  }
+  return { ok: false, reason: 'short-duration', durationSec };
+}
+
+// ---------------------------------------------------------------------------
 // v2.48.36 (ROOT PACK — D): PAGE-FETCH HARVEST ke darwaze.
 //
 // Page khud editor ke preview/playback par asal server file
@@ -135,7 +241,9 @@ function harvestGenericGates(input) {
   if (len > max) return { ok: false, reason: 'too-big' };
   if (!o.headerOk) return { ok: false, reason: 'bad-header' };
   const floor = Number.isFinite(o.floorBytes) ? Math.floor(o.floorBytes) : 0;
-  if (floor > 0 && len < floor) return { ok: false, reason: 'below-floor' };
+  // v2.48.70 (ITEM A): duration-verified body par size
+  // floor laagu NAHI hota — tasdeeq hi nayi kasauti hai.
+  if (floor > 0 && len < floor && !o.verifiedAccept) return { ok: false, reason: 'below-floor' };
   return { ok: true, reason: 'ok' };
 }
 
@@ -298,8 +406,46 @@ function mainpageHarvestVerdict(input) {
   if (o.hash && o.teacherHash && o.hash === o.teacherHash) {
     return { accept: false, action: 'reject', reason: 'duplicate-content' };
   }
-  const partial = typeof o.partial === 'boolean' ? o.partial : isPartialHarvestResponse(o);
+  // v2.48.70 (ITEM A): duration-tasdeeq ke teen faisle —
+  //   (1) body ki duration PARSE hui aur expected ke
+  //       85% se kam hai ('short-duration') -> har size
+  //       par REJECT: ye file is task ki poori video
+  //       ho hi nahi sakti.
+  //   (2) tasdeeq PASS ('ok') -> size floor skip: file
+  //       apni duration se mukammal sabit hai, size
+  //       chahe kitna hi chhota ho (116,200B wali
+  //       3.9706s file isiliye bachi). Partial ka
+  //       floor-wala hissa bhi is surat me laagu nahi
+  //       (baaki partial hisse — status/range/declared
+  //       — bilkul waisay hi: adhoora jawab save nahi).
+  //   (3) duration parse NAHI hui ('unparseable') ya
+  //       koi expectation hi nahi ('no-expectation') ->
+  //       duration koi saboot nahi deti; purane darwaze
+  //       (floor) hi faisla karte hain — lekin floor se
+  //       NEECHe wali unparseable body duration ki
+  //       bunyaad par accept bhi NAHI hoti: reject ki
+  //       wajah 'unparseable' hi rehti hai.
+  const v = o.verification && typeof o.verification === 'object' ? o.verification : null;
+  const verifiedOk = !!(v && v.ok && v.reason === 'ok');
+  const partial = typeof o.partial === 'boolean'
+    ? o.partial
+    : isPartialHarvestResponse(verifiedOk ? { ...o, floorBytes: 0 } : o);
   if (partial) return { accept: false, action: 'fetch-full', reason: 'partial' };
+  if (v && !v.ok && v.reason === 'short-duration') {
+    return { accept: false, action: 'reject', reason: 'short-duration' };
+  }
+  if (verifiedOk) {
+    const gv = harvestGenericGates({ ...o, verifiedAccept: true });
+    if (!gv.ok) return { accept: false, action: 'reject', reason: gv.reason };
+    return { accept: true, action: 'save', reason: 'ok' };
+  }
+  if (v && !v.ok && v.reason === 'unparseable') {
+    const floor = Number.isFinite(o.floorBytes) ? Math.floor(o.floorBytes) : 0;
+    const len = Number.isFinite(o.byteLength) ? Math.floor(o.byteLength) : 0;
+    if (floor > 0 && len < floor) {
+      return { accept: false, action: 'reject', reason: 'unparseable' };
+    }
+  }
   const g = harvestGenericGates(o);
   if (!g.ok) return { accept: false, action: 'reject', reason: g.reason };
   return { accept: true, action: 'save', reason: 'ok' };
@@ -941,4 +1087,4 @@ function mainpageStateProbePick(o) {
   return usable[0];
 }
 
-module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, MAINPAGE_MIN_CANDIDATE_BYTES, mainpageCandidateGate, mainpageKnownTotalOf, mainpageTooSmallMediaPick, mainpageRpcBodyPick, mainpageStateProbePick, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict };
+module.exports = { contentHash, checkDuplicate, recordSave, claimedByOtherTask, HARVEST_MAX_BYTES, harvestGenericGates, harvestCandidateVerdict, replayUrlVerdict, templateStateOf, isPartialHarvestResponse, mainpageHarvestVerdict, mainpageEntryPick, mainpageBindingPlan, MAINPAGE_MIN_CANDIDATE_BYTES, mainpageCandidateGate, mainpageKnownTotalOf, mainpageTooSmallMediaPick, mainpageRpcBodyPick, mainpageStateProbePick, fullFetchUrlCandidates, harvestAuditOf, formatHarvestAudit, mainpageAuditOf, formatMainpageAudit, cascadeVerdict, DURATION_MATCH_RATIO, mp4DurationSeconds, bodyVerification };

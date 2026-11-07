@@ -360,52 +360,6 @@ function passiveClaimApplies(task, sessionStartedAt) {
 const resizeTriggerApplies = passiveClaimApplies;
 
 /**
- * v2.48.65 (RANK-2 POINTER TRIGGER): pointer wale
- * marhale ka darwaza bhi passive wala hi hai —
- * sirf is session me render hue taaza tasks
- * (recovery is se bahar; dobara khula project
- * sirf chhota preview deta hai, wahan dabao bhi
- * bekaar hai). Doosra naam is liye taaki harvest
- * ki tartib aur test dono saaf parhe jaayein;
- * faisla ek hi function karta hai.
- */
-const pointerTriggerApplies = passiveClaimApplies;
-
-/**
- * v2.48.65 (BELOW-FLOOR SAMPLE — Item B): rejected
- * ummeedwaar ka diagnostic sample save ho ya nahi
- * — KHALIS faisla. Shartein teeno ek saath: wajah
- * 'below-floor' ho, buffer ka header asal video
- * ka ho (kachra/HTML na ho), aur is session me
- * pehle koi sample save na hua ho (latch khula
- * ho). Ye sirf jaanch ki file hai — task ka save
- * is se kabhi nahi banta.
- */
-function belowfloorSampleDecision(reason, headerOk, latchSet) {
-  return reason === 'below-floor' && !!headerOk && !latchSet;
-}
-
-/**
- * v2.48.65 (BELOW-FLOOR SAMPLE — Item B): sample
- * file ka naam — KHALIS. Bunyadi shakl
- * 'BELOWFLOOR-SAMPLE-prompt<n>-<bytes>.mp4'; wahi
- * naam pehle se maujood ho to '-2', '-3', … jodta
- * hai. existsFn(name) -> bool bulane wale ka
- * diya hua jaanch-wala hai (test me nakli, asal
- * me fs.existsSync).
- */
-function belowfloorSampleName(n, byteLength, existsFn) {
-  const base = `BELOWFLOOR-SAMPLE-prompt${n}-${byteLength}`;
-  let name = `${base}.mp4`;
-  let k = 2;
-  while (typeof existsFn === 'function' && existsFn(name)) {
-    name = `${base}-${k}.mp4`;
-    k += 1;
-  }
-  return name;
-}
-
-/**
  * v2.48.63 (SETTINGS TASDEEQ — Item B): Flow ki
  * settings pill ke text ko parhna — KHALIS parser.
  * Pill ki shaklein: 'Video · 720p · 8s crop_9_16 x1',
@@ -862,13 +816,6 @@ class FlowAutomationEngine {
     // naya banta hai (workerPool), is liye constructor
     // ka pal hi session ka aaghaz hai.
     this._sessionStartedAt = Date.now();
-    // v2.48.65 (BELOW-FLOOR SAMPLE — Item B): is
-    // worker session me below-floor wala diagnostic
-    // sample pehle hi save ho chuka hai ya nahi —
-    // latch; har session me sirf EK sample (jaanch
-    // ke liye ek hi file kaafi hai, folder bharna
-    // maqsad nahi).
-    this._belowfloorSampleSaved = false;
     // v2.48.63 (SKIP SCOPE — Item C): jin taskIds ka
     // download is session me test-flag se park ho
     // chuka hai — un ke liye SKIPPED wali [ROOT] line
@@ -7386,104 +7333,6 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.65 (RANK-2 POINTER TRIGGER): tile par
-   * Puppeteer ke asal (trusted) mouse se DABAO —
-   * lekin chhorna TILE SE BAHAR. Gemini brief-3
-   * §6.4 Rank 2: pointerdown woh user-intent
-   * signal hai jo player asal me sunta ho sakta
-   * hai (hover aur resize dono passive ishare
-   * falsify ho chuke — ZC31/ZC32). Tile ka
-   * CONTAINER nishana hai; <video> child ki
-   * maujoodgi shart NAHI (ZC32 me generation
-   * attempt ke waqt wo hota hi nahi tha aur
-   * resize 'no-video' par skip ho gaya tha).
-   * HIFAZAT (sakht): mouse.up() KABHI tile ke
-   * upar nahi; .click() kahin nahi; dabao wast
-   * par, harkat steps ke saath tile se bahar ke
-   * nukte tak (prompt bar ki taraf neeche-wast,
-   * warna upar/kenare — jo nukta tile ke rect se
-   * margin ke saath saaf bahar ho), phir wahin
-   * up. Jo click tile par poora hi na ho wo
-   * editor nahi khol sakta (standing rule).
-   * Darmiyan me khata aaye to bhi chhorna bahar
-   * wale nukte par hi koshish hoti hai; har khata
-   * andar dabayi jati hai. Lautta hai:
-   * { applied:true, box:'<tile W>x<H>' }
-   * | { applied:false, reason:'no-tile'|'error' }.
-   */
-  async _pressMainpageTile(task, tileIndexHint) {
-    let pressed = false;
-    let offPt = null;
-    try {
-      if (!this.page || this.page.isClosed()) return { applied: false, reason: 'no-tile' };
-      if (!this.page.mouse || typeof this.page.mouse.move !== 'function'
-        || typeof this.page.mouse.down !== 'function'
-        || typeof this.page.mouse.up !== 'function') return { applied: false, reason: 'error' };
-      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
-      if (!Number.isFinite(idx) || idx < 0) return { applied: false, reason: 'no-tile' };
-      const geo = await this.page.evaluate((tileIdx) => {
-        try {
-          const tiles = document.querySelectorAll('flow-grid-tile-container');
-          const el = tiles && tiles[tileIdx];
-          if (!el || typeof el.getBoundingClientRect !== 'function') return null;
-          try { if (typeof el.scrollIntoView === 'function') el.scrollIntoView({ block: 'center', inline: 'nearest' }); } catch (e) {}
-          const r = el.getBoundingClientRect();
-          if (!r || !(r.width > 0) || !(r.height > 0)) return null;
-          const vw = window.innerWidth || 0;
-          const vh = window.innerHeight || 0;
-          // bahar wala nukta: tile ke rect se kam
-          // az kam 8px ke margin ke saath saaf
-          // bahar — pehle prompt bar ki taraf
-          // neeche-wast, phir upar-wast, phir
-          // kenare. Koi na mile to dabao hi nahi
-          // (chhorna tile par risk nahi lena).
-          const cands = [
-            { x: Math.round(vw / 2), y: vh - 24 },
-            { x: Math.round(vw / 2), y: 24 },
-            { x: 24, y: Math.round(vh / 2) },
-            { x: vw - 24, y: Math.round(vh / 2) }
-          ];
-          let off = null;
-          for (const c of cands) {
-            if (c.x < 0 || c.y < 0 || c.x > vw || c.y > vh) continue;
-            if (c.x < r.left - 8 || c.x > r.right + 8 || c.y < r.top - 8 || c.y > r.bottom + 8) { off = c; break; }
-          }
-          if (!off) return null;
-          return {
-            cx: r.left + r.width / 2, cy: r.top + r.height / 2,
-            ox: off.x, oy: off.y,
-            box: `${Math.round(r.width)}x${Math.round(r.height)}`
-          };
-        } catch (e) { return null; }
-      }, idx);
-      if (!geo || !Number.isFinite(geo.cx) || !Number.isFinite(geo.cy)
-        || !Number.isFinite(geo.ox) || !Number.isFinite(geo.oy)) {
-        return { applied: false, reason: 'no-tile' };
-      }
-      offPt = { x: geo.ox, y: geo.oy };
-      await this.page.mouse.move(geo.cx, geo.cy, { steps: 5 });
-      await this.page.mouse.down();
-      pressed = true;
-      await sleep(400);
-      await this.page.mouse.move(geo.ox, geo.oy, { steps: 10 });
-      await this.page.mouse.up();
-      pressed = false;
-      return { applied: true, box: geo.box };
-    } catch (e) {
-      // dabao ke darmiyan khata: chhorna phir bhi
-      // bahar wale nukte par hi — button tile ke
-      // upar latka na rahe, click poora na ho.
-      if (pressed) {
-        try {
-          if (offPt) await this.page.mouse.move(offPt.x, offPt.y, { steps: 3 });
-          await this.page.mouse.up();
-        } catch (e2) {}
-      }
-      return { applied: false, reason: 'error' };
-    }
-  }
-
-  /**
    * v2.48.64 (TILE-RESIZE TRIGGER): tile ko CSS se
    * BADA karke dikhao — ZC31 ka saboot: tile ka
    * <video> element 360x640 ka preview encode hi
@@ -7944,30 +7793,6 @@ class FlowAutomationEngine {
     }
     if (verdict.action !== 'save') {
       emitNetload('rejected:' + (verdict.reason || 'rejected'));
-      // v2.48.65 (BELOW-FLOOR SAMPLE — Item B):
-      // below-floor par reject hui ummeedwaar ki
-      // bytes ab tak pheink di jati thin — kabhi
-      // jaancha hi nahi gaya ke wo adhoora preview
-      // rendition hai ya mukammal low-bitrate file
-      // (gv-req me us ki dur POORI aati hai). Is
-      // session ka PEHLA aisa ummeedwaar (header
-      // asal video ka ho to) output folder me
-      // SIDE file ke tor par save hota hai taaki
-      // MK use ffprobe/frame se khud jaanch sake.
-      // SAKHT: ye task ka save NAHI hai —
-      // _saveBufferForTask nahi, claim nahi, task
-      // state/DB/mediaSaved ko haath nahi; faisla
-      // aur bahao bilkul waisa hi, ummeedwaar
-      // rejected hi rehta hai. Likhna nakam ho to
-      // khamoshi — run par koi asar nahi.
-      if (belowfloorSampleDecision(verdict.reason, downloadFetch.looksLikeVideoBuffer(buf), this._belowfloorSampleSaved)) {
-        try {
-          const sampleName = belowfloorSampleName(n, buf.length, (nm) => fs.existsSync(path.join(downloadFolder, nm)));
-          fs.writeFileSync(path.join(downloadFolder, sampleName), buf);
-          this._belowfloorSampleSaved = true;
-          this.log(`[ROOT] belowfloor-sample saved name=${sampleName} bytes=${buf.length} prompt=${n} (diagnostic only — NOT a task save)`, 'info');
-        } catch (e) {}
-      }
       this.log(`[ROOT] [Prompt #${n}] mainpage-harvest candidate rejected (${verdict.reason}) — trying the remaining main-page candidates`, 'warn');
       return 'rejected';
     }
@@ -9576,27 +9401,28 @@ class FlowAutomationEngine {
       if (passiveAmbiguous) return failOut();
       if (passiveSaved || task.mediaSaved) return true;
     }
-    // v2.48.65 (RANK-2 POINTER TRIGGER): passive ke
-    // baad wala marhala — tile par ASAL pointerdown,
-    // pointerup TILE SE BAHAR. ZC32 ka saboot:
-    // resize (CSS bada + fullscreen, 30s) par
-    // player ne encode nahi badla aur koi nayi
-    // stream network par aayi hi nahi — display
-    // size passive ishara hai, player use nahi
-    // sunta; resize marhala is liye hata diya
-    // gaya. Gemini brief-3 §6.4 Rank 2: asal dabao
-    // hi woh user-intent signal hai jo player
-    // sunta ho sakta hai. Dabao tile ke wast par
-    // ~400ms, phir pointer steps ke saath tile se
-    // bahar aur wahin chhorna — click tile par
-    // poora hi nahi hota, editor KABHI nahi
-    // khulta (standing rule), aur file aaye to
-    // phir bhi backend (googlevideo) se hi
-    // network layer par pakdi jayegi. Darwaza
-    // sirf is session ke taaza renders ke liye
-    // (pointerTriggerApplies); recovery bahar.
-    if (pointerTriggerApplies(task, this._sessionStartedAt)) {
-      const logPointerTileMedia = async () => {
+    // v2.48.64 (TILE-RESIZE TRIGGER): passive ke baad
+    // wala marhala — tile ko BADA karke dikhao.
+    // ZC31 ka saboot: 360p par tile ka <video>
+    // element khud 360x640 ka preview encode rakhta
+    // hai; khamosh intezaar par bhi, hover par bhi
+    // sirf wahi chhota preview aata hai. Player
+    // encode apne display size se chunta hai
+    // (ZC30 me 720p par stream khud aa gayi thi) —
+    // is liye ab tile ko CSS se 720px/1280px tak
+    // bada karke 30s dekho: server ko asal file
+    // bhejni pade to yahin padegi, aur file phir bhi
+    // backend (googlevideo) se hi network layer par
+    // pakdi jayegi. ~15s tak kuch na aaye aur
+    // videoWidth ab bhi <= 360 ho to EK dafa
+    // fullscreen wali seedhi. Marhala khatam hote hi
+    // tile ki asal shakal hu-ba-hu wapas — neeche
+    // wala hover escalation untouched grid dekhta
+    // hai. Darwaza sirf is session ke taaza renders
+    // ke liye (resizeTriggerApplies); recovery is
+    // se bahar hai.
+    if (resizeTriggerApplies(task, this._sessionStartedAt)) {
+      const logResizeTileMedia = async () => {
         try {
           const stM = await this._readTileMediaState(task, tileIndexHint);
           const mw = stM && stM.videoWidth != null ? stM.videoWidth : '-';
@@ -9606,27 +9432,53 @@ class FlowAutomationEngine {
           this.log(`[ROOT] tile-media dims=${mw}x${mh} dur=${md} ready=${mr}`, 'info');
         } catch (e) {}
       };
-      let prs = null;
-      try { prs = await this._pressMainpageTile(task, tileIndexHint); } catch (e) { prs = null; }
-      if (!prs || !prs.applied) {
-        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: pointer trigger skipped reason=${(prs && prs.reason) || 'error'}`, 'info');
+      let enl = null;
+      try { enl = await this._enlargeMainpageTile(task, tileIndexHint); } catch (e) { enl = null; }
+      if (!enl || !enl.applied) {
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize trigger skipped reason=${(enl && enl.reason) || 'no-tile'}`, 'info');
       } else {
-        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: pointer trigger applied box=${prs.box || '-'} — watching up to 30s for the full stream`, 'info');
-        await logPointerTileMedia();
-        const pointerDeadline = Date.now() + 30000;
-        let pointerSaved = false;
-        let pointerAmbiguous = false;
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize trigger applied method=css box=${enl.box || '-'} — watching up to 30s for the full stream`, 'info');
+        await logResizeTileMedia();
+        const resizeStart = Date.now();
+        const resizeDeadline = resizeStart + 30000;
+        const resizeHalfway = resizeStart + 15000;
+        let resizeSaved = false;
+        let resizeAmbiguous = false;
+        let fsTried = false;
+        let fsEntered = false;
         for (;;) {
           if (this.isStopping) break;
-          const pz = await tryBindingPlan({ watchStart });
-          if (pz === 'saved' || task.mediaSaved) { pointerSaved = true; break; }
-          if (pz === 'ambiguous') { pointerAmbiguous = true; break; }
-          if (Date.now() >= pointerDeadline) break;
+          const rz = await tryBindingPlan({ watchStart });
+          if (rz === 'saved' || task.mediaSaved) { resizeSaved = true; break; }
+          if (rz === 'ambiguous') { resizeAmbiguous = true; break; }
+          const nowZ = Date.now();
+          if (nowZ >= resizeDeadline) break;
+          if (!fsTried && nowZ >= resizeHalfway) {
+            fsTried = true;
+            let vwNow = null;
+            try {
+              const stFs = await this._readTileMediaState(task, tileIndexHint);
+              if (stFs && Number.isFinite(stFs.videoWidth)) vwNow = stFs.videoWidth;
+            } catch (e) {}
+            if (vwNow != null && vwNow <= 360) {
+              let fs = null;
+              try { fs = await this._fullscreenMainpageTile(task, tileIndexHint); } catch (e) { fs = null; }
+              if (fs && fs.entered) {
+                fsEntered = true;
+                this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize trigger applied method=fullscreen box=${fs.box || '-'} — watching up to 30s for the full stream`, 'info');
+                await logResizeTileMedia();
+              }
+            }
+          }
           await sleep(250);
         }
-        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: pointer finished — saved=${pointerSaved ? 'yes' : 'no'}`, 'info');
-        if (pointerAmbiguous) return failOut();
-        if (pointerSaved || task.mediaSaved) return true;
+        // WAPSI lazmi hai — saved ho, ambiguous ho
+        // ya waqt khatam; hover escalation se pehle
+        // grid apni asal shakal me wapas.
+        try { await this._restoreMainpageTile(task, tileIndexHint, enl.token, fsEntered); } catch (e) {}
+        this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: resize finished — saved=${resizeSaved ? 'yes' : 'no'}`, 'info');
+        if (resizeAmbiguous) return failOut();
+        if (resizeSaved || task.mediaSaved) return true;
       }
     }
     try { await this._exitPrevMainpageHover(task); } catch (e) {}
@@ -11973,4 +11825,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption };

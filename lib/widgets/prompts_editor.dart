@@ -382,37 +382,6 @@ class _PromptsEditorState extends State<PromptsEditor> {
                           ),
                         ),
                         const Spacer(),
-                        if (_controller.text.isEmpty) ...[
-                          Tooltip(
-                            message: 'Load sample prompts for instant testing',
-                            child: TactileButton(
-                              type: TactileType.secondary,
-                              borderRadius: 6,
-                              padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
-                              onTap: () {
-                                const sample = '#00-01 Cinematic drone flyover of neon cyberpunk city at night, rain reflections\\n#00-02 Golden hour sunlight streaming through ancient redwood forest canopy';
-                                _controller.text = sample;
-                                context.read<GeneratorProvider>().setRawText(sample);
-                              },
-                              child: Row(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(Icons.bolt, size: 12, color: AppTheme.accentGold),
-                                  const SizedBox(width: 2),
-                                  Text(
-                                    'Sample',
-                                    style: TextStyle(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w600,
-                                      color: AppTheme.accentGold,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            ),
-                          ),
-                          const SizedBox(width: 6),
-                        ],
                         // txt/srt import button (Tactile 3D)
                         Tooltip(
                           message: 'Import prompt list from TXT or SRT subtitle file',

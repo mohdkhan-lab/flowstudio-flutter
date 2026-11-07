@@ -122,13 +122,13 @@ class AppTheme {
   static bool dark = true;
 
   /// The selected colour theme id (see [themeIds]).
-  static String themeId = 'macos';
+  static String themeId = 'gold';
 
   static const List<String> themeIds = [
+    'gold',
     'macos',
     'midnight',
     'graphite',
-    'gold',
     'emerald',
     'purple',
     'slate',
@@ -141,10 +141,10 @@ class AppTheme {
   ];
 
   static const Map<String, String> themeNames = {
+    'gold': 'Royal Velvet Gold',
     'macos': 'macOS Classic',
     'midnight': 'Midnight Blue',
     'graphite': 'Graphite + White',
-    'gold': 'Gold Premium',
     'emerald': 'Emerald',
     'purple': 'Royal Purple',
     'slate': 'Slate Pro',
@@ -156,19 +156,19 @@ class AppTheme {
     'ember': 'Ember',
   };
 
-  static AppPalette _current = _macosDark;
+  static AppPalette _current = _goldDark;
 
   /// The palette for theme [id] in the given mode. Unknown ids fall
-  /// back to macOS Classic, so a bad stored value can never break the UI.
+  /// back to Royal Velvet Gold, so a bad stored value can never break the UI.
   static AppPalette paletteFor(String id, bool isDark) {
     final table = isDark ? _darkPalettes : _lightPalettes;
-    return table[id] ?? (isDark ? _macosDark : _macosLight);
+    return table[id] ?? (isDark ? _goldDark : _macosLight);
   }
 
   /// Applies theme [id] + mode [isDark] as the live palette. Called
   /// from main.dart whenever either setting changes.
   static void applyTheme(String id, bool isDark) {
-    themeId = themeIds.contains(id) ? id : 'macos';
+    themeId = themeIds.contains(id) ? id : 'gold';
     dark = isDark;
     _current = paletteFor(themeId, isDark);
   }
@@ -187,6 +187,20 @@ class AppTheme {
   // For macOS Classic, textDim/textFaint keep today's exact values
   // (the sample's "dim" is today's textFaint).
   // ------------------------------------------------------------------
+
+  static const AppPalette _goldDark = AppPalette(
+    id: 'gold', dark: true,
+    bgBody: Color(0xFF080604), bg2: Color(0xFF140F0A),
+    surface: Color(0xFF18120B), surfaceElevated: Color(0xFF231C14),
+    inputBg: Color(0xFF060402),
+    border: Color(0xFFD4AF37), borderSoft: Color(0x3DFBBF24),
+    accentGold: Color(0xFFF59E0B), accentAmber: Color(0xFFFBBF24),
+    accentText: Color(0xFFFEF3C7),
+    textMain: Color(0xFFFEF3C7), textDim: Color(0xFFD4AF37),
+    textFaint: Color(0xFFA3907C),
+    gradStart: Color(0xFFFBBF24), gradEnd: Color(0xFFB45309),
+    panelTop: Color(0xFF231C14), panelBottom: Color(0xFF0E0A06),
+  );
 
   static const AppPalette _macosDark = AppPalette(
     id: 'macos', dark: true,
@@ -217,6 +231,7 @@ class AppTheme {
   );
 
   static const Map<String, AppPalette> _darkPalettes = {
+    'gold': _goldDark,
     'macos': _macosDark,
     'midnight': AppPalette(
       id: 'midnight', dark: true,
@@ -243,19 +258,6 @@ class AppTheme {
       textFaint: Color(0xFF7C7C81),
       gradStart: Color(0xFF1A94FF), gradEnd: Color(0xFF0066D6),
       panelTop: Color(0xFF2A2A2D), panelBottom: Color(0xFF1E1E20),
-    ),
-    'gold': AppPalette(
-      id: 'gold', dark: true,
-      bgBody: Color(0xFF1C1917), bg2: Color(0xFF241E18),
-      surface: Color(0xFF29241E), surfaceElevated: Color(0xFF362E24),
-      inputBg: Color(0xFF14110D),
-      border: Color(0xFF57492F), borderSoft: Color(0xFF362D1E),
-      accentGold: Color(0xFFEAB308), accentAmber: Color(0xFFF5C04E),
-      accentText: Color(0xFFF5C04E),
-      textMain: Color(0xFFFFF8E7), textDim: Color(0xFFB8A888),
-      textFaint: Color(0xFF97876B),
-      gradStart: Color(0xFFF5C04E), gradEnd: Color(0xFFB8860B),
-      panelTop: Color(0xFF362E24), panelBottom: Color(0xFF29241E),
     ),
     'emerald': AppPalette(
       id: 'emerald', dark: true,

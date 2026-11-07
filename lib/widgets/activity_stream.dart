@@ -75,17 +75,9 @@ class _ActivityStreamState extends State<ActivityStream> {
             ? 'PAUSED'
             : 'Ready';
 
-    return Container(
-      height: 150,
+    return TactileSectionContainer(
+      height: 175,
       padding: const EdgeInsets.all(10),
-      decoration: BoxDecoration(
-        gradient: AppTheme.panelGrad,
-        borderRadius: BorderRadius.circular(13),
-        border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
-        ],
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [

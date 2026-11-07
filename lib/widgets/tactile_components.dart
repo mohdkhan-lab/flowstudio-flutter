@@ -476,3 +476,79 @@ class _TactileChipState extends State<TactileChip> {
     );
   }
 }
+
+/// A luxury 3D interactive section container for major app panels.
+/// Features subtle specular edge illumination on hover,
+/// smooth 180ms cubic transition, and depth-tuned box shadows.
+class TactileSectionContainer extends StatefulWidget {
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+  final EdgeInsetsGeometry? margin;
+  final double borderRadius;
+  final double? height;
+  final double? width;
+  final Clip clipBehavior;
+
+  const TactileSectionContainer({
+    super.key,
+    required this.child,
+    this.padding = const EdgeInsets.all(12),
+    this.margin,
+    this.borderRadius = 13.0,
+    this.height,
+    this.width,
+    this.clipBehavior = Clip.none,
+  });
+
+  @override
+  State<TactileSectionContainer> createState() => _TactileSectionContainerState();
+}
+
+class _TactileSectionContainerState extends State<TactileSectionContainer> {
+  bool _isHovered = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final borderColor = _isHovered
+        ? AppTheme.borderHighlight
+        : AppTheme.borderSoft;
+
+    return MouseRegion(
+      onEnter: (_) => setState(() => _isHovered = true),
+      onExit: (_) => setState(() => _isHovered = false),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+        height: widget.height,
+        width: widget.width,
+        margin: widget.margin,
+        padding: widget.padding,
+        clipBehavior: widget.clipBehavior,
+        decoration: BoxDecoration(
+          gradient: AppTheme.panelGrad,
+          borderRadius: BorderRadius.circular(widget.borderRadius),
+          border: Border.all(
+            color: borderColor,
+            width: 1.0,
+          ),
+          boxShadow: [
+            BoxShadow(
+              color: Colors.black.withValues(alpha: _isHovered ? 0.45 : 0.35),
+              blurRadius: _isHovered ? 16 : 12,
+              offset: const Offset(0, 4),
+            ),
+            if (_isHovered)
+              BoxShadow(
+                color: AppTheme.accentGold.withValues(alpha: 0.12),
+                blurRadius: 18,
+                spreadRadius: 0.5,
+                offset: const Offset(0, 2),
+              ),
+          ],
+        ),
+        child: widget.child,
+      ),
+    );
+  }
+}
+

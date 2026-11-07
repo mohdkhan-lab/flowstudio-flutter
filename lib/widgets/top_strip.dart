@@ -22,21 +22,9 @@ class TopStrip extends StatelessWidget {
     final accounts = context.watch<AccountsProvider>();
     final notif = context.watch<NotificationsProvider>();
 
-    return Container(
+    return TactileSectionContainer(
       margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-      decoration: BoxDecoration(
-        gradient: AppTheme.panelGrad,
-        borderRadius: BorderRadius.circular(13),
-        border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(
-            color: Colors.black38,
-            blurRadius: 12,
-            offset: Offset(0, 4),
-          ),
-        ],
-      ),
       child: Row(
         children: [
           // Left Brand Pill Box
@@ -113,7 +101,7 @@ class TopStrip extends StatelessWidget {
                 // Version Pill — Tactile 3D
                 TactileChip(
                   color: AppTheme.accentText,
-                  label: 'v2.48.67',
+                  label: 'v2.48.68',
                   height: 22,
                   borderRadius: 11,
                   bevelDepth: 1.5,
@@ -141,15 +129,6 @@ class TopStrip extends StatelessWidget {
               final s = settingsProv.settings;
               final icons = <Widget>[];
               if (isUsableSocialLink(s.chatLink)) {
-                icons.add(_buildCircleIcon(
-                  icon: Icons.message_outlined,
-                  color: AppTheme.textDim,
-                  tooltip: 'Chat',
-                  onTap: () => context.read<SettingsProvider>().openSocial('chat'),
-                ));
-              }
-              if (isUsableSocialLink(s.chatLink)) {
-                if (icons.isNotEmpty) icons.add(const SizedBox(width: 6));
                 icons.add(_buildCircleIcon(
                   icon: Icons.message_outlined,
                   color: AppTheme.textDim,

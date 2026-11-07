@@ -92,20 +92,12 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     final allSelected = allAccounts.isNotEmpty && allAccounts.every((a) => a.isChecked);
     final selectedCount = allAccounts.where((a) => a.isChecked).length;
 
-    return Container(
+    return TactileSectionContainer(
       width: widget.width,
       margin: const EdgeInsets.fromLTRB(14, 12, 0, 12),
       // v2.30.0: 8 (was 10) — two of the pixels the account row's
       // name column needed at the compact width.
       padding: const EdgeInsets.all(8),
-      decoration: BoxDecoration(
-        gradient: AppTheme.panelGrad,
-        borderRadius: BorderRadius.circular(13),
-        border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
-        ],
-      ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1408,26 +1400,26 @@ class _HoverableAccountCardState extends State<_HoverableAccountCard> {
         transform: Matrix4.translationValues(0, _hovered ? -2.5 : 0.0, 0),
         decoration: BoxDecoration(
           color: active
-              ? AppTheme.blue.withValues(alpha: _hovered ? 0.20 : 0.12)
+              ? AppTheme.accentGold.withValues(alpha: _hovered ? 0.20 : 0.12)
               : (_hovered ? AppTheme.surfaceElevated : AppTheme.surfaceElevated),
           borderRadius: BorderRadius.circular(10),
           border: Border.all(
             color: active
-                ? AppTheme.blue
-                : (_hovered ? const Color(0xFF60A5FA) : AppTheme.borderSoft),
+                ? AppTheme.activeGold
+                : (_hovered ? AppTheme.borderHighlight : AppTheme.borderSoft),
             width: active ? 1.3 : 1.0,
           ),
           boxShadow: [
             BoxShadow(
-              color: active ? const Color(0xFF1E3A8A) : const Color(0xFF0F172A),
+              color: active ? AppTheme.bevelPrimary : AppTheme.bevelSecondary,
               offset: Offset(0, _hovered ? 3.4 : 2.2),
               blurRadius: 0,
             ),
             if (_hovered)
               BoxShadow(
                 color: active
-                    ? AppTheme.blue.withValues(alpha: 0.35)
-                    : const Color(0xFF38BDF8).withValues(alpha: 0.20),
+                    ? AppTheme.activeGold.withValues(alpha: 0.35)
+                    : AppTheme.glowPrimary.withValues(alpha: 0.20),
                 blurRadius: 14,
                 spreadRadius: 0.5,
                 offset: const Offset(0, 3.5),

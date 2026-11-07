@@ -33,16 +33,8 @@ class VideoSettingsBar extends StatelessWidget {
         .length;
     final promptCount = generator.totalPrompts;
 
-    return Container(
+    return TactileSectionContainer(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        gradient: AppTheme.panelGrad,
-        borderRadius: BorderRadius.circular(13),
-        border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
-        ],
-      ),
       child: LayoutBuilder(
         builder: (context, constraints) {
           // v2.30.0: compact mode for the narrow right column (the

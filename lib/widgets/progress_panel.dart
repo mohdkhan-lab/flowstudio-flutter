@@ -101,15 +101,7 @@ class ProgressPanel extends StatelessWidget {
                 .toList()
             : const <PromptItem>[];
 
-    return Container(
-      decoration: BoxDecoration(
-        gradient: AppTheme.panelGrad,
-        borderRadius: BorderRadius.circular(13),
-        border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(color: Colors.black38, blurRadius: 12, offset: Offset(0, 4)),
-        ],
-      ),
+    return TactileSectionContainer(
       padding: const EdgeInsets.all(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

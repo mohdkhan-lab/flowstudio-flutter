@@ -23,7 +23,7 @@ class AppSettings {
 
   AppSettings({
     this.appearance = 'dark',
-    this.theme = 'macos',
+    this.theme = 'gold',
     this.model = 'Omni Flash',
     this.duration = '4s',
     this.aspectRatio = '9:16',
@@ -39,7 +39,7 @@ class AppSettings {
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.currentVersion = 'v2.48.67',
+    this.currentVersion = 'v2.48.68',
     // v2.34.0 (Problem 12): no placeholder social links ship any
     // more — an unconfigured service shows NO icon (top strip /
     // About) instead of an icon that opens a dead page. The owner

@@ -120,7 +120,7 @@ class TopStrip extends StatelessWidget {
                 // Version Pill — Tactile 3D
                 TactileChip(
                   color: AppTheme.accentText,
-                  label: 'v2.48.65',
+                  label: 'v2.48.66',
                   height: 22,
                   borderRadius: 11,
                   bevelDepth: 1.5,
@@ -338,7 +338,7 @@ class TopStrip extends StatelessWidget {
 
     if (connected && !reconnecting) {
       return Tooltip(
-        message: 'Engine connected (v2.48.65) • Node.js automation active',
+        message: 'Engine connected (v2.48.66) • Node.js automation active',
         child: Container(
           padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
           decoration: BoxDecoration(

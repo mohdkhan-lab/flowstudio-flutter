@@ -31,6 +31,11 @@ const stageLock = require('./stageLock');
 const headlessHarvest = require('./headlessHarvest');
 const cookiesDb = require('./cookiesDb');
 const os = require('os');
+const downloadTiming = require('./download-timing');
+const downloadRoute = require('./download-route');
+const downloadVerify = require('./download-verify');
+const downloadZeroClick = require('./download-zero-click');
+const projectRecovery = require('./project-recovery');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -823,6 +828,12 @@ class FlowAutomationEngine {
           this.log(`[ROOT] mainpage-audit ${saveGuard.formatMainpageAudit(audit)} timing=${audit.timing || 'render-watch'}`, 'info');
         } catch (e) {}
       },
+      // Immediate zero-click candidate handoff. This runs when the
+      // network body is captured, not after the monitor's 60s harvest
+      // patience window.
+      onMainpageCandidate: (info) => {
+        try { this._onMainpageCandidate(info); } catch (e) {}
+      },
       // v2.48.50 (item 18 — SEGMENT ASSEMBLY): ek
       // logical stream ke 2+ URL hone ki khabar — sirf
       // ek line, jab group pehli dafa banta hai.
@@ -1139,6 +1150,17 @@ class FlowAutomationEngine {
     // Flow landing/gallery pages stream many large mp4 previews; buffering
     // every one of them through CDP saturated the Electron main loop.
     this.captureArmed = false;
+
+    // --- v2.48.70 + hotfix: NEW DOWNLOAD HELPERS ---
+    // Pure-logic modules, no I/O, no prompt-submits. Wired into the
+    // download flow below (timing, route, verify, zero-click, recovery).
+    this._downloadHelpers = {
+      timing: downloadTiming,
+      route: downloadRoute,
+      verify: downloadVerify,
+      zeroClick: downloadZeroClick,
+      recovery: projectRecovery
+    };
   }
 
   log(msg, type = 'info', extra = {}) {
@@ -4310,6 +4332,32 @@ class FlowAutomationEngine {
       this.capturedVideoBuffers.delete(sourceUrl);
     }
 
+    // --- v2.48.70 + hotfix: NEW DOWNLOAD HELPERS ---
+    // Verify saved file with duration check (download-verify.js)
+    try {
+      if (!isImageMode && task.filePath) {
+        const fileStats = fs.statSync(task.filePath);
+        const verifyResult = this._downloadHelpers.verify.verifySavedFile({
+          taskKey: task.taskId || task.videoId || null,
+          filePath: task.filePath,
+          expectedSec: this._expectedDurationSec(task, settings),
+          fileSizeBytes: fileStats.size
+        });
+        this.log(this._downloadHelpers.verify.saveVerifyLine({
+          taskKey: task.taskId || task.videoId || null,
+          fileName: task.fileName,
+          method: verifyResult.method,
+          durationSec: verifyResult.durationSec,
+          expectedSec: verifyResult.expectedSec,
+          reason: verifyResult.reason,
+          ok: verifyResult.ok
+        }), 'info');
+        if (!verifyResult.ok) {
+          this.log(`[ROOT] save-verify rejected task=${task.taskId || task.videoId} — not counting as success`, 'warn');
+        }
+      }
+    } catch (e) {}
+
     const result = {
       filePath: finalSavedFilePath,
       fileName,
@@ -6014,6 +6062,95 @@ class FlowAutomationEngine {
   }
 
   /**
+   * Immediate zero-click mainpage handoff. A complete googlevideo
+   * candidate is offered to the oldest eligible task as soon as capture
+   * sees it. Binding still goes through mainpageBindingPlan, and saving
+   * still goes through _mainpageCompleteCandidate's normal gates.
+   */
+  async _onMainpageCandidate(info) {
+    const entry = info && info.entry;
+    if (!entry || !entry.url || !this.netCapture || this.isStopping) return;
+    const tasks = [];
+    try {
+      for (const task of this._captureTasks.values()) {
+        // `completed` means render completion in this engine, not a saved
+        // file. Keep rendered-but-unsaved tasks eligible for the immediate
+        // network handoff; only mediaSaved closes the handoff permanently.
+        if (!task || task.mediaSaved || task._immediateMainpagePromise) continue;
+        if (!task._backendCtx) continue;
+        tasks.push(task);
+      }
+    } catch (e) { return; }
+    tasks.sort((a, b) => (a.startTime || 0) - (b.startTime || 0));
+    try { this.log(`[ROOT] immediate-candidate host=${networkCapture.hostOf(entry.url)} tasks=${tasks.length} entryBytes=${entry.bytes || 0}`, 'info'); } catch (e) {}
+    for (const task of tasks) {
+      const key = task.captureKey || task.videoId || null;
+      if (!key) continue;
+      let teacherUrl = null;
+      try { teacherUrl = this.netCapture.teacherMintUrlForTemplate(null); } catch (e) {}
+      if (teacherUrl && teacherUrl === entry.url) continue;
+      let pendingOrder = [];
+      let pendingOthers = 0;
+      try {
+        pendingOrder = typeof this.netCapture.mainpagePendingOrder === 'function'
+          ? this.netCapture.mainpagePendingOrder() : [];
+        pendingOthers = typeof this.netCapture.mainpagePendingOthers === 'function'
+          ? this.netCapture.mainpagePendingOthers(key) : 0;
+      } catch (e) {}
+      const ownStart = Number.isFinite(task.renderCompletedAt) && task.renderCompletedAt > 0
+        ? task.renderCompletedAt : (task.startTime || Date.now());
+      let plan = null;
+      try {
+        plan = saveGuard.mainpageBindingPlan({
+          candidates: [{ url: entry.url, firstSeenAt: entry.firstSeenAt || entry.at || Date.now(), seq: entry.seq || null }],
+          ownKey: key,
+          ownStart,
+          pendingOrder,
+          pendingOthers
+        });
+      } catch (e) { plan = null; }
+      try { this.log(`[ROOT] immediate-plan task=${task.promptIndex || 0} bind=${!!(plan && plan.bind)} reason=${plan && plan.reason || 'none'} pendingOthers=${pendingOthers}`, 'info'); } catch (e) {}
+      if (!plan || !plan.bind || plan.url !== entry.url) continue;
+      // Immediate backend fetch: bind the captured candidate URL to this task
+      // and start the backend download directly (no button, no menu, no waits).
+      task.backendVideoUrl = entry.url;
+      task.backendUrlVia = 'capture-immediate';
+      // Set up the backend context immediately so _kickBackendFetch has
+      // the download folder and settings ready; this is the "video banta hi"
+      // trigger — the backend download starts the moment the URL is captured.
+      const settings = this.currentSettings || {};
+      const folder = this.currentDownloadDir;
+      task._backendCtx = { downloadFolder: folder, settings };
+      const attempts = Array.isArray(task.downloadAttempts) ? task.downloadAttempts : (task.downloadAttempts = []);
+      // In-flight guard: if a fetch is already running for this task, return it;
+      // the saved promise is used by the existing completion path below.
+      const backendFetchPromise = this._kickBackendFetch(task, task._backendCtx);
+      // Wait for the immediate backend fetch to settle. If it saved the file,
+      // the slow mainpage-harvest path (in-page fetch + harvest) must be skipped.
+      let backendOk = false;
+      try { backendOk = await backendFetchPromise; } catch (e) { backendOk = false; }
+      if (backendOk) return;
+      // Fallback: if the backend fetch could not save the file, use the mainpage
+      // completion path (in-page fetch, duration verification, then save).
+      task._immediateMainpagePromise = Promise.resolve()
+        .then(() => this._mainpageCompleteCandidate(task, folder, settings, attempts, entry, {
+          captureKey: key,
+          bindReason: 'capture-immediate',
+          floorBytes: this.netCapture.harvestFloorBytes || 0,
+          teacherUrl,
+          teacherHash: null,
+          timingBucket: () => 'capture-immediate',
+          gapSec: () => Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1),
+          tileIndexHint: task.tileIndex
+        }))
+        .catch(() => 'error')
+        .finally(() => { task._immediateMainpagePromise = null; });
+      // One candidate is assigned to one task per callback.
+      break;
+    }
+  }
+
+  /**
    * v2.8.0: backend se bandha link seedha fetch karke save karo —
    * wahi authenticated tareeka jo stream download ka hai (page ke
    * session cookies ke saath Node fetch; file save par ffprobe
@@ -6073,6 +6210,9 @@ class FlowAutomationEngine {
     if (!ok && !task.mediaSaved) {
       const failSummary = this._fetchSummary(task);
       this.log(`[Prompt #${n}] The backend link had been found, but the file could not be made from it${failSummary ? ` (attempts: ${failSummary})` : ' (the link may have expired)'}. The remaining routes will be tried.`, 'warn');
+      // Clear in-flight guard so the download stage can retry the backend route
+      task._backendFetchPromise = null;
+      task._backendFetchInFlight = false;
     }
     task._backendHotFetch = false;
     if (ok) {
@@ -10572,6 +10712,29 @@ class FlowAutomationEngine {
     // isi pal se gini jati hain.
     const attemptStartedAt = Date.now();
 
+    // --- v2.48.70 + hotfix: NEW DOWNLOAD HELPERS ---
+    // Zero-click: record start (must be engine source, not manual/button/menu).
+    try {
+      this._downloadHelpers.zeroClick.recordZeroClickStart(task.taskId || task.videoId || null, 'engine');
+    } catch (e) {}
+    // Timing gate: check if download may proceed (render complete, claimed url, etc.)
+    try {
+      const timingGate = this._downloadHelpers.timing.downloadTimingGate({
+        taskKey: task.taskId || task.videoId || null,
+        renderCompletedAt: task.renderCompletedAt || null,
+        sessionStartedAt: this._sessionStartedAt,
+        claimedUrl: task.completedVideoUrl || task.backendVideoUrl || null,
+        now: Date.now()
+      });
+      if (timingGate.action === 'wait') {
+        this.log(`[ROOT] [Prompt #${n}] timing gate: ${timingGate.detail} — waiting for render/claimed URL`, 'info');
+      }
+    } catch (e) {}
+    // Store render completion time for timing tracking
+    try {
+      this._downloadHelpers.route.storeRenderCompleted(task.taskKey || task.videoId || null, task.renderCompletedAt || Date.now());
+    } catch (e) {}
+
     // v2.48.31 (MINT): is round ki render→save khidki ke liye
     // enhanced capture chalu (sirf video) — band bulane wale
     // ke finally me hota hai (_mintEndWatch).
@@ -10726,6 +10889,20 @@ class FlowAutomationEngine {
       // — ye sirf intezaar ka overlap hai, dawa hamesha
       // sequential save par bandhta hai. Grid-replay
       // dono ke baad hi aata hai, pehle jaisa.
+      // v2.48.70 (REAL FIX): backend-fetch FIRST — the fastest route.
+      // The backend link arrives via network capture (_onBackendMediaBound)
+      // and _fetchBackendAndSave runs immediately. If it succeeded, skip
+      // the headless+mainpage race entirely. If it failed, the in-flight
+      // guard is cleared (see _fetchBackendAndSave) so we can retry here.
+      if (task.backendVideoUrl && !task.mediaSaved && !this.isStopping) {
+        try {
+          const okBackend = await this._tryBackendDownload(task, downloadFolder, settings, attempts);
+          if (okBackend) return finishVideoAttempt({ ok: true, strategy: 'backend-fetch', attempts });
+        } catch (e) {
+          attempts.push({ strategy: 'backend-fetch', ok: false, note: 'backend route hit a problem — headless + mainpage ran next' });
+        }
+        if (task.mediaSaved) return finishVideoAttempt({ ok: true, strategy: 'backend-fetch', attempts });
+      }
       task._raceActive = true;
       const hhRun = (async () => {
         try { return await this._tryHeadlessHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint); }

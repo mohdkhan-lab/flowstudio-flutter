@@ -725,6 +725,10 @@ class NetworkCapture {
     // faisla/wajah/timing-bucket; asal URL kabhi bahar
     // nahi jata). Callback na ho to audit khamosh hai.
     this.onMainpageAudit = typeof opts.onMainpageAudit === 'function' ? opts.onMainpageAudit : null;
+    // Immediate zero-click handoff: a complete candidate is offered to
+    // flowAutomation as soon as the network body is captured, without
+    // waiting for the render monitor's slow harvest loop.
+    this.onMainpageCandidate = typeof opts.onMainpageCandidate === 'function' ? opts.onMainpageCandidate : null;
     // v2.48.50 (MEGA PACK item 18 — SEGMENT ASSEMBLY):
     // ek logical stream ke >1 URL hone ki khabar —
     // engine use '[ROOT] mainpage-segments' line me
@@ -1412,7 +1416,12 @@ class NetworkCapture {
                 // entry par fromCache darj hoga. Store ka
                 // rasta/cache ke baghair wala bilkul ek
                 // hai (wahi header darwaza offset 0 par).
-                fromCache: !!(e.response.fromDiskCache || e.response.fromPrefetchCache)
+                fromCache: !!(e.response.fromDiskCache || e.response.fromPrefetchCache),
+                // Keep an in-flight prefix so zero-click binding can begin
+                // as soon as the rewritten stream has enough bytes; waiting
+                // for Network.loadingFinished was the 100s+ delay.
+                streamChunks: [],
+                streamBytes: 0
               });
             }
           }
@@ -1427,9 +1436,33 @@ class NetworkCapture {
       // tukda (chunk) aate hi de deta hai — usi par scan chalega.
       client.on('Network.dataReceived', (e) => {
         try {
-          if (!e || !this._cdpBatch.has(e.requestId) || typeof e.data !== 'string' || !e.data) return;
+          if (!e || typeof e.data !== 'string' || !e.data) return;
           const buf = Buffer.from(e.data, 'base64');
-          if (buf.length) this._ingestStreamChunk(e.requestId, buf, Date.now());
+          if (!buf.length) return;
+          if (this._cdpBatch.has(e.requestId)) {
+            this._ingestStreamChunk(e.requestId, buf, Date.now());
+            return;
+          }
+          // Mainpage googlevideo responses can stay open while Flow is
+          // rendering. Feed the growing body into the same candidate
+          // pipeline before loadingFinished, so task binding/download can
+          // start as soon as the stream has enough verified bytes.
+          const pend = this._mainpagePending.get(e.requestId);
+          if (!pend || pend.src !== 'googlevideo') return;
+          if (!Array.isArray(pend.streamChunks)) pend.streamChunks = [];
+          const cap = saveGuard.HARVEST_MAX_BYTES || (8 * 1024 * 1024);
+          const room = Math.max(0, cap - (pend.streamBytes || 0));
+          if (!room) return;
+          const piece = buf.length > room ? buf.subarray(0, room) : buf;
+          pend.streamChunks.push(piece);
+          pend.streamBytes = (pend.streamBytes || 0) + piece.length;
+          // Avoid rebuilding for tiny chunks; the first meaningful prefix
+          // and then each ~256KB boundary are enough to wake the handoff.
+          if (pend.streamBytes < 128 * 1024
+            || (pend._lastEmittedBytes || 0) + 256 * 1024 > pend.streamBytes) return;
+          pend._lastEmittedBytes = pend.streamBytes;
+          const assembled = Buffer.concat(pend.streamChunks);
+          this._recordMainpageSighting(pend, assembled, assembled.length, Date.now());
         } catch (err) {}
       });
       client.on('Network.loadingFinished', async (e) => {
@@ -2442,6 +2475,14 @@ class NetworkCapture {
       if (this.isMainpageClaimed(pend.url)) { emit('ignored', 'already-claimed'); return; }
       if (bodyLen === 0) { emit('ignored', 'body-fail'); return; }
       emit('captured', partial ? 'partial-stream' : 'ok');
+      // Do not wait for _tryMainpageHarvest() to discover this body.
+      // The callback is advisory and task binding remains guarded by the
+      // engine's mainpageBindingPlan/content-hash/duration checks.
+      try {
+        if (this.onMainpageCandidate) {
+          this.onMainpageCandidate({ entry, buffer });
+        }
+      } catch (e) {}
     } catch (e) {}
   }
 

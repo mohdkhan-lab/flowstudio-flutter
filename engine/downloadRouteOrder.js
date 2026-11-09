@@ -78,10 +78,37 @@
 // attempt path se HAMESHA ke liye bahar hain.
 // IMAGE tasks is tartib se bandhe nahi hain — un ka purana
 // backend/tile-src/native rasta apni jagah barqarar hai.
+//
+// v2.48.72 (EDITOR-HARVEST PRIMARY — OWNER DECISION
+// 2026-11-09): upar wali .41 ki editor-par-pabandi OWNER
+// NE KHUD uthayi hai — un ke alfaaz ka saar: "Flow Studio
+// me editor open kar ke hi work karo abhi ke liye; baki
+// backend se extension se pata karenge, aur jab exact
+// upay mil gaya tab is feature ko Flow me daal denge."
+// Is liye tartib ab ye hai:
+//   1. 'editor-harvest' — WORKER KE LIVE browser me is
+//      task ka editor khulta hai aur editor ki apni
+//      playback stream (ZEROCLICK6/7/8 ka wahid
+//      bharosemand bytes-zariya) capture/saveGuard se
+//      save hoti hai; koshish ke baad page grid par
+//      wapas. Save stream-capture se hai — editor ke
+//      "Download media" button/menu ka click NAHI
+//      (native-editor is tartib se bahar hi rehta hai).
+//   2. 'mainpage-harvest' — .71 wali main-page kitab +
+//      backend-fetch-first candidate handoff, waisa hi.
+//   3. 'grid-replay' — teacher-guarded verbatim replay.
+// 'headless-harvest' attempt tartib se BAHAR hai (us ka
+// code repo me rehta hai — headlessHarvest.js aur
+// _tryHeadlessHarvest; wo captcha se sabit taur par mara
+// hua hai, editor se pehle waqt nahi jalayega). Backend
+// ka turant-download asal upay Chrome extension me
+// dhoondha ja raha hai; wo sabit hote hi yahan port hoga
+// aur editor-harvest retire ho jayega — ye pack wo port
+// NAHI hai.
 // ---------------------------------------------------------------------------
 
 const DOWNLOAD_ROUTE_ORDER = Object.freeze([
-  'headless-harvest',
+  'editor-harvest',
   'mainpage-harvest',
   'grid-replay'
 ]);

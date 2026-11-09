@@ -482,9 +482,10 @@ async function main() {
   const GV_URL = 'https://rr2---sn-abc123.googlevideo.com/videoplayback?expire=999&id=xyz&itag=18&source=youtube';
   const FC_FRESH3 = 'https://flow-content.google/video/fresh-media-3?Expires=999&KeyName=k&Signature=s';
   {
-    // (a) tartib — sirf do raaste, baaki sab gayab
-    eq('MP-ORDER order is exactly headless-harvest then mainpage-harvest then grid-replay', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['headless-harvest', 'mainpage-harvest', 'grid-replay']));
-    for (const banned of ['editor-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'tile-src', 'quick-check']) {
+    // (a) tartib — v2.48.72 (owner decision 2026-11-09):
+    // editor-harvest pehla, headless kram se bahar
+    eq('MP-ORDER order is exactly editor-harvest then mainpage-harvest then grid-replay', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['editor-harvest', 'mainpage-harvest', 'grid-replay']));
+    for (const banned of ['headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'tile-src', 'quick-check']) {
       ok(`MP-ORDER ${banned} is absent from the order`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
     }
     // googlevideo pehchan
@@ -727,7 +728,11 @@ async function main() {
     eq('MP-ENG mainpage route exists', typeof eng._tryMainpageHarvest, 'function');
     eq('MP-ENG mainpage full-fetch helper exists', typeof eng._fetchMainpageFullInPage, 'function');
     eq('MP-ENG grid-replay is kept', typeof eng._tryGridReplay, 'function');
-    for (const gone of ['_tryEditorHarvest', '_tryEditorHarvestInner', '_tryEditorContextReplay', '_openHarvestEditor', '_createBackgroundPage', '_closeBgEditorSession', '_bgHarvestActiveFor', '_tryDirectViewerDownload', '_openTileViewer', '_tryMenuFirstDownload', '_opportunisticServerCheck', '_tryBlobHarvestDownload', '_fetchEditorHarvestFullInPage', '_savePromotedHarvestInstead']) {
+    // v2.48.72: editor-harvest LIVE roop me wapas hai
+    // (owner decision 2026-11-09) — purani bg/inner
+    // shaklein ab bhi gayab hain.
+    eq('MP-ENG editor route exists (live, v2.48.72)', typeof eng._tryEditorHarvest, 'function');
+    for (const gone of ['_tryEditorHarvestInner', '_tryEditorContextReplay', '_openHarvestEditor', '_createBackgroundPage', '_closeBgEditorSession', '_bgHarvestActiveFor', '_tryDirectViewerDownload', '_openTileViewer', '_tryMenuFirstDownload', '_opportunisticServerCheck', '_tryBlobHarvestDownload', '_fetchEditorHarvestFullInPage', '_savePromotedHarvestInstead']) {
       eq(`MP-ENG ${gone} is gone`, typeof eng[gone], 'undefined');
     }
     eq('MP-ENG no background session state remains', eng._bgEditorSession, undefined);
@@ -745,9 +750,11 @@ async function main() {
     const task = { promptIndex: 0, captureKey: 'k-mp-fail', videoId: 'k-mp-fail', startTime: Date.now(), renderCompletedAt: Date.now() };
     const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
     eq('MP-FAIL inner returns not-ok', res.ok, false);
-    eq('MP-FAIL the task route order is the three-step order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['headless-harvest', 'mainpage-harvest', 'grid-replay']));
+    eq('MP-FAIL the task route order is the three-step order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['editor-harvest', 'mainpage-harvest', 'grid-replay']));
+    ok('MP-FAIL attempts carry editor-harvest first (v2.48.72)', res.attempts.some(a => a.strategy === 'editor-harvest'));
     ok('MP-FAIL attempts carry mainpage-harvest', res.attempts.some(a => a.strategy === 'mainpage-harvest'));
-    ok('MP-FAIL attempts carry no banned strategy', !res.attempts.some(a => ['editor-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-src', 'tile-src-fast', 'quick-check'].includes(a.strategy)));
+    ok('MP-FAIL attempts carry no headless-harvest (v2.48.72)', !res.attempts.some(a => a.strategy === 'headless-harvest'));
+    ok('MP-FAIL attempts carry no banned strategy', !res.attempts.some(a => ['replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-src', 'tile-src-fast', 'quick-check'].includes(a.strategy)));
     ok('MP-FAIL the honest-fail line was logged', logs.some(m => m.includes('Download failed honestly')));
     ok('MP-FAIL the tile audit line logged src=none', logs.some(m => m.includes('[ROOT] mainpage-audit') && m.includes('src=none')));
     ok('MP-FAIL no bg flag anywhere in the log', !logs.some(m => m.includes('bg=')));
@@ -1421,8 +1428,9 @@ async function main() {
   //       mukammal body → save, via=headless-harvest
   //       line, session band;
   //   (g) ENGINE: stream waqt par na aaye to haar, aur
-  //       cascade ki tartib headless → mainpage → grid
-  //       (fall-through), probe phir bhi ek hi dafa.
+  //       cascade ki tartib (v2.48.72 se) editor →
+  //       mainpage → grid (fall-through; headless
+  //       cascade se bahar), probe phir bhi ek hi dafa.
   //   (h) v2.48.45 — LAUNCH DIAGNOSTICS + CLONE
   //       HARDENING (ZEROCLICK12): launch fail ki
   //       strategy note + warn line me ASAL wajah
@@ -1586,7 +1594,7 @@ async function main() {
     // ki tartib headless → mainpage → grid (probe
     // cache ki wajah se phir bhi ek hi dafa).
     const logs = [];
-    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { headlessHarvestWaitMs: 300, mainpagePatienceMs: 600, mainpageViewportWaitMs: 200, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { headlessHarvestWaitMs: 300, editorHarvestWaitMs: 300, mainpagePatienceMs: 600, mainpageViewportWaitMs: 200, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
     eng.currentAccount = { id: 'acc-hh-fall', name: 'HH Fall' };
     eng.page = fakePage('main-hh-fall');
     eng._readTileMediaState = async () => null;
@@ -1599,21 +1607,26 @@ async function main() {
     const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
     eq('HH-FALL the cascade still fails honestly overall', res.ok, false);
     const seq = res.attempts.map(a => a.strategy);
-    // v2.48.50 (item 7 — ROUTE RACE): headless aur
-    // mainpage ab EK SAATH chalte hain — attempts ki
-    // tartib khatam hone ki tartib hai, shuru hone ki
-    // nahi; is liye yahan sirf maujoodgi parkhi jati
-    // hai (route ORDER ka dawa task.downloadRouteOrder
-    // par neeche waisa hi pin hai).
-    ok('HH-FALL headless ran in the cascade', seq.indexOf('headless-harvest') >= 0);
+    // v2.48.72 (EDITOR-HARVEST PRIMARY): cascade ab
+    // sequential editor → mainpage → grid hai; headless
+    // attempt path se bahar hai (us ke seedhe unit
+    // tests upar (e)/(f)/(h) me waisi hi chalte hain —
+    // method repo me rehta hai). Stubbed
+    // _headlessOpenTaskEditor yahan LIVE editor route
+    // ko 'khula' deta hai, lekin koi stream nahi aati,
+    // is liye editor attempt bhi haar kar aage badhta
+    // hai.
+    ok('EH-FALL editor-harvest ran first in the cascade', seq.indexOf('editor-harvest') === 0);
+    ok('EH-FALL headless-harvest did NOT run in the cascade', seq.indexOf('headless-harvest') === -1);
+    ok('EH-FALL the task route order has no headless-harvest', !task.downloadRouteOrder.includes('headless-harvest'));
     // grid-replay template na hone par khamoshi se skip
     // hota hai (koi attempt entry nahi) — entry ho to
     // mainpage ke BAAD hi hoga, aur haar ki line teeno
     // raaston ka naam leti hai.
     ok('HH-FALL mainpage ran, and any grid-replay attempt came after it', seq.indexOf('mainpage-harvest') >= 0 && (seq.indexOf('grid-replay') === -1 || seq.indexOf('mainpage-harvest') < seq.indexOf('grid-replay')));
-    ok('HH-FALL the honest-fail line names all three routes', logs.some(m => m.includes('Download failed honestly') && m.includes('invisible-browser harvest') && m.includes('grid replay')));
+    ok('HH-FALL the honest-fail line names all three routes', logs.some(m => m.includes('Download failed honestly') && m.includes('editor playback stream') && m.includes('grid replay')));
     eq('HH-FALL the probe still ran only once across rounds', st.probeCount, 1);
-    eq('HH-FALL the task route order is the three-step order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['headless-harvest', 'mainpage-harvest', 'grid-replay']));
+    eq('HH-FALL the task route order is the three-step order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['editor-harvest', 'mainpage-harvest', 'grid-replay']));
   }
   {
     // (h) v2.48.45 — LAUNCH DIAGNOSTICS + CLONE HARDENING.
@@ -1692,6 +1705,80 @@ async function main() {
       try { await copyFileWithRetry('src', 'dest', { copyFile: gone, sleep: async () => {} }); } catch (e) { threw3 = e.code === 'ENOENT'; }
       ok('HH-RETRY a non-retryable error throws at once', threw3 && calls3 === 1);
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // O2. v2.48.72 — EDITOR-HARVEST PRIMARY (OWNER DECISION
+  // 2026-11-09: editor-pabandi owner ne khud uthayi):
+  //   (a) editor khule + kitab me mukammal body → save,
+  //       via=editor-harvest line, page grid par wapas;
+  //   (b) editor na khule → emaandar haar, koi save nahi;
+  //   (c) wapsi nakam → '[ROOT] editor-harvest
+  //       return-failed' line, run crash nahi;
+  //   (d) stream waqt par na aaye → timeout haar.
+  // ---------------------------------------------------------------------------
+  {
+    // (a) jeet ka rasta.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { editorHarvestWaitMs: 2000 });
+    eq('EH-ENG the editor route exists', typeof eng._tryEditorHarvest, 'function');
+    eng.page = fakePage('main-eh-win');
+    let returnCalls = 0;
+    eng._headlessOpenTaskEditor = async () => true;
+    eng._returnToProjectGrid = async () => { returnCalls++; return true; };
+    eng.netCapture.harvestBodies.set('k-eh-win', { url: FC_FRESH, buffer: mp4Buffer(600000), at: Date.now() });
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-eh-win', videoId: 'k-eh-win', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+    const attempts = [];
+    const r = await eng._tryEditorHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-eh-win', 0);
+    eq('EH-WIN the route saves', r, true);
+    eq('EH-WIN the task is marked saved', task.mediaSaved, true);
+    eq('EH-WIN the saved url is the editor stream', task.completedVideoUrl, FC_FRESH);
+    ok('EH-WIN the win line is via=editor-harvest', logs.some(m => m.includes('[ROOT] via=editor-harvest gap=')));
+    ok('EH-WIN the attempt strategy is editor-harvest ok', attempts.some(a => a.strategy === 'editor-harvest' && a.ok));
+    eq('EH-WIN the page was returned to the grid', returnCalls, 1);
+  }
+  {
+    // (b) editor na khule.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { editorHarvestWaitMs: 300 });
+    eng.page = fakePage('main-eh-nopen');
+    eng._headlessOpenTaskEditor = async () => false;
+    eng._returnToProjectGrid = async () => true;
+    const task = { promptIndex: 0, captureKey: 'k-eh-nopen', videoId: 'k-eh-nopen', startTime: Date.now(), renderCompletedAt: Date.now() };
+    const attempts = [];
+    const r = await eng._tryEditorHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-eh-nopen', 0);
+    eq('EH-NOPEN the route fails honestly', r, false);
+    eq('EH-NOPEN nothing was saved', !!task.mediaSaved, false);
+    ok('EH-NOPEN the attempt strategy is editor-harvest', attempts.length === 1 && attempts[0].strategy === 'editor-harvest' && attempts[0].ok === false);
+    ok('EH-NOPEN the did-not-open line was logged', logs.some(m => m.includes('editor-harvest: this video\'s editor did not open')));
+  }
+  {
+    // (c) wapsi nakam — line darj, crash nahi.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { editorHarvestWaitMs: 300 });
+    eng.page = fakePage('main-eh-retfail');
+    eng._headlessOpenTaskEditor = async () => false;
+    eng._returnToProjectGrid = async () => false;
+    eng.page.goto = async () => { throw new Error('nav dead'); };
+    const task = { promptIndex: 0, captureKey: 'k-eh-retfail', videoId: 'k-eh-retfail', startTime: Date.now(), renderCompletedAt: Date.now() };
+    const attempts = [];
+    const r = await eng._tryEditorHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-eh-retfail', 0);
+    eq('EH-RETFAIL the route still returns (no crash)', r, false);
+    ok('EH-RETFAIL the return-failed line was logged', logs.some(m => m.includes('[ROOT] editor-harvest return-failed')));
+  }
+  {
+    // (d) editor khula lekin stream waqt par nahi.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { editorHarvestWaitMs: 300 });
+    eng.page = fakePage('main-eh-timeout');
+    eng._headlessOpenTaskEditor = async () => true;
+    eng._returnToProjectGrid = async () => true;
+    const task = { promptIndex: 0, captureKey: 'k-eh-timeout', videoId: 'k-eh-timeout', startTime: Date.now(), renderCompletedAt: Date.now() };
+    const attempts = [];
+    const r = await eng._tryEditorHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-eh-timeout', 0);
+    eq('EH-TIMEOUT the route fails when no stream completes', r, false);
+    ok('EH-TIMEOUT the timeout was logged honestly', logs.some(m => m.includes('editor-harvest: no complete editor stream arrived')));
   }
 
   // ---------------------------------------------------------------------------

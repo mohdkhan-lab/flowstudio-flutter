@@ -347,25 +347,32 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   // page ke andar se poora fetch), aakhir grid-replay
   // (teacher-guarded verbatim mint replay). Is ke baad
   // kuch nahi — attempt emaandari se FAIL hota hai.
-  eq('MAINPAGE first route is headless-harvest', firstRoute(), 'headless-harvest');
-  eq('MAINPAGE order starts with headless-harvest', DOWNLOAD_ROUTE_ORDER[0], 'headless-harvest');
+  // v2.48.72 (EDITOR-HARVEST PRIMARY — OWNER DECISION
+  // 2026-11-09): editor-pabandi owner ne khud uthayi;
+  // tartib ab editor-harvest → mainpage-harvest →
+  // grid-replay hai, aur headless-harvest attempt kram
+  // se bahar hai (code repo me rehta hai).
+  eq('MAINPAGE first route is editor-harvest', firstRoute(), 'editor-harvest');
+  eq('MAINPAGE order starts with editor-harvest', DOWNLOAD_ROUTE_ORDER[0], 'editor-harvest');
   eq('MAINPAGE mainpage-harvest route is second', DOWNLOAD_ROUTE_ORDER[1], 'mainpage-harvest');
   eq('MAINPAGE grid-replay route is third', DOWNLOAD_ROUTE_ORDER[2], 'grid-replay');
   eq('MAINPAGE order ends with grid-replay', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'grid-replay');
   eq('MAINPAGE route count', DOWNLOAD_ROUTE_ORDER.length, 3);
   ok('MAINPAGE order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
-  // Banned raaste — editor/menu/viewer/backend — tartib
-  // me kahin nahi:
-  for (const banned of ['editor-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'backend-fetch-retry', 'tile-readiness', 'tile-src-fast', 'tile-src', 'quick-check', 'server-first', 'zero-click']) {
+  // Banned raaste — menu/viewer/backend/headless —
+  // tartib me kahin nahi:
+  for (const banned of ['headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'backend-fetch-retry', 'tile-readiness', 'tile-src-fast', 'tile-src', 'quick-check', 'server-first', 'zero-click']) {
     ok(`MAINPAGE order has no ${banned}`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
   }
 
   // Fallback = tartib ka pehla rasta chhor kar baaki.
   const fb = fallbackRouteOrder();
   eq('MAINPAGE fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
+  ok('MAINPAGE fallback has no editor-harvest', !fb.includes('editor-harvest'));
   ok('MAINPAGE fallback has no headless-harvest', !fb.includes('headless-harvest'));
   ok('MAINPAGE fallback starts with mainpage-harvest', fb[0] === 'mainpage-harvest');
   eq('MAINPAGE fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
+  eq('MAINPAGE fallback list is exactly mainpage-harvest then grid-replay', JSON.stringify(fb), JSON.stringify(['mainpage-harvest', 'grid-replay']));
 }
 
 // --- v2.48.28 (SERVER-FIRST): flow-content URL matcher ---

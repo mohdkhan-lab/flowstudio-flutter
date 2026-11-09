@@ -14,7 +14,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '2.48.73';
+  static const String appVersion = '2.48.74';
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();
@@ -821,6 +821,76 @@ class AutomationBridge {
     return {'stats': {'total': 0}, 'accountCount': 0};
   }
 
+  /// v2.48.74 (Item C REVISED): the parked downloads
+  /// (pending + needs_check) for the Progress panel's
+  /// Parked downloads section. Display only — fetching
+  /// this list never starts any recovery.
+  Future<List<Map<String, dynamic>>> getParkedDownloads() async {
+    try {
+      final res = await http.get(Uri.parse('$baseUrl/api/recovery/parked'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true && data['parked'] is List) {
+          return (data['parked'] as List)
+              .whereType<Map>()
+              .map((a) => Map<String, dynamic>.from(a))
+              .toList();
+        }
+      }
+    } catch (e) {
+      debugPrint('[getParkedDownloads Error] $e');
+    }
+    return [];
+  }
+
+  /// v2.48.74 (Item C REVISED): Start on ONE parked
+  /// item (taskId given) or Start All (taskId null).
+  /// This is the ONLY way parked recovery starts now
+  /// (besides the explicit Resume action) — nothing
+  /// runs automatically in the background any more.
+  /// Returns the engine's answer map ({ok, started,
+  /// count} or {ok:false, reason}).
+  Future<Map<String, dynamic>> startParkedRecovery({String? taskId}) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/recovery/start'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({if (taskId != null) 'taskId': taskId}),
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data is Map) return Map<String, dynamic>.from(data);
+      }
+    } catch (e) {
+      debugPrint('[startParkedRecovery Error] $e');
+    }
+    return {'ok': false, 'started': false, 'reason': 'The engine did not answer.'};
+  }
+
+  /// v2.48.74 (Item C REVISED): Clear on ONE parked
+  /// item (taskId given) or Clear All (taskId null).
+  /// The record is removed permanently; returns how
+  /// many records were cleared.
+  Future<int> clearParkedDownloads({String? taskId}) async {
+    try {
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/recovery/clear'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({if (taskId != null) 'taskId': taskId}),
+      );
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data is Map && data['ok'] == true) {
+          final c = data['cleared'];
+          return c is num ? c.toInt() : 0;
+        }
+      }
+    } catch (e) {
+      debugPrint('[clearParkedDownloads Error] $e');
+    }
+    return 0;
+  }
+
   Future<void> openUrl(String targetUrl) async {
     try {
       await http.post(
@@ -848,6 +918,9 @@ class AutomationBridge {
     required String duration,
     required String aspectRatio,
     required String quality,
+    // v2.48.74 (Item B): 'original' (default) / 'enhanced' —
+    // engine run settings me downloadMode bankar jata hai.
+    String downloadMode = 'original',
     String tag = '',
     // v2.29.0: the sidebar's TICKED account IDs (checkbox truth), the
     // selected model, and the file-naming pattern — all three used to
@@ -875,6 +948,7 @@ class AutomationBridge {
           'duration': duration,
           'aspectRatio': aspectRatio,
           'quality': quality,
+          'downloadMode': downloadMode,
           'tag': tag,
           'accountIds': accountIds,
           'model': model,

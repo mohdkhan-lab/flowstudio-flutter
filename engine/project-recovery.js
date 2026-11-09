@@ -126,10 +126,26 @@ async function recoverProject(task, downloadFolder, settings) {
   return { found: false, reason: 'no-project', plan: plan.kind };
 }
 
+/**
+ * v2.48.74 (Item C REVISED — owner): Progress panel
+ * ke Parked downloads section ke Start button ka
+ * chunav — KHALIS faisla. taskId diya ho to SIRF
+ * wahi ek parked row (Start = sirf usi item ki
+ * recovery); na diya ho to saari rows (Start All).
+ * Ajnabi id par khaali fehrist — kuch nahi chalega.
+ */
+function selectParkedRows(rows, taskId) {
+  const list = Array.isArray(rows) ? rows.filter(r => r && r.id) : [];
+  const wanted = String(taskId || '').trim();
+  if (!wanted) return list;
+  return list.filter(r => String(r.id) === wanted);
+}
+
 module.exports = {
   projectIdOfUrl,
   parseGalleryDateTime,
   pickGalleryProject,
   recoveryEntryPlan,
-  recoverProject
+  recoverProject,
+  selectParkedRows
 };

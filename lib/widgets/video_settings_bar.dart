@@ -9,11 +9,17 @@ import '../providers/activity_provider.dart';
 import '../services/credit_costs.dart';
 import 'tactile_components.dart';
 
-// v2.27.0 (design): ONE row of four labelled dropdowns
+// v2.27.0 (design): ONE row of labelled dropdowns
 // (MODEL / DURATION / ASPECT / BROWSERS, labels above), then a row
 // with Stop + Pause on the left, the estimate text and the big blue
 // Generate button on the right. The engine values behind the dropdowns
 // are unchanged — only their display labels match the design.
+// v2.48.74 (owner): the same single row gains RESOLUTION (360p/720p —
+// the EXISTING quality setting the engine already applies in Flow,
+// surfaced here as the owner asked) and DOWNLOAD (Original/Enhanced —
+// the download_mode setting). Still ONE row: every field is Expanded
+// and labels scale down (the v2.28.0 FittedBox pattern), so the bar
+// fits 1024×768 with no overflow and no new scroll area.
 class VideoSettingsBar extends StatelessWidget {
   const VideoSettingsBar({super.key});
 
@@ -96,6 +102,21 @@ class VideoSettingsBar extends StatelessWidget {
               const SizedBox(width: 8),
               Expanded(
                 child: _buildSettingField(
+                  // v2.48.74 (Item A): generation resolution —
+                  // bound to the EXISTING settings.quality the
+                  // engine already applies (stored '1080p' means
+                  // a 720p generation, so the bar shows 720p).
+                  label: 'RESOLUTION',
+                  value: settings.quality == '360p' ? '360p' : '720p',
+                  items: const ['360p', '720p'],
+                  onChanged: (val) {
+                    if (val != null) settingsProv.updateQuality(val);
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildSettingField(
                   label: 'BROWSERS',
                   value: '${settings.parallelBrowsers}',
                   items: const ['1', '2', '3', '4'],
@@ -107,6 +128,22 @@ class VideoSettingsBar extends StatelessWidget {
                   },
                   onChanged: (val) {
                     if (val != null) settingsProv.updateParallelBrowsers(int.tryParse(val) ?? 1);
+                  },
+                ),
+              ),
+              const SizedBox(width: 8),
+              Expanded(
+                child: _buildSettingField(
+                  // v2.48.74 (Item B): download mode — Original
+                  // (backend file as generated) or Enhanced
+                  // (editor Download menu → one-step-up Upscaled).
+                  label: 'DOWNLOAD',
+                  value: settings.downloadMode == 'enhanced' ? 'Enhanced' : 'Original',
+                  items: const ['Original', 'Enhanced'],
+                  onChanged: (val) {
+                    if (val != null) {
+                      settingsProv.updateDownloadMode(val == 'Enhanced' ? 'enhanced' : 'original');
+                    }
                   },
                 ),
               ),

@@ -772,6 +772,26 @@ const dbService = {
     return deleted;
   },
 
+  /**
+   * v2.48.74 (Item C REVISED — owner): Progress panel
+   * ke Parked downloads section ka Clear. EK parked
+   * record ko hamesha ke liye hata do. Guard sakht
+   * hai: sirf status='pending' AND needs_check=1 wali
+   * row hi udti hai — koi aur task (running, completed,
+   * history) is raste se kabhi nahi ud sakta, aur
+   * project/account data bilkul nahi chhuta. Row asal
+   * me hati ho to true, warna false.
+   */
+  deleteParkedTask(taskId) {
+    const id = String(taskId || '');
+    if (!id) return false;
+    const before = queryOne("SELECT id FROM queue_tasks WHERE id = ? AND status = 'pending' AND needs_check = 1", [id]);
+    if (!before) return false;
+    run("DELETE FROM queue_tasks WHERE id = ? AND status = 'pending' AND needs_check = 1", [id]);
+    const after = queryOne('SELECT id FROM queue_tasks WHERE id = ?', [id]);
+    return !after;
+  },
+
   // ---------- App settings ----------
   getSetting(key, defaultValue = null) {
     const row = queryOne('SELECT value FROM app_settings WHERE key = ?', [key]);

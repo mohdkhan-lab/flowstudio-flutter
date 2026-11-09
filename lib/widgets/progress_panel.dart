@@ -106,6 +106,18 @@ class ProgressPanel extends StatelessWidget {
                 .toList()
             : const <PromptItem>[];
 
+    // v2.48.74 (Item C REVISED — owner): leftover
+    // (parked) downloads get their OWN section under
+    // the current run — visible, with Start / Clear
+    // controls, but NOTHING runs for them on its own
+    // (Item 3a REVISED: no automatic sweep anywhere).
+    // Saved rows turn completed and leave the section.
+    final parkedItems = generator.recoveryItems
+        .where((i) =>
+            i.status == PromptStatus.parked ||
+            i.status == PromptStatus.recovering)
+        .toList();
+
     return TactileSectionContainer(
       padding: const EdgeInsets.all(12),
       child: Column(
@@ -151,49 +163,12 @@ class ProgressPanel extends StatelessWidget {
             const SizedBox(height: 8),
           ],
 
-          // Content
+          // Content: the current run's cards, then the
+          // owner's Parked downloads section.
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // v2.48.70 (Item C): RECOVERY section —
-                // check-only recovery (Resume / sweep /
-                // MCP-driven) shows its own live cards
-                // here, even when no Generate run is on
-                // screen. Bounded height; the list inside
-                // scrolls, the panel layout never grows.
-                if (generator.recoveryItems.isNotEmpty) ...[
-                  Row(
-                    children: [
-                      Text(
-                        'RECOVERY',
-                        style: TextStyle(
-                          fontSize: 10,
-                          fontWeight: FontWeight.w800,
-                          letterSpacing: 1.2,
-                          color: AppTheme.textFaint,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      Text(
-                        '${generator.recoveryItems.length} check-only',
-                        style: TextStyle(fontSize: 10, color: AppTheme.textFaint),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 6),
-                  ConstrainedBox(
-                    constraints: const BoxConstraints(maxHeight: 132),
-                    child: ListView.separated(
-                      shrinkWrap: true,
-                      itemCount: generator.recoveryItems.length,
-                      separatorBuilder: (_, _) => const SizedBox(height: 4),
-                      itemBuilder: (context, index) =>
-                          _recoveryRow(generator.recoveryItems[index]),
-                    ),
-                  ),
-                  const SizedBox(height: 8),
-                ],
                 Expanded(
                   child: !showRunCards
                       ? Center(
@@ -212,6 +187,10 @@ class ProgressPanel extends StatelessWidget {
                           },
                         ),
                 ),
+                if (parkedItems.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  _parkedSection(context, generator, parkedItems),
+                ],
               ],
             ),
           ),
@@ -220,49 +199,106 @@ class ProgressPanel extends StatelessWidget {
     );
   }
 
-  // v2.48.70 (Item C): one compact recovery row — status
-  // pill, prompt number, and the engine's own status line
-  // ("Recovering — <account> / project <id>", "Saved",
-  // "Parked — <reason>", "Unmapped — no project record").
-  Widget _recoveryRow(PromptItem item) {
-    final pill = _pillFor(item.status);
-    final detail = item.status == PromptStatus.completed
-        ? 'Saved${item.accountName != null && item.accountName!.isNotEmpty ? ' — ${item.accountName}' : ''}'
-        : (item.error ?? item.accountName ?? '');
+  // v2.48.74 (Item C REVISED — owner): the PARKED
+  // DOWNLOADS section — clearly separated from the
+  // current run above it (gold-tinted box). The head
+  // carries Start All / Clear All; every row shows
+  // the prompt number, its project (short id), the
+  // parked reason in plain words, and Start + Clear
+  // buttons. Start runs targeted recovery for that
+  // one item only; its live state shows in the same
+  // row (the reason line follows the engine's phase
+  // text, the button reads Checking…). On save the
+  // row disappears (the provider turns it completed
+  // and this section filters those out); on not-found
+  // the row stays with the updated note and can be
+  // started again. Clear removes the record
+  // permanently in ONE click — no confirmation
+  // (owner's standing style). At most 4 rows render
+  // so the panel keeps its single-screen fit; Start
+  // All / Clear All always act on the full list.
+  Widget _parkedSection(BuildContext context, GeneratorProvider generator, List<PromptItem> parked) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
-        color: AppTheme.borderSoft.withValues(alpha: 0.25),
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: AppTheme.borderSoft),
+        color: AppTheme.activeGold.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.activeGold.withValues(alpha: 0.35)),
       ),
-      child: Row(
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 2),
-            decoration: BoxDecoration(
-              color: pill.$2.withValues(alpha: 0.14),
-              borderRadius: BorderRadius.circular(4),
-              border: Border.all(color: pill.$2.withValues(alpha: 0.45)),
-            ),
-            child: Text(
-              pill.$1,
-              style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w800, color: pill.$2, letterSpacing: 0.4),
-            ),
+          Row(
+            children: [
+              Text(
+                'PARKED DOWNLOADS',
+                style: TextStyle(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 1.2,
+                  color: AppTheme.activeGold,
+                ),
+              ),
+              const Spacer(),
+              TextButton(
+                onPressed: () => generator.startAllParked(),
+                child: const Text('Start All'),
+              ),
+              TextButton(
+                onPressed: () => generator.clearAllParked(),
+                child: const Text('Clear All'),
+              ),
+            ],
           ),
-          const SizedBox(width: 6),
-          Text(
-            'Prompt #${item.index}',
-            style: const TextStyle(fontSize: 10.5, fontWeight: FontWeight.w700),
-          ),
-          const SizedBox(width: 6),
+          const SizedBox(height: 4),
+          ...parked.take(4).map((item) => _parkedRow(context, generator, item)),
+          if (parked.length > 4)
+            Padding(
+              padding: const EdgeInsets.only(top: 2),
+              child: Text(
+                '+${parked.length - 4} more parked — Start All covers them all.',
+                style: TextStyle(fontSize: 10, color: AppTheme.textFaint),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+
+  Widget _parkedRow(BuildContext context, GeneratorProvider generator, PromptItem item) {
+    final running = item.status == PromptStatus.recovering;
+    final project = (item.projectId != null && item.projectId!.isNotEmpty)
+        ? item.projectId!
+        : 'project not recorded';
+    final shortProject = project.length > 8 ? project.substring(0, 8) : project;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
           Expanded(
-            child: Text(
-              detail,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: TextStyle(fontSize: 10, color: AppTheme.textFaint),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Prompt #${item.index} · $shortProject',
+                  style: const TextStyle(fontSize: 11, fontWeight: FontWeight.w700),
+                ),
+                if (item.error != null && item.error!.isNotEmpty)
+                  Text(
+                    item.error!,
+                    style: TextStyle(fontSize: 10, color: AppTheme.textFaint),
+                  ),
+              ],
             ),
+          ),
+          TextButton(
+            onPressed: running ? null : () => generator.startParkedItem(item),
+            child: Text(running ? 'Checking…' : 'Start'),
+          ),
+          TextButton(
+            onPressed: running ? null : () => generator.clearParkedItem(item),
+            child: const Text('Clear'),
           ),
         ],
       ),

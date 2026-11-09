@@ -21,22 +21,11 @@ const browserMode = require('./browserMode');
 const windowStyle = require('./windowStyle');
 const { sleepBlocker } = require('./sleepBlocker');
 
-/**
- * v2.48.62 (AUTO-SWEEP FILTER): khud-ba-khud chalne wali
- * end-of-run sweep kis parked row ko chhoye — KHALIS
- * faisla. Jis row ke download attempts 3 ya zyada ho
- * chuke hon, sweep use chhod deti hai: wohi nakam rows
- * har run me dobara ghoomti rehti thin (~20 parked
- * rows), aur asal jhijhak yahi thi. Ye rok SIRF is
- * khud-kar sweep ke liye hai — user ke haath ka
- * explicit Resume / reconcile is se bilkul nahi
- * bandha (woh apne purane raste par hi jata hai).
- */
-function autoSweepEligible(row) {
-  if (!row || typeof row !== 'object' || !row.id) return false;
-  const attempts = Number(row.download_attempts);
-  return (Number.isFinite(attempts) ? attempts : 0) < 3;
-}
+// v2.48.74 (Item 3a REVISED): v2.48.62 ka
+// autoSweepEligible filter bhi hata — jis khud-kar
+// sweep ke liye wo tha, wahi owner ke hukm se khatam
+// ho gayi hai (run ke aakhir wali jagah par comment
+// dekho). Recovery ab sirf owner-triggered hai.
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -528,8 +517,14 @@ class WorkerPool {
    * (resolved rows AND rows left for a later resume).
    *
    * v2.48.51 (item 1 — SWEEP MODE): opts.sweepMode
-   * SIRF run-end Resume-All sweep (v2.48.50 item 14)
-   * ke liye hai. Sweep mode me ek parked row KABHI
+   * pehle run-end Resume-All sweep (v2.48.50 item 14)
+   * ke liye tha. v2.48.74 (Item 3a REVISED — owner):
+   * wo khud-kar sweep HATA di gayi hai, to ab koi
+   * production caller sweepMode nahi bhejta — mode
+   * sirf is function ke park-not-fail contract ki
+   * kitab me rehta hai (tests use pin karte hain);
+   * asal recovery hamesha standard mode me, owner ke
+   * Start / Resume se chalti hai. Sweep mode me ek parked row KABHI
    * fail nahi hoti: tile na mile ya account hi na
    * mile to row pending + needs_check hi rehti hai
    * (parked — owner ke discard tak). ZEROCLICK18 me
@@ -2605,51 +2600,20 @@ class WorkerPool {
         } catch (e) {}
       }
 
-      // v2.48.50 (item 14 — RESUME-ALL SWEEP): run ke
-      // aakhir me, is run ke apne tasks ke ilawa jo
-      // PARKED (pending + needs_check) tasks reh gaye
-      // hain — purane runs ke, jin ki videos Flow me
-      // bani hui hain lekin download baqi hai — unhe
-      // bhi EK download-only mauqa milta hai: wohi
-      // check-only reconcile machinery jo run ke
-      // aaghaz me chalti hai (koi parallel system
-      // nahi), sab se purane pehle, hadd 20 tasks.
-      // Prompt KABHI dobara submit nahi hota — ye
-      // sirf download ki koshish hai (sacred rule).
-      if (!this.isStopping) {
-        try {
-          const ownIds = new Set(pendingTasks.map(t => t.id));
-          // v2.48.62 (AUTO-SWEEP FILTER): jin rows ke
-          // download attempts khatam (3+) ho chuke hon,
-          // khud-kar sweep unhe is dafa chhod deti hai —
-          // taaki har run me wohi thaki hui rows dobara
-          // na ghoomain. Explicit Resume is rok se bilkul
-          // azaad hai (wo _reconcileNeedsCheck ko seedha
-          // apni fehrist deta hai, is filter se nahi).
-          const allParked = (dbService.getNeedsCheckTasks() || [])
-            .filter(r => r && r.id && !ownIds.has(r.id));
-          const eligible = allParked.filter(autoSweepEligible);
-          const parked = eligible.slice(0, 20);
-          const skippedExhausted = allParked.length - eligible.length;
-          let saved = 0;
-          let kept = 0;
-          if (parked.length > 0) {
-            // v2.48.51 (item 1): sweep HAMESHA sweep
-            // mode me — parked row fail kabhi nahi
-            // hoti; jo save na ho wo kept (parked) hai.
-            await this._reconcileNeedsCheck(parked, downloadFolder, settings, { sweepMode: true });
-            for (const r of parked) {
-              try {
-                const row = dbService.getTask(r.id);
-                if (row && row.status === 'completed') saved++;
-                else kept++;
-              } catch (e) { kept++; }
-            }
-          }
-          const recStats = this._lastRecoveryStats || {};
-          this.log(`[ROOT] resume-sweep tasks=${parked.length} saved=${saved} kept=${kept}${skippedExhausted > 0 ? ` skipped=${skippedExhausted}` : ''}${recStats.unmapped ? ` unmapped=${recStats.unmapped}` : ''}${recStats.capped ? ` capped=${recStats.capped}` : ''}`, saved > 0 ? 'success' : 'info');
-        } catch (e) {}
-      }
+      // v2.48.74 (Item 3a REVISED — owner, 2026-11-09):
+      // yahan pehle (v2.48.50 item 14) run ke aakhir me
+      // saari PARKED rows ki khud-kar Resume-All sweep
+      // chalti thi. Owner ka hukm: backend me recovery
+      // APNE AAP bilkul NAHI chalegi — na run ke baad,
+      // na app khulne par, na timer par. Run apne
+      // sequence/balance checks ke baad yahin khatam
+      // hota hai; purani parked items ke liye browser
+      // khud kabhi nahi khulta. Recovery SIRF owner ke
+      // haath se hoti hai: Progress panel ke Parked
+      // downloads section ke Start / Start All button,
+      // ya explicit MCP Resume. Is liye wo sweep block
+      // yahan se HATA diya gaya hai — koi sweep
+      // summary line ab kabhi nahi banti.
 
       // v2.45.0 (honest totals — Fix List E item 3 ka dusra hissa):
       // run ke dauraan har submission ke baad balance padhne ki
@@ -2882,4 +2846,4 @@ WorkerPool.buildRunStatusText = function buildRunStatusText(stats) {
   return text;
 };
 
-module.exports = { WorkerPool, autoSweepEligible };
+module.exports = { WorkerPool };

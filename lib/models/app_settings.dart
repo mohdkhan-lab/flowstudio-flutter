@@ -5,6 +5,7 @@ class AppSettings {
   String duration; // '4s', '6s', '8s', '10s', '15s' (15s = Omni 1.2 only)
   String aspectRatio; // '9:16', '16:9', '1:1'
   String quality; // '360p', '720p', '1080p' (1080p = Flow's enhanced download)
+  String downloadMode; // v2.48.74: 'original' (backend file as generated, default), 'enhanced' (editor Download menu → one-step-up Upscaled)
   String namingPattern; // 'tag' (00-01.mp4), 'scene' (scene001.mp4)
   List<String> customTags;
   int parallelBrowsers; // 1, 2, 3, 4
@@ -28,6 +29,7 @@ class AppSettings {
     this.duration = '4s',
     this.aspectRatio = '9:16',
     this.quality = '720p',
+    this.downloadMode = 'original',
     this.namingPattern = 'tag',
     List<String>? customTags,
     this.parallelBrowsers = 4,
@@ -39,7 +41,7 @@ class AppSettings {
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.currentVersion = 'v2.48.73',
+    this.currentVersion = 'v2.48.74',
     // v2.34.0 (Problem 12): no placeholder social links ship any
     // more — an unconfigured service shows NO icon (top strip /
     // About) instead of an icon that opens a dead page. The owner
@@ -57,6 +59,7 @@ class AppSettings {
     String? duration,
     String? aspectRatio,
     String? quality,
+    String? downloadMode,
     String? namingPattern,
     List<String>? customTags,
     int? parallelBrowsers,
@@ -80,6 +83,7 @@ class AppSettings {
       duration: duration ?? this.duration,
       aspectRatio: aspectRatio ?? this.aspectRatio,
       quality: quality ?? this.quality,
+      downloadMode: downloadMode ?? this.downloadMode,
       namingPattern: namingPattern ?? this.namingPattern,
       customTags: customTags ?? List.from(this.customTags),
       parallelBrowsers: parallelBrowsers ?? this.parallelBrowsers,

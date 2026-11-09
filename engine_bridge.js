@@ -67,6 +67,7 @@ const {
   checkImportedAccount,
 } = require('./engine/cookieImport');
 const { WorkerPool } = require('./engine/workerPool');
+const { projectIdOfUrl, selectParkedRows } = require('./engine/project-recovery');
 const settingsTruth = require('./engine/settingsTruth');
 const browserMode = require('./engine/browserMode');
 const promptParser = require('./engine/promptParser');
@@ -170,7 +171,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.73';
+const APP_VERSION = '2.48.74';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -487,7 +488,7 @@ async function startBridge() {
       if (pathname === '/api/settings' && req.method === 'GET') {
         const keys = [
           'appearance', 'theme', 'default_model', 'default_duration', 'default_aspect',
-          'default_naming', 'default_quality', 'custom_tags', 'download_folder', 'chrome_path',
+          'default_naming', 'default_quality', 'default_download_mode', 'custom_tags', 'download_folder', 'chrome_path',
           'browser_background', 'show_browsers', 'preview_autoplay', 'auto_verify_start', 'auto_check_updates',
           // Headless generation opt-in (Settings → Automation) —
           // the app reads it back so the toggle shows the truth.
@@ -1430,6 +1431,12 @@ async function startBridge() {
           duration: effective.duration,
           aspectRatio: effective.aspectRatio,
           quality: effective.quality,
+          // v2.48.74 (Item B): download mode — the run body
+          // (app) wins, warna DB ki 'default_download_mode';
+          // sirf 'enhanced' hi enhanced hai, baaki sab
+          // 'original'. settings_json me bachti hai, is liye
+          // Resume/recovery bhi wahi mode dohrata hai.
+          downloadMode: (String(config.downloadMode || dbService.getSetting('default_download_mode', '')).toLowerCase() === 'enhanced') ? 'enhanced' : 'original',
           naming: namingPattern,
           namingPattern: namingPattern,
           customNamingPrefix: config.tag || '',
@@ -1596,6 +1603,107 @@ async function startBridge() {
           broadcastEvent('automation-log', { message: 'Generation queue finished.', level: 'success' });
         });
         return sendJson(200, { ok: true, resumed: true, mode: 'recovery', count: recoveryRows.length });
+      }
+
+      // v2.48.74 (Item C REVISED — owner): Progress panel
+      // ke Parked downloads section ki kitab. Parked
+      // (pending + needs_check) rows ki fehrist — panel
+      // inhi se apni rows banata hai. Koi recovery is
+      // se NAHI chalti; ye sirf dikhane ke liye hai.
+      if (pathname === '/api/recovery/parked' && req.method === 'GET') {
+        let rows = [];
+        try { rows = dbService.getNeedsCheckTasks() || []; } catch (e) { rows = []; }
+        const parked = rows.map(r => ({
+          taskId: r.id,
+          promptIndex: typeof r.prompt_index === 'number' ? r.prompt_index : 0,
+          promptText: String(r.prompt_text || '').slice(0, 120),
+          projectId: projectIdOfUrl(r.project_url || ''),
+          projectUrl: r.project_url || '',
+          accountName: r.assigned_account_name || '',
+          reason: String(r.last_download_error || '')
+        }));
+        return sendJson(200, { ok: true, parked });
+      }
+
+      // v2.48.74 (Item C REVISED — owner): Parked
+      // downloads ke Start / Start All button. Recovery
+      // SIRF owner ke is bulave par chalti hai (Item 3a
+      // REVISED: koi khud-kar sweep kahin nahi bachi).
+      // taskId diya ho to sirf usi EK item ki targeted
+      // recovery (uska recorded account + project, wohi
+      // check-only machinery jo Resume use karta hai);
+      // na ho to saari parked rows. Live run chal raha
+      // ho to saaf mana — do pool ek saath nahi.
+      if (pathname === '/api/recovery/start' && req.method === 'POST') {
+        const body = await readBody();
+        if (activeWorkerPool) {
+          return sendJson(200, { ok: false, started: false, reason: 'A run is active right now — parked recovery can start when it finishes.' });
+        }
+        let all = [];
+        try { all = dbService.getNeedsCheckTasks() || []; } catch (e) { all = []; }
+        const rows = selectParkedRows(all, body && body.taskId);
+        if (rows.length === 0) {
+          return sendJson(200, { ok: true, started: false, reason: 'nothing-parked' });
+        }
+        const recoveryFolder = (rows[0] && rows[0].download_folder) || (lastRunInfo ? lastRunInfo.downloadFolder : '') || '';
+        const pool = buildPool({
+          parallelBrowsers: body.parallelBrowsers || 1,
+          accountIds: Array.isArray(body.accountIds) ? body.accountIds : null,
+          getSettingsHint: () => lastRunInfo ? lastRunInfo.settings : {}
+        });
+        activeWorkerPool = pool;
+        broadcastEvent('automation-log', {
+          message: `Parked recovery started from the Progress panel for ${rows.length} item(s) — only their downloads will be checked in their own recorded projects. No prompt will be submitted again and no new charge will apply.`,
+          level: 'info'
+        });
+        pool.runQueue([], null, recoveryFolder, { existingTasks: rows }).catch(err => {
+          broadcastEvent('automation-log', { message: `Generation error: ${err.message}`, level: 'error' });
+        }).finally(() => {
+          activeWorkerPool = null;
+          broadcastEvent('automation-log', { message: 'Parked recovery finished.', level: 'success' });
+        });
+        return sendJson(200, { ok: true, started: true, count: rows.length });
+      }
+
+      // v2.48.74 (Item C REVISED — owner): Parked item
+      // ka Clear / Clear All. Record hamesha ke liye
+      // hat-ta hai (db.deleteParkedTask ka guard sirf
+      // pending + needs_check row ko hi udne deta hai
+      // — aur kuch nahi chhuta). Koi confirmation nahi
+      // (owner ki standing style). Har cleared item ki
+      // Activity line banti hai, aur panel ko 'cleared'
+      // update jata hai taaki row foran ghayab ho.
+      if (pathname === '/api/recovery/clear' && req.method === 'POST') {
+        const body = await readBody();
+        let all = [];
+        try { all = dbService.getNeedsCheckTasks() || []; } catch (e) { all = []; }
+        const rows = selectParkedRows(all, body && body.taskId);
+        let cleared = 0;
+        for (const r of rows) {
+          let gone = false;
+          try { gone = dbService.deleteParkedTask(r.id); } catch (e) { gone = false; }
+          if (!gone) continue;
+          cleared++;
+          try {
+            recordActivity({
+              category: 'generation', level: 'info',
+              accountId: r.assigned_account_id || null,
+              accountName: r.assigned_account_name || '',
+              stage: 'recovery', taskId: r.id,
+              promptIndex: typeof r.prompt_index === 'number' ? r.prompt_index : null,
+              detail: 'The owner cleared this parked download from the Progress panel. Its record was removed permanently — it will not be recovered or listed again. Nothing else was touched.',
+              message: `Parked Prompt #${(r.prompt_index || 0) + 1} cleared by owner`
+            });
+          } catch (e) {}
+          broadcastEvent('task-updated', {
+            taskId: r.id, promptIndex: r.prompt_index, promptText: r.prompt_text,
+            status: 'recovery', phase: 'cleared',
+            accountName: r.assigned_account_name || '',
+            projectId: projectIdOfUrl(r.project_url || ''),
+            reason: 'Cleared by owner'
+          });
+        }
+        return sendJson(200, { ok: true, cleared });
       }
 
       if (pathname === '/api/generation/stop' && req.method === 'POST') {

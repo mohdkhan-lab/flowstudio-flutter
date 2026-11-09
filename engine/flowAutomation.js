@@ -22,6 +22,7 @@ const downloadFetch = require('./downloadFetch');
 const { describeUrlShape, formatUrlShape } = require('./urlShape');
 const blobHarvest = require('./blobHarvest');
 const downloadRouteOrder = require('./downloadRouteOrder');
+const editorEnhance = require('./editorEnhance');
 const flowContent = require('./flowContent');
 const downloadEventMatch = require('./downloadEventMatch');
 const mintWindow = require('./mintWindow');
@@ -9188,6 +9189,334 @@ class FlowAutomationEngine {
    * reporting rule). Prompt yahan KABHI dobara submit
    * nahi hota (sacred rule barkarar).
    */
+  /**
+   * Editor ke top bar ka Download wala control — pehle
+   * parkha hua "Download media" rasta
+   * (_findEditorDownloadControl), phir naye editor UI ka
+   * 'download' aria wala ⬇ icon (top bar ke andar hi,
+   * overlay ke controls ginne baghair).
+   */
+  async _findEditorDownloadButton(page) {
+    const pg = page || this.page;
+    try {
+      const ctl = await this._findEditorDownloadControl(pg);
+      if (ctl && ctl.found) return ctl;
+    } catch (e) {}
+    try {
+      return await pg.evaluate(() => {
+        const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const all = Array.from(document.querySelectorAll('button, [role="button"]'));
+        for (const b of all) {
+          if (b.closest && b.closest('.cdk-overlay-pane')) continue;
+          if (!visible(b)) continue;
+          const r = b.getBoundingClientRect();
+          if (r.top > 160) continue;
+          const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
+          const t = (b.innerText || b.textContent || '').trim().toLowerCase();
+          if (aria.includes('download') || t === 'download') {
+            return { found: true, x: r.x + r.width / 2, y: r.y + r.height / 2, how: aria || t };
+          }
+        }
+        return { found: false };
+      });
+    } catch (e) {
+      return { found: false };
+    }
+  }
+
+  /**
+   * Khule hue Download menu ki entries — [{text, x, y,
+   * upgrade}]. Do darwaze: parkhe hue overlay containers,
+   * aur koi bhi dikhai dene wala element jis ke text me
+   * quality wale alfaaz hon (naya editor UI custom menu
+   * deta hai). Har entry ka text us ki poori ROW ka text
+   * hai (label + sub-label), taaki khalis chunav
+   * (editorEnhance.pickUpscaledEntry) dono hisse dekh
+   * sake; 'upgrade' nishaan row ke text se hi pakda jata
+   * hai (4K wali row par Upgrade pill usi row me hota hai).
+   */
+  async _editorEnhanceMenuItems(page) {
+    const pg = page || this.page;
+    try {
+      return await pg.evaluate(() => {
+        const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
+        const hasQualityWords = (t) => /(upscaled|original size|animated gif)/i.test(t || '');
+        const hasQualityToken = (t) => /(\d{3,4}p|4k)/i.test(t || '');
+        const clean = (el) => (el.innerText || el.textContent || '').trim().replace(/\s+/g, ' ');
+        const rowOf = (el) => {
+          let cur = el;
+          for (let i = 0; i < 3 && cur; i++) {
+            const t = clean(cur);
+            if (t && t.length <= 90 && hasQualityWords(t) && hasQualityToken(t)) return cur;
+            cur = cur.parentElement;
+          }
+          return el;
+        };
+        const out = [];
+        const seen = new Set();
+        const push = (el) => {
+          if (!el || !visible(el)) return;
+          const row = rowOf(el);
+          const t = clean(row);
+          if (!t || t.length > 90 || !hasQualityWords(t)) return;
+          const r = row.getBoundingClientRect();
+          const key = t.toLowerCase() + '@' + Math.round(r.top);
+          if (seen.has(key)) return;
+          seen.add(key);
+          out.push({ text: t, x: r.x + r.width / 2, y: r.y + r.height / 2, upgrade: /upgrade/i.test(t) });
+        };
+        document.querySelectorAll('.cdk-overlay-pane button, [role="menuitem"], .mat-mdc-menu-panel button, [role="menu"] button, [role="listbox"] [role="option"]').forEach(push);
+        const all = Array.from(document.querySelectorAll('button, [role="button"], li, div, span'));
+        for (const el of all) {
+          if (!visible(el)) continue;
+          const t = clean(el);
+          if (!t || t.length > 90 || !hasQualityWords(t)) continue;
+          const childMatch = Array.from(el.children).some((c) => hasQualityWords(clean(c)));
+          if (!childMatch) push(el);
+        }
+        return out;
+      });
+    } catch (e) {
+      return [];
+    }
+  }
+
+  /** Buffer asal me enhanced hai ya nahi — dimensions ki kasauti (temp file par ffprobe). */
+  async _bufferMatchesEnhanceTarget(buffer, target, downloadFolder) {
+    const tmpDir = this.browserDownloadDir || downloadFolder;
+    let tmpPath = null;
+    try {
+      if (!tmpDir || !buffer || !buffer.length) return false;
+      if (!fs.existsSync(tmpDir)) fs.mkdirSync(tmpDir, { recursive: true });
+      tmpPath = path.join(tmpDir, `.enhance-probe-${Date.now()}-${Math.floor(Math.random() * 1e6)}.mp4`);
+      fs.writeFileSync(tmpPath, buffer);
+      const dims = await FFmpegService.getVideoDimensions(tmpPath);
+      return editorEnhance.dimensionsMatchTarget(dims, target);
+    } catch (e) {
+      return false;
+    } finally {
+      if (tmpPath) { try { fs.unlinkSync(tmpPath); } catch (e) {} }
+    }
+  }
+
+  /**
+   * v2.48.74 (Item B — ENHANCED DOWNLOAD, owner order
+   * 2026-11-09): settings.downloadMode 'enhanced' ho to
+   * editor ke Download (⬇) menu se EK STEP UPAR wali
+   * "Upscaled" file ki koshish (360p→720p, 720p→1080p;
+   * 'Upgrade' paywall wali entry KABHI nahi — chunav ka
+   * khalis hisaab engine/editorEnhance me hai, fixture
+   * tests ke saath). Editor pehle se khula hai (bulane
+   * wala _tryEditorHarvest hai).
+   * Aamad ke do darwaze, dono par dimensions ki kasauti
+   * lazmi hai (editor ki apni playback stream ORIGINAL
+   * hai — wo enhanced keh kar kabhi save nahi hogi):
+   *   (a) networkCapture me is click ke BAAD aayi NAYI
+   *       stream ki mukammal body → saveFromEditor
+   *       (wahi teacher/duplicate darwaze + .70 gate);
+   *   (b) browser ka apna download (.flow-native folder
+   *       me utri mukammal file — parkha hua native
+   *       rasta) → bytes _saveBufferForTask ke usi save
+   *       point se (.70 gate hu-bahu).
+   * Had-banda intezaar 180s (upscale Flow ke server par
+   * banta hai, waqt lag sakta hai). Round ki 150s
+   * download ghadi beech me kaat de to ghadi ki haalat
+   * task par rehti hai — agla round menu DOBARA nahi
+   * kholta, sirf intezaar jodta hai (join).
+   * Wapsi: 'enhanced' (enhanced file save hui) |
+   * 'saved-other' (intezaar ke dauraan kisi aur raste
+   * ne save kar diya) | 'unavailable' (bulane wala
+   * original wale intezaar par jata hai).
+   * Prompt yahan KABHI dobara submit nahi hota.
+   */
+  async _tryEditorEnhance(task, page, downloadFolder, settings, attempts, captureKey, saveFromEditor, gapSec) {
+    const n = task.promptIndex + 1;
+    const cap = this.netCapture;
+    const target = task._enhanceTarget
+      || editorEnhance.enhanceTargetFor(editorEnhance.nativeQualityOf(settings && settings.quality));
+    const joined = !!(task._enhanceDeadline && task._enhanceDeadline > Date.now());
+    try {
+      if (!joined) {
+        const native = editorEnhance.nativeQualityOf(settings && settings.quality);
+        task._enhanceTarget = target;
+        this.log(`[ROOT] editor-enhance start prompt=${n} native=${native} target=${target} — opening the editor's Download menu`, 'info');
+        // Click se pehle ki kitab: jo addresses pehle se
+        // maloom hain wo ORIGINAL ke hain — enhanced sirf
+        // NAYA address gina jayega.
+        const known = new Set();
+        try { const e0 = cap.harvestForKey(captureKey); if (e0 && e0.url) known.add(e0.url); } catch (e) {}
+        try { const b0 = cap.urlForKey(captureKey); if (b0 && b0.url) known.add(b0.url); } catch (e) {}
+        try {
+          const rec0 = typeof cap.recentFlowContentVideos === 'function' ? cap.recentFlowContentVideos(Date.now() - 600000) : [];
+          for (const r of (rec0 || [])) { if (r && r.url) known.add(r.url); }
+        } catch (e) {}
+        task._enhanceKnownUrls = known;
+        task._enhanceClaimedFiles = new Set();
+        task._enhanceStableFiles = new Map();
+        try { task._enhancePrep = await this._nativeDownloadPrep(downloadFolder); } catch (e) { task._enhancePrep = null; }
+        // Download control: ~15s tak poll (editor top bar
+        // ka load waqt — _nativeEditorForm wala sabak).
+        let ctl = { found: false };
+        for (let r = 0; r < 30; r++) {
+          ctl = await this._findEditorDownloadButton(page);
+          if (ctl.found) break;
+          if (task.mediaSaved || this.isStopping) break;
+          await sleep(500);
+        }
+        if (!ctl.found) {
+          this.log(`[ROOT] [Prompt #${n}] editor-enhance: the editor's Download control was not found — the original file will be saved instead`, 'warn');
+          attempts.push({ strategy: 'editor-enhance', ok: false, note: 'the editor Download control was not found; the original-quality save ran instead' });
+          return 'unavailable';
+        }
+        task._enhanceClickTime = Date.now();
+        await page.mouse.click(ctl.x, ctl.y);
+        // Menu + chunav: entries aane tak ~6s poll; chunav
+        // khalis hisaab se (target + 'Upscaled', Upgrade
+        // wala kabhi nahi).
+        let picked = null;
+        let menuSeen = false;
+        for (let r = 0; r < 12 && !picked; r++) {
+          const items = await this._editorEnhanceMenuItems(page);
+          if (items.length) {
+            menuSeen = true;
+            picked = editorEnhance.pickUpscaledEntry(items, target);
+            if (picked) break;
+          }
+          await sleep(500);
+        }
+        if (!picked) {
+          this.log(`[ROOT] [Prompt #${n}] editor-enhance: ${menuSeen ? `the Download menu offered no "${target} Upscaled" entry` : 'the Download menu did not open'} — the original file will be saved instead`, 'warn');
+          attempts.push({ strategy: 'editor-enhance', ok: false, note: menuSeen ? `the editor Download menu offered no ${target} Upscaled entry; the original-quality save ran instead` : 'the editor Download menu did not open; the original-quality save ran instead' });
+          try { await page.keyboard.press('Escape'); } catch (e) {}
+          return 'unavailable';
+        }
+        this.log(`[ROOT] editor-enhance picked prompt=${n} "${picked.text}" — Flow is preparing the upscaled file`, 'info');
+        task._enhancePickedText = picked.text;
+        await page.mouse.click(picked.x, picked.y);
+        // Menu band hone ki pushti — khula raha to taze
+        // coordinates se dobara click (v2.30.4 sabak),
+        // kul 3 koshish.
+        for (let t = 1; t < 3; t++) {
+          await sleep(900);
+          const still = await this._editorEnhanceMenuItems(page);
+          if (!still.length) break;
+          const again = editorEnhance.pickUpscaledEntry(still, target);
+          if (!again) break;
+          await page.mouse.click(again.x, again.y);
+        }
+        task._enhanceDeadline = Date.now() + 180000;
+      } else {
+        this.log(`[ROOT] editor-enhance prompt=${n} — the previous round's preparation watch is still live; joining its wait without opening the menu again`, 'info');
+      }
+      // ---- Aamad ka intezaar (deadline tak) ----
+      const deadline = task._enhanceDeadline || (Date.now() + 180000);
+      const prep = task._enhancePrep;
+      while (Date.now() < deadline && !this.isStopping) {
+        if (task.mediaSaved) return 'saved-other';
+        // (a) NAYI stream ki mukammal body.
+        try {
+          let entry = null;
+          try { entry = cap.harvestForKey(captureKey); } catch (e) { entry = null; }
+          if (entry && entry.buffer && entry.buffer.length > 0 && entry.url
+              && !(task._enhanceKnownUrls && task._enhanceKnownUrls.has(entry.url))) {
+            if (await this._bufferMatchesEnhanceTarget(entry.buffer, target, downloadFolder)) {
+              try { cap.evictHarvest(captureKey); } catch (e) {}
+              const r = await saveFromEditor(entry.url, entry.buffer);
+              if (r === 'saved') {
+                const g = gapSec();
+                this.log(`[ROOT] via=editor-enhance gap=${g}s quality=${target}`, 'success');
+                attempts.push({ strategy: 'editor-enhance', ok: true, note: `the enhanced file ("${task._enhancePickedText || (target + ' Upscaled')}") was captured from the new stream the editor's Download menu produced; render→save gap ${g}s` });
+                return 'enhanced';
+              }
+              this.log(`[ROOT] [Prompt #${n}] editor-enhance: the enhanced stream did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the original file will be saved instead`, 'warn');
+              attempts.push({ strategy: 'editor-enhance', ok: false, note: 'the enhanced stream did not pass the save checks; the original-quality save ran instead' });
+              return 'unavailable';
+            }
+            if (task._enhanceKnownUrls) task._enhanceKnownUrls.add(entry.url);
+          }
+        } catch (e) {}
+        try {
+          const rec = typeof cap.recentFlowContentVideos === 'function'
+            ? cap.recentFlowContentVideos(task._enhanceClickTime || (Date.now() - 180000)) : [];
+          for (const r of (rec || [])) {
+            if (!r || !r.url || (task._enhanceKnownUrls && task._enhanceKnownUrls.has(r.url))) continue;
+            let held = null;
+            try { held = typeof cap.mainpageBodyForUrl === 'function' ? cap.mainpageBodyForUrl(r.url) : null; } catch (e) { held = null; }
+            if (!held || !held.buffer || !held.buffer.length) continue;
+            if (await this._bufferMatchesEnhanceTarget(held.buffer, target, downloadFolder)) {
+              const rr = await saveFromEditor(r.url, held.buffer);
+              if (rr === 'saved') {
+                const g = gapSec();
+                this.log(`[ROOT] via=editor-enhance gap=${g}s quality=${target}`, 'success');
+                attempts.push({ strategy: 'editor-enhance', ok: true, note: `the enhanced file ("${task._enhancePickedText || (target + ' Upscaled')}") was captured from the new stream the editor's Download menu produced; render→save gap ${g}s` });
+                return 'enhanced';
+              }
+              attempts.push({ strategy: 'editor-enhance', ok: false, note: 'the enhanced stream did not pass the save checks; the original-quality save ran instead' });
+              return 'unavailable';
+            }
+            if (task._enhanceKnownUrls) task._enhanceKnownUrls.add(r.url);
+          }
+        } catch (e) {}
+        // (b) Browser ki utri file (.flow-native folder).
+        if (prep && prep.foldersToWatch) {
+          for (const fld of prep.foldersToWatch) {
+            let names = [];
+            try { names = fs.readdirSync(fld); } catch (e) { names = []; }
+            const existing = prep.existingFilesByFolder.get(fld) || new Set();
+            for (const name of names) {
+              if (existing.has(name)) continue;
+              if (name.endsWith('.crdownload') || name.endsWith('.tmp') || name.endsWith('.htm')) continue;
+              if (!(name.endsWith('.mp4') || name.endsWith('.webm'))) continue;
+              const fullPath = path.join(fld, name);
+              if (task._enhanceClaimedFiles && task._enhanceClaimedFiles.has(fullPath)) continue;
+              let st = null;
+              try { st = fs.statSync(fullPath); } catch (e) { st = null; }
+              if (!st || st.size <= 20000) continue;
+              if (task._enhanceClickTime && st.mtimeMs < task._enhanceClickTime - 2000) continue;
+              // File abhi badh rahi ho to ek poll aur ruko
+              // (size ki stability) — aadhi file kabhi nahi.
+              const stable = task._enhanceStableFiles || (task._enhanceStableFiles = new Map());
+              const prev = stable.get(fullPath);
+              if (!prev || prev.size !== st.size) { stable.set(fullPath, { size: st.size }); continue; }
+              if (task._enhanceClaimedFiles) task._enhanceClaimedFiles.add(fullPath);
+              let dims = null;
+              try { dims = await FFmpegService.getVideoDimensions(fullPath); } catch (e) { dims = null; }
+              if (!editorEnhance.dimensionsMatchTarget(dims, target)) continue;
+              let buf = null;
+              try { buf = fs.readFileSync(fullPath); } catch (e) { buf = null; }
+              if (!buf || !buf.length) continue;
+              const okSave = await this._saveBufferForTask(task, downloadFolder, settings, buf, '', 'editor-enhance');
+              // Browser wali copy ab duplicate hai — save
+              // hua ho ya gate ne roka ho, hata do (kitab
+              // saaf; asal file _saveBufferForTask ne apni
+              // jagah likh di hai ya bilkul nahi likhi).
+              try { fs.unlinkSync(fullPath); } catch (e) {}
+              if (okSave && task.mediaSaved) {
+                const g = gapSec();
+                this.log(`[ROOT] via=editor-enhance gap=${g}s quality=${target}`, 'success');
+                attempts.push({ strategy: 'editor-enhance', ok: true, note: `the enhanced file ("${task._enhancePickedText || (target + ' Upscaled')}") arrived as the browser's own download from the editor's Download menu and was saved through the standard save point; render→save gap ${g}s` });
+                return 'enhanced';
+              }
+              if (task.mediaSaved) return 'saved-other';
+              this.log(`[ROOT] [Prompt #${n}] editor-enhance: the enhanced download did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the original file will be saved instead`, 'warn');
+              attempts.push({ strategy: 'editor-enhance', ok: false, note: 'the enhanced browser download did not pass the save checks; the original-quality save ran instead' });
+              return 'unavailable';
+            }
+          }
+        }
+        await sleep(700);
+      }
+      if (task.mediaSaved) return 'saved-other';
+      this.log(`[ROOT] [Prompt #${n}] editor-enhance: no enhanced file arrived within 180s of the menu pick — the original file will be saved instead`, 'warn');
+      attempts.push({ strategy: 'editor-enhance', ok: false, note: 'no enhanced file arrived within the 180s bound; the original-quality save ran instead' });
+      return 'unavailable';
+    } catch (e) {
+      try { this.log(`[ROOT] [Prompt #${n}] editor-enhance hit a problem (${(e && e.message) || e}) — the original file will be saved instead`, 'warn'); } catch (e2) {}
+      try { attempts.push({ strategy: 'editor-enhance', ok: false, note: 'the enhance attempt hit a problem; the original-quality save ran instead' }); } catch (e2) {}
+      return 'unavailable';
+    }
+  }
+
   async _tryEditorHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint) {
     const n = task.promptIndex + 1;
     if (!task || task.mediaSaved) return false;
@@ -9217,8 +9546,16 @@ class FlowAutomationEngine {
         let teacherUrl = null;
         try { teacherUrl = this.netCapture ? this.netCapture.teacherMintUrlForTemplate(null) : null; } catch (e) { teacherUrl = null; }
         const gapSec = () => Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+        // v2.48.74 (Item B): enhanced ki koshish haar gayi
+        // ho aur ORIGINAL yahan save ho to pehle wo line
+        // aati hai — enhanced ka waada jhootha na rahe.
+        let enhanceUnavailable = false;
         const win = () => {
           const g = gapSec();
+          if (enhanceUnavailable) {
+            enhanceUnavailable = false;
+            this.log(`[ROOT] editor-enhance unavailable — saved original`, 'warn');
+          }
           this.log(`[ROOT] via=editor-harvest gap=${g}s`, 'success');
           attempts.push({ strategy: 'editor-harvest', ok: true, note: `the file was captured from this video's own editor playback stream in the worker's live browser — the editor was opened for this task and the stream was captured, no download button or menu was clicked; render→save gap ${g}s` });
           return true;
@@ -9247,7 +9584,34 @@ class FlowAutomationEngine {
         const waitMs = Math.max(1000, this.editorHarvestWaitMs || 120000);
         const deadline = Date.now() + waitMs;
         const triedFetchUrls = new Set();
+        // v2.48.74 (scope 3b): jin addresses par
+        // chalti capture ka intezaar ho raha hai —
+        // har pass me dobara log na ho, is liye kitab.
+        const inFlightWaitUrls = new Set();
         let settled = false;
+        // v2.48.74 (Item B — ENHANCED DOWNLOAD): download
+        // mode 'enhanced' ho to original wale intezaar se
+        // PEHLE editor ke Download menu se enhanced file
+        // ki koshish. Jeet → yahin khatam (settled). Haar
+        // → enhanceUnavailable nishaan ke saath neeche
+        // wala original intezaar bilkul waisa hi chalta
+        // hai; original save par 'editor-enhance
+        // unavailable — saved original' line aati hai.
+        // Original mode me ye hissa bilkul nahi chalta —
+        // .73 ka vyavhaar hu-bahu.
+        if (editorEnhance.downloadModeOf(settings) === 'enhanced' && !task.mediaSaved) {
+          const enh = await this._tryEditorEnhance(task, page, downloadFolder, settings, attempts, captureKey, saveFromEditor, gapSec);
+          if (enh === 'enhanced') {
+            outcome = true;
+            settled = true;
+          } else if (enh === 'saved-other') {
+            this.log(`[ROOT] editor-enhance unavailable — saved original`, 'warn');
+            outcome = true;
+            settled = true;
+          } else {
+            enhanceUnavailable = true;
+          }
+        }
         for (;;) {
           // Kisi aur raste ne (backend candidate handoff)
           // is dauraan save kar diya ho to wahi jeet hai.
@@ -9274,7 +9638,6 @@ class FlowAutomationEngine {
           candidates.sort((a, b) => qualityRank(a) - qualityRank(b));
           for (const candUrl of candidates) {
             if (triedFetchUrls.has(candUrl)) continue;
-            triedFetchUrls.add(candUrl);
             // v2.48.73 (SPEED B — CAPTURED BUFFER PEHLE):
             // editor page ke andar fetch se pehle kitab
             // dekho — is address ki mukammal body pehle
@@ -9289,6 +9652,34 @@ class FlowAutomationEngine {
               if (heldEh && heldEh.buffer && heldEh.buffer.length > 0 && downloadFetch.looksLikeVideoBuffer(heldEh.buffer)) candBuf = heldEh.buffer;
             } catch (e) { candBuf = null; }
             if (!candBuf) {
+              // v2.48.74 (scope 3b — CHALTI CAPTURE SE
+              // MAT LADO): is address ki capture abhi
+              // stream ho rahi ho (pending, complete
+              // nahi) to in-page fetch SHURU hi mat
+              // karo — .73 ke field run me fetch usi
+              // waqt chala jab body capture me stream
+              // ho rahi thi, 'Failed to fetch' par
+              // ~3s zaya hua, aur capture 0.8s baad
+              // mukammal hokar save ho gayi. Yahan
+              // sirf INTEZAAR hai: URL triedFetchUrls
+              // me NAHI dala jata, to agli pass me
+              // mukammal capture captured-buffer wale
+              // raste se save ho jayegi (isi loop ki
+              // deadline ke andar). Fetch sirf tab jab
+              // na body ho, na capture chal rahi ho.
+              let captureInFlight = false;
+              try {
+                captureInFlight = (typeof cap.mainpageCaptureInFlight === 'function')
+                  ? cap.mainpageCaptureInFlight(candUrl) : false;
+              } catch (e) { captureInFlight = false; }
+              if (editorEnhance.shouldSkipInPageFetch({ haveBuffer: false, captureInFlight })) {
+                if (!inFlightWaitUrls.has(candUrl)) {
+                  inFlightWaitUrls.add(candUrl);
+                  this.log(`[ROOT] editor-harvest prompt=${n}: this video's stream is still arriving in the capture — waiting for it instead of fetching inside the page`, 'info');
+                }
+                continue;
+              }
+              triedFetchUrls.add(candUrl);
               this.log(`[ROOT] editor-harvest fetch prompt=${n} itag=${itagOf(candUrl) || '?'} — full fetch inside the editor page`, 'info');
               const fetched = await this._fetchMainpageFullInPage(candUrl, page);
               if (fetched && fetched.buf && fetched.buf.length > 0 && fetched.status !== 206 && downloadFetch.looksLikeVideoBuffer(fetched.buf)) candBuf = fetched.buf;
@@ -9311,6 +9702,13 @@ class FlowAutomationEngine {
         if (!settled && !task.mediaSaved) {
           this.log(`[ROOT] [Prompt #${n}] editor-harvest: no complete editor stream arrived in the worker browser within ${Math.round(waitMs / 1000)}s — no other download route runs; the bounded editor retry rounds / recovery will retry the editor`, 'warn');
           failNote = 'the editor opened, but its playback stream did not complete in the worker browser in time — no other download route runs; the task parks for the bounded editor retry rounds / recovery';
+        }
+        if (enhanceUnavailable && task.mediaSaved) {
+          // Backend handoff ne is dauraan original save
+          // kar diya — enhanced haar ki line yahan bhi
+          // lazmi hai (win() wale raste se na aayi ho to).
+          enhanceUnavailable = false;
+          this.log(`[ROOT] editor-enhance unavailable — saved original`, 'warn');
         }
         if (task.mediaSaved && !outcome) outcome = true;
       }

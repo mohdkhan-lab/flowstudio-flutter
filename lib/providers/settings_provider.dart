@@ -191,6 +191,15 @@ class SettingsProvider with ChangeNotifier {
           _settings.headlessGeneration = data['headless_generation'].toString() == '1';
         }
         if (data['default_quality'] != null) _settings.quality = data['default_quality'].toString();
+        // v2.48.74 (Item B): download mode — sirf 'enhanced' hi
+        // enhanced hai, baaki har value (ya ghair-maujoodgi)
+        // default 'original'.
+        if (data['default_download_mode'] != null) {
+          _settings.downloadMode =
+              data['default_download_mode'].toString().toLowerCase() == 'enhanced'
+                  ? 'enhanced'
+                  : 'original';
+        }
         if (data['preview_autoplay'] != null) _settings.previewAutoplay = data['preview_autoplay'] != '0';
         if (data['auto_verify_start'] != null) _settings.autoVerifyOnStart = data['auto_verify_start'] == '1';
         if (data['auto_check_updates'] != null) _settings.autoCheckUpdates = data['auto_check_updates'] != '0';
@@ -343,6 +352,15 @@ class SettingsProvider with ChangeNotifier {
   void updateQuality(String quality) {
     _settings.quality = quality;
     AutomationBridge.instance.saveSetting('default_quality', quality);
+    notifyListeners();
+  }
+
+  // v2.48.74 (Item B): Generate bar ka DOWNLOAD dropdown —
+  // 'original' (default) ya 'enhanced'; engine har run par
+  // 'default_download_mode' se yehi value padhta hai.
+  void updateDownloadMode(String mode) {
+    _settings.downloadMode = mode == 'enhanced' ? 'enhanced' : 'original';
+    AutomationBridge.instance.saveSetting('default_download_mode', _settings.downloadMode);
     notifyListeners();
   }
 

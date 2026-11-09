@@ -3333,8 +3333,12 @@ async function main() {
     reconcileResult = { found: false };
     // line format + bulane walon ki wiring (source pin)
     const wpSrc = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'workerPool.js'), 'utf8');
-    ok('V-SWEEP the sweep line carries kept=', wpSrc.includes('[ROOT] resume-sweep tasks=${parked.length} saved=${saved} kept=${kept}'));
-    ok('V-SWEEP the sweep caller passes sweepMode', wpSrc.includes('_reconcileNeedsCheck(parked, downloadFolder, settings, { sweepMode: true })'));
+    // v2.48.74 (Item 3a REVISED — owner): khud-kar sweep
+    // ka caller aur uski summary line DONO khatam —
+    // recovery ab sirf owner-triggered hai (Progress
+    // Start / Start All ya explicit Resume).
+    ok('V-SWEEP the automatic sweep summary line is GONE (v2.48.74)', !wpSrc.includes('[ROOT] resume-sweep'));
+    ok('V-SWEEP no automatic sweep caller remains (v2.48.74)', !wpSrc.includes('_reconcileNeedsCheck(parked,'));
     ok('V-SWEEP the restart caller stays 3-arg', wpSrc.includes('await this._reconcileNeedsCheck(checkRows, downloadFolder, settings);'));
     // stubs wapas
     dbService.getAccount = savedDb.getAccount;
@@ -4733,22 +4737,19 @@ async function main() {
     ok('X62-GALLERY the old ambiguous line is gone', !faSrc62.includes('button/link found and clicked'));
   }
 
-  // X62-SWEEP: 3+ attempts wali rows khud-kar sweep se bahar;
-  // explicit Resume is faisle se nahi bandha (wo apni fehrist
-  // seedha _reconcileNeedsCheck ko deta hai).
+  // X62-SWEEP (HISTORY): ye block kabhi khud-kar sweep ke
+  // filter ki kasauti tha. v2.48.74 (Item 3a REVISED —
+  // owner) me sweep hi khatam ho gayi, to yahan ab sirf
+  // us khatme ke nishan pin hain; asal kasautiyan X74B me.
   {
-    const { autoSweepEligible } = require('../engine/workerPool');
-    eq('X62-SWEEP 0 attempts is eligible', autoSweepEligible({ id: 'a', download_attempts: 0 }), true);
-    eq('X62-SWEEP 2 attempts is eligible', autoSweepEligible({ id: 'a', download_attempts: 2 }), true);
-    eq('X62-SWEEP 3 attempts is exhausted', autoSweepEligible({ id: 'a', download_attempts: 3 }), false);
-    eq('X62-SWEEP 9 attempts is exhausted', autoSweepEligible({ id: 'a', download_attempts: 9 }), false);
-    eq('X62-SWEEP a missing counter reads as 0', autoSweepEligible({ id: 'a' }), true);
-    eq('X62-SWEEP a NaN counter reads as 0', autoSweepEligible({ id: 'a', download_attempts: 'x' }), true);
-    eq('X62-SWEEP a null row is out', autoSweepEligible(null), false);
-    eq('X62-SWEEP a row without an id is out', autoSweepEligible({ download_attempts: 0 }), false);
+    // v2.48.74 (Item 3a REVISED — owner): khud-kar
+    // sweep hi khatam, to uska .62 filter bhi gaya.
+    // (Is block ki asal kasautiyan — ke sweep kabhi
+    // khud nahi chalti — X74B-3A me hain.)
+    const wpModule62 = require('../engine/workerPool');
+    eq('X74B-3A the auto-sweep filter export is gone', typeof wpModule62.autoSweepEligible, 'undefined');
     const wpSrc62 = require('fs').readFileSync(require('path').join(__dirname, '..', 'engine', 'workerPool.js'), 'utf8');
-    ok('X62-SWEEP the sweep log gains skipped= only when rows were skipped', wpSrc62.includes("skippedExhausted > 0 ? ` skipped=${skippedExhausted}` : ''"));
-    ok('X62-SWEEP the sweep applies the filter before the cap', wpSrc62.includes('const eligible = allParked.filter(autoSweepEligible);') && wpSrc62.includes('const parked = eligible.slice(0, 20);'));
+    ok('X74B-3A the skipped-counter sweep bookkeeping is gone', !wpSrc62.includes('skippedExhausted'));
   }
 
   // X62-RES: purani pehchan barkarar + parent/widened pehchan;
@@ -5290,6 +5291,239 @@ async function main() {
     const mainSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'main.dart'), 'utf8');
     ok('X70-E Dart applies the pushed duration before the run', mainSrc.includes("pushed['duration']") && mainSrc.includes('settings.updateDuration(duration)'));
     ok('X70-E Dart applies the pushed model before the run', mainSrc.includes("pushed['model']") && mainSrc.includes('settings.updateModel(model)'));
+  }
+
+  {
+    // X74. v2.48.74 — QUALITY OPTIONS + PROGRESS CLEANUP
+    // (owner, 2026-11-09): (A) Generate bar me RESOLUTION
+    // selector (existing quality setting par), (B) DOWNLOAD
+    // mode Original/Enhanced — enhanced = editor Download
+    // menu se ek step upar wali Upscaled file, (C) Progress
+    // panel se RECOVERY parked cards gayab (display-only).
+    const fs = require('fs');
+    const path = require('path');
+    const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+    const ee = require('../engine/editorEnhance');
+
+    // --- (B) khalis chunav: native quality + target ---
+    eq('X74 native quality of 360p is 360p', ee.nativeQualityOf('360p'), '360p');
+    eq('X74 native quality of 720p is 720p', ee.nativeQualityOf('720p'), '720p');
+    eq('X74 native quality of 1080p is 720p (1080p is a download, not a generation)', ee.nativeQualityOf('1080p'), '720p');
+    eq('X74 enhance target of 360p is 720p', ee.enhanceTargetFor('360p'), '720p');
+    eq('X74 enhance target of 720p is 1080p', ee.enhanceTargetFor('720p'), '1080p');
+
+    // --- (B) menu fixtures (owner ke screenshots wale menu) ---
+    const menu360 = [
+      { text: '270p Animated GIF', upgrade: false },
+      { text: '360p Original size', upgrade: false },
+      { text: '720p Upscaled', upgrade: false }
+    ];
+    const menu720 = [
+      { text: '270p Animated GIF', upgrade: false },
+      { text: '720p Original size', upgrade: false },
+      { text: '1080p Upscaled', upgrade: false },
+      { text: '4K Upscaled', upgrade: true }
+    ];
+    eq('X74 a 360p menu picks 720p Upscaled', (ee.pickUpscaledEntry(menu360, '720p') || {}).text, '720p Upscaled');
+    eq('X74 a 720p menu picks 1080p Upscaled', (ee.pickUpscaledEntry(menu720, '1080p') || {}).text, '1080p Upscaled');
+    eq('X74 the Upgrade-gated 4K entry is never picked', ee.pickUpscaledEntry(menu720, '4k'), null);
+    eq('X74 an Upgrade-flagged entry loses even when its quality matches', ee.pickUpscaledEntry([{ text: '1080p Upscaled', upgrade: true }], '1080p'), null);
+    eq('X74 upgrade written into the text also blocks the pick', ee.pickUpscaledEntry([{ text: '1080p Upscaled Upgrade', upgrade: false }], '1080p'), null);
+    eq('X74 a menu with no Upscaled entry picks nothing (fallback path)', ee.pickUpscaledEntry([{ text: '360p Original size', upgrade: false }, { text: '270p Animated GIF', upgrade: false }], '720p'), null);
+    eq('X74 Original size is never picked as an enhance', ee.pickUpscaledEntry([{ text: '720p Original size', upgrade: false }], '1080p'), null);
+    eq('X74 an empty menu picks nothing', ee.pickUpscaledEntry([], '720p'), null);
+
+    // --- (B) download mode + dimensions ki kasauti ---
+    eq('X74 download mode defaults to original', ee.downloadModeOf({}), 'original');
+    eq('X74 download mode reads enhanced', ee.downloadModeOf({ downloadMode: 'enhanced' }), 'enhanced');
+    eq('X74 download mode is case-insensitive', ee.downloadModeOf({ downloadMode: 'ENHANCED' }), 'enhanced');
+    eq('X74 any other download mode value is original', ee.downloadModeOf({ downloadMode: 'junk' }), 'original');
+    ok('X74 1080x1920 matches the 1080p target', ee.dimensionsMatchTarget({ width: 1080, height: 1920 }, '1080p'));
+    ok('X74 720x1280 does NOT match the 1080p target (the original can never pass as enhanced)', !ee.dimensionsMatchTarget({ width: 720, height: 1280 }, '1080p'));
+    ok('X74 720x1280 matches the 720p target', ee.dimensionsMatchTarget({ width: 720, height: 1280 }, '720p'));
+    ok('X74 360x640 does NOT match the 720p target', !ee.dimensionsMatchTarget({ width: 360, height: 640 }, '720p'));
+    ok('X74 unknown dimensions never match', !ee.dimensionsMatchTarget(null, '720p'));
+
+    // --- (A)+(B) settings ki poori zanjeer (har hop pin) ---
+    const barSrc = read('lib/widgets/video_settings_bar.dart');
+    ok('X74 the Generate bar has a RESOLUTION dropdown', barSrc.includes("label: 'RESOLUTION'"));
+    ok('X74 the RESOLUTION dropdown offers exactly 360p/720p', barSrc.includes("items: const ['360p', '720p']"));
+    ok('X74 the RESOLUTION dropdown writes the existing quality setting', barSrc.includes('settingsProv.updateQuality(val)'));
+    ok('X74 the Generate bar has a DOWNLOAD dropdown', barSrc.includes("label: 'DOWNLOAD'"));
+    ok('X74 the DOWNLOAD dropdown writes download_mode', barSrc.includes('settingsProv.updateDownloadMode'));
+    const appSettingsSrc = read('lib/models/app_settings.dart');
+    ok('X74 AppSettings carries downloadMode defaulting to original', appSettingsSrc.includes('String downloadMode') && appSettingsSrc.includes("this.downloadMode = 'original'"));
+    const settingsProvSrc = read('lib/providers/settings_provider.dart');
+    ok('X74 the settings provider loads default_download_mode', settingsProvSrc.includes("data['default_download_mode']"));
+    ok('X74 the settings provider saves default_download_mode', settingsProvSrc.includes("saveSetting('default_download_mode'"));
+    const libBridgeSrc = read('lib/services/automation_bridge.dart');
+    ok('X74 the app bridge sends downloadMode on generation start', libBridgeSrc.includes("'downloadMode': downloadMode"));
+    const genProvSrc = read('lib/providers/generator_provider.dart');
+    ok('X74 the generator passes the settings downloadMode', genProvSrc.includes('downloadMode: settings.settings.downloadMode'));
+    const bridgeSrc2 = read('engine_bridge.js');
+    ok('X74 the bridge serves default_download_mode in GET settings', bridgeSrc2.includes("'default_download_mode'"));
+    ok('X74 the bridge puts downloadMode into the run settings (config wins, DB default behind it)', bridgeSrc2.includes('downloadMode:') && bridgeSrc2.includes("dbService.getSetting('default_download_mode'"));
+    const mcpSrc = read('mcp_server.js');
+    ok('X74 the MCP settings whitelist carries default_download_mode', mcpSrc.includes("'default_download_mode'"));
+
+    // --- (B) engine wiring ---
+    const faSrc = read('engine/flowAutomation.js');
+    ok('X74 the engine has the editor-enhance attempt', faSrc.includes('async _tryEditorEnhance('));
+    ok('X74 editor-harvest runs enhance only in enhanced mode', faSrc.includes("editorEnhance.downloadModeOf(settings) === 'enhanced'"));
+    ok('X74 the enhance win line exists with its quality', faSrc.includes('[ROOT] via=editor-enhance gap=') && faSrc.includes('quality=${target}'));
+    ok('X74 the honest fallback line exists verbatim', faSrc.includes('[ROOT] editor-enhance unavailable — saved original'));
+    ok('X74 the enhance wait is bounded at 180s', faSrc.includes('Date.now() + 180000'));
+    ok('X74 the menu pick goes through the pure helper', faSrc.includes('editorEnhance.pickUpscaledEntry'));
+
+    // --- (C REVISED) Progress: PARKED DOWNLOADS section ---
+    // Owner ka revised hukm: parked rows Progress me
+    // DIKHENGI (apne alag section me), lekin chalengi
+    // sirf Start se; Clear se record hamesha ke liye
+    // hat-ta hai. (Asal bartav ki kasautiyan X74B me.)
+    const progressSrc = read('lib/widgets/progress_panel.dart');
+    ok('X74 the Progress panel has the PARKED DOWNLOADS section', progressSrc.includes("'PARKED DOWNLOADS'"));
+    ok('X74 the parked section renders rows from recoveryItems', progressSrc.includes('recoveryItems') && progressSrc.includes('_parkedRow'));
+    ok('X74 the parked section head has Start All and Clear All', progressSrc.includes("'Start All'") && progressSrc.includes("'Clear All'"));
+    ok('X74 parked rows carry Start and Clear buttons', progressSrc.includes('startParkedItem') && progressSrc.includes('clearParkedItem'));
+    ok('X74 the Progress panel still renders the current run (header + cards)', progressSrc.includes("'PROGRESS'") && progressSrc.includes('_buildCard'));
+    ok('X74 the provider still tracks recovery items (engine behaviour unchanged)', genProvSrc.includes('recoveryItems'));
+  }
+
+  // ---------------------------------------------------------------------------
+  // X74B. v2.48.74 (scope additions — owner, 2026-11-09):
+  //   3a REVISED: koi khud-kar recovery sweep NAHI —
+  //     workerPool parked rows ko khud kabhi nahi
+  //     chhuta; recovery sirf Progress ke Start /
+  //     Start All ya explicit Resume se hoti hai.
+  //   (b) Start ka chunav (selectParkedRows): ek id
+  //     -> sirf wahi item; bina id -> sab; ajnabi id
+  //     -> kuch nahi. Bridge ke teen naye raste pinned.
+  //   Clear: deleteParkedTask ka asal DB round-trip
+  //     (alag process, throwaway dir) — ek item udta
+  //     hai, baqi rehte hain; restart ke baad bhi
+  //     wapas nahi aata; guard ghair-parked row ko
+  //     haath nahi lagata.
+  //   3b: chalti capture par in-page fetch NAHI —
+  //     shouldSkipInPageFetch ki kasauti,
+  //     mainpageCaptureInFlight ka asal bartav, aur
+  //     harvest me wiring ki tartib (fetch se pehle
+  //     in-flight check).
+  //   Prompts Clear button ki wiring (editor source).
+  // ---------------------------------------------------------------------------
+  {
+    const fs = require('fs');
+    const path = require('path');
+    const wpSrc = fs.readFileSync(path.join(__dirname, '..', 'engine', 'workerPool.js'), 'utf8');
+
+    // --- 3a REVISED: khud-kar sweep ka koi rasta nahi ---
+    ok('X74B-3A workerPool has no automatic sweep summary line', !wpSrc.includes('[ROOT] resume-sweep'));
+    ok('X74B-3A workerPool never loads parked rows by itself', !wpSrc.includes('getNeedsCheckTasks'));
+    eq('X74B-3A the only reconcile call left serves the run\'s own rows',
+      (wpSrc.match(/await this\._reconcileNeedsCheck\(/g) || []).length, 1);
+    ok('X74B-3A the surviving reconcile call is the checkRows one',
+      wpSrc.includes('await this._reconcileNeedsCheck(checkRows, downloadFolder, settings);'));
+
+    // --- (b) Start ka chunav ---
+    const { selectParkedRows } = require('../engine/project-recovery');
+    const rowsB = [{ id: 'p1' }, { id: 'p2' }, { id: 'p3' }];
+    eq('X74B-START Start All selects every parked row', selectParkedRows(rowsB, null).length, 3);
+    eq('X74B-START Start on one item selects only that item', (selectParkedRows(rowsB, 'p2').map(r => r.id)).join(','), 'p2');
+    eq('X74B-START an unknown id selects nothing', selectParkedRows(rowsB, 'nope').length, 0);
+    eq('X74B-START junk input selects nothing', selectParkedRows(null, 'p1').length, 0);
+    const bridgeSrc = fs.readFileSync(path.join(__dirname, '..', 'engine_bridge.js'), 'utf8');
+    ok('X74B-START the bridge serves the parked list', bridgeSrc.includes("pathname === '/api/recovery/parked'"));
+    ok('X74B-START the bridge has the owner Start route', bridgeSrc.includes("pathname === '/api/recovery/start'"));
+    ok('X74B-START the Start route selects through the pure helper', bridgeSrc.includes('selectParkedRows(all, body && body.taskId)'));
+    ok('X74B-START the Start route runs the rows as themselves (no resubmit)', bridgeSrc.includes('existingTasks: rows'));
+    ok('X74B-CLEAR the bridge has the Clear route', bridgeSrc.includes("pathname === '/api/recovery/clear'"));
+    ok('X74B-CLEAR the Clear route records an Activity line per item', bridgeSrc.includes('cleared by owner'));
+    const libBridgeSrcB = fs.readFileSync(path.join(__dirname, '..', 'lib', 'services', 'automation_bridge.dart'), 'utf8');
+    ok('X74B-CLEAR the app bridge calls all three recovery routes',
+      libBridgeSrcB.includes('/api/recovery/parked') && libBridgeSrcB.includes('/api/recovery/start') && libBridgeSrcB.includes('/api/recovery/clear'));
+    const genProvSrcB = fs.readFileSync(path.join(__dirname, '..', 'lib', 'providers', 'generator_provider.dart'), 'utf8');
+    ok('X74B-C the provider owns Start / Start All / Clear / Clear All',
+      genProvSrcB.includes('startParkedItem') && genProvSrcB.includes('startAllParked') && genProvSrcB.includes('clearParkedItem') && genProvSrcB.includes('clearAllParked'));
+    ok('X74B-C the provider loads parked rows for display only', genProvSrcB.includes('loadParkedItems'));
+    ok('X74B-C a cleared update removes the row at once', genProvSrcB.includes("phase == 'cleared'"));
+
+    // --- Clear: asal DB round-trip (alag process) ---
+    const { execFileSync } = require('child_process');
+    const os = require('os');
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-x74clr-'));
+    const dbPath = JSON.stringify(path.join(__dirname, '..', 'engine', 'db.js'));
+    const script1 = `(async () => {
+      const { dbService } = require(${dbPath});
+      await dbService.ensureInit();
+      const rows = dbService.createBatchTasks('b-x74clr', ['clr one', 'clr two', 'clr three'], {});
+      dbService.setTaskNeedsCheck(rows[0].id, 1);
+      dbService.setTaskNeedsCheck(rows[1].id, 1);
+      const del1 = dbService.deleteParkedTask(rows[0].id);
+      const delPlain = dbService.deleteParkedTask(rows[2].id);
+      const delGone = dbService.deleteParkedTask(rows[0].id);
+      const remaining = dbService.getNeedsCheckTasks().map(r => r.id);
+      dbService.persistNow();
+      console.log(JSON.stringify({ del1, delPlain, delGone, remaining, keepId: rows[1].id }));
+    })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+    let rt1 = null;
+    try {
+      const out = execFileSync(process.execPath, ['-e', script1], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+      rt1 = JSON.parse(out.trim().split('\\n').filter(Boolean).pop());
+    } catch (e) { rt1 = null; }
+    ok('X74B-CLEAR the clear child ran', !!rt1);
+    eq('X74B-CLEAR clearing one parked item removes it', rt1 && rt1.del1, true);
+    eq('X74B-CLEAR the guard refuses a non-parked row', rt1 && rt1.delPlain, false);
+    eq('X74B-CLEAR clearing twice removes nothing more', rt1 && rt1.delGone, false);
+    eq('X74B-CLEAR the other parked item remains (and stays listed)', rt1 && rt1.remaining.join(','), rt1 && rt1.keepId);
+    const keepId = rt1 && rt1.keepId;
+    const script2 = `(async () => {
+      const { dbService } = require(${dbPath});
+      await dbService.ensureInit();
+      const remaining = dbService.getNeedsCheckTasks().map(r => r.id);
+      const del2 = dbService.deleteParkedTask(${JSON.stringify(keepId || '')});
+      const after = dbService.getNeedsCheckTasks().length;
+      dbService.persistNow();
+      console.log(JSON.stringify({ remaining, del2, after }));
+    })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+    let rt2 = null;
+    try {
+      const out = execFileSync(process.execPath, ['-e', script2], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+      rt2 = JSON.parse(out.trim().split('\\n').filter(Boolean).pop());
+    } catch (e) { rt2 = null; }
+    ok('X74B-CLEAR the restart child ran', !!rt2);
+    eq('X74B-CLEAR a cleared item does not reappear after a restart', rt2 && rt2.remaining.join(','), keepId || '__none__');
+    eq('X74B-CLEAR the surviving item is still clearable after restart', rt2 && rt2.del2, true);
+    eq('X74B-CLEAR clearing the last item empties the parked list', rt2 && rt2.after, 0);
+    try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+
+    // --- 3b: chalti capture par fetch nahi ---
+    const eeB = require('../engine/editorEnhance');
+    eq('X74B-3B a held buffer skips the fetch', eeB.shouldSkipInPageFetch({ haveBuffer: true, captureInFlight: false }), true);
+    eq('X74B-3B an in-flight capture skips the fetch', eeB.shouldSkipInPageFetch({ haveBuffer: false, captureInFlight: true }), true);
+    eq('X74B-3B no buffer and no capture -> fetch allowed', eeB.shouldSkipInPageFetch({ haveBuffer: false, captureInFlight: false }), false);
+    eq('X74B-3B empty input -> fetch allowed', eeB.shouldSkipInPageFetch({}), false);
+    const { NetworkCapture } = require('../engine/networkCapture');
+    const capB = Object.create(NetworkCapture.prototype);
+    capB._mainpagePending = new Map();
+    capB._harvestPending = new Map();
+    eq('X74B-3B nothing pending -> not in flight', capB.mainpageCaptureInFlight('https://rr1.googlevideo.com/videoplayback?itag=18'), false);
+    capB._mainpagePending.set('req-1', { url: 'https://rr1.googlevideo.com/videoplayback?itag=18', src: 'googlevideo' });
+    eq('X74B-3B a pending response for the URL is in flight', capB.mainpageCaptureInFlight('https://rr1.googlevideo.com/videoplayback?itag=18'), true);
+    eq('X74B-3B an unrelated URL is not in flight', capB.mainpageCaptureInFlight('https://other.example.com/videoplayback?itag=22'), false);
+    capB._mainpagePending.delete('req-1');
+    eq('X74B-3B once the response finishes it is no longer in flight', capB.mainpageCaptureInFlight('https://rr1.googlevideo.com/videoplayback?itag=18'), false);
+    const faSrcB = fs.readFileSync(path.join(__dirname, '..', 'engine', 'flowAutomation.js'), 'utf8');
+    const ehStart = faSrcB.indexOf('async _tryEditorHarvest(');
+    const ehSlice = faSrcB.slice(ehStart, ehStart + 30000);
+    const inflightIdx = ehSlice.indexOf('mainpageCaptureInFlight(candUrl)');
+    const fetchIdx = ehSlice.indexOf('_fetchMainpageFullInPage(candUrl, page)');
+    ok('X74B-3B editor-harvest checks the in-flight capture', inflightIdx >= 0);
+    ok('X74B-3B the in-flight check stands before the in-page fetch', inflightIdx >= 0 && fetchIdx > inflightIdx);
+    ok('X74B-3B the fetch decision goes through the pure helper', ehSlice.includes('editorEnhance.shouldSkipInPageFetch'));
+
+    // --- Prompts Clear button ---
+    const promptsSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'widgets', 'prompts_editor.dart'), 'utf8');
+    ok('X74B-PROMPTS the Prompts header has a Clear button', promptsSrc.includes("'Clear'") && promptsSrc.includes('clearPrompts()'));
+    ok('X74B-PROMPTS Clear is disabled while a run is active', promptsSrc.includes('generator.isRunning'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

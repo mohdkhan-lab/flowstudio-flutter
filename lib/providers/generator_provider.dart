@@ -80,6 +80,13 @@ class GeneratorProvider with ChangeNotifier {
 
   GeneratorProvider() {
     _refreshEngineStats();
+    // v2.48.74 (Item C REVISED): seed the Parked
+    // downloads list from the engine's records so
+    // leftover work is VISIBLE in the Progress panel
+    // from the start — display only, nothing runs
+    // automatically. The bridge may still be coming
+    // up, so retry a few times.
+    _loadParkedItemsWithRetry();
     // v2.22.0 fix: the engine's video-completed payload carries
     // {id, prompt, accountName, status, filePath, error} — there is NO
     // promptIndex field. Match the finished video to its prompt item by
@@ -523,6 +530,14 @@ class GeneratorProvider with ChangeNotifier {
     final taskId = data['taskId']?.toString() ?? '';
     if (taskId.isEmpty) return;
     final phase = data['phase']?.toString() ?? 'start';
+    // v2.48.74 (Item C REVISED): the owner cleared this
+    // parked record — its row leaves the panel at once.
+    if (phase == 'cleared') {
+      final gone = _recoveryByTaskId.remove(taskId);
+      if (gone != null) _recoveryItems.remove(gone);
+      notifyListeners();
+      return;
+    }
     final rawIndex = data['promptIndex'];
     final promptIndex = rawIndex is num ? rawIndex.toInt() : 0;
     var item = _recoveryByTaskId[taskId];
@@ -531,6 +546,7 @@ class GeneratorProvider with ChangeNotifier {
         index: promptIndex + 1,
         text: data['promptText']?.toString() ?? '',
         status: PromptStatus.recovering,
+        taskId: taskId,
       );
       _recoveryByTaskId[taskId] = item;
       _recoveryItems.add(item);
@@ -542,6 +558,8 @@ class GeneratorProvider with ChangeNotifier {
     }
     final accName = data['accountName']?.toString();
     if (accName != null && accName.isNotEmpty) item.accountName = accName;
+    final projId = data['projectId']?.toString();
+    if (projId != null && projId.isNotEmpty) item.projectId = projId;
     final reason = data['reason']?.toString();
     switch (phase) {
       case 'saved':
@@ -560,6 +578,142 @@ class GeneratorProvider with ChangeNotifier {
         break;
     }
     notifyListeners();
+  }
+
+  // v2.48.74 (Item C REVISED — owner): the Parked
+  // downloads list is OWNER-CONTROLLED. Nothing about
+  // it runs automatically: this loader only READS the
+  // engine's parked records for display; recovery
+  // starts only from startParkedItem / startAllParked
+  // (the panel's Start buttons, or the explicit
+  // Resume action); records leave via Clear.
+  Future<void> _loadParkedItemsWithRetry() async {
+    for (final waitMs in [600, 1500, 3000]) {
+      await Future.delayed(Duration(milliseconds: waitMs));
+      await loadParkedItems();
+      if (_recoveryItems.isNotEmpty) return;
+    }
+  }
+
+  /// Refresh the parked rows from the engine's
+  /// records. Live (recovering) rows are never
+  /// clobbered; rows the engine no longer lists as
+  /// parked (saved or cleared elsewhere) drop off.
+  Future<void> loadParkedItems() async {
+    final rows = await AutomationBridge.instance.getParkedDownloads();
+    final seen = <String>{};
+    for (final row in rows) {
+      final taskId = row['taskId']?.toString() ?? '';
+      if (taskId.isEmpty) continue;
+      seen.add(taskId);
+      final rawIndex = row['promptIndex'];
+      final promptIndex = rawIndex is num ? rawIndex.toInt() : 0;
+      var item = _recoveryByTaskId[taskId];
+      if (item == null) {
+        item = PromptItem(
+          index: promptIndex + 1,
+          text: row['promptText']?.toString() ?? '',
+          status: PromptStatus.parked,
+          taskId: taskId,
+        );
+        _recoveryByTaskId[taskId] = item;
+        _recoveryItems.add(item);
+      }
+      if (item.status == PromptStatus.recovering) continue;
+      if (item.status == PromptStatus.completed) continue;
+      item.status = PromptStatus.parked;
+      final acc = row['accountName']?.toString();
+      if (acc != null && acc.isNotEmpty) item.accountName = acc;
+      final proj = row['projectId']?.toString();
+      if (proj != null && proj.isNotEmpty) item.projectId = proj;
+      final reason = row['reason']?.toString();
+      item.error = (reason != null && reason.isNotEmpty)
+          ? reason
+          : 'Its download never completed — press Start to check its project and download it.';
+    }
+    _recoveryItems.removeWhere((it) {
+      final id = it.taskId;
+      if (id == null || seen.contains(id)) return false;
+      if (it.status == PromptStatus.recovering) return false;
+      _recoveryByTaskId.remove(id);
+      return true;
+    });
+    notifyListeners();
+  }
+
+  /// Start on ONE parked row: targeted recovery for
+  /// that item only (its recorded account + project).
+  Future<void> startParkedItem(PromptItem item) async {
+    final taskId = item.taskId;
+    if (taskId == null || taskId.isEmpty) return;
+    if (item.status == PromptStatus.recovering) return;
+    item.status = PromptStatus.recovering;
+    item.error = 'Starting…';
+    notifyListeners();
+    final res = await AutomationBridge.instance.startParkedRecovery(taskId: taskId);
+    if (res['started'] != true) {
+      item.status = PromptStatus.parked;
+      item.error = res['reason']?.toString() ?? 'Recovery could not start.';
+      notifyListeners();
+    }
+    // On success the engine's own recovery events
+    // drive the row from here (checking, then saved
+    // or not found).
+  }
+
+  /// Start All: every parked row (the engine works
+  /// them oldest first, in its own recorded order).
+  Future<void> startAllParked() async {
+    final parked = _recoveryItems
+        .where((i) => i.status == PromptStatus.parked)
+        .toList();
+    if (parked.isEmpty) return;
+    for (final item in parked) {
+      item.status = PromptStatus.recovering;
+      item.error = 'Starting…';
+    }
+    notifyListeners();
+    final res = await AutomationBridge.instance.startParkedRecovery();
+    if (res['started'] != true) {
+      for (final item in parked) {
+        item.status = PromptStatus.parked;
+        item.error = res['reason']?.toString() ?? 'Recovery could not start.';
+      }
+      notifyListeners();
+    }
+  }
+
+  /// Clear on ONE parked row: the record is removed
+  /// permanently and the row leaves at once. Single
+  /// click, no confirmation (owner's standing style).
+  Future<void> clearParkedItem(PromptItem item) async {
+    final taskId = item.taskId;
+    if (taskId == null || taskId.isEmpty) return;
+    if (item.status == PromptStatus.recovering) return;
+    final cleared = await AutomationBridge.instance.clearParkedDownloads(taskId: taskId);
+    if (cleared > 0) {
+      _recoveryByTaskId.remove(taskId);
+      _recoveryItems.remove(item);
+      notifyListeners();
+    }
+  }
+
+  /// Clear All: every parked record goes, the same
+  /// way, in one click.
+  Future<void> clearAllParked() async {
+    final parked = _recoveryItems
+        .where((i) => i.status == PromptStatus.parked)
+        .toList();
+    if (parked.isEmpty) return;
+    final cleared = await AutomationBridge.instance.clearParkedDownloads();
+    if (cleared > 0) {
+      for (final item in parked) {
+        final id = item.taskId;
+        if (id != null) _recoveryByTaskId.remove(id);
+        _recoveryItems.remove(item);
+      }
+      notifyListeners();
+    }
   }
 
   /// v2.30.3: whether a run has been started for the current item
@@ -800,6 +954,7 @@ class GeneratorProvider with ChangeNotifier {
       duration: settings.settings.duration,
       aspectRatio: settings.settings.aspectRatio,
       quality: settings.settings.quality,
+      downloadMode: settings.settings.downloadMode,
       tag: _selectedTag == 'None' ? '' : _selectedTag,
       accountIds: tickedIds,
       model: settings.settings.model,

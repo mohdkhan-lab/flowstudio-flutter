@@ -210,6 +210,37 @@ class _PromptsEditorState extends State<PromptsEditor> {
                 bevelDepth: 1.5,
                 padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               ),
+              const SizedBox(width: 6),
+              // v2.48.74 (owner): Clear — the whole
+              // prompts box empties in ONE click, no
+              // confirmation. This is a hazard fix, not
+              // cosmetics: leftover prompts in the box
+              // were once executed wholesale by an MCP
+              // in-app run (2026-11-09), so an obvious
+              // one-click empty matters. Disabled while
+              // a run is active — a running queue was
+              // already captured by the engine at run
+              // start and must never be disturbed.
+              TextButton(
+                onPressed: generator.isRunning
+                    ? null
+                    : () => context.read<GeneratorProvider>().clearPrompts(),
+                style: TextButton.styleFrom(
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  minimumSize: const Size(0, 26),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                ),
+                child: Text(
+                  'Clear',
+                  style: TextStyle(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.bold,
+                    color: generator.isRunning
+                        ? AppTheme.textFaint
+                        : AppTheme.red,
+                  ),
+                ),
+              ),
             ],
           ),
                 ),

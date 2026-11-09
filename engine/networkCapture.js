@@ -2724,6 +2724,43 @@ class NetworkCapture {
    * kis task ka hai wo bhi darj hota hai (claim-once:
    * pehla naam hi rehta hai, doosra kabhi nahi chadhta).
    */
+  /**
+   * v2.48.74 (scope 3b): is address ki capture ABHI
+   * CHAL rahi hai kya — koi pending (abhi khatam na
+   * hui) response is URL ya is ke segment (logical
+   * stream) ke liye kitab me hai? Pending entry
+   * response ke khatam/fail hote hi hat jati hai, to
+   * is ka maujood hona hi 'streaming, not yet
+   * complete' ka saboot hai. Editor-harvest is se
+   * faisla karta hai ke in-page fetch SHURU hi na
+   * kare — chalti capture se ladna .73 ke field run
+   * me 'Failed to fetch' par waqt zaya kar gaya tha;
+   * capture ke mukammal hote hi captured-buffer
+   * wala rasta (mainpageBodyForUrl) file de deta hai.
+   */
+  mainpageCaptureInFlight(url) {
+    try {
+      if (!url) return false;
+      let segKey = '';
+      try { segKey = segmentKeyOf(url) || ''; } catch (e) { segKey = ''; }
+      const hit = (pend) => {
+        if (!pend || !pend.url) return false;
+        if (pend.url === url) return true;
+        if (segKey) {
+          try { if (segmentKeyOf(pend.url) === segKey) return true; } catch (e) {}
+        }
+        return false;
+      };
+      if (this._mainpagePending) {
+        for (const pend of this._mainpagePending.values()) { if (hit(pend)) return true; }
+      }
+      if (this._harvestPending) {
+        for (const pend of this._harvestPending.values()) { if (hit(pend)) return true; }
+      }
+      return false;
+    } catch (e) { return false; }
+  }
+
   claimMainpageVideo(url, claim) {
     try {
       if (!url) return;

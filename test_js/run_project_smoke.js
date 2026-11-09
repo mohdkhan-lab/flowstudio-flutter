@@ -74,7 +74,7 @@ async function main() {
   try {
     const status = await waitStatus();
     check('bridge boots', !!status, bridgeLog.slice(-400));
-    check('status version is 2.48.73', status && status.version === '2.48.73', JSON.stringify(status));
+    check('status version is 2.48.74', status && status.version === '2.48.74', JSON.stringify(status));
 
     const redoEarly = await req('POST', '/api/generation/redo-missing', {});
     check('redo before any run -> 400', redoEarly.status === 400, JSON.stringify(redoEarly.data));

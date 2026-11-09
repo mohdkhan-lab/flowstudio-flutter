@@ -34,6 +34,12 @@ class PromptItem {
   String? accountName;
   String? outputFileName;
   String? error;
+  // v2.48.74 (Item C REVISED): parked-download rows carry
+  // their engine task id (the Start / Clear buttons act
+  // on it) and the short id of the Flow project the
+  // video was made in (shown on the row).
+  String? taskId;
+  String? projectId;
   // v2.29.0: the REAL credit cost of this video, from the engine's
   // video-completed payload (the card hardcoded "7 credits" before).
   // Null when the engine did not report one — the card then shows no
@@ -53,6 +59,8 @@ class PromptItem {
     this.outputFileName,
     this.error,
     this.creditsUsed,
+    this.taskId,
+    this.projectId,
   });
 
   PromptItem copyWith({

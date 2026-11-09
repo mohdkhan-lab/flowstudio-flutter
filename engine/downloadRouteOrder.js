@@ -105,12 +105,33 @@
 // dhoondha ja raha hai; wo sabit hote hi yahan port hoga
 // aur editor-harvest retire ho jayega — ye pack wo port
 // NAHI hai.
+//
+// v2.48.73 (EDITOR-ONLY + SPEED — OWNER DECISION
+// 2026-11-09): owner ka faisla: "final video ko download
+// karne ka tareeka sirf aur sirf editor open karke hi
+// hoga, kyunki grid me video ka backend link hi nahi
+// mil pata." Tartib ab EK hi raste ki hai:
+//   1. 'editor-harvest' — wahid rasta.
+// 'mainpage-harvest' aur 'grid-replay' attempt kram se
+// BAHAR hain — un ka code repo me rehta hai (bilkul
+// headless-harvest ki tarah), lekin ab kabhi aazmaya
+// nahi jata. Editor ke bounded rounds haar jayein to
+// task apni wajah ke saath PARK hota hai aur recovery
+// bhi yahi editor rasta dobara aazmati hai; prompt
+// dobara KABHI submit nahi hota (sacred rule barkarar).
+// Saath me SPEED: .72 ke live run (19:45 IST) me editor
+// ki flow-content body pehle hi networkCapture ki kitab
+// me mukammal pakdi ja chuki thi, phir bhi code ne wahi
+// file ranged fetch se dobara utaari (~9.5s) — ab
+// backend-fetch aur editor-harvest dono pehle kitab ki
+// mukammal body (mainpageBodyForUrl) dekhte hain aur ho
+// to seedha save point par dete hain ('captured-buffer'
+// / editor-harvest via line ke saath); fetch sirf tab
+// jab kitab me mukammal body na ho.
 // ---------------------------------------------------------------------------
 
 const DOWNLOAD_ROUTE_ORDER = Object.freeze([
-  'editor-harvest',
-  'mainpage-harvest',
-  'grid-replay'
+  'editor-harvest'
 ]);
 
 /** Bharri hui copy — tartib ka pehla rasta chhor kar baaki (fallback) raaste. */

@@ -23,7 +23,7 @@ const { usableCreditsTotal, storedCreditsTotal } = require('./engine/usableCredi
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.48.72';
+const SERVER_VERSION = '2.48.73';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request

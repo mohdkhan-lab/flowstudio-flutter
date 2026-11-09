@@ -6182,7 +6182,36 @@ class FlowAutomationEngine {
     task._backendHotFetch = true;
     const fetchStartedAt = Date.now();
     let ok = false;
-    try { ok = await this.downloadFromCapturedStream(task, ctx.downloadFolder, ctx.settings); } catch (e) { ok = false; }
+    // v2.48.73 (SPEED A — CAPTURED BUFFER): koi network
+    // fetch se PEHLE networkCapture ki kitab dekho — is
+    // URL ki mukammal body aksar pehle hi pakdi ja chuki
+    // hoti hai (.72 field run, 2026-11-09 19:45: editor
+    // ki flow-content body 4,872,159B entry kitab me thi,
+    // phir bhi wahi file ~9.5s ki ranged fetch se dobara
+    // utari gayi). Held/assembled body ho aur header
+    // video jesa ho to seedha save point par do —
+    // mukammaliat ka asal faisla .70 duration gate hi
+    // karega (assembled lambai entry ke content-length
+    // ke barabar hona zaroori nahi — chunk
+    // reconstruction me 4,867,800 vs 4,872,159 jesa
+    // farq aam hai). Kitab me body na ho ya gate reject
+    // kar de to neeche wala asal fetch rasta hu-bahu
+    // chalta hai — us me koi tabdeeli nahi.
+    try {
+      const heldCap = (this.netCapture && typeof this.netCapture.mainpageBodyForUrl === 'function')
+        ? this.netCapture.mainpageBodyForUrl(url) : null;
+      if (heldCap && heldCap.buffer && heldCap.buffer.length > 0 && downloadFetch.looksLikeVideoBuffer(heldCap.buffer)) {
+        const capOk = await this._saveBufferForTask(task, ctx.downloadFolder, ctx.settings, heldCap.buffer, url, 'captured-buffer');
+        if (capOk || task.mediaSaved) {
+          ok = true;
+          const g = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+          this.log(`[ROOT] via=captured-buffer gap=${g}s`, 'success');
+        }
+      }
+    } catch (e) { ok = false; }
+    if (!ok && !task.mediaSaved) {
+      try { ok = await this.downloadFromCapturedStream(task, ctx.downloadFolder, ctx.settings); } catch (e) { ok = false; }
+    }
     if (!ok && !task.mediaSaved && !this.isStopping) {
       // v2.38.0: before the second try, if the server REFUSED the
       // backend link (HTTP 403/404 — the signature was not servable
@@ -9168,11 +9197,11 @@ class FlowAutomationEngine {
     };
     const page = this.page;
     if (!page || (typeof page.isClosed === 'function' && page.isClosed())) {
-      return fail('the worker browser page is not available, so this video\'s editor could not open — the main-page routes ran next');
+      return fail('the worker browser page is not available, so this video\'s editor could not open — no other download route runs; the task parks for the bounded editor retry rounds / recovery');
     }
     const cap = this.netCapture;
     if (!cap || typeof cap.harvestForKey !== 'function') {
-      return fail('the network capture book is not available, so the editor playback stream could not be harvested — the main-page routes ran next');
+      return fail('the network capture book is not available, so the editor playback stream could not be harvested — no other download route runs; the task parks for the bounded editor retry rounds / recovery');
     }
     let outcome = false;
     let failNote = null;
@@ -9181,8 +9210,8 @@ class FlowAutomationEngine {
       let editorOpen = false;
       try { editorOpen = await this._headlessOpenTaskEditor(page, task, tileIndexHint); } catch (e) { editorOpen = false; }
       if (!editorOpen) {
-        this.log(`[ROOT] [Prompt #${n}] editor-harvest: this video's editor did not open in the worker browser — the main-page routes will run`, 'warn');
-        failNote = 'this video\'s editor did not open in the worker browser — the main-page routes ran next';
+        this.log(`[ROOT] [Prompt #${n}] editor-harvest: this video's editor did not open in the worker browser — no other download route runs; the bounded editor retry rounds / recovery will retry the editor`, 'warn');
+        failNote = 'this video\'s editor did not open in the worker browser — no other download route runs; the task parks for the bounded editor retry rounds / recovery';
       } else {
         this.log(`[ROOT] editor-harvest opened prompt=${n} — watching the editor's own playback stream`, 'info');
         let teacherUrl = null;
@@ -9230,10 +9259,10 @@ class FlowAutomationEngine {
             const r = await saveFromEditor(entry.url, entry.buffer);
             if (r === 'saved') { outcome = win(); settled = true; break; }
             if (r === 'teacher') {
-              failNote = 'the stream captured in this video\'s editor was the previous task\'s file address (teacher) and was not saved — the main-page routes ran next';
+              failNote = 'the stream captured in this video\'s editor was the previous task\'s file address (teacher) and was not saved — no other download route runs; the task parks for the bounded editor retry rounds / recovery';
               settled = true; break;
             }
-            failNote = `the stream captured in this video's editor did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the main-page routes ran next`;
+            failNote = `the stream captured in this video's editor did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — no other download route runs; the task parks for the bounded editor retry rounds / recovery`;
             settled = true; break;
           }
           const candidates = [];
@@ -9246,16 +9275,32 @@ class FlowAutomationEngine {
           for (const candUrl of candidates) {
             if (triedFetchUrls.has(candUrl)) continue;
             triedFetchUrls.add(candUrl);
-            this.log(`[ROOT] editor-harvest fetch prompt=${n} itag=${itagOf(candUrl) || '?'} — full fetch inside the editor page`, 'info');
-            const fetched = await this._fetchMainpageFullInPage(candUrl, page);
-            if (fetched && fetched.buf && fetched.buf.length > 0 && fetched.status !== 206 && downloadFetch.looksLikeVideoBuffer(fetched.buf)) {
-              const r = await saveFromEditor(candUrl, fetched.buf);
+            // v2.48.73 (SPEED B — CAPTURED BUFFER PEHLE):
+            // editor page ke andar fetch se pehle kitab
+            // dekho — is address ki mukammal body pehle
+            // se pakdi ho to wahi save karo (.72 field
+            // run me in-page fetch 'Failed to fetch' par
+            // ~1.7s zaya hua jabke body capture me
+            // maujood thi). In-page fetch sirf tab jab
+            // kitab me mukammal body na ho.
+            let candBuf = null;
+            try {
+              const heldEh = (typeof cap.mainpageBodyForUrl === 'function') ? cap.mainpageBodyForUrl(candUrl) : null;
+              if (heldEh && heldEh.buffer && heldEh.buffer.length > 0 && downloadFetch.looksLikeVideoBuffer(heldEh.buffer)) candBuf = heldEh.buffer;
+            } catch (e) { candBuf = null; }
+            if (!candBuf) {
+              this.log(`[ROOT] editor-harvest fetch prompt=${n} itag=${itagOf(candUrl) || '?'} — full fetch inside the editor page`, 'info');
+              const fetched = await this._fetchMainpageFullInPage(candUrl, page);
+              if (fetched && fetched.buf && fetched.buf.length > 0 && fetched.status !== 206 && downloadFetch.looksLikeVideoBuffer(fetched.buf)) candBuf = fetched.buf;
+            }
+            if (candBuf) {
+              const r = await saveFromEditor(candUrl, candBuf);
               if (r === 'saved') { outcome = win(); settled = true; break; }
               if (r === 'teacher') {
-                failNote = 'the stream captured in this video\'s editor was the previous task\'s file address (teacher) and was not saved — the main-page routes ran next';
+                failNote = 'the stream captured in this video\'s editor was the previous task\'s file address (teacher) and was not saved — no other download route runs; the task parks for the bounded editor retry rounds / recovery';
                 settled = true; break;
               }
-              failNote = `the stream captured in this video's editor did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the main-page routes ran next`;
+              failNote = `the stream captured in this video's editor did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — no other download route runs; the task parks for the bounded editor retry rounds / recovery`;
               settled = true; break;
             }
           }
@@ -9264,13 +9309,13 @@ class FlowAutomationEngine {
           await sleep(300);
         }
         if (!settled && !task.mediaSaved) {
-          this.log(`[ROOT] [Prompt #${n}] editor-harvest: no complete editor stream arrived in the worker browser within ${Math.round(waitMs / 1000)}s — the main-page routes will run`, 'warn');
-          failNote = 'the editor opened, but its playback stream did not complete in the worker browser in time — the main-page routes ran next';
+          this.log(`[ROOT] [Prompt #${n}] editor-harvest: no complete editor stream arrived in the worker browser within ${Math.round(waitMs / 1000)}s — no other download route runs; the bounded editor retry rounds / recovery will retry the editor`, 'warn');
+          failNote = 'the editor opened, but its playback stream did not complete in the worker browser in time — no other download route runs; the task parks for the bounded editor retry rounds / recovery';
         }
         if (task.mediaSaved && !outcome) outcome = true;
       }
     } catch (e) {
-      failNote = 'the editor harvest hit a problem — the main-page routes ran next';
+      failNote = 'the editor harvest hit a problem — no other download route runs; the task parks for the bounded editor retry rounds / recovery';
     } finally {
       // Har surat me page wapas project grid par — agli
       // task/run ki haalat saaf. Wapsi nakam ho to line
@@ -9495,8 +9540,8 @@ class FlowAutomationEngine {
       // chuka ho to ye haar ki line/note jhooti hogi —
       // khamoshi se jeet ki wapsi.
       if (task.mediaSaved) return true;
-      attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'no usable stream for this video was seen on the main project page (see the mainpage-audit lines) — grid replay ran next; nothing was opened or clicked' });
-      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: no usable stream for this video on the main project page — grid replay will run`, 'warn');
+      attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'no usable stream for this video was seen on the main project page (see the mainpage-audit lines) — no further route runs in the current download order; nothing was opened or clicked' });
+      this.log(`[ROOT] [Prompt #${n}] mainpage-harvest: no usable stream for this video on the main project page — no further route runs in the current download order`, 'warn');
       return false;
     };
     // v2.48.45 (BINDCHECK — ZEROCLICK12 addendum):
@@ -10953,12 +10998,15 @@ class FlowAutomationEngine {
     // v2.48.44 (HEADLESS HARVEST PACK — OWNER SEQUENCE
     // 2026-11-04) → v2.48.72 (EDITOR-HARVEST PRIMARY —
     // OWNER DECISION 2026-11-09: editor-pabandi owner
-    // ne khud uthayi; tartib ab editor-harvest →
-    // mainpage-harvest → grid-replay hai aur headless
-    // attempt kram se bahar hai — neeche wala .44
-    // bayan tareekh hai, maujooda tartib
-    // downloadRouteOrder.js me hai): VIDEO ki tartib
-    // ab teen qadam hai:
+    // ne khud uthayi; tartib editor-harvest →
+    // mainpage-harvest → grid-replay hui aur headless
+    // attempt kram se bahar hua) → v2.48.73 (EDITOR-
+    // ONLY — OWNER DECISION 2026-11-09: tartib ab
+    // SIRF editor-harvest hai; mainpage/grid bhi kram
+    // se bahar — neeche wala .44/.72 bayan tareekh
+    // hai, maujooda tartib downloadRouteOrder.js me
+    // hai aur neeche wala loop usi array par chalta
+    // hai): VIDEO ki tartib .44 ke waqt teen qadam thi:
     //   1. headless-harvest — profile ki copy par
     //      BILKUL BINA-WINDOW Chrome me is task ka
     //      editor + us ki playback stream (probe-first:
@@ -11081,58 +11129,66 @@ class FlowAutomationEngine {
           const okBackend = await this._tryBackendDownload(task, downloadFolder, settings, attempts);
           if (okBackend) return finishVideoAttempt({ ok: true, strategy: 'backend-fetch', attempts });
         } catch (e) {
-          attempts.push({ strategy: 'backend-fetch', ok: false, note: 'backend route hit a problem — headless + mainpage ran next' });
+          attempts.push({ strategy: 'backend-fetch', ok: false, note: 'backend route hit a problem — the editor route ran next' });
         }
         if (task.mediaSaved) return finishVideoAttempt({ ok: true, strategy: 'backend-fetch', attempts });
       }
-      // v2.48.72 (EDITOR-HARVEST PRIMARY — OWNER DECISION
-      // 2026-11-09): .50 wali headless+mainpage RACE
-      // khatam. Tartib ab downloadRouteOrder ke hu-bahu
-      // kram me, ek ke baad ek chalti hai:
-      //   1. editor-harvest — live browser me is task ka
-      //      editor + us ki apni playback stream;
-      //   2. mainpage-harvest — main page ki apni kitab.
-      // Headless-harvest is kram se bahar hai (captcha
-      // se mara hua; code repo me rehta hai). Grid-replay
-      // dono ke baad, pehle jaisa.
-      try {
-        await this._tryEditorHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
-      } catch (e) {
-        attempts.push({ strategy: 'editor-harvest', ok: false, note: 'the editor harvest hit a problem — the main-page routes ran next' });
-      }
-      if (task.mediaSaved) {
-        if (task._raceSavedUrl) task.completedVideoUrl = task._raceSavedUrl;
-        const won = attempts.filter(a => a.ok).pop();
-        return finishVideoAttempt({ ok: true, strategy: won ? won.strategy : 'editor-harvest', attempts });
-      }
-      try {
-        await this._tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
-      } catch (e) {
-        attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'the main-page harvest hit a problem — grid replay ran next' });
-      } finally {
-        // v2.48.54 (fix 5 — hissa): mainpage marhala
-        // khatam — is task ka hover isi pal chhodo.
-        try { await this._exitOwnMainpageHover(task); } catch (e) {}
-      }
-      if (task.mediaSaved) {
-        if (task._raceSavedUrl) task.completedVideoUrl = task._raceSavedUrl;
-        const won = attempts.filter(a => a.ok).pop();
-        return finishVideoAttempt({ ok: true, strategy: won ? won.strategy : 'mainpage-harvest', attempts });
-      }
-      try {
-        const g = await this._tryGridReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
-        if (g && g.done) {
-          // v2.48.42: is task ka download mukammal —
-          // bandhan khidki band (exclusion hisaab ke
-          // liye ye task ab 'baqi' nahi).
-          try { if (typeof this.netCapture.mainpageMarkWindowDone === 'function') this.netCapture.mainpageMarkWindowDone(captureKey); } catch (e) {}
-          return finishVideoAttempt({ ok: true, strategy: 'grid-replay', attempts });
+      // v2.48.73 (EDITOR-ONLY — OWNER DECISION
+      // 2026-11-09): tartib ab task.downloadRouteOrder
+      // par chalti hai aur us me SIRF 'editor-harvest'
+      // hai — grid par video ka backend link milta hi
+      // nahi (owner ki sabit haqeeqat), is liye final
+      // video ka download sirf editor khol kar hoga.
+      // Loop order-array se chalta hai taaki wahid
+      // sachai (downloadRouteOrder.js) hi faisla kare
+      // kaunsi ranneeti chalegi; baaki raaston ka code
+      // repo me rehta hai lekin kram me na hone se
+      // kabhi aazmaya nahi jata. Editor rounds (round-
+      // cap khaata) haar jayein to task apni wajah ke
+      // saath PARK hota hai aur recovery bhi yahi
+      // editor rasta dobara aazmati hai (recovery isi
+      // function se guzarti hai). Prompt KABHI dobara
+      // submit nahi hota (sacred rule barkarar).
+      for (const route of (task.downloadRouteOrder || [])) {
+        if (task.mediaSaved || this.isStopping) break;
+        if (route === 'editor-harvest') {
+          try {
+            await this._tryEditorHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
+          } catch (e) {
+            attempts.push({ strategy: 'editor-harvest', ok: false, note: 'the editor harvest hit a problem — no other download route runs; the task parks for the bounded editor retry rounds / recovery' });
+          }
+        } else if (route === 'mainpage-harvest') {
+          try {
+            await this._tryMainpageHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
+          } catch (e) {
+            attempts.push({ strategy: 'mainpage-harvest', ok: false, note: 'the main-page harvest hit a problem — the next route in the order ran next' });
+          } finally {
+            // v2.48.54 (fix 5 — hissa): mainpage marhala
+            // khatam — is task ka hover isi pal chhodo.
+            try { await this._exitOwnMainpageHover(task); } catch (e) {}
+          }
+        } else if (route === 'grid-replay') {
+          try {
+            const g = await this._tryGridReplay(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
+            if (g && g.done) {
+              // v2.48.42: is task ka download mukammal —
+              // bandhan khidki band (exclusion hisaab ke
+              // liye ye task ab 'baqi' nahi).
+              try { if (typeof this.netCapture.mainpageMarkWindowDone === 'function') this.netCapture.mainpageMarkWindowDone(captureKey); } catch (e) {}
+              return finishVideoAttempt({ ok: true, strategy: 'grid-replay', attempts });
+            }
+          } catch (e) {
+            attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid replay hit a problem' });
+          }
         }
-      } catch (e) {
-        attempts.push({ strategy: 'grid-replay', ok: false, note: 'the grid replay hit a problem' });
+        if (task.mediaSaved) {
+          if (task._raceSavedUrl) task.completedVideoUrl = task._raceSavedUrl;
+          const won = attempts.filter(a => a.ok).pop();
+          return finishVideoAttempt({ ok: true, strategy: won ? won.strategy : route, attempts });
+        }
       }
       // EMAANDAR FAIL: is ke baad koi rasta nahi bacha.
-      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: this video's editor playback stream did not produce its file, no usable stream for this video was seen on the main project page, and grid replay did not produce its file. The prompt was NOT resubmitted.`, 'warn');
+      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: this video's editor playback stream did not produce its file, and the editor route is the only download route. The prompt was NOT resubmitted — the task parks for recovery, which retries the same editor route.`, 'warn');
       return finishVideoAttempt({ ok: false, attempts });
     }
 

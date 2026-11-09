@@ -483,11 +483,18 @@ async function main() {
   const FC_FRESH3 = 'https://flow-content.google/video/fresh-media-3?Expires=999&KeyName=k&Signature=s';
   {
     // (a) tartib — v2.48.72 (owner decision 2026-11-09):
-    // editor-harvest pehla, headless kram se bahar
-    eq('MP-ORDER order is exactly editor-harvest then mainpage-harvest then grid-replay', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['editor-harvest', 'mainpage-harvest', 'grid-replay']));
-    for (const banned of ['headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'tile-src', 'quick-check']) {
+    // editor-harvest pehla, headless kram se bahar →
+    // v2.48.73 (EDITOR-ONLY, owner decision 2026-11-09):
+    // tartib SIRF editor-harvest; mainpage/grid bhi
+    // kram se bahar (code repo me rehta hai).
+    eq('MP-ORDER order is exactly editor-harvest only', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['editor-harvest']));
+    for (const banned of ['mainpage-harvest', 'grid-replay', 'headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'tile-src', 'quick-check']) {
       ok(`MP-ORDER ${banned} is absent from the order`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
     }
+    // Kram se bahar hue raaston ka code ab bhi load
+    // hota hai — sirf aazmaya nahi jata.
+    eq('MP-ORDER mainpage route code still loads', typeof FlowAutomationEngine.prototype._tryMainpageHarvest, 'function');
+    eq('MP-ORDER grid-replay route code still loads', typeof FlowAutomationEngine.prototype._tryGridReplay, 'function');
     // googlevideo pehchan
     ok('MP googlevideo matcher accepts a real playback url', isGooglevideoPlaybackUrl(GV_URL));
     eq('MP googlevideo matcher rejects the flow-content host', isGooglevideoPlaybackUrl(FC_FRESH), false);
@@ -750,13 +757,18 @@ async function main() {
     const task = { promptIndex: 0, captureKey: 'k-mp-fail', videoId: 'k-mp-fail', startTime: Date.now(), renderCompletedAt: Date.now() };
     const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
     eq('MP-FAIL inner returns not-ok', res.ok, false);
-    eq('MP-FAIL the task route order is the three-step order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['editor-harvest', 'mainpage-harvest', 'grid-replay']));
+    // v2.48.73 (EDITOR-ONLY): kram sirf editor-harvest
+    // hai — editor haar jaye to koi dusri ranneeti
+    // aazmayi hi nahi jati; task park hota hai.
+    eq('MP-FAIL the task route order is the editor-only order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['editor-harvest']));
     ok('MP-FAIL attempts carry editor-harvest first (v2.48.72)', res.attempts.some(a => a.strategy === 'editor-harvest'));
-    ok('MP-FAIL attempts carry mainpage-harvest', res.attempts.some(a => a.strategy === 'mainpage-harvest'));
+    eq('MP-FAIL the only attempted strategy is editor-harvest', JSON.stringify(res.attempts.map(a => a.strategy)), JSON.stringify(['editor-harvest']));
+    ok('MP-FAIL attempts carry no mainpage-harvest (v2.48.73)', !res.attempts.some(a => a.strategy === 'mainpage-harvest'));
+    ok('MP-FAIL attempts carry no grid-replay (v2.48.73)', !res.attempts.some(a => a.strategy === 'grid-replay'));
     ok('MP-FAIL attempts carry no headless-harvest (v2.48.72)', !res.attempts.some(a => a.strategy === 'headless-harvest'));
     ok('MP-FAIL attempts carry no banned strategy', !res.attempts.some(a => ['replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-src', 'tile-src-fast', 'quick-check'].includes(a.strategy)));
     ok('MP-FAIL the honest-fail line was logged', logs.some(m => m.includes('Download failed honestly')));
-    ok('MP-FAIL the tile audit line logged src=none', logs.some(m => m.includes('[ROOT] mainpage-audit') && m.includes('src=none')));
+    ok('MP-FAIL the honest-fail line names the editor as the only route', logs.some(m => m.includes('Download failed honestly') && m.includes('editor route is the only download route')));
     ok('MP-FAIL no bg flag anywhere in the log', !logs.some(m => m.includes('bg=')));
   }
   {
@@ -1591,8 +1603,10 @@ async function main() {
   }
   {
     // (g) stream waqt par NAHI — haar, aur cascade
-    // ki tartib headless → mainpage → grid (probe
-    // cache ki wajah se phir bhi ek hi dafa).
+    // ki tartib (v2.48.73: SIRF editor-harvest; headless
+    // seedha unit test yahin upar chalta hai, cascade
+    // me nahi — probe cache ki wajah se phir bhi ek
+    // hi dafa).
     const logs = [];
     const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { headlessHarvestWaitMs: 300, editorHarvestWaitMs: 300, mainpagePatienceMs: 600, mainpageViewportWaitMs: 200, mainpageHoverGraceMs: 100, mainpagePointerGraceMs: 100 });
     eng.currentAccount = { id: 'acc-hh-fall', name: 'HH Fall' };
@@ -1607,26 +1621,29 @@ async function main() {
     const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
     eq('HH-FALL the cascade still fails honestly overall', res.ok, false);
     const seq = res.attempts.map(a => a.strategy);
-    // v2.48.72 (EDITOR-HARVEST PRIMARY): cascade ab
-    // sequential editor → mainpage → grid hai; headless
-    // attempt path se bahar hai (us ke seedhe unit
+    // v2.48.72 (EDITOR-HARVEST PRIMARY): cascade
+    // sequential editor → mainpage → grid hui; headless
+    // attempt path se bahar hua (us ke seedhe unit
     // tests upar (e)/(f)/(h) me waisi hi chalte hain —
-    // method repo me rehta hai). Stubbed
+    // method repo me rehta hai). v2.48.73 (EDITOR-
+    // ONLY): cascade ab SIRF editor-harvest hai —
+    // mainpage/grid bhi aazmaye nahi jate. Stubbed
     // _headlessOpenTaskEditor yahan LIVE editor route
     // ko 'khula' deta hai, lekin koi stream nahi aati,
-    // is liye editor attempt bhi haar kar aage badhta
+    // is liye editor attempt haar kar task park hota
     // hai.
     ok('EH-FALL editor-harvest ran first in the cascade', seq.indexOf('editor-harvest') === 0);
     ok('EH-FALL headless-harvest did NOT run in the cascade', seq.indexOf('headless-harvest') === -1);
     ok('EH-FALL the task route order has no headless-harvest', !task.downloadRouteOrder.includes('headless-harvest'));
-    // grid-replay template na hone par khamoshi se skip
-    // hota hai (koi attempt entry nahi) — entry ho to
-    // mainpage ke BAAD hi hoga, aur haar ki line teeno
-    // raaston ka naam leti hai.
-    ok('HH-FALL mainpage ran, and any grid-replay attempt came after it', seq.indexOf('mainpage-harvest') >= 0 && (seq.indexOf('grid-replay') === -1 || seq.indexOf('mainpage-harvest') < seq.indexOf('grid-replay')));
-    ok('HH-FALL the honest-fail line names all three routes', logs.some(m => m.includes('Download failed honestly') && m.includes('editor playback stream') && m.includes('grid replay')));
+    // v2.48.73: koi dusri ranneeti aazmayi hi nahi
+    // gayi — attempts sirf editor-harvest ke hain, aur
+    // haar ki line editor ko wahid rasta kehti hai.
+    ok('EH-FALL mainpage-harvest did NOT run in the cascade (v2.48.73)', seq.indexOf('mainpage-harvest') === -1);
+    ok('EH-FALL grid-replay did NOT run in the cascade (v2.48.73)', seq.indexOf('grid-replay') === -1);
+    eq('EH-FALL the only attempted strategy is editor-harvest', JSON.stringify(seq), JSON.stringify(['editor-harvest']));
+    ok('HH-FALL the honest-fail line names the editor as the only route', logs.some(m => m.includes('Download failed honestly') && m.includes('editor playback stream') && m.includes('editor route is the only download route') && !m.includes('grid replay')));
     eq('HH-FALL the probe still ran only once across rounds', st.probeCount, 1);
-    eq('HH-FALL the task route order is the three-step order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['editor-harvest', 'mainpage-harvest', 'grid-replay']));
+    eq('HH-FALL the task route order is the editor-only order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['editor-harvest']));
   }
   {
     // (h) v2.48.45 — LAUNCH DIAGNOSTICS + CLONE HARDENING.
@@ -1779,6 +1796,86 @@ async function main() {
     const r = await eng._tryEditorHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-eh-timeout', 0);
     eq('EH-TIMEOUT the route fails when no stream completes', r, false);
     ok('EH-TIMEOUT the timeout was logged honestly', logs.some(m => m.includes('editor-harvest: no complete editor stream arrived')));
+  }
+
+  // ---------------------------------------------------------------------------
+  // O3. v2.48.73 — CAPTURED-BUFFER SPEED (OWNER: video
+  // bante hi turant, backend se fast download):
+  //   (a) SPEED A — backend-fetch path: kitab me is URL
+  //       ki mukammal body pehle se ho to seedha
+  //       'captured-buffer' save; network fetch NAHI
+  //       chalta; '[ROOT] via=captured-buffer' line;
+  //   (b) SPEED A fallback — save gate captured buffer
+  //       ko reject kar de (ya kitab me body hi na ho)
+  //       to asal fetch rasta hu-bahu chalta hai;
+  //   (c) SPEED B — editor-harvest: candidate ki
+  //       mukammal body kitab me ho to in-page fetch
+  //       NAHI chalta, save editor-harvest se hi hota
+  //       hai.
+  // ---------------------------------------------------------------------------
+  {
+    // (a) mukammal captured buffer — seedha save.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+    let fetchCalls = 0;
+    eng.downloadFromCapturedStream = async () => { fetchCalls++; return false; };
+    let saveRoute = null;
+    eng._saveBufferForTask = async (t, folder, settings, buffer, url, route) => { saveRoute = route; t.mediaSaved = true; return true; };
+    eng.netCapture.mainpageBodyForUrl = () => ({ buffer: mp4Buffer(600000), at: Date.now() });
+    const task = { promptIndex: 0, captureKey: 'k-cb-win', videoId: 'k-cb-win', backendVideoUrl: FC_FRESH, backendUrlVia: 'capture-immediate', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+    const okSave = await eng._fetchBackendAndSave(task, { downloadFolder: '/tmp', settings: { duration: '10s' } });
+    eq('CB-WIN the backend path saves from the captured buffer', okSave, true);
+    eq('CB-WIN the save route is captured-buffer', saveRoute, 'captured-buffer');
+    eq('CB-WIN no network fetch ran', fetchCalls, 0);
+    ok('CB-WIN the via line is via=captured-buffer', logs.some(m => m.includes('[ROOT] via=captured-buffer gap=')));
+  }
+  {
+    // (b) gate reject kare to asal fetch rasta chalta hai.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) });
+    let fetchCalls = 0;
+    eng.downloadFromCapturedStream = async (t) => { fetchCalls++; t.mediaSaved = true; return true; };
+    eng._saveBufferForTask = async () => false; // save gate ne captured buffer reject kiya
+    eng.netCapture.mainpageBodyForUrl = () => ({ buffer: mp4Buffer(600000), at: Date.now() });
+    const task = { promptIndex: 0, captureKey: 'k-cb-reject', videoId: 'k-cb-reject', backendVideoUrl: FC_FRESH, backendUrlVia: 'capture-immediate', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+    const okSave = await eng._fetchBackendAndSave(task, { downloadFolder: '/tmp', settings: { duration: '10s' } });
+    eq('CB-REJECT the fetch path still saves after the gate rejects the buffer', okSave, true);
+    eq('CB-REJECT the network fetch ran', fetchCalls, 1);
+    ok('CB-REJECT no via=captured-buffer line on a rejected buffer', !logs.some(m => m.includes('[ROOT] via=captured-buffer')));
+  }
+  {
+    // (b2) kitab me body hi na ho to bhi fetch rasta chalta hai.
+    const eng = new FlowAutomationEngine({ onLog: () => {} });
+    let fetchCalls = 0;
+    eng.downloadFromCapturedStream = async (t) => { fetchCalls++; t.mediaSaved = true; return true; };
+    eng._saveBufferForTask = async (t) => { t.mediaSaved = true; return true; };
+    eng.netCapture.mainpageBodyForUrl = () => null;
+    const task = { promptIndex: 0, captureKey: 'k-cb-none', videoId: 'k-cb-none', backendVideoUrl: FC_FRESH, backendUrlVia: 'capture-immediate', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+    const okSave = await eng._fetchBackendAndSave(task, { downloadFolder: '/tmp', settings: { duration: '10s' } });
+    eq('CB-NONE the fetch path saves when no buffer is held', okSave, true);
+    eq('CB-NONE the network fetch ran', fetchCalls, 1);
+  }
+  {
+    // (c) SPEED B — editor candidate ki body kitab me
+    // ho to in-page fetch skip, save editor-harvest se.
+    const logs = [];
+    const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { editorHarvestWaitMs: 2000 });
+    eng.page = fakePage('main-cb-eh');
+    eng._headlessOpenTaskEditor = async () => true;
+    eng._returnToProjectGrid = async () => true;
+    let inPageFetchCalls = 0;
+    eng._fetchMainpageFullInPage = async () => { inPageFetchCalls++; return null; };
+    eng.netCapture.urlForKey = () => ({ url: FC_FRESH, via: 'test' });
+    eng.netCapture.mainpageBodyForUrl = () => ({ buffer: mp4Buffer(600000), at: Date.now() });
+    let saveRoute = null;
+    eng._saveBufferForTask = async (t, folder, settings, buffer, url, route) => { saveRoute = route; t.mediaSaved = true; return true; };
+    const task = { promptIndex: 0, captureKey: 'k-cb-eh', videoId: 'k-cb-eh', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+    const attempts = [];
+    const r = await eng._tryEditorHarvest(task, '/tmp', { duration: '10s' }, attempts, 'k-cb-eh', 0);
+    eq('CB-EH the editor route saves from the captured buffer', r, true);
+    eq('CB-EH the save route is editor-harvest', saveRoute, 'editor-harvest');
+    eq('CB-EH the in-page fetch never ran', inPageFetchCalls, 0);
+    ok('CB-EH the win line is via=editor-harvest', logs.some(m => m.includes('[ROOT] via=editor-harvest gap=')));
   }
 
   // ---------------------------------------------------------------------------

@@ -349,30 +349,45 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   // kuch nahi — attempt emaandari se FAIL hota hai.
   // v2.48.72 (EDITOR-HARVEST PRIMARY — OWNER DECISION
   // 2026-11-09): editor-pabandi owner ne khud uthayi;
-  // tartib ab editor-harvest → mainpage-harvest →
-  // grid-replay hai, aur headless-harvest attempt kram
-  // se bahar hai (code repo me rehta hai).
+  // tartib editor-harvest → mainpage-harvest →
+  // grid-replay hui, aur headless-harvest attempt kram
+  // se bahar hua (code repo me rehta hai).
+  // v2.48.73 (EDITOR-ONLY — OWNER DECISION 2026-11-09):
+  // tartib ab SIRF editor-harvest hai — grid par video
+  // ka backend link milta hi nahi; mainpage-harvest aur
+  // grid-replay bhi attempt kram se bahar hain (un ka
+  // code repo me rehta hai, kabhi aazmaya nahi jata).
   eq('MAINPAGE first route is editor-harvest', firstRoute(), 'editor-harvest');
   eq('MAINPAGE order starts with editor-harvest', DOWNLOAD_ROUTE_ORDER[0], 'editor-harvest');
-  eq('MAINPAGE mainpage-harvest route is second', DOWNLOAD_ROUTE_ORDER[1], 'mainpage-harvest');
-  eq('MAINPAGE grid-replay route is third', DOWNLOAD_ROUTE_ORDER[2], 'grid-replay');
-  eq('MAINPAGE order ends with grid-replay', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'grid-replay');
-  eq('MAINPAGE route count', DOWNLOAD_ROUTE_ORDER.length, 3);
+  eq('MAINPAGE order ends with editor-harvest', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'editor-harvest');
+  eq('MAINPAGE route count', DOWNLOAD_ROUTE_ORDER.length, 1);
   ok('MAINPAGE order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
-  // Banned raaste — menu/viewer/backend/headless —
-  // tartib me kahin nahi:
-  for (const banned of ['headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'backend-fetch-retry', 'tile-readiness', 'tile-src-fast', 'tile-src', 'quick-check', 'server-first', 'zero-click']) {
+  // Banned raaste — menu/viewer/backend/headless, aur
+  // v2.48.73 se mainpage/grid bhi — tartib me kahin nahi:
+  for (const banned of ['mainpage-harvest', 'grid-replay', 'headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'backend-fetch-retry', 'tile-readiness', 'tile-src-fast', 'tile-src', 'quick-check', 'server-first', 'zero-click']) {
     ok(`MAINPAGE order has no ${banned}`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
   }
+  // Bahar hue raaston ka code repo me ab bhi load hota
+  // hai (engine ke methods maujood hain) — sirf kram
+  // me nahi hain.
+  {
+    const { FlowAutomationEngine } = require('../engine/flowAutomation');
+    eq('MAINPAGE mainpage route code still loads', typeof FlowAutomationEngine.prototype._tryMainpageHarvest, 'function');
+    eq('MAINPAGE grid-replay route code still loads', typeof FlowAutomationEngine.prototype._tryGridReplay, 'function');
+    eq('MAINPAGE headless route code still loads', typeof FlowAutomationEngine.prototype._tryHeadlessHarvest, 'function');
+  }
 
-  // Fallback = tartib ka pehla rasta chhor kar baaki.
+  // Fallback = tartib ka pehla rasta chhor kar baaki —
+  // ek hi rasta hai, is liye fallback KHALI hai.
   const fb = fallbackRouteOrder();
   eq('MAINPAGE fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
+  eq('MAINPAGE fallback is empty', fb.length, 0);
   ok('MAINPAGE fallback has no editor-harvest', !fb.includes('editor-harvest'));
   ok('MAINPAGE fallback has no headless-harvest', !fb.includes('headless-harvest'));
-  ok('MAINPAGE fallback starts with mainpage-harvest', fb[0] === 'mainpage-harvest');
+  ok('MAINPAGE fallback has no mainpage-harvest', !fb.includes('mainpage-harvest'));
+  ok('MAINPAGE fallback has no grid-replay', !fb.includes('grid-replay'));
   eq('MAINPAGE fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
-  eq('MAINPAGE fallback list is exactly mainpage-harvest then grid-replay', JSON.stringify(fb), JSON.stringify(['mainpage-harvest', 'grid-replay']));
+  eq('MAINPAGE fallback list is exactly empty', JSON.stringify(fb), JSON.stringify([]));
 }
 
 // --- v2.48.28 (SERVER-FIRST): flow-content URL matcher ---

@@ -20,6 +20,14 @@ import 'tactile_components.dart';
 // the download_mode setting). Still ONE row: every field is Expanded
 // and labels scale down (the v2.28.0 FittedBox pattern), so the bar
 // fits 1024×768 with no overflow and no new scroll area.
+// v2.48.75 (owner): the DOWNLOAD selector leaves the bar — the
+// download mode is a Settings-only choice now (Settings → Defaults →
+// DOWNLOAD MODE, the same default_download_mode binding; runs keep
+// honouring it). The five remaining selectors get sized flex widths
+// (MODEL widest) and every selector label renders on ONE line via
+// the FittedBox pattern — the owner's .74 screenshot showed labels
+// breaking mid-word ("RESOLUTI ON" / "DOWNLOA D") in the
+// overcrowded 6-field row.
 class VideoSettingsBar extends StatelessWidget {
   const VideoSettingsBar({super.key});
 
@@ -51,10 +59,13 @@ class VideoSettingsBar extends StatelessWidget {
           return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // One row of 4 labelled dropdowns (design)
+          // One row of 5 labelled dropdowns (design; v2.48.75:
+          // flex widths sized to each field's content — MODEL
+          // widest — so no label or value is squeezed).
           Row(
             children: [
               Expanded(
+                flex: 3,
                 child: _buildSettingField(
                   label: 'MODEL',
                   value: settings.model,
@@ -65,8 +76,9 @@ class VideoSettingsBar extends StatelessWidget {
                   },
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               Expanded(
+                flex: 2,
                 child: _buildSettingField(
                   label: 'DURATION',
                   value: settings.duration,
@@ -83,8 +95,9 @@ class VideoSettingsBar extends StatelessWidget {
                   },
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               Expanded(
+                flex: 3,
                 child: _buildSettingField(
                   label: 'ASPECT',
                   value: settings.aspectRatio,
@@ -99,8 +112,9 @@ class VideoSettingsBar extends StatelessWidget {
                   },
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               Expanded(
+                flex: 2,
                 child: _buildSettingField(
                   // v2.48.74 (Item A): generation resolution —
                   // bound to the EXISTING settings.quality the
@@ -114,8 +128,9 @@ class VideoSettingsBar extends StatelessWidget {
                   },
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               Expanded(
+                flex: 2,
                 child: _buildSettingField(
                   label: 'BROWSERS',
                   value: '${settings.parallelBrowsers}',
@@ -131,22 +146,9 @@ class VideoSettingsBar extends StatelessWidget {
                   },
                 ),
               ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: _buildSettingField(
-                  // v2.48.74 (Item B): download mode — Original
-                  // (backend file as generated) or Enhanced
-                  // (editor Download menu → one-step-up Upscaled).
-                  label: 'DOWNLOAD',
-                  value: settings.downloadMode == 'enhanced' ? 'Enhanced' : 'Original',
-                  items: const ['Original', 'Enhanced'],
-                  onChanged: (val) {
-                    if (val != null) {
-                      settingsProv.updateDownloadMode(val == 'Enhanced' ? 'enhanced' : 'original');
-                    }
-                  },
-                ),
-              ),
+              // v2.48.75 (owner): NO download selector here —
+              // the download mode lives in Settings only
+              // (Settings → Defaults → DOWNLOAD MODE).
             ],
           ),
 
@@ -273,13 +275,23 @@ class VideoSettingsBar extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text(
-          label,
-          style: TextStyle(
-            fontSize: 10,
-            fontWeight: FontWeight.w800,
-            letterSpacing: 0.8,
-            color: AppTheme.textFaint,
+        // v2.48.75: the label NEVER wraps or breaks mid-word —
+        // softWrap off, one line, and the FittedBox scales it
+        // down to the field width (the same pattern the values
+        // below have used since v2.28.0).
+        FittedBox(
+          fit: BoxFit.scaleDown,
+          alignment: Alignment.centerLeft,
+          child: Text(
+            label,
+            maxLines: 1,
+            softWrap: false,
+            style: TextStyle(
+              fontSize: 10,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 0.8,
+              color: AppTheme.textFaint,
+            ),
           ),
         ),
         const SizedBox(height: 5),

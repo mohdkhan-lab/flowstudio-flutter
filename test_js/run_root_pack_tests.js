@@ -5349,8 +5349,8 @@ async function main() {
     ok('X74 the Generate bar has a RESOLUTION dropdown', barSrc.includes("label: 'RESOLUTION'"));
     ok('X74 the RESOLUTION dropdown offers exactly 360p/720p', barSrc.includes("items: const ['360p', '720p']"));
     ok('X74 the RESOLUTION dropdown writes the existing quality setting', barSrc.includes('settingsProv.updateQuality(val)'));
-    ok('X74 the Generate bar has a DOWNLOAD dropdown', barSrc.includes("label: 'DOWNLOAD'"));
-    ok('X74 the DOWNLOAD dropdown writes download_mode', barSrc.includes('settingsProv.updateDownloadMode'));
+    ok('X74 the download mode is written from the Settings view (.75: bar selector removed, Settings-only)', read('lib/widgets/settings_view.dart').includes('prov.updateDownloadMode'));
+    ok('X74 the Generate bar carries NO download selector (.75 owner order)', !barSrc.includes("label: 'DOWNLOAD'") && !barSrc.includes('updateDownloadMode'));
     const appSettingsSrc = read('lib/models/app_settings.dart');
     ok('X74 AppSettings carries downloadMode defaulting to original', appSettingsSrc.includes('String downloadMode') && appSettingsSrc.includes("this.downloadMode = 'original'"));
     const settingsProvSrc = read('lib/providers/settings_provider.dart');
@@ -5524,6 +5524,57 @@ async function main() {
     const promptsSrc = fs.readFileSync(path.join(__dirname, '..', 'lib', 'widgets', 'prompts_editor.dart'), 'utf8');
     ok('X74B-PROMPTS the Prompts header has a Clear button', promptsSrc.includes("'Clear'") && promptsSrc.includes('clearPrompts()'));
     ok('X74B-PROMPTS Clear is disabled while a run is active', promptsSrc.includes('generator.isRunning'));
+  }
+
+  // ---------------------------------------------------------------------------
+  // X75. v2.48.75 — GENERATE BAR SAFAI (owner corrections on .74,
+  //   2026-11-09 screenshot):
+  //   (1) DOWNLOAD selector bar se HATA — download mode sirf
+  //     Settings (Defaults → DOWNLOAD MODE) me; setting aur uski
+  //     poori zanjeer (AppSettings -> provider -> bridge body ->
+  //     run settings, MCP whitelist) .74 waisi hi.
+  //   (2) Baqi 5 selectors ki layout fix: flex widths (MODEL
+  //     sab se chaura), har label EK line (FittedBox + softWrap
+  //     off) — "RESOLUTI ON" / "DOWNLOA D" wala mid-word break
+  //     ab mumkin nahi.
+  //   Note: ye harness Flutter widget render nahi kar sakta —
+  //   layout ki kasauti source pins hain (neeche); asal render
+  //   ki tasdeeq owner ke PC par hogi.
+  {
+    const fs = require('fs');
+    const path = require('path');
+    const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+    const barSrc75 = read('lib/widgets/video_settings_bar.dart');
+    const settingsViewSrc75 = read('lib/widgets/settings_view.dart');
+
+    // --- (a) bar me exactly 5 selectors, koi download control nahi ---
+    const fieldCalls = (barSrc75.match(/child: _buildSettingField\(/g) || []).length;
+    eq('X75 the Generate bar renders exactly 5 setting fields', fieldCalls, 5);
+    for (const lbl of ['MODEL', 'DURATION', 'ASPECT', 'RESOLUTION', 'BROWSERS']) {
+      ok(`X75 the bar has the ${lbl} selector`, barSrc75.includes(`label: '${lbl}'`));
+    }
+    ok('X75 the bar has NO DOWNLOAD label', !barSrc75.includes("label: 'DOWNLOAD'"));
+    ok('X75 the bar never touches the download mode', !barSrc75.includes('updateDownloadMode') && !barSrc75.includes('downloadMode'));
+
+    // --- (b) download mode ka round-trip Settings se (zanjeer .74 wali) ---
+    ok('X75 Settings (Defaults) exposes the DOWNLOAD MODE control', settingsViewSrc75.includes("label: 'DOWNLOAD MODE'"));
+    ok('X75 the Settings control offers original/enhanced', settingsViewSrc75.includes("'original', 'enhanced'") && settingsViewSrc75.includes("'enhanced': 'Enhanced'"));
+    ok('X75 the Settings control reads the same downloadMode value', settingsViewSrc75.includes('value: s.downloadMode'));
+    ok('X75 the Settings control writes through the provider', settingsViewSrc75.includes('prov.updateDownloadMode(v!)'));
+    const settingsProvSrc75 = read('lib/providers/settings_provider.dart');
+    ok('X75 the provider still persists default_download_mode', settingsProvSrc75.includes("saveSetting('default_download_mode'"));
+    const genProvSrc75 = read('lib/providers/generator_provider.dart');
+    ok('X75 runs still carry the settings downloadMode into the bridge body', genProvSrc75.includes('downloadMode: settings.settings.downloadMode'));
+    const bridgeSrc75 = read('engine_bridge.js');
+    ok('X75 the bridge still puts downloadMode into the run settings', bridgeSrc75.includes('downloadMode:') && bridgeSrc75.includes("dbService.getSetting('default_download_mode'"));
+
+    // --- (c) label single-line layout pins ---
+    ok('X75 the selector label never wraps (softWrap off)', barSrc75.includes('softWrap: false'));
+    ok('X75 the selector label is capped at one line', barSrc75.includes('maxLines: 1'));
+    ok('X75 the selector label scales down instead of breaking (FittedBox)', barSrc75.includes('FittedBox(') && barSrc75.includes('BoxFit.scaleDown'));
+    ok('X75 MODEL is the widest field (flex 3, ASPECT 3, others 2)', (barSrc75.match(/flex: 3,/g) || []).length === 2 && (barSrc75.match(/flex: 2,/g) || []).length === 3);
+    ok('X75 all five fields share the same 34px control height', barSrc75.includes('height: 34'));
+    ok('X75 the bar status text still ellipsizes only at the end of the full string', barSrc75.includes('overflow: TextOverflow.ellipsis') && barSrc75.includes('Live accounts'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

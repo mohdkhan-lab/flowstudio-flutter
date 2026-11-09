@@ -355,9 +355,11 @@ class SettingsProvider with ChangeNotifier {
     notifyListeners();
   }
 
-  // v2.48.74 (Item B): Generate bar ka DOWNLOAD dropdown —
-  // 'original' (default) ya 'enhanced'; engine har run par
-  // 'default_download_mode' se yehi value padhta hai.
+  // v2.48.74 (Item B) / v2.48.75: download mode — 'original'
+  // (default) ya 'enhanced'. .74 me Generate bar se bhi set
+  // hota tha; .75 se sirf Settings (Defaults → DOWNLOAD MODE)
+  // se set hota hai. Engine har run par 'default_download_mode'
+  // se yehi value padhta hai.
   void updateDownloadMode(String mode) {
     _settings.downloadMode = mode == 'enhanced' ? 'enhanced' : 'original';
     AutomationBridge.instance.saveSetting('default_download_mode', _settings.downloadMode);

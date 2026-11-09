@@ -503,7 +503,9 @@ class _SettingsViewState extends State<SettingsView> {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 // Dropdown grid (Sample A): MODEL | DURATION,
-                // ASPECT | QUALITY, FILE NAMING — v2.34.0 adds the
+                // ASPECT | QUALITY, FILE NAMING | DOWNLOAD MODE
+                // (the download mode moved here from the Generate
+                // bar in v2.48.75) — v2.34.0 adds the
                 // Quality control (Problem 11): the setting existed
                 // and was sent on every run, but no control anywhere
                 // could change it.
@@ -573,7 +575,21 @@ class _SettingsViewState extends State<SettingsView> {
                       ),
                     ),
                         const SizedBox(width: 8),
-                        const Expanded(child: SizedBox()),
+                        Expanded(
+                      child: _buildDropdown(
+                        // v2.48.75 (owner): the download mode lives
+                        // ONLY here in Settings — the Generate bar
+                        // selector was removed in .75 ("sirf setting
+                        // me ho, yaha par nahi"). Same binding the
+                        // bar had: default_download_mode, read by
+                        // every run.
+                        label: 'DOWNLOAD MODE',
+                        value: s.downloadMode,
+                        items: const ['original', 'enhanced'],
+                        labels: const {'original': 'Original', 'enhanced': 'Enhanced'},
+                        onChanged: (v) => prov.updateDownloadMode(v!),
+                      ),
+                    ),
                       ],
                     ),
                   ],

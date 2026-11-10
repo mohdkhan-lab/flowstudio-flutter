@@ -7249,9 +7249,14 @@ async function main() {
       goldLight86.includes('border: Color(0xFF788AA0)') && goldLight86.includes('borderSoft: Color(0xFF788AA0)'));
     ok('X87 white-palette inputs get the #E2E8F0 fill', goldLight86.includes('inputBg: Color(0xFFE2E8F0)'));
     ok('X87 white-palette chip/wash partner bg2 is #B6C4D6', goldLight86.includes('bg2: Color(0xFFB6C4D6)'));
-    ok('X87 white-palette textMain is near-black #0A0F16', goldLight86.includes('textMain: Color(0xFF0A0F16)'));
-    ok('X87 white-palette textDim is #334155', goldLight86.includes('textDim: Color(0xFF334155)'));
-    ok('X87 white-palette textFaint is #475569', goldLight86.includes('textFaint: Color(0xFF475569)'));
+    // v2.48.89 (owner, on the REAL .88 screenshot): the text
+    // ramp deepens one more full step — these three pins are
+    // re-pointed at the new values (see the X89 block for the
+    // measured contrast floors). The .87 structure (canvas /
+    // cards / border / input / bg2 / gold) is unchanged.
+    ok('X87 white-palette textMain is near-black #05080C (deepened in .89)', goldLight86.includes('textMain: Color(0xFF05080C)'));
+    ok('X87 white-palette textDim is #1E293B (deepened in .89)', goldLight86.includes('textDim: Color(0xFF1E293B)'));
+    ok('X87 white-palette textFaint is #334155 (deepened in .89)', goldLight86.includes('textFaint: Color(0xFF334155)'));
     ok('X87 white-palette gold accent unchanged', goldLight86.includes('accentGold: Color(0xFFD97706)'));
     ok('X87 no light palette keeps the washed-out slate-400 faint', !themeSrc86.includes('textFaint: Color(0xFF94A3B8)'));
     ok('X87 the light card shadow is strengthened in the shared card decoration',
@@ -7310,12 +7315,15 @@ async function main() {
     // --- Item 2: the audited strays are token-sourced in light ---
     const tactileSrc88 = read88('lib/widgets/tactile_components.dart');
     ok('X88 no hard-coded #F1F5F9 slab remains in tactile components', !tactileSrc88.includes('0xFFF1F5F9'));
-    ok('X88 tactile stop/pause/icon/secondary light fills come from inputBg',
-      count88(tactileSrc88, 'AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg') === 4);
+    // v2.48.89: the gold type joins the same pattern (count 4 -> 5).
+    ok('X88 tactile stop/pause/icon/secondary/gold light fills come from inputBg',
+      count88(tactileSrc88, 'AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg') === 5);
     const sidebarSrc88 = read88('lib/widgets/sidebar_accounts.dart');
     ok('X88 no hard-coded #F1F5F9 slab remains in the sidebar', !sidebarSrc88.includes('0xFFF1F5F9'));
-    ok('X88 sidebar bottom buttons take their light fill from inputBg',
-      count88(sidebarSrc88, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg') === 2);
+    // v2.48.89: the '+ Add Cookies' pill and the inactive filter
+    // tabs join the same pattern (count 2 -> 4).
+    ok('X88 sidebar bottom buttons + add-cookies pill + filter tabs take their light fill from inputBg',
+      count88(sidebarSrc88, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg') === 4);
     ok('X88 the checking filter accent is sky blue on dark only, ACTIVE gold in light',
       sidebarSrc88.includes('AppTheme.dark ? const Color(0xFF38BDF8) : AppTheme.activeGold'));
     ok('X88 the checkbox edge is white70 on dark only, the border token in light',
@@ -7330,6 +7338,93 @@ async function main() {
     const historySrc88 = read88('lib/widgets/history_view.dart');
     ok('X88 history file tiles have a white-theme slate/gold palette',
       historySrc88.includes('_tilePaletteLight') && historySrc88.includes('AppTheme.dark ? _tilePalette : _tilePaletteLight'));
+  }
+
+  // ---------------------------------------------------------------------------
+  // X89 (v2.48.89) — TEXT CLARITY pass (owner, on the REAL .88
+  // screenshot: "text ka color abhi bhi sahi nahi ha — asa hona
+  // chahiye jis se saaf saaf dikhai de"). The pale offenders
+  // were the small grey/tinted texts: the PROJECT placeholder,
+  // filter-tab counts, account credits sub-lines, the empty-
+  // Progress line, the est. line, status words.
+  // (1) The white palette's text ramp deepens one full step —
+  // textMain #05080C / textDim #1E293B / textFaint #334155 —
+  // and accentText deepens to amber-800 #92400E. textFaint is
+  // the FLOOR for every hint/placeholder/disabled text in
+  // light mode (measured 10.35:1 on white).
+  // (2) Light-mode semantic text deepens: green -> #166534
+  // (7.13:1; was #34C759 at 2.22:1), red -> #B91C1C (6.47:1;
+  // was #FF3B30 at 3.55:1), activeGold -> #92400E (7.09:1;
+  // was #CF8A04 at 2.88:1); sidebar status words keep their
+  // fixed brights on dark only (amber -> #92400E, Login
+  // orange -> #9A3412 at 7.31:1 in light); the credits
+  // sub-line reads at textDim in light; disabled tactile
+  // labels never drop below textFaint in light; the dim-red
+  // sidebar label wears the full red token in light.
+  // (3) The dark-reading fills the owner flagged (filter
+  // tabs, '+ Add Cookies' slab, Details/Simple + Bulk/Agent
+  // toggles, '+ Add Tag') rest on inputBg in light mode.
+  // Dark palettes and dark branches are byte-identical.
+  // ---------------------------------------------------------------------------
+  {
+    const fsx89 = require('fs');
+    const pathx89 = require('path');
+    const read89 = (rel) => fsx89.readFileSync(pathx89.join(__dirname, '..', rel), 'utf8');
+    const count89 = (hay, needle) => hay.split(needle).length - 1;
+
+    // WCAG relative luminance / contrast vs the white surface.
+    const lum89 = (hex) => [0, 2, 4]
+      .map((i) => parseInt(hex.substr(i, 2), 16) / 255)
+      .map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)))
+      .reduce((acc, v, i) => acc + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const contrast89 = (hex) => 1.05 / (lum89(hex) + 0.05);
+
+    const themeSrc89 = read89('lib/theme/app_theme.dart');
+    const whiteStart89 = themeSrc89.indexOf('static const AppPalette _whiteLight');
+    const white89 = themeSrc89.slice(whiteStart89, themeSrc89.indexOf('\n  );', whiteStart89));
+
+    // --- (1) the deepened ramp, pinned by value AND by contrast ---
+    ok('X89 white textMain is #05080C', white89.includes('textMain: Color(0xFF05080C)'));
+    ok('X89 white textDim is #1E293B', white89.includes('textDim: Color(0xFF1E293B)'));
+    ok('X89 white textFaint is #334155', white89.includes('textFaint: Color(0xFF334155)'));
+    ok('X89 white accentText is deep amber-800 #92400E', white89.includes('accentText: Color(0xFF92400E)'));
+    ok('X89 textMain contrast vs white >= 7:1', contrast89('05080C') >= 7);
+    ok('X89 textDim contrast vs white >= 7:1', contrast89('1E293B') >= 7);
+    ok('X89 textFaint (the hint/disabled floor) contrast vs white >= 7:1', contrast89('334155') >= 7);
+    ok('X89 accentText contrast vs white >= 7:1', contrast89('92400E') >= 7);
+
+    // --- (2) semantic text deepens in light; dark bytes intact ---
+    ok('X89 light green text is #166534 (dark keeps #30D158)',
+      themeSrc89.includes('dark ? const Color(0xFF30D158) : const Color(0xFF166534)'));
+    ok('X89 light green contrast vs white >= 7:1', contrast89('166534') >= 7);
+    ok('X89 light red text is #B91C1C (dark keeps #FF453A)',
+      themeSrc89.includes('dark ? const Color(0xFFFF453A) : const Color(0xFFB91C1C)'));
+    ok('X89 light red contrast vs white >= 6:1', contrast89('B91C1C') >= 6);
+    ok('X89 light activeGold is #92400E (dark keeps #F5B301)',
+      themeSrc89.includes('dark ? const Color(0xFFF5B301) : const Color(0xFF92400E)'));
+    const sidebarSrc89 = read89('lib/widgets/sidebar_accounts.dart');
+    ok('X89 sidebar status ambers are bright on dark only, #92400E in light',
+      count89(sidebarSrc89, 'AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E)') === 5);
+    ok('X89 the Login status word is deep orange #9A3412 in light',
+      sidebarSrc89.includes('AppTheme.dark ? const Color(0xFFFF9F0A) : const Color(0xFF9A3412)'));
+    ok('X89 the filter-tab idle accent is ACTIVE gold in light (no bright #F5B301 text)',
+      sidebarSrc89.includes('AppTheme.dark ? const Color(0xFFF5B301) : AppTheme.activeGold'));
+    ok('X89 the credits sub-line reads at textDim in light (textFaint on dark)',
+      sidebarSrc89.includes('AppTheme.dark ? AppTheme.textFaint : AppTheme.textDim'));
+    ok('X89 the dim red sidebar label wears the full red token in light',
+      sidebarSrc89.includes('AppTheme.dark ? const Color(0x80F87171) : AppTheme.red'));
+    const tactileSrc89 = read89('lib/widgets/tactile_components.dart');
+    ok('X89 disabled tactile labels never drop below textFaint in light',
+      count89(tactileSrc89, 'AppTheme.dark ? AppTheme.textDim.withValues(alpha: 0.55) : AppTheme.textFaint') === 3 &&
+      tactileSrc89.includes('AppTheme.dark ? AppTheme.red.withValues(alpha: 0.45) : AppTheme.textFaint'));
+
+    // --- (3) the flagged fills rest on inputBg in light ---
+    ok('X89 tactile pill toggles rest on inputBg in light (Simple/Details, Bulk/Agent)',
+      tactileSrc89.includes('AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg'));
+    ok('X89 the gold tactile type rests on inputBg in light (+ Add Tag)',
+      count89(tactileSrc89, 'AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg') === 5);
+    ok('X89 add-cookies pill + filter tabs rest on inputBg in light',
+      count89(sidebarSrc89, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg') === 4);
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

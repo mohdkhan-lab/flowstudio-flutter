@@ -100,9 +100,13 @@ class _TactileButtonState extends State<TactileButton> {
 
       case TactileType.pill:
         gradient = widget.isActive ? AppTheme.accentGrad : null;
+        // v2.48.89: the inactive light fill is the palette inputBg
+        // token (same pattern as stop/pause/secondary since .88) —
+        // the near-clear overlay08 read as a dark slate slab in the
+        // owner's .88 screenshot (Bulk/Agent Prompt, Simple/Details).
         bgColor = widget.isActive
             ? AppTheme.accentGold
-            : (_isHovered ? AppTheme.accentGold.withValues(alpha: 0.16) : AppTheme.overlay08);
+            : (_isHovered ? AppTheme.accentGold.withValues(alpha: 0.16) : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg));
         borderColor = widget.isActive
             ? AppTheme.accentGold
             : (_isHovered ? AppTheme.accentAmber : AppTheme.borderSoft);
@@ -118,7 +122,9 @@ class _TactileButtonState extends State<TactileButton> {
       case TactileType.gold:
         gradient = null;
         // Clean dark slate background — NO brown/gold fill bricks
-        bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.overlay10;
+        // v2.48.89: light mode rests on inputBg (the '+ Add Tag'
+        // chip read dark-filled in the owner's .88 screenshot).
+        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg);
         borderColor = _isHovered ? AppTheme.accentGold : AppTheme.accentGold.withValues(alpha: 0.5);
         bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.accentGold;
@@ -132,7 +138,9 @@ class _TactileButtonState extends State<TactileButton> {
         borderColor = _isHovered ? AppTheme.red.withValues(alpha: 0.8) : AppTheme.borderSoft;
         bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.red;
-        textColor = isInteractive ? AppTheme.red : AppTheme.red.withValues(alpha: 0.45);
+        // v2.48.89: disabled text in light mode never drops below
+        // the textFaint floor (the alpha-dimmed red measured ~2:1).
+        textColor = isInteractive ? AppTheme.red : (AppTheme.dark ? AppTheme.red.withValues(alpha: 0.45) : AppTheme.textFaint);
         break;
 
       case TactileType.stop:
@@ -146,7 +154,7 @@ class _TactileButtonState extends State<TactileButton> {
         glowColor = AppTheme.red;
         textColor = isInteractive
             ? (_isHovered ? (AppTheme.dark ? Colors.white : AppTheme.red) : AppTheme.red)
-            : AppTheme.textDim.withValues(alpha: 0.55);
+            : (AppTheme.dark ? AppTheme.textDim.withValues(alpha: 0.55) : AppTheme.textFaint);
         break;
 
       case TactileType.pause:
@@ -158,7 +166,7 @@ class _TactileButtonState extends State<TactileButton> {
         glowColor = AppTheme.accentGold;
         textColor = isInteractive
             ? (_isHovered ? (AppTheme.dark ? Colors.white : AppTheme.accentGold) : AppTheme.accentGold)
-            : AppTheme.textDim.withValues(alpha: 0.55);
+            : (AppTheme.dark ? AppTheme.textDim.withValues(alpha: 0.55) : AppTheme.textFaint);
         break;
 
       case TactileType.icon:
@@ -183,7 +191,7 @@ class _TactileButtonState extends State<TactileButton> {
         glowColor = AppTheme.glowPrimary;
         textColor = isInteractive
             ? (_isHovered ? (AppTheme.dark ? Colors.white : AppTheme.textMain) : AppTheme.textMain)
-            : AppTheme.textDim.withValues(alpha: 0.55);
+            : (AppTheme.dark ? AppTheme.textDim.withValues(alpha: 0.55) : AppTheme.textFaint);
         break;
     }
 

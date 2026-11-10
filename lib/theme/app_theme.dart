@@ -105,15 +105,24 @@ class AppPalette {
   // v2.25.0 (parked browser): the gold of the "● ACTIVE" text and the
   // active account row's border. FIXED across all themes — deeper gold
   // on light palettes, brighter gold on dark palettes.
+  // v2.48.89 (owner: light-mode text still not crisp): the light
+  // value deepens one full step to amber-800 #92400E (~7.1:1 on
+  // white) — #CF8A04 measured only ~2.9:1 as small text. The dark
+  // value is byte-identical.
   Color get activeGold =>
-      dark ? const Color(0xFFF5B301) : const Color(0xFFCF8A04);
+      dark ? const Color(0xFFF5B301) : const Color(0xFF92400E);
 
   // Status colours — mac greens/reds, FIXED across all themes.
-  Color get green => dark ? const Color(0xFF30D158) : const Color(0xFF34C759);
+  // v2.48.89: the LIGHT branches deepen to clearly-readable text
+  // values on white (green-800 #166534 ~7.1:1, red-700 #B91C1C
+  // ~6.5:1; the old mac tints #34C759/#FF3B30 measured ~2.2:1 and
+  // ~3.5:1 as the small Live/Fail texts). The tint backgrounds
+  // follow their text colour. Dark branches byte-identical.
+  Color get green => dark ? const Color(0xFF30D158) : const Color(0xFF166534);
   Color get greenBg =>
-      dark ? const Color(0x1F30D158) : const Color(0x1F34C759);
-  Color get red => dark ? const Color(0xFFFF453A) : const Color(0xFFFF3B30);
-  Color get redBg => dark ? const Color(0x1FFF453A) : const Color(0x1FFF3B30);
+      dark ? const Color(0x1F30D158) : const Color(0x1F166534);
+  Color get red => dark ? const Color(0xFFFF453A) : const Color(0xFFB91C1C);
+  Color get redBg => dark ? const Color(0x1FFF453A) : const Color(0x1FB91C1C);
   // v2.48.88: in light mode this is the GOLD accent, not a blue —
   // the single white theme carries no blue anywhere (the token
   // feeds info/running accents in Progress + Notifications +
@@ -261,6 +270,12 @@ class AppTheme {
   // #788AA0 borders, #E2E8F0 inputs, near-black / slate text,
   // gold the only accent). Every light-mode lookup resolves
   // here; the 13 per-family light palettes are gone.
+  // v2.48.89 (owner, on the .88 screenshot: text colour still not
+  // right — text must be "saaf saaf" visible): the text ramp
+  // deepens one full step (textMain #05080C, textDim #1E293B,
+  // textFaint #334155 — the FLOOR for every hint/placeholder/
+  // disabled text in light mode) and accentText deepens to
+  // amber-800 #92400E (#B45309 measured only ~5.0:1 on white).
   static const AppPalette _whiteLight = AppPalette(
     id: 'white', dark: false,
     bgBody: Color(0xFFCBD5E1), bg2: Color(0xFFB6C4D6),
@@ -268,9 +283,9 @@ class AppTheme {
     inputBg: Color(0xFFE2E8F0),
     border: Color(0xFF788AA0), borderSoft: Color(0xFF788AA0),
     accentGold: Color(0xFFD97706), accentAmber: Color(0xFFF59E0B),
-    accentText: Color(0xFFB45309),
-    textMain: Color(0xFF0A0F16), textDim: Color(0xFF334155),
-    textFaint: Color(0xFF475569),
+    accentText: Color(0xFF92400E),
+    textMain: Color(0xFF05080C), textDim: Color(0xFF1E293B),
+    textFaint: Color(0xFF334155),
     gradStart: Color(0xFFF59E0B), gradEnd: Color(0xFFD97706),
     panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
   );

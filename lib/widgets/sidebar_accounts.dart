@@ -154,7 +154,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                 // v2.48.88: the checking accent is sky blue on dark
                 // palettes only — in the white theme it is the
                 // fixed ACTIVE gold (no blue in light mode).
-                accentColor: isCheckingNow ? (AppTheme.dark ? const Color(0xFF38BDF8) : AppTheme.activeGold) : const Color(0xFFF5B301),
+                // v2.48.89: in light mode the idle accent is the
+                // deepened ACTIVE gold token too — the fixed bright
+                // #F5B301 measured ~1.9:1 as the tab's count text.
+                accentColor: isCheckingNow ? (AppTheme.dark ? const Color(0xFF38BDF8) : AppTheme.activeGold) : (AppTheme.dark ? const Color(0xFFF5B301) : AppTheme.activeGold),
                 tooltip: isCheckingNow
                     ? '$checkingCount cookies currently verifying'
                     : '$loginRequiredCount expired cookies requiring login',
@@ -320,7 +323,14 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                           softWrap: false,
                                           style: TextStyle(
                                             fontSize: 12,
-                                            color: AppTheme.textFaint,
+                                            // v2.48.89 (owner): the
+                                            // credits sub-line reads at
+                                            // textDim minimum in the
+                                            // white theme — textFaint
+                                            // was one of the pale lines
+                                            // in his .88 screenshot.
+                                            // Dark keeps textFaint.
+                                            color: AppTheme.dark ? AppTheme.textFaint : AppTheme.textDim,
                                             height: 1.0,
                                           ),
                                         ),
@@ -693,18 +703,22 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // v2.27.0 (design): the sidebar status chip — (text, colour). Status
   // colours stay fixed in every theme: LIVE green, CHECKING amber,
   // FAIL red.
+  // v2.48.89: in LIGHT mode the amber status TEXT deepens to
+  // amber-800 #92400E (~7.1:1 on white) — the fixed bright golds
+  // are small-text pale offenders in the white theme. Dark keeps
+  // the fixed brights byte-identical.
   (String, Color) _statusChip(GoogleAccount acc) {
     if (acc.status == AccountStatus.checking) {
-      return ('CHECKING', const Color(0xFFF5B301));
+      return ('CHECKING', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
     }
     // v2.29.0: "Need Login" is an amber LOGIN chip, not red FAIL.
     if (acc.status == AccountStatus.loginRequired) {
-      return ('LOGIN', const Color(0xFFF5B301));
+      return ('LOGIN', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
     }
     // v2.46.0: credits khatam/kam FAIL nahi hai — apne lafz, apne
     // rang (grey / amber). FAIL sirf asal problem ke liye bacha.
     if (_isNoCredits(acc)) return ('NO CREDITS', AppTheme.textDim);
-    if (_isLowCredits(acc)) return ('LOW CREDITS', const Color(0xFFF5B301));
+    if (_isLowCredits(acc)) return ('LOW CREDITS', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
     if (_isLiveAcc(acc)) return ('LIVE', AppTheme.green);
     return ('FAIL', AppTheme.red);
   }
@@ -717,18 +731,20 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // in flight reads "Checking" from the account state itself.
   (String, Color) _statusWord(GoogleAccount acc) {
     if (acc.status == AccountStatus.checking) {
-      return ('Checking', const Color(0xFFF5B301));
+      return ('Checking', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
     }
     if (acc.pendingCheck) {
       return ('Waiting', AppTheme.textFaint);
     }
     if (acc.status == AccountStatus.loginRequired) {
-      return ('Login', const Color(0xFFFF9F0A));
+      // v2.48.89: light mode wears deep orange-800 #9A3412
+      // (~7.3:1) instead of the bright #FF9F0A (~2.2:1).
+      return ('Login', AppTheme.dark ? const Color(0xFFFF9F0A) : const Color(0xFF9A3412));
     }
     // v2.46.0: credits wali haalat apne lafz se — Fail sirf asal
     // problem (cookie/login/error) ke liye.
     if (_isNoCredits(acc)) return ('No Credits', AppTheme.textDim);
-    if (_isLowCredits(acc)) return ('Low Credits', const Color(0xFFF5B301));
+    if (_isLowCredits(acc)) return ('Low Credits', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
     if (_isLiveAcc(acc)) return ('Live', AppTheme.green);
     return ('Fail', AppTheme.red);
   }
@@ -1166,7 +1182,10 @@ class _HoverPillBtnState extends State<_HoverPillBtn> {
             alignment: Alignment.center,
             transform: Matrix4.translationValues(0, translateY, 0),
             decoration: BoxDecoration(
-              color: _hovered ? AppTheme.accentGold.withValues(alpha: 0.18) : AppTheme.overlay08,
+              // v2.48.89: light mode rests on inputBg — the
+              // near-clear overlay08 read as a dark slate slab in
+              // the owner's .88 screenshot.
+              color: _hovered ? AppTheme.accentGold.withValues(alpha: 0.18) : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg),
               borderRadius: BorderRadius.circular(17),
               border: Border.all(
                 color: _hovered ? AppTheme.accentGold : AppTheme.borderHighlight,
@@ -1343,9 +1362,12 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
               alignment: Alignment.center,
               transform: Matrix4.translationValues(0, translateY, 0),
               decoration: BoxDecoration(
+                // v2.48.89: inactive light tabs rest on inputBg
+                // (the overlay08 fill read dark-slab in the
+                // owner's .88 screenshot).
                 color: isActive
                     ? activeTint.withValues(alpha: _hovered ? 0.25 : 0.16)
-                    : (_hovered ? AppTheme.surfaceElevated : AppTheme.overlay08),
+                    : (_hovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg)),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
                   color: isActive
@@ -1570,7 +1592,10 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
                 fontSize: 10,
                 fontWeight: FontWeight.w600,
                 color: widget.isRed
-                    ? (widget.isDim ? const Color(0x80F87171) : AppTheme.red)
+                    // v2.48.89: the half-alpha pale red is a dark-mode
+                    // dim only — in light mode the dim red label wears
+                    // the deepened red token at full strength.
+                    ? (widget.isDim ? (AppTheme.dark ? const Color(0x80F87171) : AppTheme.red) : AppTheme.red)
                     : (widget.isDim
                         ? AppTheme.textFaint
                         : (_hovered

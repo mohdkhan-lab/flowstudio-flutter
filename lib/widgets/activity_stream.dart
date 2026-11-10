@@ -9,7 +9,8 @@ import '../providers/settings_provider.dart';
 import 'tactile_components.dart';
 
 class ActivityStream extends StatefulWidget {
-  const ActivityStream({super.key});
+  final double? height;
+  const ActivityStream({super.key, this.height});
 
   @override
   State<ActivityStream> createState() => _ActivityStreamState();
@@ -76,7 +77,7 @@ class _ActivityStreamState extends State<ActivityStream> {
             : 'Ready';
 
     return TactileSectionContainer(
-      height: 175,
+      height: widget.height ?? 145,
       padding: const EdgeInsets.all(10),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,

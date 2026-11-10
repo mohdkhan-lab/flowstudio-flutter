@@ -356,11 +356,12 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
                 builder: (context, constraints) {
                   final winW = constraints.maxWidth;
                   final compact = winW < 1150;
-                  // Section size tested and verified in section size studio:
-                  // compact <1150: 240.0, standard: 260.0, wide >1500: 285.0
+                  final isUltraWide = winW >= 2000;
+                  // Section size tuned for standard & 2560x1080 UltraWide:
+                  // compact <1150: 240.0, standard: 260.0, wide >1500: 285.0, ultrawide >=2000: 310.0
                   final sidebarWidth = compact
                       ? 240.0
-                      : (winW > 1500 ? 285.0 : 260.0);
+                      : (isUltraWide ? 310.0 : (winW > 1500 ? 285.0 : 260.0));
                   return Row(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
@@ -384,7 +385,9 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
                               Padding(
                               padding: compact
                                   ? const EdgeInsets.fromLTRB(8, 10, 10, 10)
-                                  : const EdgeInsets.fromLTRB(10, 12, 14, 12),
+                                  : (isUltraWide
+                                      ? const EdgeInsets.fromLTRB(14, 12, 16, 12)
+                                      : const EdgeInsets.fromLTRB(10, 12, 14, 12)),
                           child: Column(
                             crossAxisAlignment: CrossAxisAlignment.stretch,
                             children: [

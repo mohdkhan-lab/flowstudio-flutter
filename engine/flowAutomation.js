@@ -23,6 +23,7 @@ const { describeUrlShape, formatUrlShape } = require('./urlShape');
 const blobHarvest = require('./blobHarvest');
 const downloadRouteOrder = require('./downloadRouteOrder');
 const editorEnhance = require('./editorEnhance');
+const resolutionMemory = require('./resolutionMemory');
 const flowContent = require('./flowContent');
 const downloadEventMatch = require('./downloadEventMatch');
 const mintWindow = require('./mintWindow');
@@ -293,13 +294,43 @@ function resolutionBtnSelected(snap) {
  * hi hain). Test is source ko jaali document par chala
  * kar asal bartav parkhta hai.
  */
+/**
+ * v2.48.80 (Item A — FIELD SABOOT, owner screenshot
+ * 2026-11-10): panel par 360p wale button ke saath ek
+ * INFO icon (ⓘ) chipka hota hai, is liye us ka poora
+ * text kabhi saaf '360p' nahi hota — Material icon ki
+ * ligature saath beh kar '360p info' jaisi shakal ban
+ * jati hai (720p par koi icon nahi, wo exact milta
+ * hai). Isi liye purana exact-barabari wala filter
+ * 360p ko dekh hi nahi pata tha. Pehchan ab PEHLE
+ * token par hai: normalize hue text ka pehla lafz
+ * '360p'/'720p' ho (us ke aas-paas ke ghair-harf
+ * nishan hata kar) to wahi us button ki resolution
+ * hai — warna null. Khalis helper; page-side sources
+ * (reader + finder) is ka source garam karke chalate
+ * hain, taaki Node wala faisla aur page wala faisla
+ * ek hi hon.
+ */
+function resolutionTokenOf(text) {
+  const norm = String(text == null ? '' : text).toLowerCase().replace(/\s+/g, ' ').trim();
+  if (!norm) return null;
+  const first = norm.split(' ')[0].replace(/^[^a-z0-9]+|[^a-z0-9]+$/g, '');
+  return (first === '360p' || first === '720p') ? first : null;
+}
+
 function resolutionStateSource() {
   return '(() => {\n'
     + 'const resolutionBtnSelected = ' + resolutionBtnSelected.toString() + ';\n'
+    + 'const resolutionTokenOf = ' + resolutionTokenOf.toString() + ';\n'
     + 'const pop = Array.from(document.querySelectorAll(\'.cdk-overlay-pane, .settings-content\')).find(p => p.getClientRects().length > 0) || document.querySelector(\'.settings-content\');\n'
     + 'if (!pop) return { found: false, selected: null };\n'
     + 'const btns = Array.from(pop.querySelectorAll(\'button, [role="radio"], [role="tab"]\'));\n'
-    + 'const resBtns = btns.filter(b => [\'360p\', \'720p\'].includes((b.innerText || \'\').trim().toLowerCase()));\n'
+    // v2.48.80 (Item A): pehchan ab exact barabari ki
+    // bajaye pehle-token par (resolutionTokenOf) —
+    // '360p info' (icon wali) shakal bhi ek asal
+    // resolution button hai, aur selected hamesha
+    // saaf token ('360p'/'720p') lautta hai.
+    + 'const resBtns = btns.map(b => ({ b, tok: resolutionTokenOf(b.innerText || \'\') })).filter(x => !!x.tok);\n'
     + 'if (!resBtns.length) return { found: false, selected: null };\n'
     + 'const snapOf = (b) => ({\n'
     + '  attrs: {\n'
@@ -311,8 +342,8 @@ function resolutionStateSource() {
     + '  className: b.className,\n'
     + '  parentClassName: b.parentElement ? b.parentElement.className : \'\'\n'
     + '});\n'
-    + 'const sel = resBtns.find(b => resolutionBtnSelected(snapOf(b)));\n'
-    + 'return { found: true, selected: sel ? (sel.innerText || \'\').trim().toLowerCase() : null };\n'
+    + 'const sel = resBtns.find(x => resolutionBtnSelected(snapOf(x.b)));\n'
+    + 'return { found: true, selected: sel ? sel.tok : null };\n'
     + '})()';
 }
 
@@ -586,9 +617,17 @@ function settingsOptionsDumpLine(field, options) {
   return `[ROOT] settings-options field=${field} options=[${list.join(', ')}]`;
 }
 
-/** Ek click strategy ka natija — [ROOT] line. */
-function settingsClickLogLine(field, strategy, changed) {
-  return `[ROOT] settings-click field=${field} strategy=${strategy} changed=${changed}`;
+/**
+ * Ek click strategy ka natija — [ROOT] line.
+ * v2.48.80 (Item A): resolution ke liye ek chautha
+ * tukda — via=exact|token — ke target kis pass se
+ * mila (saaf text wala ya pehle-token wala). Baaki
+ * fields par via nahi bheja jata, un ki line ki
+ * shakal bilkul waisi hi rehti hai.
+ */
+function settingsClickLogLine(field, strategy, changed, via) {
+  const base = `[ROOT] settings-click field=${field} strategy=${strategy} changed=${changed}`;
+  return via ? `${base} via=${via}` : base;
 }
 
 /**
@@ -601,6 +640,77 @@ function settingsClickLogLine(field, strategy, changed) {
  */
 function settingsSkipLogLine(field, reason) {
   return `[ROOT] settings-skip field=${field} reason=${reason}`;
+}
+
+/**
+ * v2.48.80 (Item B — PANEL DUMP): resolution ka target
+ * dono passes ke baad bhi na mile to panel ki asal
+ * haalat log me — pehli line popover ke saare dikhne
+ * wale texts (dedupe hue, zyada se zyada 40), phir har
+ * us element ki alag line jis ke text me '360' aata
+ * hai (zyada se zyada 10). Ye dump hi woh saboot hai
+ * jis se agla field faisla hoga — ke 360p ka control
+ * asal me kis shakal me hai, ya hai bhi nahi.
+ */
+function settingsPanelDumpTextsLine(texts) {
+  const list = (Array.isArray(texts) ? texts : [])
+    .map(t => String(t == null ? '' : t).replace(/\s+/g, ' ').trim())
+    .filter(Boolean)
+    .slice(0, 40);
+  return `[ROOT] settings-panel-dump texts=[${list.join(', ')}]`;
+}
+
+function settingsPanelDumpElementLine(el) {
+  const e = el && typeof el === 'object' ? el : {};
+  const tag = String(e.tag == null ? '' : e.tag).trim() || '-';
+  const role = String(e.role == null ? '' : e.role).trim() || '-';
+  const cls = String(e.className == null ? '' : e.className).replace(/\s+/g, ' ').trim().slice(0, 48) || '-';
+  const text = String(e.text == null ? '' : e.text).replace(/\s+/g, ' ').trim().slice(0, 80);
+  return `[ROOT] settings-panel-dump el=${tag} role=${role} class=${cls} text=${text}`;
+}
+
+/**
+ * v2.48.80 (Item B): panel dump ka page-side source —
+ * panelOptionTargetSource wali hi shakal (khalis
+ * string, jaali document par test hoti hai). Lautta
+ * hai { texts: [...], hits: [{tag, role, className,
+ * text}] } — hits sirf woh elements jin ke text me
+ * '360' aata hai. Lambe ancestor-text (poora panel ek
+ * saath) dump ko kharab karte hain, is liye 120
+ * characters se lambe text fehrist me nahi aate;
+ * hits par ye pabandi nahi (un ka text 80 par kat
+ * jata hai).
+ */
+function panelDumpSource() {
+  return '(() => {\n'
+    + '/*fsPanelDump*/\n'
+    + 'try {\n'
+    + '  const pop = Array.from(document.querySelectorAll(\'.cdk-overlay-pane, .settings-content\')).find(p => p.getClientRects().length > 0) || document.querySelector(\'.settings-content\');\n'
+    + '  if (!pop) return { texts: [], hits: [] };\n'
+    + '  const visible = (el) => { try { return el.getClientRects().length > 0; } catch (e) { return false; } };\n'
+    + '  const textOf = (el) => (el.innerText || \'\').replace(/\\s+/g, \' \').trim();\n'
+    + '  const texts = [];\n'
+    + '  const seenTexts = new Set();\n'
+    + '  const hits = [];\n'
+    + '  const seenHits = new Set();\n'
+    + '  const els = Array.from(pop.querySelectorAll(\'*\'));\n'
+    + '  for (const el of els) {\n'
+    + '    if (!visible(el)) continue;\n'
+    + '    const t = textOf(el);\n'
+    + '    if (!t) continue;\n'
+    + '    if (t.length <= 120 && !seenTexts.has(t)) { seenTexts.add(t); if (texts.length < 40) texts.push(t); }\n'
+    + '    if (t.toLowerCase().includes(\'360\') && hits.length < 10 && !seenHits.has(t)) {\n'
+    + '      seenHits.add(t);\n'
+    + '      let cls = \'\';\n'
+    + '      try { cls = typeof el.className === \'string\' ? el.className : ((el.className && el.className.baseVal) || \'\'); } catch (e) {}\n'
+    + '      let role = \'\';\n'
+    + '      try { role = el.getAttribute ? (el.getAttribute(\'role\') || \'\') : \'\'; } catch (e) {}\n'
+    + '      hits.push({ tag: String(el.tagName || \'\').toLowerCase(), role, className: String(cls).replace(/\\s+/g, \' \').trim().slice(0, 48), text: t.slice(0, 80) });\n'
+    + '    }\n'
+    + '  }\n'
+    + '  return { texts, hits };\n'
+    + '} catch (e) { return { texts: [], hits: [] }; }\n'
+    + '})()';
 }
 
 /**
@@ -629,6 +739,14 @@ function settingsSkipLogLine(field, reason) {
  * 'Option nahi hai' ka faisla sirf poore scan ke
  * baad hota hai; scan ke baad bhi na mile to scroll
  * apni asal jagah par wapas.
+ * v2.48.80 (Item A): SIRF resolution ke liye, exact
+ * pass ke baad ek doosri TOKEN pass chalti hai —
+ * chauda jaal (mat-button-toggle aur toggle-host
+ * classes bhi shamil) aur pehchan pehle-token par
+ * (resolutionTokenOf): '360p info' (icon wali asal
+ * field shakal) bhi target hai. Natije me via
+ * ('exact'|'token'|null) bhi lautta hai. Baaki
+ * fields bilkul exact-only rehte hain.
  */
 function panelOptionTargetSource(kind, wantText) {
   const kindJson = JSON.stringify(String(kind || ''));
@@ -638,8 +756,9 @@ function panelOptionTargetSource(kind, wantText) {
     + 'try {\n'
     + '  const kind = ' + kindJson + ';\n'
     + '  const want = ' + wantJson + ';\n'
+    + '  const resolutionTokenOf = ' + resolutionTokenOf.toString() + ';\n'
     + '  const pop = Array.from(document.querySelectorAll(\'.cdk-overlay-pane, .settings-content\')).find(p => p.getClientRects().length > 0) || document.querySelector(\'.settings-content\');\n'
-    + '  if (!pop) return { found: false, options: [], self: null, inner: null, host: null };\n'
+    + '  if (!pop) return { found: false, options: [], self: null, inner: null, host: null, via: null };\n'
     + '  const visible = (el) => { try { return el.getClientRects().length > 0; } catch (e) { return false; } };\n'
     + '  const textOf = (el) => (el.innerText || \'\').replace(/\\s+/g, \' \').trim();\n'
     + '  const inGroup = (t) => {\n'
@@ -655,41 +774,62 @@ function panelOptionTargetSource(kind, wantText) {
     + '    if (kind === \'aspect\') return low === want || low === want.replace(\':\', \'_\') || low.includes(want);\n'
     + '    return low === want;\n'
     + '  };\n'
-    + '  const collect = () => Array.from(pop.querySelectorAll(\'button, [role="radio"], [role="tab"]\')).filter(visible).filter(b => inGroup(textOf(b)));\n'
-    + '  let group = collect();\n'
-    + '  const options = group.map(textOf);\n'
-    + '  let target = group.find(b => matches(textOf(b)));\n'
-    + '  if (!target) {\n'
-    + '    const seenOpts = new Set(options);\n'
-    + '    let scrollers = [];\n'
-    + '    try {\n'
-    + '      const all = [pop];\n'
-    + '      try { for (const el of Array.from(pop.querySelectorAll(\'*\'))) all.push(el); } catch (e) {}\n'
-    + '      for (const el of all) {\n'
-    + '        try { if (el && (el.clientHeight || 0) > 0 && (el.scrollHeight || 0) > (el.clientHeight || 0) + 2) scrollers.push(el); } catch (e) {}\n'
+    + '  const SEL_NARROW = \'button, [role="radio"], [role="tab"]\';\n'
+    + '  const SEL_WIDE = \'button, [role="radio"], [role="tab"], mat-button-toggle, [class*="toggle"]\';\n'
+    + '  const rankOf = (el) => { try { const tg = String(el.tagName || \'\').toLowerCase(); if (tg === \'mat-button-toggle\') return 1; const rl = el.getAttribute ? (el.getAttribute(\'role\') || \'\') : \'\'; if (tg === \'button\' || rl === \'radio\' || rl === \'tab\') return 0; return 2; } catch (e) { return 2; } };\n'
+    + '  const scan = (sel, tokenMode) => {\n'
+    + '    const collect = () => Array.from(pop.querySelectorAll(sel)).filter(visible).filter(b => tokenMode ? !!resolutionTokenOf(textOf(b)) : inGroup(textOf(b)));\n'
+    + '    const pickFrom = (g) => {\n'
+    + '      if (!tokenMode) return g.find(b => matches(textOf(b))) || null;\n'
+    + '      const cands = g.filter(b => resolutionTokenOf(textOf(b)) === want);\n'
+    + '      cands.sort((a, b) => rankOf(a) - rankOf(b));\n'
+    + '      return cands[0] || null;\n'
+    + '    };\n'
+    + '    let group = collect();\n'
+    + '    const options = group.map(textOf);\n'
+    + '    let target = pickFrom(group);\n'
+    + '    if (!target) {\n'
+    + '      const seenOpts = new Set(options);\n'
+    + '      let scrollers = [];\n'
+    + '      try {\n'
+    + '        const all = [pop];\n'
+    + '        try { for (const el of Array.from(pop.querySelectorAll(\'*\'))) all.push(el); } catch (e) {}\n'
+    + '        for (const el of all) {\n'
+    + '          try { if (el && (el.clientHeight || 0) > 0 && (el.scrollHeight || 0) > (el.clientHeight || 0) + 2) scrollers.push(el); } catch (e) {}\n'
+    + '        }\n'
+    + '      } catch (e) {}\n'
+    + '      scrollers = scrollers.slice(0, 3);\n'
+    + '      for (const sc of scrollers) {\n'
+    + '        if (target) break;\n'
+    + '        let origTop = 0;\n'
+    + '        try { origTop = sc.scrollTop || 0; } catch (e) {}\n'
+    + '        const stepPx = Math.max(40, sc.clientHeight || 100);\n'
+    + '        const maxTop = Math.max(0, (sc.scrollHeight || 0) - (sc.clientHeight || 0));\n'
+    + '        const positions = [];\n'
+    + '        for (let p = 0; p < maxTop; p += stepPx) positions.push(p);\n'
+    + '        positions.push(maxTop);\n'
+    + '        for (const pos of positions.slice(0, 12)) {\n'
+    + '          try { sc.scrollTop = pos; } catch (e) { break; }\n'
+    + '          const g2 = collect();\n'
+    + '          for (const b of g2) { const t = textOf(b); if (!seenOpts.has(t)) { seenOpts.add(t); options.push(t); } }\n'
+    + '          target = pickFrom(g2);\n'
+    + '          if (target) { group = g2; break; }\n'
+    + '        }\n'
+    + '        if (!target) { try { sc.scrollTop = origTop; } catch (e) {} }\n'
     + '      }\n'
-    + '    } catch (e) {}\n'
-    + '    scrollers = scrollers.slice(0, 3);\n'
-    + '    for (const sc of scrollers) {\n'
-    + '      if (target) break;\n'
-    + '      let origTop = 0;\n'
-    + '      try { origTop = sc.scrollTop || 0; } catch (e) {}\n'
-    + '      const stepPx = Math.max(40, sc.clientHeight || 100);\n'
-    + '      const maxTop = Math.max(0, (sc.scrollHeight || 0) - (sc.clientHeight || 0));\n'
-    + '      const positions = [];\n'
-    + '      for (let p = 0; p < maxTop; p += stepPx) positions.push(p);\n'
-    + '      positions.push(maxTop);\n'
-    + '      for (const pos of positions.slice(0, 12)) {\n'
-    + '        try { sc.scrollTop = pos; } catch (e) { break; }\n'
-    + '        const g2 = collect();\n'
-    + '        for (const b of g2) { const t = textOf(b); if (!seenOpts.has(t)) { seenOpts.add(t); options.push(t); } }\n'
-    + '        target = g2.find(b => matches(textOf(b)));\n'
-    + '        if (target) { group = g2; break; }\n'
-    + '      }\n'
-    + '      if (!target) { try { sc.scrollTop = origTop; } catch (e) {} }\n'
     + '    }\n'
+    + '    return { target, options };\n'
+    + '  };\n'
+    + '  const scanned = scan(SEL_NARROW, false);\n'
+    + '  let target = scanned.target;\n'
+    + '  const options = scanned.options;\n'
+    + '  let via = target ? \'exact\' : null;\n'
+    + '  if (!target && kind === \'resolution\') {\n'
+    + '    const t2 = scan(SEL_WIDE, true);\n'
+    + '    for (const t of t2.options) { if (!options.includes(t)) options.push(t); }\n'
+    + '    if (t2.target) { target = t2.target; via = \'token\'; }\n'
     + '  }\n'
-    + '  if (!target) return { found: false, options, self: null, inner: null, host: null };\n'
+    + '  if (!target) return { found: false, options, self: null, inner: null, host: null, via: null };\n'
     + '  try { target.scrollIntoView({ block: \'center\', inline: \'center\' }); } catch (e) {}\n'
     + '  const centre = (el) => { try { const r = el.getBoundingClientRect(); if (!r || (r.width === 0 && r.height === 0)) return null; return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; } catch (e) { return null; } };\n'
     + '  const self = centre(target);\n'
@@ -698,8 +838,8 @@ function panelOptionTargetSource(kind, wantText) {
     + '  let host = null;\n'
     + '  try { const hostEl = target.closest ? target.closest(\'mat-button-toggle, [role="radio"], [role="tab"]\') : null; if (hostEl && hostEl !== target) host = centre(hostEl); } catch (e) {}\n'
     + '  if (!host) { try { const p = target.parentElement; if (p && p !== pop) host = centre(p); } catch (e) {} }\n'
-    + '  return { found: !!self, options, self, inner, host };\n'
-    + '} catch (e) { return { found: false, options: [], self: null, inner: null, host: null }; }\n'
+    + '  return { found: !!self, options, self, inner, host, via };\n'
+    + '} catch (e) { return { found: false, options: [], self: null, inner: null, host: null, via: null }; }\n'
     + '})()';
 }
 
@@ -1178,6 +1318,10 @@ class FlowAutomationEngine {
     // state badalne ke poll ki hadd (asal click ke
     // baad UI settle hone ka intezaar).
     this.settingsSelectWaitMs = Number(options.settingsSelectWaitMs) > 0 ? Number(options.settingsSelectWaitMs) : SETTINGS_SELECT_WAIT_MS;
+    // v2.48.80 (Item C): proven-absent kitab ka kv
+    // (dbService) — workerPool deta hai; na mile to
+    // memory band (purana bartav).
+    this._resolutionMemoryKv = options.resolutionMemoryKv || null;
 
     // Credit port: every method is a no-op unless the pool binds it.
     const noopPort = {
@@ -2848,16 +2992,20 @@ class FlowAutomationEngine {
   async _panelOptionTarget(kind, wantText) {
     try {
       const res = await this.page.evaluate(panelOptionTargetSource(kind, wantText));
-      if (!res || typeof res !== 'object') return { found: false, options: [], self: null, inner: null, host: null };
+      if (!res || typeof res !== 'object') return { found: false, options: [], self: null, inner: null, host: null, via: null };
       return {
         found: !!res.found,
         options: Array.isArray(res.options) ? res.options : [],
         self: res.self || null,
         inner: res.inner || null,
-        host: res.host || null
+        host: res.host || null,
+        // v2.48.80 (Item A): finder jis pass se mila,
+        // woh bolta hai; purane/jaali jawabon me via
+        // na ho to found par 'exact' hi samjha jata hai.
+        via: res.via === 'token' ? 'token' : (res.found ? 'exact' : null)
       };
     } catch (e) {
-      return { found: false, options: [], self: null, inner: null, host: null };
+      return { found: false, options: [], self: null, inner: null, host: null, via: null };
     }
   }
 
@@ -2902,7 +3050,17 @@ class FlowAutomationEngine {
       // wala inse pehchan sakta hai ke field panel me tha
       // hi nahi (options khaali) ya sirf manga hua option
       // ghayab tha (options me kuch aur maujud).
-      return { ok: false, found: false, strategy: null, options: target.options };
+      // v2.48.80 (Item B): resolution na mile to panel
+      // ka dump bhi (har settings attempt par ek baar —
+      // ye tareeqa khud har attempt par ek hi baar
+      // chalta hai) aur natije me dumped ka jhanda,
+      // taaki bulane wala Item C ki kitab me tabhi darj
+      // kare jab saboot asal me jama ho gaya ho.
+      let dumped = false;
+      if (kind === 'resolution') {
+        dumped = await this._dumpSettingsPanel();
+      }
+      return { ok: false, found: false, strategy: null, options: target.options, via: null, dumped };
     }
     const clickAt = async (pt) => {
       if (!pt || !this.page || !this.page.mouse || typeof this.page.mouse.click !== 'function') return false;
@@ -2923,12 +3081,64 @@ class FlowAutomationEngine {
       } else {
         await sleep(350);
       }
-      this.log(settingsClickLogLine(field, strat.name, changed === null ? 'unchecked' : String(changed)), 'info');
+      // v2.48.80 (Item A): resolution par click line
+      // me via bhi (exact|token) — baaki fields par
+      // line ki shakal pehle jaisi.
+      this.log(settingsClickLogLine(field, strat.name, changed === null ? 'unchecked' : String(changed), kind === 'resolution' ? (target.via || 'exact') : undefined), 'info');
       if (changed !== false) {
-        return { ok: true, found: true, strategy: strat.name, options: target.options };
+        return { ok: true, found: true, strategy: strat.name, options: target.options, via: target.via || 'exact' };
       }
     }
-    return { ok: false, found: true, strategy: lastStrategy, options: target.options };
+    return { ok: false, found: true, strategy: lastStrategy, options: target.options, via: target.via || 'exact' };
+  }
+
+  /**
+   * v2.48.80 (Item B): resolution na milne par panel
+   * ki asal haalat [ROOT] settings-panel-dump lines
+   * me. Nakami par khamosh false — dump kabhi chunav
+   * ki nakami ki wajah nahi banta.
+   */
+  async _dumpSettingsPanel() {
+    try {
+      const res = await this.page.evaluate(panelDumpSource());
+      if (!res || typeof res !== 'object') return false;
+      this.log(settingsPanelDumpTextsLine(res.texts), 'info');
+      const hits = Array.isArray(res.hits) ? res.hits.slice(0, 10) : [];
+      for (const h of hits) {
+        this.log(settingsPanelDumpElementLine(h), 'info');
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.80 (Item C): proven-absent kitab me darj —
+   * engine ko kv (dbService) workerPool deta hai;
+   * kv na ho (purane bulane wale / jaali test) to
+   * khamosh no-op. Kitab ki koi nakami chunav ke
+   * raaste me kabhi nahi aati.
+   */
+  _resMemoryRecordAbsent(model, resolution) {
+    if (!this._resolutionMemoryKv || !this.currentAccount) return;
+    try {
+      const map = resolutionMemory.loadResolutionMemory(this._resolutionMemoryKv);
+      if (resolutionMemory.recordResolutionAbsent(map, this.currentAccount.name, model, resolution)) {
+        resolutionMemory.saveResolutionMemory(this._resolutionMemoryKv, map);
+      }
+    } catch (e) { /* kitab ki nakami khamosh */ }
+  }
+
+  /** v2.48.80 (Item C): kamyab chunav apna record saaf kar deta hai. */
+  _resMemoryClearAbsent(model, resolution) {
+    if (!this._resolutionMemoryKv || !this.currentAccount) return;
+    try {
+      const map = resolutionMemory.loadResolutionMemory(this._resolutionMemoryKv);
+      if (resolutionMemory.clearResolutionAbsent(map, this.currentAccount.name, model, resolution)) {
+        resolutionMemory.saveResolutionMemory(this._resolutionMemoryKv, map);
+      }
+    } catch (e) { /* kitab ki nakami khamosh */ }
   }
 
   async configureGenerationSettings(settings, isRetry = false, attemptNo = 1) {
@@ -3218,11 +3428,37 @@ class FlowAutomationEngine {
           // field saboot: options=[720p], manga 360p) to
           // ye skip NAHI hai — imaandar mismatch aur agle
           // account wala rasta bilkul waisa hi chalta hai.
-          if (!selRes.found && (!selRes.options || selRes.options.length === 0)) {
-            const st = await readResolutionState();
-            if (!st || !st.found) {
-              resolutionFieldAbsent = true;
-              this.log(settingsSkipLogLine('resolution', 'model-has-no-resolution'), 'info');
+          if (selRes.ok) {
+            // v2.48.80 (Item C): ek kamyab chunav is
+            // (account, model, resolution) ka purana
+            // proven-absent record saaf kar deta hai —
+            // panel badal sakta hai, kitab purani sachai
+            // par qaim nahi rehti.
+            this._resMemoryClearAbsent(settings.model || 'Omni Flash', genResolution);
+          }
+          if (!selRes.found) {
+            // Field panel me maujud hai ya nahi — pehle
+            // options se, woh khaali hon to reader se.
+            let fieldPresent = !!(selRes.options && selRes.options.length > 0);
+            if (!fieldPresent) {
+              const st = await readResolutionState();
+              if (!st || !st.found) {
+                resolutionFieldAbsent = true;
+                this.log(settingsSkipLogLine('resolution', 'model-has-no-resolution'), 'info');
+              } else {
+                fieldPresent = true;
+              }
+            }
+            if (!resolutionFieldAbsent && fieldPresent && selRes.dumped) {
+              // v2.48.80 (Item C): field maujud hai,
+              // manga hua option dono passes ke baad bhi
+              // nahi mila, aur panel dump ne haalat
+              // saboot ke saath darj kar di — ye
+              // (account, model, resolution) proven-
+              // absent hai; kitab me darj karo taaki agle
+              // runs me planner is account ko is
+              // resolution ke liye pehle hi chhod de.
+              this._resMemoryRecordAbsent(settings.model || 'Omni Flash', genResolution);
             }
           }
         }
@@ -13493,4 +13729,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };

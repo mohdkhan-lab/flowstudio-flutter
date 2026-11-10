@@ -5904,7 +5904,7 @@ async function main() {
       eq('X78A a delayed settle still selects successfully', r.ok, true);
       eq('X78A the winning strategy is the real mouse click', r.strategy, 'mouse');
       ok('X78A the dump line was logged before clicking', logs.some(m => m === '[ROOT] settings-options field=resolution options=[360p, 720p]'));
-      ok('X78A the mouse strategy outcome is logged as changed', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=mouse changed=true'));
+      ok('X78A the mouse strategy outcome is logged as changed', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=mouse changed=true via=exact'));
     }
     {
       // pehli strategy murda, dusri (andar wala
@@ -5914,8 +5914,8 @@ async function main() {
       const r = await eng._selectPanelOption({ field: 'resolution', kind: 'resolution', wantText: '360p', verify: async () => state === '360p' });
       eq('X78A the fallback strategy rescues a dead first click', r.ok, true);
       eq('X78A the winning strategy is the inner element', r.strategy, 'inner');
-      ok('X78A the dead first strategy is logged as unchanged', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=mouse changed=false'));
-      ok('X78A the fallback outcome is logged as changed', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=inner changed=true'));
+      ok('X78A the dead first strategy is logged as unchanged', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=mouse changed=false via=exact'));
+      ok('X78A the fallback outcome is logged as changed', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=inner changed=true via=exact'));
     }
     {
       // kabhi na badalne wala panel: dono strategies
@@ -5975,7 +5975,7 @@ async function main() {
       eng.page = mkConfigurePage(state);
       const res = await eng.configureGenerationSettings({ type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p' });
       eq('X78A a panel recovered by the fallback click configures cleanly', res, undefined);
-      ok('X78A the recovery came through the inner strategy', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=inner changed=true'));
+      ok('X78A the recovery came through the inner strategy', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=inner changed=true via=exact'));
       ok('X78A the resolution was confirmed at the needed value (v2.48.79: aakhri pill se — alag read-back line khatam)', logs.some(m => m.includes('Video · 360p · 10s')) && !logs.some(m => m.includes('Resolution confirmed on Flow')));
       ok('X78A no mismatch was recorded for the recovered panel', !logs.some(m => m.includes('[ROOT] settings-mismatch')));
     }
@@ -6141,10 +6141,64 @@ async function main() {
     ok('X79A the finder scrolls the panel before declaring an option absent', faSrc.includes('sc.scrollTop = pos') && faSrc.includes('seenOpts'));
 
     // ---------- B pins: do settings, do alag raaste ----------
+    // v2.48.80 (Item D): pin ab COMMENTS hata kar dekhta
+    // hai — .79 me ye pin step 4.5 ke ek Hinglish comment
+    // ke andar maujud lafz 'downloadMode' par phisal gaya
+    // tha, halanke asal code me woh lafz hai hi nahi
+    // (invariant sach tha, kasauti andhi thi). Stripper
+    // string/template-literal se waqif hai; us ki apni
+    // do kasautiyan neeche hain — prose gayi, code bacha.
+    const stripComments79 = (src) => {
+      let out = '';
+      let i = 0;
+      const n = src.length;
+      let mode = 'code';
+      let braceDepth = 0;
+      const tplDepths = [];
+      while (i < n) {
+        const c = src[i];
+        const d = i + 1 < n ? src[i + 1] : '';
+        if (mode === 'code') {
+          if (c === '/' && d === '/') { mode = 'line'; i += 2; continue; }
+          if (c === '/' && d === '*') { mode = 'block'; i += 2; continue; }
+          if (c === "'") { mode = 'sq'; out += c; i++; continue; }
+          if (c === '"') { mode = 'dq'; out += c; i++; continue; }
+          if (c === '`') { mode = 'tpl'; out += c; i++; continue; }
+          if (c === '{') braceDepth++;
+          if (c === '}') {
+            braceDepth--;
+            if (tplDepths.length && braceDepth === tplDepths[tplDepths.length - 1]) { tplDepths.pop(); mode = 'tpl'; }
+          }
+          out += c; i++; continue;
+        }
+        if (mode === 'line') { if (c === '\n') { mode = 'code'; out += c; } i++; continue; }
+        if (mode === 'block') { if (c === '*' && d === '/') { mode = 'code'; i += 2; continue; } if (c === '\n') out += c; i++; continue; }
+        if (mode === 'sq' || mode === 'dq') {
+          const q = mode === 'sq' ? "'" : '"';
+          out += c;
+          if (c === '\\' && i + 1 < n) { out += src[i + 1]; i += 2; continue; }
+          if (c === q) mode = 'code';
+          i++; continue;
+        }
+        // mode === 'tpl'
+        out += c;
+        if (c === '\\' && i + 1 < n) { out += src[i + 1]; i += 2; continue; }
+        if (c === '`') { mode = 'code'; i++; continue; }
+        if (c === '$' && d === '{') { out += d; tplDepths.push(braceDepth); braceDepth++; mode = 'code'; i += 2; continue; }
+        i++; continue;
+      }
+      return out;
+    };
     ok('X79B configureGenerationSettings never reads the download mode', (() => {
       const a = faSrc.indexOf('async configureGenerationSettings');
       const b = faSrc.indexOf('async submitPrompt', a);
-      return a >= 0 && b > a && !faSrc.slice(a, b).includes('downloadMode');
+      if (!(a >= 0 && b > a)) return false;
+      const codeOnly = stripComments79(faSrc.slice(a, b));
+      // stripper ki apni sabooti-kasautiyan: woh comment
+      // jis me lafz chhupa tha woh gaya, asal code bacha.
+      if (codeOnly.includes('kahin padha hi nahi jata')) return false;
+      if (!codeOnly.includes('genResolution')) return false;
+      return !codeOnly.includes('downloadMode');
     })());
     ok('X79B the only download-mode gate in the engine is the editor-harvest enhance gate', (faSrc.match(/downloadModeOf\(settings\)/g) || []).length === 1 && faSrc.includes("downloadModeOf(settings) === 'enhanced'"));
     ok('X79B the bridge maps quality and download mode from separate settings', bridgeSrc.includes("quality: dbService.getSetting('default_quality', '')") && bridgeSrc.includes("dbService.getSetting('default_download_mode', '')"));
@@ -6233,7 +6287,7 @@ async function main() {
       const state = { res: '360p', pill: 'Video · 360p · 10s crop_9_16 x1', fixTo: null };
       const { res, logs } = await runConfigure79(state, { type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p', downloadMode: 'enhanced' });
       eq('X79B (360p + Enhanced) configures cleanly', res, undefined);
-      ok('X79A an already-correct resolution is still clicked through the helper (no skip-the-click branch)', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=mouse changed=true'));
+      ok('X79A an already-correct resolution is still clicked through the helper (no skip-the-click branch)', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=mouse changed=true via=exact'));
       ok('X79B (360p + Enhanced) the panel selection targeted 360p', logs.some(m => m.includes('Selecting the Resolution: [360p]')));
       ok('X79A no separate read-back line is emitted any more', !logs.some(m => m.includes('Resolution confirmed on Flow')));
     }
@@ -6244,7 +6298,7 @@ async function main() {
       const state = { res: '720p', pill: 'Video · 720p · 10s crop_9_16 x1', fixTo: '360p' };
       const { res, logs } = await runConfigure79(state, { type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p', downloadMode: 'enhanced' });
       eq('X79B (360p + Enhanced) a stuck panel still configures to 360p', res, undefined);
-      ok('X79A the recovery came through the shared helper inner strategy', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=inner changed=true'));
+      ok('X79A the recovery came through the shared helper inner strategy', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=inner changed=true via=exact'));
       ok('X79A no mismatch was recorded for the recovered panel', !logs.some(m => m.includes('[ROOT] settings-mismatch')));
     }
     {
@@ -6351,6 +6405,327 @@ async function main() {
       eq('X79B quality alone never opens the gate (720p, mode unset)', gate({ quality: '720p' }), false);
       eq('X79B the bar value never rewrites the mode', editorEnhance.downloadModeOf({ quality: '360p', downloadMode: 'original' }), 'original');
       eq('X79B the mode never rewrites the native (generated) quality', editorEnhance.nativeQualityOf('360p'), '360p');
+    }
+  }
+
+  // ===========================================================================
+  // X80 — v2.48.80: (A) resolution finder ki TOKEN pass +
+  // reader ki pehle-token wali pehchan (FIELD SABOOT:
+  // owner screenshot 2026-11-10 — panel par 360p wale
+  // button ke saath INFO icon chipka hai, is liye us ka
+  // text '360p info' banta hai aur exact barabari use
+  // kabhi dekh hi nahi pati thi) · (B) resolution na
+  // milne par panel dump · (C) proven-absent memory
+  // (planner consultation + safety valve + kamyabi par
+  // saaf) · (D) X79B pin comments hata kar (upar X79
+  // block me).
+  // ===========================================================================
+  {
+    const {
+      resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine,
+      panelOptionTargetSource, resolutionStateSource, settingsClickLogLine
+    } = require('../engine/flowAutomation');
+    const resolutionMemory = require('../engine/resolutionMemory');
+
+    // ---------- TOK: khalis pehle-token pehchan ----------
+    eq('X80-TOK a clean 360p label is its own token', resolutionTokenOf('360p'), '360p');
+    eq('X80-TOK a clean 720p label is its own token', resolutionTokenOf('720p'), '720p');
+    eq('X80-TOK the field form (icon ligature) still reads 360p', resolutionTokenOf('360p info'), '360p');
+    eq('X80-TOK the outline-icon ligature form reads 360p', resolutionTokenOf('360p info_outline'), '360p');
+    eq('X80-TOK surrounding whitespace is normalized', resolutionTokenOf('  720p  '), '720p');
+    eq('X80-TOK a duration label is not a resolution', resolutionTokenOf('10s'), null);
+    eq('X80-TOK a count label is not a resolution', resolutionTokenOf('x1'), null);
+    eq('X80-TOK an icon BEFORE the label is not a first-token match', resolutionTokenOf('info 360p'), null);
+    eq('X80-TOK empty text has no token', resolutionTokenOf(''), null);
+    eq('X80-TOK null text has no token', resolutionTokenOf(null), null);
+
+    // ---------- FIND: finder ki token pass (jaali DOM) ----------
+    {
+      const mkEl80 = (text, opts = {}) => ({
+        innerText: text,
+        tagName: opts.tag || 'BUTTON',
+        getAttribute: (k) => (k === 'role' ? (opts.role || null) : null),
+        getClientRects: () => [1],
+        getBoundingClientRect: () => ({ x: opts.x || 0, y: opts.y || 0, width: 60, height: 24 }),
+        scrollIntoView: () => {},
+        querySelector: () => null,
+        closest: () => null,
+        parentElement: null
+      });
+      const runTarget80 = (els, kind, want, wideEls) => {
+        const pop = {
+          getClientRects: () => [1],
+          querySelectorAll: (sel) => {
+            if (sel === '*') return els;
+            if (wideEls && String(sel).includes('mat-button-toggle')) return wideEls;
+            return els;
+          }
+        };
+        const fakeDoc = { querySelectorAll: () => [pop], querySelector: () => pop };
+        return new Function('document', `return ${panelOptionTargetSource(kind, want)};`)(fakeDoc);
+      };
+      // Asal field shakal: 360p button par icon — text '360p info'.
+      const btn720 = mkEl80('720p', { x: 100 });
+      const btn360Icon = mkEl80('360p info', { x: 0 });
+      const tIcon = runTarget80([btn720, btn360Icon], 'resolution', '360p');
+      eq('X80-FIND the icon-form 360p button IS found', tIcon.found, true);
+      eq('X80-FIND it is found through the token pass', tIcon.via, 'token');
+      eq('X80-FIND the click point is the icon-form button centre', JSON.stringify(tIcon.self), JSON.stringify({ x: 30, y: 12 }));
+      ok('X80-FIND the options list names what the panel really shows', tIcon.options.includes('720p') && tIcon.options.includes('360p info'));
+      // Saaf text ho to exact pass hi kaafi — via=exact barkarar.
+      const tExact = runTarget80([mkEl80('360p', { x: 0 }), mkEl80('720p', { x: 100 })], 'resolution', '360p');
+      eq('X80-FIND a clean 360p button is still found exactly', tExact.found, true);
+      eq('X80-FIND a clean match reports via=exact', tExact.via, 'exact');
+      // Toggle-host shakal: 360p sirf mat-button-toggle par (chauda jaal).
+      const host360 = mkEl80('360p info_outline', { tag: 'MAT-BUTTON-TOGGLE', x: 0 });
+      const tHost = runTarget80([btn720], 'resolution', '360p', [host360, btn720]);
+      eq('X80-FIND a toggle-host 360p is found through the wide net', tHost.found, true);
+      eq('X80-FIND the toggle-host match reports via=token', tHost.via, 'token');
+      // Jo hai hi nahi, woh token pass ke baad bhi nahi milta.
+      const tAbsent = runTarget80([btn720, btn360Icon], 'resolution', '1080p');
+      eq('X80-FIND a truly absent option stays absent after both passes', tAbsent.found, false);
+      eq('X80-FIND an absent option reports via=null', tAbsent.via, null);
+      // Token pass SIRF resolution ke liye hai.
+      const tDur = runTarget80([mkEl80('10s', { x: 0 }), btn360Icon], 'duration', '10s');
+      eq('X80-FIND duration still resolves through the exact pass', tDur.found, true);
+      eq('X80-FIND duration never reports the token pass', tDur.via, 'exact');
+    }
+
+    // ---------- READ: state reader ki pehle-token pehchan ----------
+    {
+      const mkBtn80 = (text, attrs, className, parentClassName) => ({
+        innerText: text,
+        getAttribute: (k) => (Object.prototype.hasOwnProperty.call(attrs, k) ? attrs[k] : null),
+        className,
+        parentElement: { className: parentClassName }
+      });
+      const runReader80 = (btns) => {
+        const pop = { getClientRects: () => [1], querySelectorAll: () => btns };
+        const fakeDoc = { querySelectorAll: () => [pop], querySelector: () => pop };
+        return new Function('document', `return ${resolutionStateSource()};`)(fakeDoc);
+      };
+      const rSel = runReader80([
+        mkBtn80('360p info', { 'aria-checked': 'true' }, 'mat-button-toggle', 'group'),
+        mkBtn80('720p', {}, 'mat-button-toggle', 'group')
+      ]);
+      eq('X80-READ the reader sees the icon-form button (found)', rSel.found, true);
+      eq('X80-READ a selected icon-form button reports the clean token', rSel.selected, '360p');
+      const rOther = runReader80([
+        mkBtn80('360p info', {}, 'mat-button-toggle', 'group'),
+        mkBtn80('720p', { 'aria-checked': 'true' }, 'mat-button-toggle', 'group')
+      ]);
+      eq('X80-READ an unselected icon-form button does not fake a selection', rOther.selected, '720p');
+      const rNone = runReader80([
+        mkBtn80('360p info', {}, 'mat-button-toggle', 'group'),
+        mkBtn80('720p', {}, 'mat-button-toggle', 'group')
+      ]);
+      eq('X80-READ the icon-form button counts as a resolution button even unselected', rNone.found, true);
+      eq('X80-READ nothing marked still means selected=null', rNone.selected, null);
+    }
+
+    // ---------- CLICK: token target par asal click + via line ----------
+    {
+      eq('X80-CLICK the click line carries via=token when asked', settingsClickLogLine('resolution', 'mouse', 'true', 'token'), '[ROOT] settings-click field=resolution strategy=mouse changed=true via=token');
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { settingsSelectWaitMs: 250 });
+      eng.page = {
+        isClosed: () => false,
+        mouse: { click: async () => {} },
+        evaluate: async () => ({ found: true, via: 'token', options: ['720p', '360p info'], self: { x: 10, y: 10 }, inner: { x: 20, y: 20 }, host: null })
+      };
+      const r = await eng._selectPanelOption({ field: 'resolution', kind: 'resolution', wantText: '360p', verify: async () => true });
+      eq('X80-CLICK a token-form target selects successfully', r.ok, true);
+      eq('X80-CLICK the result carries via=token', r.via, 'token');
+      ok('X80-CLICK the click was logged with via=token', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=mouse changed=true via=token'));
+    }
+
+    // ---------- DUMP: page-side dump + line builders ----------
+    {
+      eq('X80-DUMP the texts line has the mandated shape', settingsPanelDumpTextsLine(['720p', '360p info']), '[ROOT] settings-panel-dump texts=[720p, 360p info]');
+      eq('X80-DUMP the element line has the mandated shape', settingsPanelDumpElementLine({ tag: 'button', role: '', className: 'mat-button-toggle', text: '360p info' }), '[ROOT] settings-panel-dump el=button role=- class=mat-button-toggle text=360p info');
+      const mkDumpEl = (text, opts = {}) => ({
+        innerText: text,
+        tagName: opts.tag || 'SPAN',
+        className: opts.cls || '',
+        getAttribute: (k) => (k === 'role' ? (opts.role || null) : null),
+        getClientRects: () => [1]
+      });
+      const longText = 'Generating will use some credits and this sentence is deliberately made far longer than one hundred and twenty characters for sure';
+      const els = [
+        mkDumpEl('Omni 1.1 Flash'),
+        mkDumpEl('360p info', { tag: 'BUTTON', cls: 'mat-button-toggle' }),
+        mkDumpEl('720p', { tag: 'BUTTON', cls: 'mat-button-toggle' }),
+        mkDumpEl('360p', { tag: 'SPAN' }),
+        mkDumpEl(longText)
+      ];
+      const pop = { getClientRects: () => [1], querySelectorAll: () => els };
+      const fakeDoc = { querySelectorAll: () => [pop], querySelector: () => pop };
+      const dump = new Function('document', `return ${panelDumpSource()};`)(fakeDoc);
+      ok('X80-DUMP the dump lists the icon-form text', dump.texts.includes('360p info'));
+      ok('X80-DUMP the dump lists the clean 720p text', dump.texts.includes('720p'));
+      ok('X80-DUMP over-long ancestor texts stay out of the list', !dump.texts.includes(longText));
+      eq('X80-DUMP every 360-bearing element is described once', dump.hits.length, 2);
+      ok('X80-DUMP the icon-form button is described with tag and class', dump.hits.some(h => h.tag === 'button' && h.className === 'mat-button-toggle' && h.text === '360p info'));
+    }
+
+    // ---------- MEM: proven-absent kitab (khalis) ----------
+    {
+      const mkKv = () => {
+        const store = new Map();
+        return {
+          store,
+          getSetting: (k, d) => (store.has(k) ? store.get(k) : (d == null ? '' : d)),
+          setSetting: (k, v) => { store.set(k, String(v)); }
+        };
+      };
+      eq('X80-MEM the key joins account, model and resolution', resolutionMemory.resolutionMemoryKey('Acct Seven', 'Omni Flash', '360p'), 'Acct Seven::omni flash::360p');
+      eq('X80-MEM an empty account makes no key', resolutionMemory.resolutionMemoryKey('', 'Omni Flash', '360p'), null);
+      const kv = mkKv();
+      let map = resolutionMemory.loadResolutionMemory(kv);
+      eq('X80-MEM a fresh book is empty', Object.keys(map).length, 0);
+      eq('X80-MEM recording reports success', resolutionMemory.recordResolutionAbsent(map, 'Acct Seven', 'Omni Flash', '360p', '2026-11-10T00:00:00.000Z'), true);
+      resolutionMemory.saveResolutionMemory(kv, map);
+      map = resolutionMemory.loadResolutionMemory(kv);
+      eq('X80-MEM the record survives a save/load round-trip', resolutionMemory.isResolutionKnownAbsent(map, 'Acct Seven', 'Omni Flash', '360p'), true);
+      eq('X80-MEM another resolution is not covered by the record', resolutionMemory.isResolutionKnownAbsent(map, 'Acct Seven', 'Omni Flash', '720p'), false);
+      eq('X80-MEM another account is not covered by the record', resolutionMemory.isResolutionKnownAbsent(map, 'Acct Eight', 'Omni Flash', '360p'), false);
+      eq('X80-MEM another model is not covered by the record', resolutionMemory.isResolutionKnownAbsent(map, 'Acct Seven', 'Veo 3.1', '360p'), false);
+      eq('X80-MEM clearing reports the record existed', resolutionMemory.clearResolutionAbsent(map, 'Acct Seven', 'Omni Flash', '360p'), true);
+      eq('X80-MEM a cleared record no longer counts', resolutionMemory.isResolutionKnownAbsent(map, 'Acct Seven', 'Omni Flash', '360p'), false);
+      eq('X80-MEM clearing twice is an honest no', resolutionMemory.clearResolutionAbsent(map, 'Acct Seven', 'Omni Flash', '360p'), false);
+      eq('X80-MEM junk JSON reads as an empty book', Object.keys(resolutionMemory.parseResolutionMemory('not json')).length, 0);
+      eq('X80-MEM a missing kv reads as an empty book', Object.keys(resolutionMemory.loadResolutionMemory(null)).length, 0);
+      eq('X80-MEM a missing kv refuses to save quietly', resolutionMemory.saveResolutionMemory(null, {}), false);
+      eq('X80-MEM the known-absent line has the mandated shape', resolutionMemory.settingsKnownAbsentLine('Acct Seven', '360p', 'Omni Flash'), '[ROOT] settings-known-absent account=Acct Seven resolution=360p model=Omni Flash');
+      eq('X80-MEM quality 720p maps to the 720p panel resolution', resolutionMemory.generationResolutionOf({ quality: '720p' }), '720p');
+      eq('X80-MEM quality 1080p maps to the 720p panel resolution', resolutionMemory.generationResolutionOf({ quality: '1080p' }), '720p');
+      eq('X80-MEM quality 360p maps to the 360p panel resolution', resolutionMemory.generationResolutionOf({ quality: '360p' }), '360p');
+      eq('X80-MEM no quality maps to the 360p panel resolution', resolutionMemory.generationResolutionOf({}), '360p');
+    }
+
+    // ---------- POOL: planner ki mashwara (asal WorkerPool, jaali db) ----------
+    {
+      const { WorkerPool } = require('../engine/workerPool');
+      const { dbService } = require('../engine/db');
+      const savedGetAccount = dbService.getAccount;
+      const accA = { id: 'acc-a', name: 'Acct Seven', status: 'Ready', credits: 862 };
+      const accB = { id: 'acc-b', name: 'Acct Eight', status: 'Ready', credits: 100 };
+      const byId = { 'acc-a': accA, 'acc-b': accB };
+      dbService.getAccount = (id) => byId[id] || null;
+      const logs = [];
+      const pool = new WorkerPool({ onLog: (d) => logs.push(d && d.message ? d.message : String(d)) });
+      const mkCtx = () => ({ memory: {}, model: 'Omni Flash', resolution: '360p', logged: new Set() });
+      const ctx = mkCtx();
+      resolutionMemory.recordResolutionAbsent(ctx.memory, 'Acct Seven', 'Omni Flash', '360p');
+      const picked = pool._findNextAvailableAccount([accA, accB], 7, new Map(), null, ctx);
+      eq('X80-POOL a proven-absent account is passed over for another that can serve', picked && picked.id, 'acc-b');
+      eq('X80-POOL the pass-over is logged exactly once', logs.filter(m => m === '[ROOT] settings-known-absent account=Acct Seven resolution=360p model=Omni Flash').length, 1);
+      const picked2 = pool._findNextAvailableAccount([accA, accB], 7, new Map(), null, ctx);
+      eq('X80-POOL a second pick in the same run still passes it over', picked2 && picked2.id, 'acc-b');
+      eq('X80-POOL the line is not repeated within the run', logs.filter(m => m.includes('settings-known-absent')).length, 1);
+      const ctxValve = mkCtx();
+      resolutionMemory.recordResolutionAbsent(ctxValve.memory, 'Acct Seven', 'Omni Flash', '360p');
+      const valvePick = pool._findNextAvailableAccount([accA], 7, new Map(), null, ctxValve);
+      eq('X80-POOL the safety valve still serves the only account that can serve', valvePick && valvePick.id, 'acc-a');
+      eq('X80-POOL the valve pick logs no pass-over line', ctxValve.logged.size, 0);
+      const plainPick = pool._findNextAvailableAccount([accA, accB], 7, new Map(), null);
+      eq('X80-POOL without a context the richest account still wins (old behaviour)', plainPick && plainPick.id, 'acc-a');
+      dbService.getAccount = savedGetAccount;
+    }
+
+    // ---------- RUN: configure par dump + kitab darj, aur kamyabi par saaf ----------
+    {
+      const mkKv80 = () => {
+        const store = new Map();
+        return {
+          store,
+          getSetting: (k, d) => (store.has(k) ? store.get(k) : (d == null ? '' : d)),
+          setSetting: (k, v) => { store.set(k, String(v)); }
+        };
+      };
+      const mkConfigurePage80 = (state) => ({
+        isClosed: () => false,
+        mouse: {
+          click: async (x, y) => {
+            if (state.fixOnClick && (x === 1 || x === 2)) {
+              state.res = '360p';
+              state.pill = 'Video · 360p · 10s crop_9_16 x1';
+            }
+          }
+        },
+        keyboard: { press: async () => {} },
+        evaluate: async (fn) => {
+          if (typeof fn === 'string') {
+            if (fn.includes('fsPanelDump')) return state.dumpPayload;
+            if (fn.includes('resolutionBtnSelected')) return { found: true, selected: state.res };
+            if (fn.includes('fsPanelTarget')) {
+              const m = fn.match(/const kind = "(\w+)"/);
+              const kind = m ? m[1] : '';
+              if (kind === 'resolution') return state.resTarget;
+              return { found: true, options: ['x'], self: { x: 1, y: 1 }, inner: { x: 2, y: 2 }, host: { x: 3, y: 3 } };
+            }
+            return undefined;
+          }
+          const src = fn.toString();
+          if (src.includes('agent-mode-chip')) return false;
+          if (src.includes('removeBtns')) return undefined;
+          if (src.includes('settings-trigger-button') && src.includes('found: true')) return { found: true, x: 5, y: 5, text: state.pill };
+          if (src.includes("aria === 'video'")) return { clicked: false };
+          if (src.includes('btnFrames')) return undefined;
+          if (src.includes('modelDropdown')) return 'Omni Flash';
+          if (src.includes('durBtns')) return '10s';
+          if (src.includes('settings-trigger-button')) return state.pill;
+          return undefined;
+        }
+      });
+      const settings80 = { type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p' };
+      {
+        // Field maujud, option ghayab (account (7) wali
+        // asal haalat): teeno attempts par dump ek ek
+        // baar, phir mismatch — aur kitab me darj.
+        const logs = [];
+        const kv = mkKv80();
+        const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { settingsSelectWaitMs: 120, resolutionMemoryKv: kv });
+        eng.currentAccount = { name: 'Acct Seven' };
+        const state = {
+          res: '720p',
+          pill: 'Video · 720p · 10s crop_9_16 x1',
+          fixOnClick: false,
+          resTarget: { found: false, options: ['720p'], self: null, inner: null, host: null },
+          dumpPayload: { texts: ['360p info', '720p', 'Omni 1.1 Flash'], hits: [{ tag: 'button', role: '', className: 'mat-button-toggle', text: '360p info' }] }
+        };
+        eng.page = mkConfigurePage80(state);
+        const res = await eng.configureGenerationSettings({ ...settings80 });
+        ok('X80-RUN a present field with an absent option still ends in a settings mismatch', !!(res && Array.isArray(res.settingsMismatch)));
+        eq('X80-RUN the panel dump texts line fired once per attempt (3 attempts)', logs.filter(m => m.startsWith('[ROOT] settings-panel-dump texts=')).length, 3);
+        eq('X80-RUN the 360-bearing element line fired once per attempt', logs.filter(m => m === '[ROOT] settings-panel-dump el=button role=- class=mat-button-toggle text=360p info').length, 3);
+        const book = resolutionMemory.loadResolutionMemory(kv);
+        eq('X80-RUN the proven absence was written to the book', resolutionMemory.isResolutionKnownAbsent(book, 'Acct Seven', 'Omni Flash', '360p'), true);
+      }
+      {
+        // Kamyab chunav (token shakal wala target, click
+        // se panel badal jata hai): purana record saaf.
+        const logs = [];
+        const kv = mkKv80();
+        const seed = {};
+        resolutionMemory.recordResolutionAbsent(seed, 'Acct Seven', 'Omni Flash', '360p');
+        resolutionMemory.saveResolutionMemory(kv, seed);
+        const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { settingsSelectWaitMs: 400, resolutionMemoryKv: kv });
+        eng.currentAccount = { name: 'Acct Seven' };
+        const state = {
+          res: '720p',
+          pill: 'Video · 720p · 10s crop_9_16 x1',
+          fixOnClick: true,
+          resTarget: { found: true, via: 'token', options: ['720p', '360p info'], self: { x: 1, y: 1 }, inner: { x: 2, y: 2 }, host: null },
+          dumpPayload: { texts: [], hits: [] }
+        };
+        eng.page = mkConfigurePage80(state);
+        const res = await eng.configureGenerationSettings({ ...settings80 });
+        eq('X80-RUN a token-form selection configures cleanly', res, undefined);
+        ok('X80-RUN the token click was logged with via=token', logs.some(m => m.includes('settings-click field=resolution') && m.includes('via=token')));
+        const book = resolutionMemory.loadResolutionMemory(kv);
+        eq('X80-RUN a successful selection cleared the book record', resolutionMemory.isResolutionKnownAbsent(book, 'Acct Seven', 'Omni Flash', '360p'), false);
+      }
     }
   }
 

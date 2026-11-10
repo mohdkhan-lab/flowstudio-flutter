@@ -19,6 +19,7 @@ const crypto = require('crypto');
 const sequenceReport = require('./sequenceReport');
 const { duplicateQueueEntryLogLine } = require('./queueDedupe');
 const browserMode = require('./browserMode');
+const resolutionMemory = require('./resolutionMemory');
 const windowStyle = require('./windowStyle');
 const { sleepBlocker } = require('./sleepBlocker');
 
@@ -435,7 +436,7 @@ class WorkerPool {
     };
   }
 
-  _findNextAvailableAccount(pool, requiredCredits, unusableAccounts, afterAccountId) {
+  _findNextAvailableAccount(pool, requiredCredits, unusableAccounts, afterAccountId, resCtx) {
     // Eligibility (v2.48.10: factored out, rules unchanged) — the
     // account's live row, or null when this run may not use it.
     const eligible = (candidate) => {
@@ -463,6 +464,41 @@ class WorkerPool {
       if (requiredCredits > 0 && (credits === null || credits < requiredCredits)) return null;
       return live;
     };
+    // v2.48.80 (Item C — PROVEN-ABSENT MEMORY): resCtx diya
+    // gaya ho (sirf generation run deta hai) to har kabil
+    // account ke saath ye bhi dekha jata hai ke us ke
+    // liye (model, resolution) kitab me proven-absent
+    // darj hai ya nahi. Aisa account kisi doosre kabil
+    // account ke hote hue CHUNA NAHI jata — settings ki
+    // teen bekaar koshishen aur ek imaandar mismatch ka
+    // chakkar har run me dobara nahi lagta. Jin accounts
+    // ko is wajah se chhoda gaya, un ke liye har run me
+    // ek baar [ROOT] settings-known-absent line darj
+    // hoti hai. SAFETY VALVE: koi doosra account serve
+    // hi na kar sake to proven-absent account hi chuna
+    // jata hai — use ek asal koshish phir bhi milti hai
+    // (panel badal sakta hai; kamyabi par engine us ka
+    // record saaf kar deta hai). resCtx na ho (recovery
+    // wale bulane wale / purane test) to bartav bilkul
+    // pehle jaisa.
+    const evaluate = (candidate) => {
+      const live = eligible(candidate);
+      if (!live) return null;
+      const knownAbsent = !!(resCtx && resolutionMemory.isResolutionKnownAbsent(resCtx.memory, live.name, resCtx.model, resCtx.resolution));
+      return { live, knownAbsent };
+    };
+    const finish = (picked, evaluated) => {
+      if (!picked) return null;
+      if (resCtx) {
+        for (const ev of evaluated) {
+          if (!ev.knownAbsent || ev.live.id === picked.live.id) continue;
+          if (resCtx.logged.has(ev.live.id)) continue;
+          resCtx.logged.add(ev.live.id);
+          try { this.log(resolutionMemory.settingsKnownAbsentLine(ev.live.name, resCtx.resolution, resCtx.model), 'info'); } catch (e) {}
+        }
+      }
+      return picked.live;
+    };
     // v2.48.10: a FRESH binding (no previous account — a worker's
     // first pick of a run) takes the eligible account with the
     // MOST credits, so the run starts on the account most likely
@@ -472,13 +508,23 @@ class WorkerPool {
     // land back on it just because it is rich.
     if (!afterAccountId) {
       let best = null;
+      let bestKnown = null;
+      const evaluated = [];
       for (const candidate of pool) {
-        const live = eligible(candidate);
-        if (!live) continue;
-        const c = (typeof live.credits === 'number') ? live.credits : 0;
-        if (!best || c > best.credits) best = { live, credits: c };
+        const ev = evaluate(candidate);
+        if (!ev) continue;
+        evaluated.push(ev);
+        const c = (typeof ev.live.credits === 'number') ? ev.live.credits : 0;
+        if (ev.knownAbsent) {
+          if (!bestKnown || c > bestKnown.credits) bestKnown = { live: ev.live, credits: c };
+        } else if (!best || c > best.credits) {
+          best = { live: ev.live, credits: c };
+        }
       }
-      if (best) return best.live;
+      if (best) return finish(best, evaluated);
+      // Safety valve: sirf proven-absent hi bacha hai —
+      // wahi milega, asal koshish ke saath.
+      if (bestKnown) return finish(bestKnown, evaluated);
     }
     // v2.0.0: ROUND-ROBIN scan — the search starts just AFTER the
     // account this worker was last bound to (wrapping around). Before
@@ -494,10 +540,18 @@ class WorkerPool {
       const idx = pool.findIndex(a => a.id === afterAccountId);
       if (idx >= 0) start = idx + 1;
     }
+    let firstKnown = null;
+    const evaluatedRr = [];
     for (let k = 0; k < pool.length; k++) {
-      const live = eligible(pool[(start + k) % pool.length]);
-      if (live) return live;
+      const ev = evaluate(pool[(start + k) % pool.length]);
+      if (!ev) continue;
+      if (!ev.knownAbsent) return finish(ev, evaluatedRr);
+      evaluatedRr.push(ev);
+      if (!firstKnown) firstKnown = ev;
     }
+    // Safety valve (round-robin): sirf proven-absent hi
+    // bacha hai — pehla wala milega, asal koshish ke saath.
+    if (firstKnown) return finish(firstKnown, evaluatedRr);
     return null;
   }
 
@@ -1816,6 +1870,20 @@ class WorkerPool {
       const unusableAccounts = new Map(); // accountId -> reason
       let lastStartError = null;
 
+      // v2.48.80 (Item C): proven-absent kitab is run ke
+      // liye ek baar load hoti hai — sirf video runs par
+      // (resolution sirf video settings me hoti hai).
+      // logged set har account ki settings-known-absent
+      // line ko run me ek baar tak mehdood rakhta hai.
+      const resCtx = (settings && (settings.type || 'Video') === 'Video')
+        ? {
+            memory: resolutionMemory.loadResolutionMemory(dbService),
+            model: settings.model || 'Omni Flash',
+            resolution: resolutionMemory.generationResolutionOf(settings),
+            logged: new Set()
+          }
+        : null;
+
       const runWorker = async (workerIndex) => {
         const workerId = `worker_${workerIndex + 1}`;
         // WORKER-SCOPE task reference (audit fix #1): the error handler
@@ -2056,7 +2124,11 @@ class WorkerPool {
           // v2.31.3: persisted download-attempt ledger (3-round cap).
           downloadPort: this._downloadPort(),
           // v2.48.60: project entries register in the registry.
-          projectPort: this._projectPort()
+          projectPort: this._projectPort(),
+          // v2.48.80 (Item C): proven-absent kitab ka kv —
+          // engine apne kamyab/naakam chunav wahan darj
+          // karta hai (record sirf panel-dump saboot par).
+          resolutionMemoryKv: dbService
         });
 
         this.activeWorkers.set(workerId, engine);
@@ -2074,7 +2146,7 @@ class WorkerPool {
             // ---- Ensure this worker has a usable account + open studio ----
             if (!workerAccount || !engine.browser || !engine.page || engine.page.isClosed()) {
               if (!workerAccount) {
-                workerAccount = this._findNextAvailableAccount(pool, requiredCredits, unusableAccounts, lastBoundAccountId);
+                workerAccount = this._findNextAvailableAccount(pool, requiredCredits, unusableAccounts, lastBoundAccountId, resCtx);
                 if (!workerAccount) {
                   if (activeWorkerTasks.length === 0) {
                     if (taskQueue.size() > 0 && !lastStartError) {

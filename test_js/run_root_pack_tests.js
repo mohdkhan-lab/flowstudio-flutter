@@ -5976,7 +5976,7 @@ async function main() {
       const res = await eng.configureGenerationSettings({ type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p' });
       eq('X78A a panel recovered by the fallback click configures cleanly', res, undefined);
       ok('X78A the recovery came through the inner strategy', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=inner changed=true'));
-      ok('X78A the resolution was confirmed at the needed value', logs.some(m => m.includes('Resolution confirmed on Flow: [360p]')));
+      ok('X78A the resolution was confirmed at the needed value (v2.48.79: aakhri pill se — alag read-back line khatam)', logs.some(m => m.includes('Video · 360p · 10s')) && !logs.some(m => m.includes('Resolution confirmed on Flow')));
       ok('X78A no mismatch was recorded for the recovered panel', !logs.some(m => m.includes('[ROOT] settings-mismatch')));
     }
     {
@@ -6086,6 +6086,272 @@ async function main() {
     ok('X78B createBatchTasks runs the dedupe', read('engine/db.js').includes('dedupeBatchEntries(normalizedItems)'));
     ok('X78B the pool logs every dropped entry as a [ROOT] line', read('engine/workerPool.js').includes('duplicateQueueEntryLogLine(droppedTag)'));
     ok('X78B the redo route logs drops from recreated items', read('engine_bridge.js').includes('created.droppedDuplicates'));
+  }
+
+  // ---------------------------------------------------------------------------
+  // v2.48.79 — OWNER DESIGN: RESOLUTION ≠ DOWNLOAD QUALITY
+  //   A. Resolution bhi ab BILKUL doosre dropdowns jaisa.
+  //      .78 ke field log (2026-11-10 12:38) me duration/
+  //      count _selectPanelOption se gaye, lekin resolution
+  //      ne apne options dump ke baad koi settings-click
+  //      line hi nahi di — wo ab bhi apne purane alag raste
+  //      par tha: pehle state padho, click sirf tab jab
+  //      selected mukhtalif ho, warna step skip; phir apni
+  //      'Resolution confirmed on Flow' read-back aur pill
+  //      fallback. Ab: bina-shart wahi helper, koi shortcut
+  //      nahi, koi alag read-back nahi — tasdeeq helper ki
+  //      lines + aakhri pill gate se. Finder panel ke apne
+  //      scrollable hisse ko scroll karke bhi dhoondhta hai
+  //      (below-the-fold options bhi dump me aate hain).
+  //   B. SEPARATION LOCK — bar resolution (settings.
+  //      quality) SIRF generation ke liye; DOWNLOAD MODE
+  //      (settings.downloadMode) SIRF download step ke
+  //      liye. Matrix: (360p + Enhanced) → panel 360p par,
+  //      download enhance; (720p + Original) → panel 720p
+  //      par, download original. Ek ka dusre par koi asar
+  //      nahi — audit + regression yahi pakadte hain.
+  //   C. MODEL APPLICABILITY (owner 2026-11-10 12:53) —
+  //      resolution ka khet panel me sirf Omni Flash aur
+  //      naye models par hai; Veo 3.1 jaise purane models
+  //      par hota hi nahi. Khet ghayab ho (panel ki apni
+  //      gawahi: options=[] aur state reader ko bhi koi
+  //      button na mile) to step SAAF SKIP:
+  //      [ROOT] settings-skip field=resolution
+  //      reason=model-has-no-resolution — koi click nahi,
+  //      koi repair nahi, koi mismatch nahi; run us model
+  //      ki apni default par banta hai. Khet maujud lekin
+  //      option ghayab (options=[720p], manga 360p) skip
+  //      NAHI hai — imaandar mismatch hi chalta hai.
+  // ---------------------------------------------------------------------------
+  {
+    const fs = require('fs');
+    const path = require('path');
+    const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+    const faSrc = read('engine/flowAutomation.js');
+    const bridgeSrc = read('engine_bridge.js');
+    const { panelOptionTargetSource, settingsSkipLogLine } = require('../engine/flowAutomation');
+    const editorEnhance = require('../engine/editorEnhance');
+
+    // ---------- A1: source pins — purana alag rasta khatam ----------
+    ok('X79A the legacy separate read-back line is gone from the engine', !faSrc.includes('Resolution confirmed on Flow'));
+    ok('X79A the buttons-not-found skip branch is gone', !faSrc.includes('buttons were not found on Flow'));
+    ok('X79A the could-not-be-confirmed fallback line is gone', !faSrc.includes('could not be confirmed after selecting'));
+    ok('X79A the state-gated conditional click is gone', !faSrc.includes('resState.selected !== genResolution') && !faSrc.includes('let resState'));
+    ok('X79A resolution is selected through the shared helper', faSrc.includes("field: 'resolution',") && faSrc.includes("kind: 'resolution',"));
+    ok('X79A the finder scrolls the panel before declaring an option absent', faSrc.includes('sc.scrollTop = pos') && faSrc.includes('seenOpts'));
+
+    // ---------- B pins: do settings, do alag raaste ----------
+    ok('X79B configureGenerationSettings never reads the download mode', (() => {
+      const a = faSrc.indexOf('async configureGenerationSettings');
+      const b = faSrc.indexOf('async submitPrompt', a);
+      return a >= 0 && b > a && !faSrc.slice(a, b).includes('downloadMode');
+    })());
+    ok('X79B the only download-mode gate in the engine is the editor-harvest enhance gate', (faSrc.match(/downloadModeOf\(settings\)/g) || []).length === 1 && faSrc.includes("downloadModeOf(settings) === 'enhanced'"));
+    ok('X79B the bridge maps quality and download mode from separate settings', bridgeSrc.includes("quality: dbService.getSetting('default_quality', '')") && bridgeSrc.includes("dbService.getSetting('default_download_mode', '')"));
+
+    // ---------- A2: finder ka scroll-scan (jaali DOM) ----------
+    {
+      // Panel ka scrollable hissa: 360p wala button fold ke
+      // neeche chipa hai — container ka scrollTop 300 se
+      // pehle us ke rects hi nahi aate (clip hue jaisa).
+      const container = { scrollHeight: 500, clientHeight: 100, scrollTop: 0 };
+      const mkBtn = (text, x, clippedUntil) => ({
+        innerText: text,
+        getClientRects: () => (container.scrollTop >= clippedUntil ? [1] : []),
+        getBoundingClientRect: () => ({ x, y: 0, width: 40, height: 20 }),
+        scrollIntoView: () => {},
+        querySelector: () => null,
+        closest: () => null,
+        parentElement: null
+      });
+      const btn720 = mkBtn('720p', 50, 0);
+      const btn360 = mkBtn('360p', 0, 300);
+      const pop = {
+        getClientRects: () => [1],
+        querySelectorAll: (sel) => (sel === '*' ? [container, btn720, btn360] : [btn720, btn360]),
+        querySelector: () => null
+      };
+      const fakeDoc = { querySelectorAll: () => [pop], querySelector: () => pop };
+      const runTarget = (kind, want) => new Function('document', `return ${panelOptionTargetSource(kind, want)};`)(fakeDoc);
+      container.scrollTop = 0;
+      const tScan = runTarget('resolution', '360p');
+      eq('X79A a below-the-fold resolution option is found after the panel scroll-scan', tScan.found, true);
+      eq('X79A the dump lists everything the finder saw across the scan', JSON.stringify(tScan.options), JSON.stringify(['720p', '360p']));
+      container.scrollTop = 0;
+      const tAbsent = runTarget('resolution', '1080p');
+      eq('X79A an option absent even after the full scan is honestly not found', tAbsent.found, false);
+      eq('X79A the absent verdict still lists the whole scanned panel', JSON.stringify(tAbsent.options), JSON.stringify(['720p', '360p']));
+      eq('X79A the panel scroll is restored after a failed scan', container.scrollTop, 0);
+    }
+
+    // ---------- A3 + B: poora configure (scripted fake page) ----------
+    const mkConfigurePage79 = (state) => ({
+      isClosed: () => false,
+      mouse: {
+        click: async (x, y) => {
+          // is nakli panel me SIRF andar wale element (2,2)
+          // par click haalat badalta hai — asal field wala
+          // pattern; badlav state.fixTo ki taraf hota hai.
+          if (state.fixTo && x === 2 && y === 2) {
+            state.res = state.fixTo;
+            state.pill = `Video · ${state.fixTo} · 10s crop_9_16 x1`;
+          }
+        }
+      },
+      keyboard: { press: async () => {} },
+      evaluate: async (fn) => {
+        if (typeof fn === 'string') {
+          if (fn.includes('resolutionBtnSelected')) return { found: true, selected: state.res };
+          if (fn.includes('fsPanelTarget')) return { found: true, options: ['360p', '720p'], self: { x: 1, y: 1 }, inner: { x: 2, y: 2 }, host: { x: 3, y: 3 } };
+          return undefined;
+        }
+        const src = fn.toString();
+        if (src.includes('agent-mode-chip')) return false;
+        if (src.includes('removeBtns')) return undefined;
+        if (src.includes('settings-trigger-button') && src.includes('found: true')) return { found: true, x: 5, y: 5, text: state.pill };
+        if (src.includes("aria === 'video'")) return { clicked: false };
+        if (src.includes('btnFrames')) return undefined;
+        if (src.includes('modelDropdown')) return 'Omni Flash';
+        if (src.includes('durBtns')) return '10s';
+        if (src.includes('settings-trigger-button')) return state.pill;
+        return undefined;
+      }
+    });
+    const runConfigure79 = async (state, settings, waitMs) => {
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { settingsSelectWaitMs: waitMs || 300 });
+      eng.page = mkConfigurePage79(state);
+      const res = await eng.configureGenerationSettings(settings);
+      return { res, logs };
+    };
+    {
+      // (B matrix, pehla hissa) bar=360p + mode=Enhanced:
+      // panel pehle se 360p par hai — purana code click hi
+      // nahi karta tha (koi settings-click line nahi aati
+      // thi). Ab bina-shart helper chalta hai aur mode ke
+      // enhanced hone ke bawajood panel target 360p hi hai.
+      const state = { res: '360p', pill: 'Video · 360p · 10s crop_9_16 x1', fixTo: null };
+      const { res, logs } = await runConfigure79(state, { type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p', downloadMode: 'enhanced' });
+      eq('X79B (360p + Enhanced) configures cleanly', res, undefined);
+      ok('X79A an already-correct resolution is still clicked through the helper (no skip-the-click branch)', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=mouse changed=true'));
+      ok('X79B (360p + Enhanced) the panel selection targeted 360p', logs.some(m => m.includes('Selecting the Resolution: [360p]')));
+      ok('X79A no separate read-back line is emitted any more', !logs.some(m => m.includes('Resolution confirmed on Flow')));
+    }
+    {
+      // bar=360p + mode=Enhanced, panel 720p par atka —
+      // andar wale click se theek hota hai; download mode
+      // generation ko zara bhi nahi rokta.
+      const state = { res: '720p', pill: 'Video · 720p · 10s crop_9_16 x1', fixTo: '360p' };
+      const { res, logs } = await runConfigure79(state, { type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p', downloadMode: 'enhanced' });
+      eq('X79B (360p + Enhanced) a stuck panel still configures to 360p', res, undefined);
+      ok('X79A the recovery came through the shared helper inner strategy', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=inner changed=true'));
+      ok('X79A no mismatch was recorded for the recovered panel', !logs.some(m => m.includes('[ROOT] settings-mismatch')));
+    }
+    {
+      // (B matrix, dusra hissa) bar=720p + mode=Original:
+      // panel 360p par hai — bar resolution use 720p par
+      // le jata hai; mode ke original hone se generation
+      // par koi farq nahi padta.
+      const state = { res: '360p', pill: 'Video · 360p · 10s crop_9_16 x1', fixTo: '720p' };
+      const { res, logs } = await runConfigure79(state, { type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '720p', downloadMode: 'original' });
+      eq('X79B (720p + Original) configures cleanly', res, undefined);
+      ok('X79B (720p + Original) the panel selection targeted 720p', logs.some(m => m.includes('Selecting the Resolution: [720p]')));
+      ok('X79B (720p + Original) the pill ended at 720p', logs.some(m => m.includes('Video · 720p · 10s')));
+    }
+    {
+      // Kabhi na badalne wala panel — theek 3 attempts,
+      // har attempt par resolution ka options dump, phir
+      // imaandar mismatch (koi submit nahi).
+      const state = { res: '720p', pill: 'Video · 720p · 10s crop_9_16 x1', fixTo: null };
+      const { res, logs } = await runConfigure79(state, { type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p', downloadMode: 'enhanced' }, 150);
+      ok('X79A a never-changing panel ends in a settings mismatch', !!(res && Array.isArray(res.settingsMismatch)));
+      eq('X79A the mismatch names only the resolution', JSON.stringify(res && res.settingsMismatch), JSON.stringify(['resolution']));
+      eq('X79A the options were dumped once per attempt (3 attempts)', logs.filter(m => m.includes('[ROOT] settings-options field=resolution')).length, 3);
+      ok('X79A every attempt went through the helper (click lines on all attempts)', logs.filter(m => m.includes('[ROOT] settings-click field=resolution')).length >= 3);
+      ok('X79A no separate read-back line on the failing path either', !logs.some(m => m.includes('Resolution confirmed on Flow')));
+    }
+
+    // ---------- C: model applicability — khet ghayab vs option ghayab ----------
+    eq('X79C the skip line has the mandated shape', settingsSkipLogLine('resolution', 'model-has-no-resolution'), '[ROOT] settings-skip field=resolution reason=model-has-no-resolution');
+    ok('X79C the engine logs the skip through the pure helper', faSrc.includes("settingsSkipLogLine('resolution', 'model-has-no-resolution')"));
+    const mkConfigurePage79C = (state) => ({
+      isClosed: () => false,
+      mouse: { click: async () => {} },
+      keyboard: { press: async () => {} },
+      evaluate: async (fn) => {
+        if (typeof fn === 'string') {
+          if (fn.includes('resolutionBtnSelected')) {
+            return state.resField === 'absent' ? { found: false, selected: null } : { found: true, selected: state.res };
+          }
+          if (fn.includes('fsPanelTarget')) {
+            const km = fn.match(/const kind = "(\w+)"/);
+            const kind = km ? km[1] : '';
+            if (kind === 'resolution') {
+              if (state.resField === 'absent') return { found: false, options: [], self: null, inner: null, host: null };
+              if (state.resField === '720only') return { found: false, options: ['720p'], self: null, inner: null, host: null };
+            }
+            return { found: true, options: ['360p', '720p'], self: { x: 1, y: 1 }, inner: { x: 2, y: 2 }, host: { x: 3, y: 3 } };
+          }
+          return undefined;
+        }
+        const src = fn.toString();
+        if (src.includes('agent-mode-chip')) return false;
+        if (src.includes('removeBtns')) return undefined;
+        if (src.includes('settings-trigger-button') && src.includes('found: true')) return { found: true, x: 5, y: 5, text: state.pill };
+        if (src.includes("aria === 'video'")) return { clicked: false };
+        if (src.includes('btnFrames')) return undefined;
+        if (src.includes('modelDropdown')) return 'Omni Flash';
+        if (src.includes('durBtns')) return '10s';
+        if (src.includes('settings-trigger-button')) return state.pill;
+        return undefined;
+      }
+    });
+    const runConfigure79C = async (state, settings, waitMs) => {
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { settingsSelectWaitMs: waitMs || 300 });
+      eng.page = mkConfigurePage79C(state);
+      const res = await eng.configureGenerationSettings(settings);
+      return { res, logs };
+    };
+    {
+      // Veo-style model: panel me resolution ka khet hi
+      // nahi (pill me bhi koi resolution token nahi) —
+      // step saaf skip, run saaf configure, video us
+      // model ki apni default par banne ke liye aage.
+      const state = { resField: 'absent', res: null, pill: 'Video · 10s crop_9_16 x1' };
+      const { res, logs } = await runConfigure79C(state, { type: 'Video', videoMode: 'Text', model: 'Veo 3.1 Fast', duration: '10s', aspectRatio: '9:16', quality: '360p', downloadMode: 'original' });
+      eq('X79C a model with no resolution field configures cleanly (run proceeds)', res, undefined);
+      eq('X79C the skip line is logged exactly once (no repair loop)', logs.filter(m => m === '[ROOT] settings-skip field=resolution reason=model-has-no-resolution').length, 1);
+      ok('X79C the survey showed the empty resolution group', logs.some(m => m === '[ROOT] settings-options field=resolution options=[]'));
+      ok('X79C no resolution click was attempted', !logs.some(m => m.includes('[ROOT] settings-click field=resolution')));
+      ok('X79C no mismatch and no repair for the absent field', !logs.some(m => m.includes('[ROOT] settings-mismatch')) && !logs.some(m => m.includes('[ROOT] settings-repair')));
+    }
+    {
+      // Omni-style panel: khet MAUJUD hai lekin manga
+      // hua option ghayab (options=[720p], manga 360p) —
+      // ye skip NAHI hai: imaandar mismatch ka rasta
+      // bilkul waisa hi (3 attempts, phir mismatch).
+      const state = { resField: '720only', res: '720p', pill: 'Video · 720p · 10s crop_9_16 x1' };
+      const { res, logs } = await runConfigure79C(state, { type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p', downloadMode: 'original' }, 150);
+      ok('X79C a present field with an absent option still ends in a settings mismatch', !!(res && Array.isArray(res.settingsMismatch)));
+      eq('X79C the mismatch names only the resolution', JSON.stringify(res && res.settingsMismatch), JSON.stringify(['resolution']));
+      ok('X79C no skip line on the present-field path', !logs.some(m => m.includes('[ROOT] settings-skip')));
+      eq('X79C the present options were dumped once per attempt (3 attempts)', logs.filter(m => m === '[ROOT] settings-options field=resolution options=[720p]').length, 3);
+    }
+
+    // ---------- B: download faisla matrix (khalis helpers) ----------
+    {
+      const gate = (settings) => editorEnhance.downloadModeOf(settings) === 'enhanced';
+      const target = (settings) => editorEnhance.enhanceTargetFor(editorEnhance.nativeQualityOf(settings.quality));
+      eq('X79B (360p + Enhanced): the download gate is ON', gate({ quality: '360p', downloadMode: 'enhanced' }), true);
+      eq('X79B (360p + Enhanced): the enhance target is one step up from the generated 360p', target({ quality: '360p', downloadMode: 'enhanced' }), '720p');
+      eq('X79B (720p + Original): the download gate is OFF — the original file is saved', gate({ quality: '720p', downloadMode: 'original' }), false);
+      eq('X79B (720p + Enhanced): the gate is ON and the target is one step up from 720p', gate({ quality: '720p', downloadMode: 'enhanced' }) && target({ quality: '720p', downloadMode: 'enhanced' }), '1080p');
+      eq('X79B quality alone never opens the gate (360p, mode unset)', gate({ quality: '360p' }), false);
+      eq('X79B quality alone never opens the gate (720p, mode unset)', gate({ quality: '720p' }), false);
+      eq('X79B the bar value never rewrites the mode', editorEnhance.downloadModeOf({ quality: '360p', downloadMode: 'original' }), 'original');
+      eq('X79B the mode never rewrites the native (generated) quality', editorEnhance.nativeQualityOf('360p'), '360p');
+    }
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

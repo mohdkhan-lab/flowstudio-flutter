@@ -592,6 +592,18 @@ function settingsClickLogLine(field, strategy, changed) {
 }
 
 /**
+ * v2.48.79 (Item C — MODEL APPLICABILITY): jis model ke
+ * panel me koi field hota hi nahi (masalan Veo 3.1
+ * family par resolution), us field ke step ke saaf
+ * skip ki [ROOT] line — koi click nahi, koi mismatch
+ * nahi, run us model ki apni default par aage badhta
+ * hai.
+ */
+function settingsSkipLogLine(field, reason) {
+  return `[ROOT] settings-skip field=${field} reason=${reason}`;
+}
+
+/**
  * v2.48.78 (Item A): panel ke ek field-group ka
  * TARGET option dhoondhne wala page-side source —
  * resolutionStateSource wali hi shakal (khalis
@@ -608,6 +620,15 @@ function settingsClickLogLine(field, strategy, changed) {
  * toggle / role wala parent) ka markaz, jab wo
  * element se alag ho. Marker 'fsPanelTarget' test
  * routing ke liye hai.
+ * v2.48.79 (Item A): target pehli pass me na mile to
+ * finder panel ke apne scrollable hisse ko seedhi
+ * seedhi scroll karke har position par dobara
+ * dhoondhta hai — neeche taait (below the fold) hue
+ * options bhi milte hain aur options wali fehrist
+ * (dump) me saare dekhe hue options jama hote hain.
+ * 'Option nahi hai' ka faisla sirf poore scan ke
+ * baad hota hai; scan ke baad bhi na mile to scroll
+ * apni asal jagah par wapas.
  */
 function panelOptionTargetSource(kind, wantText) {
   const kindJson = JSON.stringify(String(kind || ''));
@@ -629,15 +650,45 @@ function panelOptionTargetSource(kind, wantText) {
     + '    if (kind === \'aspect\') return low.includes(\':\') || /^\\d+_\\d+$/.test(low);\n'
     + '    return false;\n'
     + '  };\n'
-    + '  const btns = Array.from(pop.querySelectorAll(\'button, [role="radio"], [role="tab"]\')).filter(visible);\n'
-    + '  const group = btns.filter(b => inGroup(textOf(b)));\n'
-    + '  const options = group.map(textOf);\n'
     + '  const matches = (t) => {\n'
     + '    const low = t.toLowerCase();\n'
     + '    if (kind === \'aspect\') return low === want || low === want.replace(\':\', \'_\') || low.includes(want);\n'
     + '    return low === want;\n'
     + '  };\n'
-    + '  const target = group.find(b => matches(textOf(b)));\n'
+    + '  const collect = () => Array.from(pop.querySelectorAll(\'button, [role="radio"], [role="tab"]\')).filter(visible).filter(b => inGroup(textOf(b)));\n'
+    + '  let group = collect();\n'
+    + '  const options = group.map(textOf);\n'
+    + '  let target = group.find(b => matches(textOf(b)));\n'
+    + '  if (!target) {\n'
+    + '    const seenOpts = new Set(options);\n'
+    + '    let scrollers = [];\n'
+    + '    try {\n'
+    + '      const all = [pop];\n'
+    + '      try { for (const el of Array.from(pop.querySelectorAll(\'*\'))) all.push(el); } catch (e) {}\n'
+    + '      for (const el of all) {\n'
+    + '        try { if (el && (el.clientHeight || 0) > 0 && (el.scrollHeight || 0) > (el.clientHeight || 0) + 2) scrollers.push(el); } catch (e) {}\n'
+    + '      }\n'
+    + '    } catch (e) {}\n'
+    + '    scrollers = scrollers.slice(0, 3);\n'
+    + '    for (const sc of scrollers) {\n'
+    + '      if (target) break;\n'
+    + '      let origTop = 0;\n'
+    + '      try { origTop = sc.scrollTop || 0; } catch (e) {}\n'
+    + '      const stepPx = Math.max(40, sc.clientHeight || 100);\n'
+    + '      const maxTop = Math.max(0, (sc.scrollHeight || 0) - (sc.clientHeight || 0));\n'
+    + '      const positions = [];\n'
+    + '      for (let p = 0; p < maxTop; p += stepPx) positions.push(p);\n'
+    + '      positions.push(maxTop);\n'
+    + '      for (const pos of positions.slice(0, 12)) {\n'
+    + '        try { sc.scrollTop = pos; } catch (e) { break; }\n'
+    + '        const g2 = collect();\n'
+    + '        for (const b of g2) { const t = textOf(b); if (!seenOpts.has(t)) { seenOpts.add(t); options.push(t); } }\n'
+    + '        target = g2.find(b => matches(textOf(b)));\n'
+    + '        if (target) { group = g2; break; }\n'
+    + '      }\n'
+    + '      if (!target) { try { sc.scrollTop = origTop; } catch (e) {} }\n'
+    + '    }\n'
+    + '  }\n'
     + '  if (!target) return { found: false, options, self: null, inner: null, host: null };\n'
     + '  try { target.scrollIntoView({ block: \'center\', inline: \'center\' }); } catch (e) {}\n'
     + '  const centre = (el) => { try { const r = el.getBoundingClientRect(); if (!r || (r.width === 0 && r.height === 0)) return null; return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; } catch (e) { return null; } };\n'
@@ -2847,7 +2898,11 @@ class FlowAutomationEngine {
     const target = await this._panelOptionTarget(kind, wantText);
     this.log(settingsOptionsDumpLine(field, target.options), 'info');
     if (!target.found || !target.self) {
-      return { ok: false, found: false, strategy: null };
+      // v2.48.79 (Item C): options bhi lautta hai — bulane
+      // wala inse pehchan sakta hai ke field panel me tha
+      // hi nahi (options khaali) ya sirf manga hua option
+      // ghayab tha (options me kuch aur maujud).
+      return { ok: false, found: false, strategy: null, options: target.options };
     }
     const clickAt = async (pt) => {
       if (!pt || !this.page || !this.page.mouse || typeof this.page.mouse.click !== 'function') return false;
@@ -2870,10 +2925,10 @@ class FlowAutomationEngine {
       }
       this.log(settingsClickLogLine(field, strat.name, changed === null ? 'unchecked' : String(changed)), 'info');
       if (changed !== false) {
-        return { ok: true, found: true, strategy: strat.name };
+        return { ok: true, found: true, strategy: strat.name, options: target.options };
       }
     }
-    return { ok: false, found: true, strategy: lastStrategy };
+    return { ok: false, found: true, strategy: lastStrategy, options: target.options };
   }
 
   async configureGenerationSettings(settings, isRetry = false, attemptNo = 1) {
@@ -3094,9 +3149,34 @@ class FlowAutomationEngine {
         // getRequiredCredits). This step never ran before, so a
         // panel left on 720p silently generated (and charged)
         // 720p while the app's Quality setting said 360p.
-        // Best-effort, like every panel step: if the buttons are
-        // not found (Flow panel variants exist), log a warning
-        // and continue — never fail a run over this.
+        // v2.48.79 (Item A — OWNER DESIGN: generation resolution
+        // ≠ download quality): resolution bhi ab BILKUL doosre
+        // dropdowns ki tarah chuna jata hai — wahi
+        // _selectPanelOption, wahi finder (panel scroll-scan ke
+        // saath), wahi asal mouse click, wahi state-badal poll,
+        // wahi [ROOT] settings-options / settings-click lines.
+        // .78 tak is step ka apna alag rasta tha (field saboot,
+        // 2026-11-10 12:38: dump ke baad koi settings-click line
+        // hi nahi aayi — seedha purani 'Resolution confirmed on
+        // Flow' read-back par gaya) — wo rasta KHATAM:
+        //   - na pehle state padh kar 'buttons not found' par
+        //     step skip karna,
+        //   - na 'selected pehle se sahi hai' par click chhod
+        //     dena (bina-shart click hota hai, duration jaisa),
+        //   - na alag read-back line, na pill-text fallback.
+        // Tasdeeq helper ki apni lines aur aakhri pill gate
+        // (step 9) se hoti hai — bilkul aspect/count jaisi.
+        // In-panel state reader (resolutionStateSource) ab
+        // sirf verify-poll ka kaam karta hai — duration ke
+        // readSelectedDuration wala hi pattern. Aur Item B ka
+        // lock: settings.quality yahan SIRF generation ke liye
+        // padhi jati hai; settings.downloadMode is function me
+        // kahin padha hi nahi jata.
+        // v2.48.79 (Item C): ye jhanda step 4.5 me banta hai
+        // aur aakhri pill gate (step 9) me padha jata hai —
+        // resolution ka khet panel me ho hi na to gate us
+        // ka muqabla hi nahi karta.
+        let resolutionFieldAbsent = false;
         if (modeType === 'Video') {
           this.log(`Selecting the Resolution: [${genResolution}]…`, 'info');
           const readResolutionState = async () => {
@@ -3107,54 +3187,42 @@ class FlowAutomationEngine {
             // wali class button par ho ya us ke parent par.
             return await this.page.evaluate(resolutionStateSource());
           };
-          let resState = await readResolutionState();
-          if (!resState.found) {
-            this.log('The 360p/720p buttons were not found on Flow\'s panel — the generation keeps the resolution the panel already shows.', 'warn');
-          } else {
-            if (resState.selected !== genResolution) {
-              // v2.48.78 (Item A): purana synthetic DOM
-              // click is account par asar hi nahi karta
-              // tha (field saboot: teenon attempts me
-              // pill 720p hi raha). Ab sakht chunav —
-              // options dump, asal mouse click, pill/
-              // state badalne ka poll, na badle to
-              // andar wale element par dusri strategy.
-              // Tasdeeq ki baaki saari lines (neeche
-              // wali confirmed/fallback) bilkul waisi.
-              await this._selectPanelOption({
-                field: 'resolution',
-                kind: 'resolution',
-                wantText: genResolution,
-                verify: async () => {
-                  const s = await readResolutionState();
-                  return !!(s && s.selected === genResolution);
-                }
-              });
-              resState = await readResolutionState();
+          const selRes = await this._selectPanelOption({
+            field: 'resolution',
+            kind: 'resolution',
+            wantText: genResolution,
+            verify: async () => {
+              const s = await readResolutionState();
+              return !!(s && s.selected === genResolution);
             }
-            if (resState.selected) {
-              this.log(`Resolution confirmed on Flow: [${resState.selected}] (needed [${genResolution}])`, resState.selected === genResolution ? 'success' : 'warn');
-            } else {
-              // v2.48.62 (FALLBACK): panel ke button par
-              // pehchan phir bhi na mile to settings pill ka
-              // apna text dekho — wahi pill jo is function
-              // ke aakhir me bhi padha jata hai ('Video ·
-              // 360p · 4s …'). Us me asal resolution maujood
-              // ho to wahi tasdeeq hai; warna purani
-              // chetaavni barkarar.
-              let pillConfirmed = false;
-              try {
-                const pillText = await this.page.evaluate(() => {
-                  const pill = document.querySelector('.settings-trigger-button, button.settings-trigger-button');
-                  return pill ? (pill.innerText || '').replace(/\n/g, ' ').trim() : null;
-                });
-                if (pillText && pillText.includes(genResolution)) pillConfirmed = true;
-              } catch (e) {}
-              if (pillConfirmed) {
-                this.log(`Resolution confirmed on Flow: [${genResolution}]`, 'success');
-              } else {
-                this.log('The panel\'s resolution could not be confirmed after selecting — the run continues with the resolution Flow shows.', 'warn');
-              }
+          });
+          // v2.48.79 (Item C — MODEL APPLICABILITY, owner
+          // 2026-11-10): resolution ka khet Flow ke panel
+          // me SIRF Omni Flash aur naye models par hota
+          // hai; purane models (masalan Veo 3.1 family) ke
+          // panel me resolution hota hi nahi. Pehchan kisi
+          // hard-coded fehrist se nahi, panel ki apni
+          // gawahi se: poore (scroll-scan samet) survey ke
+          // baad bhi resolution group bilkul khaali
+          // (options=[]) AUR state reader ko bhi koi
+          // 360p/720p button na mila ho. Tab step SAAF
+          // SKIP hota hai: [ROOT] settings-skip line,
+          // koi click nahi (helper ne target na milne par
+          // koi click kiya hi nahi), koi repair chakkar
+          // nahi, koi mismatch nahi — aakhri gate me bhi
+          // resolution ka muqabla nahi (resolutionField-
+          // Absent → requestedPill.resolution = null) aur
+          // video us model ki apni default quality par
+          // banta hai. Is ke bar-aks: khet MAUJUD ho lekin
+          // manga hua option ghayab ho (account (7) wala
+          // field saboot: options=[720p], manga 360p) to
+          // ye skip NAHI hai — imaandar mismatch aur agle
+          // account wala rasta bilkul waisa hi chalta hai.
+          if (!selRes.found && (!selRes.options || selRes.options.length === 0)) {
+            const st = await readResolutionState();
+            if (!st || !st.found) {
+              resolutionFieldAbsent = true;
+              this.log(settingsSkipLogLine('resolution', 'model-has-no-resolution'), 'info');
             }
           }
         }
@@ -3251,7 +3319,11 @@ class FlowAutomationEngine {
         if (modeType === 'Video' && finalPillText) {
           const requestedPill = {
             mode: modeType,
-            resolution: genResolution,
+            // v2.48.79 (Item C): panel me resolution ka
+            // khet ho hi na (purane models) to muqabla
+            // nahi — settingsPillMismatch null ko 'is run
+            // ke liye maayne nahi rakhta' samajhta hai.
+            resolution: resolutionFieldAbsent ? null : genResolution,
             durationSec: parseInt(String(settings.duration || '6s'), 10) || null,
             aspect: targetAspect
           };
@@ -13421,4 +13493,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, panelOptionTargetSource, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };

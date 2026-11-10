@@ -42,6 +42,12 @@ class AutomationBridge {
   // v2.25.0 (parked browser): [{ 'id': ..., 'windowShown': bool }] for
   // every account with a live generation browser right now.
   Function(List<Map<String, dynamic>> accounts)? onActiveBrowsers;
+  // v2.48.82 (live PC-stats pill): the engine's ~2s 'system-stats'
+  // payload — real CPU/RAM percentages for this PC plus the
+  // About-this-PC detail (hostname, OS, CPU model/cores, total RAM,
+  // free disk on the download drive). Any field may be null when
+  // the platform cannot supply it; the UI shows only real values.
+  Function(Map<String, dynamic> data)? onSystemStats;
   // v2.31.4: Muse asked (through the MCP connector) for the app to
   // update itself. The bridge broadcasts 'mcp-update-request' after
   // its own guards pass; the settings provider consumes it by
@@ -444,6 +450,11 @@ class AutomationBridge {
                   );
                 }
                 break;
+              case 'system-stats':
+                // v2.48.82: live PC stats from the engine — the
+                // payload IS the stats object (see systemStats.js).
+                onSystemStats?.call(data);
+                break;
               default:
                 // 'automation-log' and any unnamed frame carrying a message
                 if (data.containsKey('message')) {
@@ -753,6 +764,24 @@ class AutomationBridge {
       debugPrint('[getActiveBrowsers Error] $e');
     }
     return [];
+  }
+
+  /// v2.48.82 (live PC-stats pill): the engine's current PC-stats
+  /// sample (the same payload the 'system-stats' SSE event carries),
+  /// or null when the engine is unreachable.
+  Future<Map<String, dynamic>?> getSystemStats() async {
+    try {
+      final res = await http.get(Uri.parse('$baseUrl/api/system/stats'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true && data['stats'] is Map) {
+          return Map<String, dynamic>.from(data['stats'] as Map);
+        }
+      }
+    } catch (e) {
+      debugPrint('[getSystemStats Error] $e');
+    }
+    return null;
   }
 
   /// v2.25.0 (parked browser): flip a GENERATING account's working

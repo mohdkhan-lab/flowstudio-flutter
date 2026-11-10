@@ -48,6 +48,8 @@ process.env.FLOW_LITE_PROFILES_DIR = appDataProfilesDir;
 
 // Engine imports
 const { dbService } = require('./engine/db');
+const os = require('os');
+const systemStats = require('./engine/systemStats');
 const {
   getAccounts,
   addAccount,
@@ -194,6 +196,70 @@ function broadcastEvent(eventName, data) {
     }
   }
 }
+
+// ---------------------------------------------------------------------------
+// v2.48.82 (LIVE PC-STATS PILL — OWNER ORDER 2026-11-10): is PC ki
+// asal, live haalat (CPU % / RAM %) har ~2s me 'system-stats' SSE
+// event se UI ko — hisaab khalis engine/systemStats.js me hai
+// (CPU = os.cpus() ke do namunon ka delta; RAM = os ke total/free
+// se hu-bahu). About-this-PC ki tafseel (hostname, OS, CPU model +
+// cores, kul RAM, download drive ki khaali jagah) bhi isi payload
+// me jati hai. Jo value platform sach me na de sake wo null rehti
+// hai — nakli number kabhi nahi bhejta.
+// ---------------------------------------------------------------------------
+const _cpuSampler = systemStats.createCpuSampler(() => os.cpus());
+let _lastSystemStats = null;
+
+function _systemStatsDisk() {
+  try {
+    let dir = null;
+    try { dir = dbService.getSetting('download_folder', ''); } catch (e) { dir = null; }
+    if (!dir || typeof dir !== 'string') dir = path.join(appDataDataDir, 'downloads');
+    if (typeof fs.statfsSync !== 'function') return null;
+    const st = fs.statfsSync(dir);
+    if (!st || !(st.bsize > 0)) return null;
+    return {
+      path: dir,
+      freeBytes: Math.max(0, (Number(st.bavail) || 0) * st.bsize),
+      totalBytes: Math.max(0, (Number(st.blocks) || 0) * st.bsize)
+    };
+  } catch (e) { return null; }
+}
+
+function collectSystemStats() {
+  let cpuPercent = null;
+  try { cpuPercent = _cpuSampler.sample(); } catch (e) { cpuPercent = null; }
+  let cpus = [];
+  try { cpus = os.cpus() || []; } catch (e) { cpus = []; }
+  let osLabel = null;
+  try { osLabel = (typeof os.version === 'function' && os.version()) || `${os.type()} ${os.release()}`; } catch (e) { osLabel = null; }
+  const payload = systemStats.buildSystemStatsPayload({
+    cpuPercent,
+    totalmem: (() => { try { return os.totalmem(); } catch (e) { return 0; } })(),
+    freemem: (() => { try { return os.freemem(); } catch (e) { return 0; } })(),
+    at: Date.now()
+  }, {
+    hostname: (() => { try { return os.hostname(); } catch (e) { return null; } })(),
+    osLabel,
+    cpuModel: cpus.length && cpus[0] && cpus[0].model ? String(cpus[0].model).trim() : null,
+    cpuCores: cpus.length || null,
+    disk: _systemStatsDisk()
+  });
+  _lastSystemStats = payload;
+  return payload;
+}
+
+function currentSystemStats() {
+  return _lastSystemStats || collectSystemStats();
+}
+
+try { collectSystemStats(); } catch (e) {}
+try {
+  const _statsTimer = setInterval(() => {
+    try { broadcastEvent('system-stats', collectSystemStats()); } catch (e) {}
+  }, 2000);
+  if (_statsTimer && typeof _statsTimer.unref === 'function') _statsTimer.unref();
+} catch (e) {}
 
 // ---------------------------------------------------------------------------
 // v2.31.4: latest-release lookup for the MCP "update the app" tool.
@@ -453,6 +519,11 @@ async function startBridge() {
       try {
         const snap = activeWorkerPool ? activeWorkerPool.getActiveBrowsers() : [];
         res.write(`event: active-browsers\ndata: ${JSON.stringify({ accounts: snap })}\n\n`);
+      } catch (e) {}
+      // v2.48.82: (re)connecting UI ko PC-stats ka maujooda
+      // namuna bhi foran — patti pehli paint se hi asal ho.
+      try {
+        res.write(`event: system-stats\ndata: ${JSON.stringify(currentSystemStats())}\n\n`);
       } catch (e) {}
 
       req.on('close', () => {
@@ -864,6 +935,13 @@ async function startBridge() {
       if (pathname === '/api/generation/active-browsers' && req.method === 'GET') {
         const accounts = activeWorkerPool ? activeWorkerPool.getActiveBrowsers() : [];
         return sendJson(200, { ok: true, accounts });
+      }
+
+      // v2.48.82 (LIVE PC-STATS PILL): is PC ki asal haalat ka
+      // maujooda namuna (wahi payload jo 'system-stats' SSE
+      // event har ~2s me bhejta hai).
+      if (pathname === '/api/system/stats' && req.method === 'GET') {
+        return sendJson(200, { ok: true, stats: currentSystemStats() });
       }
 
       if (pathname === '/api/accounts/complete-login' && req.method === 'POST') {

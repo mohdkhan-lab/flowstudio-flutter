@@ -22,6 +22,7 @@ const downloadFetch = require('./downloadFetch');
 const { describeUrlShape, formatUrlShape } = require('./urlShape');
 const blobHarvest = require('./blobHarvest');
 const downloadRouteOrder = require('./downloadRouteOrder');
+const streamFirst = require('./streamFirst');
 const editorEnhance = require('./editorEnhance');
 const resolutionMemory = require('./resolutionMemory');
 const flowContent = require('./flowContent');
@@ -1322,6 +1323,11 @@ class FlowAutomationEngine {
     // (dbService) — workerPool deta hai; na mile to
     // memory band (purana bartav).
     this._resolutionMemoryKv = options.resolutionMemoryKv || null;
+    // v2.48.82 (STREAM-FIRST): claimable stream ke
+    // intezaar ki bandhi hadd — production me
+    // streamFirst.STREAM_FIRST_WAIT_MS (3s); tests
+    // is override se hadd chhoti kar sakte hain.
+    this.streamFirstWaitMs = Number(options.streamFirstWaitMs) > 0 ? Number(options.streamFirstWaitMs) : streamFirst.STREAM_FIRST_WAIT_MS;
 
     // Credit port: every method is a no-op unless the pool binds it.
     const noopPort = {
@@ -6584,6 +6590,174 @@ class FlowAutomationEngine {
       return await nativePromise;
     }
     return await nativePromise;
+  }
+
+  /**
+   * v2.48.82 (STREAM-FIRST): is pal capture kitab me is
+   * task ke naam bandhne wala claimable full stream hai
+   * to us ka dawa-faisla (khalis hisaab
+   * streamFirst.streamFirstEntryPick me hai — kitab,
+   * kataar aur khidki capture se, zeher/dawa ki
+   * adrishyata engine ki apni kitab se). Kuch na mile
+   * to null.
+   */
+  _streamFirstPickNow(task, key, expectedSec, teacherUrl) {
+    const cap = this.netCapture;
+    if (!cap || typeof cap.mainpageEntries !== 'function') return null;
+    let entries = [];
+    try { entries = cap.mainpageEntries() || []; } catch (e) { entries = []; }
+    if (!entries.length) return null;
+    const excluded = new Set();
+    for (const e of entries) {
+      if (!e || !e.url) continue;
+      let hide = false;
+      try { hide = this._urlPoisonedRunWide(e.url) || this._candidateClaimedByOther(task, e.url); } catch (err) { hide = false; }
+      if (hide) excluded.add(e.url);
+    }
+    let pendingOrder = [];
+    let pendingOthers = 0;
+    try {
+      if (typeof cap.mainpagePendingOrder === 'function') pendingOrder = cap.mainpagePendingOrder() || [];
+      if (typeof cap.mainpagePendingOthers === 'function') pendingOthers = cap.mainpagePendingOthers(key) || 0;
+    } catch (e) {}
+    const ownStart = (Number.isFinite(task.renderCompletedAt) && task.renderCompletedAt > 0)
+      ? task.renderCompletedAt : (task.startTime || Date.now());
+    try {
+      return streamFirst.streamFirstEntryPick({
+        entries,
+        ownKey: key,
+        ownStart,
+        pendingOrder,
+        pendingOthers,
+        expectedDurationSec: expectedSec,
+        teacherUrl,
+        excludedUrls: excluded
+      });
+    } catch (e) { return null; }
+  }
+
+  /**
+   * v2.48.82 (STREAM-FIRST — OWNER ORDER 2026-11-10):
+   * tartib ka SAB SE PEHLA rasta. Render-complete par
+   * page khud asal file ki poori stream wire par mangti
+   * hai (asb 302 → googlevideo itag 18/22, dur = task
+   * ki duration — .81 field log se sabit); ye rasta
+   * bandhi hadd (streamFirstWaitMs, production 3s) tak
+   * usi stream ka intezaar karta hai aur claimable
+   * milte hi use dawa karke save karta hai — menu ka
+   * click NAHI, editor NAHI, mint ka intezaar NAHI.
+   * Save ke do per (dono purani machinery):
+   *   (1) wire par pehle se mukammal pakdi hui body
+   *       (mainpageBodyForUrl) seedha aam save point
+   *       par — duration tasdeeq + duplicate registry
+   *       wahi;
+   *   (2) warna usi pate ka foran fetch
+   *       (downloadFromCapturedStream — parallel-parts
+   *       ranged fetch pehle, phir session-cookie
+   *       Node fetch; saare darwaze usi ke andar).
+   * Jeet par: '[ROOT] via=stream-first gap=<X>s' —
+   * gap ki tareef purani wali hi hai (render-complete
+   * → file saved). Hadd me kuch na mile to ye rasta
+   * EMAANDARI se haar manta hai aur tile-menu fallback
+   * chalta hai. Prompt dobara KABHI submit nahi hota.
+   */
+  async _tryStreamFirstDownload(task, downloadFolder, settings, attempts) {
+    const n = (task.promptIndex || 0) + 1;
+    if (task.mediaSaved) return true;
+    const cap = this.netCapture;
+    if (!cap || typeof cap.mainpageEntries !== 'function') {
+      attempts.push({ strategy: 'stream-first', ok: false, note: 'the network capture book is not available in this session — the tile-menu route runs next' });
+      return false;
+    }
+    const key = task.captureKey || task.videoId || null;
+    const expectedSec = this._expectedDurationSec(task, settings);
+    let teacherUrl = null;
+    try { teacherUrl = typeof cap.teacherMintUrlForTemplate === 'function' ? cap.teacherMintUrlForTemplate(null) : null; } catch (e) { teacherUrl = null; }
+    const waitMs = Number.isFinite(this.streamFirstWaitMs) && this.streamFirstWaitMs > 0
+      ? this.streamFirstWaitMs : streamFirst.STREAM_FIRST_WAIT_MS;
+    const deadline = Date.now() + waitMs;
+    let pick = null;
+    while (!task.mediaSaved && !this.isStopping) {
+      pick = this._streamFirstPickNow(task, key, expectedSec, teacherUrl);
+      if (pick) break;
+      if (Date.now() >= deadline) break;
+      await sleep(streamFirst.STREAM_FIRST_POLL_MS);
+    }
+    if (task.mediaSaved) {
+      // Intezaar ke dauraan immediate capture handoff
+      // (ya koi pehle se chala fetch) file save kar
+      // gaya — jeet usi ki hai, rasta apna kaam pura
+      // samjhe.
+      attempts.push({ strategy: 'stream-first', ok: true, note: 'the file was saved by the immediate capture handoff while this route was watching for the stream' });
+      return true;
+    }
+    if (!pick || !pick.url) {
+      attempts.push({ strategy: 'stream-first', ok: false, note: `no claimable full stream appeared on the wire within ${(waitMs / 1000).toFixed(1)}s of the render completing — the tile-menu route runs next` });
+      return false;
+    }
+    const url = pick.url;
+    // Dawa se pehle wahi do darwaze jo backend raaste
+    // par lagte hain: zeher-yafta pata dobara NAHI,
+    // dusre task ke dawa wala pata is ke liye adrishya.
+    if (this._urlPoisonedRunWide(url)) {
+      attempts.push({ strategy: 'stream-first', ok: false, note: 'the stream address that appeared had already returned non-video bytes in this run — it was not used; the tile-menu route runs next' });
+      return false;
+    }
+    if (this._candidateClaimedByOther(task, url)) {
+      attempts.push({ strategy: 'stream-first', ok: false, note: 'the stream that appeared already belongs to another task in this run — the tile-menu route runs next' });
+      return false;
+    }
+    this._claimCandidateUrl(task, url);
+    task.completedVideoUrl = url;
+    task.backendVideoUrl = url;
+    task.backendUrlVia = 'stream-first';
+    task._backendCtx = { downloadFolder, settings };
+    this.log(`[Prompt #${n}] The video's own full stream was seen on the wire — claiming it now, with no menu click and no editor…`, 'info');
+    let ok = false;
+    // (1) Wire par pehle se mukammal body — seedha
+    // save point par. Adhoori (partial) nazar ki body
+    // yahan istemal NAHI hoti; faisla hamesha asal
+    // kul size se bandha hai (mainpage completion ki
+    // hi bandish).
+    try {
+      const held = typeof cap.mainpageBodyForUrl === 'function' ? cap.mainpageBodyForUrl(url) : null;
+      if (held && held.buffer && held.buffer.length > 0) {
+        if (downloadFetch.looksLikeHtmlBuffer(held.buffer) && !downloadFetch.looksLikeVideoBuffer(held.buffer)) {
+          this._markUrlPoisonedRunWide(url);
+          attempts.push({ strategy: 'stream-first', ok: false, note: 'the captured stream bytes were an HTML page, not the video — the address was dropped for this run and the tile-menu route runs next' });
+          return false;
+        }
+        if (downloadFetch.looksLikeVideoBuffer(held.buffer)) {
+          const knownTotal = saveGuard.mainpageKnownTotalOf({
+            knownTotal: pick.entry ? pick.entry.knownTotal : null,
+            contentRange: pick.entry ? pick.entry.contentRange : null,
+            declared: pick.entry ? pick.entry.declared : null,
+            status: pick.entry ? pick.entry.status : null
+          });
+          const complete = !pick.entry || pick.entry.partial === false
+            || (knownTotal !== null && held.buffer.length >= knownTotal);
+          if (complete) {
+            ok = await this._saveBufferForTask(task, downloadFolder, settings, held.buffer, url, 'stream-first');
+          }
+        }
+      }
+    } catch (e) { ok = false; }
+    // (2) Asal pate ka foran fetch — FAST-DL machinery
+    // (parallel parts pehle). Fetch sirf maujooda file
+    // ka GET hai; prompt dobara kabhi nahi bhejta.
+    if (!ok && !task.mediaSaved && !this.isStopping) {
+      task._backendHotFetch = true;
+      try { ok = await this.downloadFromCapturedStream(task, downloadFolder, settings); } catch (e) { ok = false; }
+      task._backendHotFetch = false;
+    }
+    if (ok || task.mediaSaved) {
+      const g = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+      this.log(`[ROOT] via=stream-first gap=${g}s`, 'success');
+      attempts.push({ strategy: 'stream-first', ok: true, note: 'the full stream the page itself requested right after the render was claimed and saved — no menu click, no editor' });
+      return true;
+    }
+    attempts.push({ strategy: 'stream-first', ok: false, note: 'the claimed stream could not be turned into this video\'s file — the tile-menu route runs next' });
+    return false;
   }
 
   /**
@@ -12341,9 +12515,24 @@ class FlowAutomationEngine {
       // ['tile-menu', 'editor-harvest'] hai
       // (downloadRouteOrder.js wahid sachai rehti hai);
       // editor fallback bilkul .73–.75 jaisa hi hai.
+      // v2.48.82 (STREAM-FIRST): tartib ab
+      // ['stream-first', 'tile-menu', 'editor-harvest']
+      // hai — pehla qadam wire par aayi asal stream ka
+      // dawa hai (koi click nahi); tile-menu aur editor
+      // us ke baad wale fallback bilkul waisi hi hain.
       for (const route of (task.downloadRouteOrder || [])) {
         if (task.mediaSaved || this.isStopping) break;
-        if (route === 'tile-menu') {
+        if (route === 'stream-first') {
+          // v2.48.82: tartib ka pehla qadam — bandhi
+          // hadd tak claimable full stream ka intezaar
+          // aur dawa; na mile to loop agle raste
+          // (tile-menu) par jata hai.
+          try {
+            await this._tryStreamFirstDownload(task, downloadFolder, settings, attempts);
+          } catch (e) {
+            attempts.push({ strategy: 'stream-first', ok: false, note: 'the stream-first route hit a problem — the tile-menu route ran next' });
+          }
+        } else if (route === 'tile-menu') {
           // v2.48.76 (Item C): tartib ka pehla qadam —
           // tile ke 3-dots menu se turant Download;
           // bandhi hadd me file na aaye to loop agle
@@ -12394,7 +12583,7 @@ class FlowAutomationEngine {
         }
       }
       // EMAANDAR FAIL: is ke baad koi rasta nahi bacha.
-      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: neither the tile-menu download nor the editor route produced this video's file. The prompt was NOT resubmitted — the task parks for recovery, which retries the same routes.`, 'warn');
+      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: neither the stream-first capture, the tile-menu download nor the editor route produced this video's file. The prompt was NOT resubmitted — the task parks for recovery, which retries the same routes.`, 'warn');
       return finishVideoAttempt({ ok: false, attempts });
     }
 

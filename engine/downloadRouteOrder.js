@@ -151,9 +151,32 @@
 // attempt kram se BAHAR hi rehte hain (code repo me
 // rehta hai, aazmaya nahi jata). Editor kabhi PEHLA amal
 // nahi raha ab — lekin fallback ke taur par barkarar hai.
+//
+// v2.48.82 (STREAM-FIRST — OWNER ORDER 2026-11-10):
+// .81 ke field test ke baad owner ka hukm: "video bante
+// hi turant download hona chahiye — 14.9s ka gap bilkul
+// nahi chahiye." Usi run ke log ne sabit kiya ke asal
+// file ki poori stream (asb 302 → googlevideo itag=18,
+// dur = task ki duration) render-complete ke pal hi,
+// kisi click se PEHLE, wire par aati hai — waqt menu ke
+// click (~2.5s) aur us se bane mint pate (~5.5s) me
+// jalta tha. Tartib ab teen qadmon ki hai:
+//   1. 'stream-first' — bandhi hadd (3s) tak capture
+//      kitab ka intezaar; is task ke naam bandhne wala
+//      pehla claimable full-duration stream usi pal
+//      dawa hokar aam save point / FAST-DL fetch se
+//      save (engine/streamFirst.js me khalis faisla,
+//      bandhan saveGuard.mainpageBindingPlan se).
+//      Jeet par '[ROOT] via=stream-first gap=<X>s' —
+//      gap ki tareef purani wali hi hai (render-
+//      complete → file saved); number chhota dikhane
+//      ke liye tareef NAHI badli.
+//   2. 'tile-menu' — .76 wala pehla rasta, ab dusra.
+//   3. 'editor-harvest' — sab se aakhri chaara, hu-bahu.
 // ---------------------------------------------------------------------------
 
 const DOWNLOAD_ROUTE_ORDER = Object.freeze([
+  'stream-first',
   'tile-menu',
   'editor-harvest'
 ]);

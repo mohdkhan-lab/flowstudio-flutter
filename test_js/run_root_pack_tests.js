@@ -491,7 +491,7 @@ async function main() {
     // 2026-11-10): tartib ab tile-menu (3-dots Download,
     // pehli koshish) phir editor-harvest (fallback);
     // mainpage/grid/headless kram se bahar hi rehte hain.
-    eq('MP-ORDER order is exactly tile-menu then editor-harvest', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['tile-menu', 'editor-harvest']));
+    eq('MP-ORDER order is exactly stream-first then tile-menu then editor-harvest', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
     for (const banned of ['mainpage-harvest', 'grid-replay', 'headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'tile-src', 'quick-check']) {
       ok(`MP-ORDER ${banned} is absent from the order`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
     }
@@ -768,7 +768,7 @@ async function main() {
     // editor-harvest hai; dono haar jayein tab hi
     // emaandar fail. ('native-menu' tile-menu route ka
     // andar ka qadam hai — route nahi.)
-    eq('MP-FAIL the task route order is tile-menu then editor-harvest', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['tile-menu', 'editor-harvest']));
+    eq('MP-FAIL the task route order is stream-first then tile-menu then editor-harvest', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
     ok('MP-FAIL attempts carry tile-menu', res.attempts.some(a => a.strategy === 'tile-menu'));
     ok('MP-FAIL attempts carry editor-harvest', res.attempts.some(a => a.strategy === 'editor-harvest'));
     eq('MP-FAIL tile-menu is attempted before editor-harvest', (() => { const s = res.attempts.map(a => a.strategy); return s.indexOf('tile-menu') >= 0 && s.indexOf('editor-harvest') > s.indexOf('tile-menu'); })(), true);
@@ -777,7 +777,7 @@ async function main() {
     ok('MP-FAIL attempts carry no headless-harvest (v2.48.72)', !res.attempts.some(a => a.strategy === 'headless-harvest'));
     ok('MP-FAIL attempts carry no banned strategy', !res.attempts.some(a => ['replay-context', 'direct-viewer', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-src', 'tile-src-fast', 'quick-check'].includes(a.strategy)));
     ok('MP-FAIL the honest-fail line was logged', logs.some(m => m.includes('Download failed honestly')));
-    ok('MP-FAIL the honest-fail line names both routes', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the tile-menu download nor the editor route')));
+    ok('MP-FAIL the honest-fail line names all three routes', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the stream-first capture, the tile-menu download nor the editor route')));
     ok('MP-FAIL no bg flag anywhere in the log', !logs.some(m => m.includes('bg=')));
   }
   {
@@ -1646,16 +1646,16 @@ async function main() {
     // andar ka qadam 'native-menu' attempt bhi aata
     // hai), editor fallback dusra; headless/mainpage/
     // grid ab bhi cascade se bahar hain.
-    const routeSeq = seq.filter(s => ['tile-menu', 'editor-harvest'].includes(s));
-    eq('EH-FALL tile-menu ran first in the cascade, editor-harvest as fallback (v2.48.76)', JSON.stringify(routeSeq), JSON.stringify(['tile-menu', 'editor-harvest']));
+    const routeSeq = seq.filter(s => ['stream-first', 'tile-menu', 'editor-harvest'].includes(s));
+    eq('EH-FALL stream-first ran first in the cascade, then tile-menu, editor-harvest last (v2.48.82)', JSON.stringify(routeSeq), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
     ok('EH-FALL headless-harvest did NOT run in the cascade', seq.indexOf('headless-harvest') === -1);
     ok('EH-FALL the task route order has no headless-harvest', !task.downloadRouteOrder.includes('headless-harvest'));
     ok('EH-FALL mainpage-harvest did NOT run in the cascade (v2.48.73)', seq.indexOf('mainpage-harvest') === -1);
     ok('EH-FALL grid-replay did NOT run in the cascade (v2.48.73)', seq.indexOf('grid-replay') === -1);
-    ok('EH-FALL attempts stay inside the tile-menu + editor family', seq.every(s => ['native-menu', 'tile-menu', 'editor-harvest'].includes(s)));
-    ok('HH-FALL the honest-fail line names both routes (v2.48.76)', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the tile-menu download nor the editor route')));
+    ok('EH-FALL attempts stay inside the stream-first + tile-menu + editor family', seq.every(s => ['native-menu', 'stream-first', 'tile-menu', 'editor-harvest'].includes(s)));
+    ok('HH-FALL the honest-fail line names all three routes (v2.48.82)', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the stream-first capture, the tile-menu download nor the editor route')));
     eq('HH-FALL the probe still ran only once across rounds', st.probeCount, 1);
-    eq('HH-FALL the task route order is tile-menu then editor-harvest', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['tile-menu', 'editor-harvest']));
+    eq('HH-FALL the task route order is stream-first then tile-menu then editor-harvest', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
   }
   {
     // (h) v2.48.45 — LAUNCH DIAGNOSTICS + CLONE HARDENING.
@@ -5707,11 +5707,11 @@ async function main() {
 
     // ---------- C: tile-menu first + poison ----------
     eq('X76C the shipped tile-menu file-wait bound is 20s', TILE_MENU_FILE_WAIT_MS, 20000);
-    eq('X76C the route order is tile-menu then editor-harvest', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['tile-menu', 'editor-harvest']));
+    eq('X76C the route order is stream-first then tile-menu then editor-harvest (v2.48.82)', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
     {
       const loopStart = faSrc.indexOf('for (const route of (task.downloadRouteOrder');
-      const loopSlice = faSrc.slice(loopStart, loopStart + 3200);
-      ok('X76C the dispatch tries tile-menu before editor-harvest', loopSlice.indexOf("route === 'tile-menu'") >= 0 && loopSlice.indexOf("route === 'editor-harvest'") > loopSlice.indexOf("route === 'tile-menu'"));
+      const loopSlice = faSrc.slice(loopStart, loopStart + 5200);
+      ok('X76C the dispatch tries stream-first before tile-menu before editor-harvest (v2.48.82)', loopSlice.indexOf("route === 'stream-first'") >= 0 && loopSlice.indexOf("route === 'tile-menu'") > loopSlice.indexOf("route === 'stream-first'") && loopSlice.indexOf("route === 'editor-harvest'") > loopSlice.indexOf("route === 'tile-menu'"));
     }
     ok('X76C tile-menu runs the menu form only (editor form skipped, bound passed)', faSrc.includes('skipEditorForm: true') && faSrc.includes('menuAwaitTimeoutMs: TILE_MENU_FILE_WAIT_MS'));
     ok('X76C the tile-menu route exists', typeof FlowAutomationEngine.prototype._tryTileMenuDownload, 'function');
@@ -6726,6 +6726,215 @@ async function main() {
         const book = resolutionMemory.loadResolutionMemory(kv);
         eq('X80-RUN a successful selection cleared the book record', resolutionMemory.isResolutionKnownAbsent(book, 'Acct Seven', 'Omni Flash', '360p'), false);
       }
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // X82 (v2.48.82) — STREAM-FIRST DOWNLOAD + LIVE PC-STATS PILL.
+  // Stream-first: render-complete par page khud jo poori stream
+  // wire par mangti hai (asb 302 → googlevideo itag 18/22, dur =
+  // task ki duration) wahi tartib ka pehla dawa hai — koi click
+  // nahi, koi editor nahi. PC-stats: engine ke asal os namunon
+  // ka hisaab (systemStats.js) + UI ki shakal ke source pin.
+  // ---------------------------------------------------------------------------
+  {
+    const fsx = require('fs');
+    const pathx = require('path');
+    const read82 = (rel) => fsx.readFileSync(pathx.join(__dirname, '..', rel), 'utf8');
+    const faSrc82 = read82('engine/flowAutomation.js');
+    const streamFirst82 = require('../engine/streamFirst');
+    const systemStats82 = require('../engine/systemStats');
+    const saveGuardMod82 = require('../engine/saveGuard');
+
+    const GV82 = 'https://rr4---sn-x82test.googlevideo.com/videoplayback?expire=999&id=x82vid&itag=18&dur=10.054&source=youtube';
+    const gvEntry82 = (over) => Object.assign({
+      url: GV82, src: 'googlevideo', candidate: true,
+      firstSeenAt: Date.now() - 400, seq: 1, bytes: 2403644, bodyBytes: 2403644,
+      knownTotal: 2403644, partial: false, contentRange: '', declared: 2403644,
+      status: 200, contentType: 'video/mp4'
+    }, over || {});
+
+    // ---------- A: khalis faisla (pick) ----------
+    {
+      const info = streamFirst82.streamUrlInfo(GV82);
+      eq('X82A streamUrlInfo reads the itag', info.itag, '18');
+      eq('X82A streamUrlInfo reads the declared duration', info.dur, 10.054);
+      eq('X82A streamUrlInfo rejects a non-googlevideo url', streamFirst82.streamUrlInfo(FC_FRESH), null);
+      eq('X82A a matching duration passes', streamFirst82.streamDurationMatches(10.054, 10), true);
+      eq('X82A a preview-length duration is refused', streamFirst82.streamDurationMatches(3.0, 10), false);
+      eq('X82A no expectation means no duration veto', streamFirst82.streamDurationMatches(10.054, 0), true);
+      eq('X82A a missing duration never matches an expectation', streamFirst82.streamDurationMatches(null, 10), false);
+
+      const t0 = Date.now() - 1000;
+      const baseInput = {
+        entries: [gvEntry82({ firstSeenAt: t0 + 100 })],
+        ownKey: 'kA', ownStart: t0,
+        pendingOrder: [{ key: 'kA', start: t0 }], pendingOthers: 0,
+        expectedDurationSec: 10, teacherUrl: FC_TEACHER, excludedUrls: new Set()
+      };
+      const pick = streamFirst82.streamFirstEntryPick(baseInput);
+      ok('X82A the claimable full stream binds to its task', !!pick && pick.url === GV82);
+      eq('X82A the binding reason is the queue order', pick && pick.reason, 'order');
+      eq('X82A a preview-duration stream is never picked', streamFirst82.streamFirstEntryPick({ ...baseInput, entries: [gvEntry82({ url: GV82.replace('dur=10.054', 'dur=3.0'), firstSeenAt: t0 + 100 })] }), null);
+      eq('X82A the preview itag 15 is never picked', streamFirst82.streamFirstEntryPick({ ...baseInput, entries: [gvEntry82({ url: GV82.replace('itag=18', 'itag=15'), firstSeenAt: t0 + 100 })] }), null);
+      ok('X82A the 720p full encode (itag 22) binds too', !!streamFirst82.streamFirstEntryPick({ ...baseInput, entries: [gvEntry82({ url: GV82.replace('itag=18', 'itag=22'), firstSeenAt: t0 + 100 })] }));
+      eq('X82A a non-candidate sighting is never picked', streamFirst82.streamFirstEntryPick({ ...baseInput, entries: [gvEntry82({ candidate: false, firstSeenAt: t0 + 100 })] }), null);
+      ok('X82A a bound flow-content candidate binds without itag/dur', !!streamFirst82.streamFirstEntryPick({ ...baseInput, entries: [gvEntry82({ url: FC_FRESH, src: 'flow-content', firstSeenAt: t0 + 100 })] }));
+      eq('X82A the teacher address is never picked', streamFirst82.streamFirstEntryPick({ ...baseInput, entries: [gvEntry82({ url: FC_TEACHER, src: 'flow-content', firstSeenAt: t0 + 100 })] }), null);
+      eq('X82A an excluded (claimed/poisoned) stream is never picked', streamFirst82.streamFirstEntryPick({ ...baseInput, excludedUrls: new Set([GV82]) }), null);
+      {
+        // Do tasks, ek stream: kataar me pehle wala hi
+        // bandhta hai; dusre ke liye wahi stream nahi.
+        const order2 = [{ key: 'kA', start: t0 }, { key: 'kB', start: t0 + 500 }];
+        const entries2 = [gvEntry82({ firstSeenAt: t0 + 600 })];
+        const pickA = streamFirst82.streamFirstEntryPick({ ...baseInput, entries: entries2, pendingOrder: order2, pendingOthers: 1 });
+        ok('X82A with two tasks the single stream binds to the first in queue', !!pickA && pickA.url === GV82);
+        const pickB = streamFirst82.streamFirstEntryPick({ ...baseInput, entries: entries2, ownKey: 'kB', ownStart: t0 + 500, pendingOrder: order2, pendingOthers: 1 });
+        eq('X82A the second task does not get the same stream', pickB, null);
+      }
+      {
+        // Be-tarteebi: do ummeedwaar ek hi pal, koi seq
+        // nahi — dawa nahi banta.
+        const e1 = gvEntry82({ firstSeenAt: t0 + 100, seq: null });
+        const e2 = gvEntry82({ url: GV82.replace('id=x82vid', 'id=x82vid2'), firstSeenAt: t0 + 100, seq: null });
+        eq('X82A an ambiguous pair is never claimed', streamFirst82.streamFirstEntryPick({ ...baseInput, entries: [e1, e2] }), null);
+      }
+    }
+
+    // ---------- B: engine — claimable stream jeet (brief i) ----------
+    {
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { streamFirstWaitMs: 600 });
+      eng.page = fakePage('x82-win');
+      eng._readTileMediaState = async () => null;
+      eng.netCapture.mainpageVideos.push(gvEntry82({}));
+      eng.netCapture.mainpageBodyForUrl = () => ({ buffer: mp4Buffer(2403644), at: Date.now() });
+      eng.netCapture.mainpageNoteWindow('k-x82-win', Date.now() - 500);
+      let savedArgs = null;
+      eng._saveBufferForTask = async (t, f, s, buf, url, route) => { savedArgs = { len: buf.length, url, route }; t.mediaSaved = true; return true; };
+      let tileRan = false;
+      let editorRan = false;
+      eng._tryTileMenuDownload = async () => { tileRan = true; return false; };
+      eng._tryEditorHarvest = async () => { editorRan = true; };
+      const task = { promptIndex: 0, captureKey: 'k-x82-win', videoId: 'k-x82-win', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+      const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
+      eq('X82B the attempt completes via the stream', res.ok, true);
+      eq('X82B the winning strategy is stream-first', res.strategy, 'stream-first');
+      eq('X82B the save point was reached with the stream-first route name', savedArgs && savedArgs.route, 'stream-first');
+      eq('X82B the saved bytes are the claimed stream address', savedArgs && savedArgs.url, GV82);
+      eq('X82B the tile-menu route never ran', tileRan, false);
+      eq('X82B the editor route never ran', editorRan, false);
+      ok('X82B the win is logged as via=stream-first with its own gap', logs.some(m => /\[ROOT\] via=stream-first gap=\d/.test(m)));
+    }
+
+    // ---------- C: koi stream nahi — bandha intezaar, phir fallback (brief ii) ----------
+    {
+      const eng = new FlowAutomationEngine({ onLog: () => {} }, { streamFirstWaitMs: 400 });
+      eng.page = fakePage('x82-none');
+      eng._readTileMediaState = async () => null;
+      eng._tryTileMenuDownload = async (t, f, s, attempts) => { attempts.push({ strategy: 'tile-menu', ok: false, note: 'stub' }); return false; };
+      eng._tryEditorHarvest = async (t, f, s, attempts) => { attempts.push({ strategy: 'editor-harvest', ok: false, note: 'stub' }); };
+      const task = { promptIndex: 0, captureKey: 'k-x82-none', videoId: 'k-x82-none', startTime: Date.now(), renderCompletedAt: Date.now() };
+      const startedAt = Date.now();
+      const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
+      const elapsed = Date.now() - startedAt;
+      eq('X82C with no stream the attempt still fails honestly', res.ok, false);
+      ok('X82C the stream-first wait honored its bound before falling back', elapsed >= 350);
+      eq('X82C the fallback order is stream-first, tile-menu, editor-harvest', res.attempts.map(a => a.strategy).join(','), 'stream-first,tile-menu,editor-harvest');
+    }
+
+    // ---------- D: sirf preview stream — dawa nahi (brief iii) ----------
+    {
+      const eng = new FlowAutomationEngine({ onLog: () => {} }, { streamFirstWaitMs: 300 });
+      eng.netCapture.mainpageVideos.push(gvEntry82({ url: GV82.replace('dur=10.054', 'dur=3.0') }));
+      eng.netCapture.mainpageNoteWindow('k-x82-prev', Date.now() - 100);
+      let saveCalls = 0;
+      eng._saveBufferForTask = async () => { saveCalls++; return true; };
+      const task = { promptIndex: 0, captureKey: 'k-x82-prev', videoId: 'k-x82-prev', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 100 };
+      const att = [];
+      const r = await eng._tryStreamFirstDownload(task, '/tmp', { duration: '10s' }, att);
+      eq('X82D a preview-only stream is not claimed', r, false);
+      eq('X82D nothing was saved from the preview', saveCalls, 0);
+      ok('X82D the refusal is recorded as a stream-first attempt', att.some(a => a.strategy === 'stream-first' && !a.ok));
+    }
+
+    // ---------- E: dawa + teacher + duplicate darwaze (brief iv + v) ----------
+    {
+      const eng = new FlowAutomationEngine({ onLog: () => {} });
+      eng.netCapture.mainpageVideos.push(gvEntry82({}));
+      const tA = { promptIndex: 0, captureKey: 'k-x82-a', videoId: 'k-x82-a', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+      const tB = { promptIndex: 1, captureKey: 'k-x82-b', videoId: 'k-x82-b', startTime: Date.now() - 900, renderCompletedAt: Date.now() - 400 };
+      eng._claimCandidateUrl(tA, GV82);
+      eq('X82E a stream claimed by one task is invisible to another', eng._streamFirstPickNow(tB, 'k-x82-b', 10, null), null);
+      ok('X82E the claiming task itself can still pick its stream', !!eng._streamFirstPickNow(tA, 'k-x82-a', 10, null));
+      eng.netCapture.mainpageVideos.push(gvEntry82({ url: FC_TEACHER, src: 'flow-content' }));
+      eq('X82E the teacher stream is never picked', eng._streamFirstPickNow(tB, 'k-x82-b', 10, FC_TEACHER), null);
+
+      const logs5 = [];
+      const eng5 = new FlowAutomationEngine({ onLog: (e) => logs5.push(e.message) });
+      const dupBuf = mp4Buffer(2403644);
+      const seedTask = { promptIndex: 0, captureKey: 'k-x82-seed', videoId: 'k-x82-seed' };
+      saveGuardMod82.recordSave(eng5._runSavedContentHashes, eng5._taskKey(seedTask), contentHash(dupBuf), 0);
+      const tDup = { promptIndex: 1, captureKey: 'k-x82-dup', videoId: 'k-x82-dup', startTime: Date.now() };
+      const rDup = await eng5._saveBufferForTask(tDup, '/tmp', { duration: '10s' }, dupBuf, GV82, 'stream-first');
+      eq('X82E bytes already saved for another task are refused at the save point', rDup, false);
+      ok('X82E the duplicate refusal is logged', logs5.some(m => m.includes('duplicate-save blocked')));
+    }
+
+    // ---------- F: gap ki tareef + hadd ke pin (brief vi) ----------
+    {
+      eq('X82F the production stream-first wait bound is 3s', streamFirst82.STREAM_FIRST_WAIT_MS, 3000);
+      eq('X82F the stream-first poll interval is 150ms', streamFirst82.STREAM_FIRST_POLL_MS, 150);
+      ok('X82F the engine logs the stream-first win with a gap', faSrc82.includes('[ROOT] via=stream-first gap=${g}s'));
+      const sfStart = faSrc82.indexOf('async _tryStreamFirstDownload');
+      const sfBody = faSrc82.slice(sfStart, faSrc82.indexOf('async _tryTileMenuDownload', sfStart));
+      ok('X82F the gap is measured from render-complete, the same definition as every other route', sfBody.includes('task.renderCompletedAt || task.startTime'));
+      ok('X82F the orchestrator dispatches the stream-first route', faSrc82.includes('await this._tryStreamFirstDownload(task, downloadFolder, settings, attempts)'));
+      eq('X82F the stream-first route method exists', typeof FlowAutomationEngine.prototype._tryStreamFirstDownload, 'function');
+    }
+
+    // ---------- S: PC-stats hisaab + UI shakal ----------
+    {
+      eq('X82S cpu delta: half the time busy is 50%', systemStats82.cpuUsagePercent({ idle: 100, total: 200 }, { idle: 200, total: 400 }), 50);
+      eq('X82S cpu delta: all idle is 0%', systemStats82.cpuUsagePercent({ idle: 100, total: 200 }, { idle: 300, total: 400 }), 0);
+      eq('X82S cpu delta: no idle advance is 100%', systemStats82.cpuUsagePercent({ idle: 100, total: 200 }, { idle: 100, total: 400 }), 100);
+      eq('X82S cpu delta: the first sample cannot give a percent', systemStats82.cpuUsagePercent(null, { idle: 100, total: 200 }), null);
+      eq('X82S cpu delta: a frozen clock gives no percent', systemStats82.cpuUsagePercent({ idle: 100, total: 200 }, { idle: 100, total: 200 }), null);
+      {
+        const cpusAt = (user, idle) => [{ times: { user, nice: 0, sys: 0, idle, irq: 0 } }];
+        const samples = [cpusAt(0, 100), cpusAt(50, 150), cpusAt(150, 150)];
+        let idx = 0;
+        const sampler = systemStats82.createCpuSampler(() => samples[Math.min(idx++, samples.length - 1)]);
+        eq('X82S the sampler primes on its first sample', sampler.sample(), null);
+        eq('X82S the sampler then reports the real delta', sampler.sample(), 50);
+        eq('X82S the sampler keeps tracking deltas', sampler.sample(), 100);
+      }
+      eq('X82S ram percent is (total-free)/total', systemStats82.ramUsagePercent(16000000000, 4000000000), 75);
+      eq('X82S ram percent with no total is null, never a fake zero', systemStats82.ramUsagePercent(0, 0), null);
+      eq('X82S ram percent clamps free above total', systemStats82.ramUsagePercent(100, 150), 0);
+      {
+        const p = systemStats82.buildSystemStatsPayload(
+          { cpuPercent: 56, totalmem: 16000000000, freemem: 2000000000, at: 123 },
+          { hostname: 'PC-ONE', osLabel: 'Windows 11 Pro', cpuModel: 'Intel Core', cpuCores: 8, disk: { path: 'C:\\dl', freeBytes: 5000000000, totalBytes: 50000000000 } }
+        );
+        eq('X82S the payload carries the cpu percent', p.cpuPercent, 56);
+        eq('X82S the payload computes the ram percent', p.ramPercent, 88);
+        eq('X82S the payload carries the hostname', p.hostname, 'PC-ONE');
+        eq('X82S the payload carries the cpu cores', p.cpuCores, 8);
+        eq('X82S the payload carries the disk free bytes', p.diskFreeBytes, 5000000000);
+        const pNull = systemStats82.buildSystemStatsPayload({ cpuPercent: null, totalmem: 0, freemem: 0 }, {});
+        eq('X82S an unsuppliable cpu stays null in the payload', pNull.cpuPercent, null);
+        eq('X82S an unsuppliable disk stays null in the payload', pNull.diskFreeBytes, null);
+      }
+      const topStripSrc82 = read82('lib/widgets/top_strip.dart');
+      ok('X82S the pill renders the owner format exactly', topStripSrc82.includes("'CPU $cpu% · RAM $ram% · Active $active/$total'"));
+      ok('X82S the pill opens About this PC', topStripSrc82.includes("'About this PC'") && topStripSrc82.includes('_showAboutPc'));
+      ok('X82S the bridge Dart side routes system-stats events', read82('lib/services/automation_bridge.dart').includes("case 'system-stats':") && read82('lib/services/automation_bridge.dart').includes('onSystemStats'));
+      ok('X82S the stats provider exists and holds the bridge callback', read82('lib/providers/system_stats_provider.dart').includes('class SystemStatsProvider'));
+      ok('X82S the provider is registered in main', read82('lib/main.dart').includes('SystemStatsProvider()'));
+      const bridgeSrc82 = read82('engine_bridge.js');
+      ok('X82S the bridge broadcasts system-stats', bridgeSrc82.includes("broadcastEvent('system-stats'"));
+      ok('X82S the bridge serves the stats endpoint', bridgeSrc82.includes("'/api/system/stats'"));
     }
   }
 

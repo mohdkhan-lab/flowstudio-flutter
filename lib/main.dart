@@ -8,6 +8,7 @@ import 'providers/activity_provider.dart';
 import 'providers/settings_provider.dart';
 import 'providers/generator_provider.dart';
 import 'providers/notifications_provider.dart';
+import 'providers/system_stats_provider.dart';
 import 'services/automation_bridge.dart';
 import 'widgets/top_strip.dart';
 import 'widgets/notification_center.dart';
@@ -42,6 +43,7 @@ class FlowStudioApp extends StatelessWidget {
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
         ChangeNotifierProvider(create: (_) => ActivityProvider()),
         ChangeNotifierProvider(create: (_) => GeneratorProvider()),
+        ChangeNotifierProvider(create: (_) => SystemStatsProvider()),
       ],
       child: Consumer<SettingsProvider>(
         builder: (context, settingsProv, _) {

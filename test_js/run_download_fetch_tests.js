@@ -357,10 +357,13 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   // ka backend link milta hi nahi; mainpage-harvest aur
   // grid-replay bhi attempt kram se bahar hain (un ka
   // code repo me rehta hai, kabhi aazmaya nahi jata).
-  eq('MAINPAGE first route is editor-harvest', firstRoute(), 'editor-harvest');
-  eq('MAINPAGE order starts with editor-harvest', DOWNLOAD_ROUTE_ORDER[0], 'editor-harvest');
+  // v2.48.76 (TILE-MENU FIRST — OWNER REVISION
+  // 2026-11-10): pehli koshish ab tile ke 3-dots menu
+  // ka Download hai; editor-harvest fallback hai.
+  eq('MAINPAGE first route is tile-menu', firstRoute(), 'tile-menu');
+  eq('MAINPAGE order starts with tile-menu', DOWNLOAD_ROUTE_ORDER[0], 'tile-menu');
   eq('MAINPAGE order ends with editor-harvest', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'editor-harvest');
-  eq('MAINPAGE route count', DOWNLOAD_ROUTE_ORDER.length, 1);
+  eq('MAINPAGE route count', DOWNLOAD_ROUTE_ORDER.length, 2);
   ok('MAINPAGE order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
   // Banned raaste — menu/viewer/backend/headless, aur
   // v2.48.73 se mainpage/grid bhi — tartib me kahin nahi:
@@ -378,16 +381,17 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   }
 
   // Fallback = tartib ka pehla rasta chhor kar baaki —
-  // ek hi rasta hai, is liye fallback KHALI hai.
+  // v2.48.76: fallback sirf editor-harvest hai.
   const fb = fallbackRouteOrder();
   eq('MAINPAGE fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
-  eq('MAINPAGE fallback is empty', fb.length, 0);
-  ok('MAINPAGE fallback has no editor-harvest', !fb.includes('editor-harvest'));
+  eq('MAINPAGE fallback count is one', fb.length, 1);
+  ok('MAINPAGE fallback is exactly editor-harvest', fb.length === 1 && fb[0] === 'editor-harvest');
+  ok('MAINPAGE fallback has no tile-menu', !fb.includes('tile-menu'));
   ok('MAINPAGE fallback has no headless-harvest', !fb.includes('headless-harvest'));
   ok('MAINPAGE fallback has no mainpage-harvest', !fb.includes('mainpage-harvest'));
   ok('MAINPAGE fallback has no grid-replay', !fb.includes('grid-replay'));
   eq('MAINPAGE fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
-  eq('MAINPAGE fallback list is exactly empty', JSON.stringify(fb), JSON.stringify([]));
+  eq('MAINPAGE fallback list is exactly editor-harvest', JSON.stringify(fb), JSON.stringify(['editor-harvest']));
 }
 
 // --- v2.48.28 (SERVER-FIRST): flow-content URL matcher ---

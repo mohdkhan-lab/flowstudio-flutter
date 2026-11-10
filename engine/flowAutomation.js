@@ -513,6 +513,41 @@ function settingsPillMismatch(requested, pill) {
 }
 
 /**
+ * v2.48.76 (Item B — SETTINGS REPAIR, owner order
+ * 2026-11-10): apply ke baad pill mangi hui settings se
+ * na mile to faisla — KHALIS hisaab. .75 ke live run
+ * (2026-11-10 09:54) me account (7) pehli hi 720p-vs-360p
+ * khilaf-warzi par chhor diya gaya tha, halanke panel
+ * aksar ek dobara-chunav se theek ho jata hai. Ab:
+ * apply + read-back ka chakkar kul SETTINGS_REPAIR_MAX_
+ * ATTEMPTS (3) dafa tak chal sakta hai; har nayi koshish
+ * se pehle ek [ROOT] settings-repair line banti hai.
+ * input = { attemptsDone, mismatchFields, pillText,
+ * neededText, maxAttempts }
+ *   attemptsDone — ab tak mukammal apply chakkar
+ *   mismatchFields — settingsPillMismatch ki fehrist
+ * Lautta hai { retry, nextAttempt, logLine } — retry
+ * sirf tab jab ikhtilaf asal ho AUR hadd baqi ho.
+ */
+const SETTINGS_REPAIR_MAX_ATTEMPTS = 3;
+
+function settingsRepairDecision(input) {
+  const o = input && typeof input === 'object' ? input : {};
+  const fields = Array.isArray(o.mismatchFields) ? o.mismatchFields.filter(f => typeof f === 'string' && f) : [];
+  const done = Number.isFinite(o.attemptsDone) ? Math.max(0, Math.floor(o.attemptsDone)) : 0;
+  const max = Number.isFinite(o.maxAttempts) && o.maxAttempts > 0 ? Math.floor(o.maxAttempts) : SETTINGS_REPAIR_MAX_ATTEMPTS;
+  if (fields.length === 0 || done >= max) return { retry: false, nextAttempt: done, logLine: null };
+  const nextAttempt = done + 1;
+  const pill = typeof o.pillText === 'string' && o.pillText.trim() ? o.pillText.replace(/\s+/g, ' ').trim() : 'unreadable';
+  const needed = typeof o.neededText === 'string' && o.neededText.trim() ? o.neededText.trim() : 'requested settings';
+  return {
+    retry: true,
+    nextAttempt,
+    logLine: `[ROOT] settings-repair field=${fields.join(',')} attempt=${nextAttempt} pill=${pill} needed=${needed}`
+  };
+}
+
+/**
  * v2.48.59 (OMNI 1.2 FLASH): Omni Flash 1.2 ki qeemat
  * PER-SECOND hai (Google Flow support page, verified
  * 2026-11-06; CREDIT-RATES-OMNI-1.2-2026-11-06.md) —
@@ -698,6 +733,18 @@ const TILE_DRIVE_MISSING = Symbol('fs-tile-drive-missing');
  *  - Task persistence (complete/fail) is the WorkerPool's job, via the
  *    onTaskCompleted / onTaskFailed callbacks.
  */
+
+/**
+ * v2.48.76 (Item C — TILE-MENU FIRST): tile ke 3-dots
+ * menu se Download click ke baad mukammal file ka
+ * intezaar is hadd tak bandha hai — is ke andar file na
+ * aaye to koshish editor-harvest fallback ko jagah de
+ * kar khatam hoti hai. (Menu ki apni talaash/hover wali
+ * mashineri native roop ki aam rawish hai; ye hadd sirf
+ * click-ke-baad-wale file-intezaar ki hai.)
+ */
+const TILE_MENU_FILE_WAIT_MS = 20000;
+
 class FlowAutomationEngine {
   constructor(callbacks = {}, options = {}) {
     this.onLog = callbacks.onLog || (() => {});
@@ -968,6 +1015,9 @@ class FlowAutomationEngine {
     this.stallTimeoutSecOverride = Number(options.stallTimeoutSec) > 0 ? Number(options.stallTimeoutSec) : null;
     this.recoveryWindowSecOverride = Number(options.recoveryWindowSec) > 0 ? Number(options.recoveryWindowSec) : null;
     this.recoveryScanEveryMs = Number(options.recoveryScanEveryMs) > 0 ? Number(options.recoveryScanEveryMs) : 15000;
+    // v2.48.76 (Item E): der se aane wali tile ke liye
+    // monitor ke tick par grid-poll ki muddat.
+    this.lateTilePollEveryMs = Number(options.lateTilePollEveryMs) > 0 ? Number(options.lateTilePollEveryMs) : 5000;
 
     // Credit port: every method is a no-op unless the pool binds it.
     const noopPort = {
@@ -1124,6 +1174,20 @@ class FlowAutomationEngine {
     // pakdi jati hai (ZEROCLICK2 cross-task contamination).
     // Hash kabhi log nahi hota — sirf andarooni hisaab hai.
     this._runSavedContentHashes = new Map();
+    // v2.48.76 (Item A + C): is run ki do aur kitabein —
+    // (1) _runClaimedCandidateUrls: candidate URL -> use
+    // dawa karne/jeetne wale task ki key. Ek candidate ek
+    // hi task ka hota hai; dusre task ki binding use
+    // dekhti hi nahi (immediate-plan / backend bandhan
+    // dono is se poochte hain). (2) _runPoisonedUrls: jin
+    // URLs ne is run me ghair-video (HTML) bytes diye —
+    // pehle zeher-saboot ke baad wo run-bhar ke liye
+    // mare hue hain, koi stage unhe dobara pesh/fetch
+    // nahi karega (purana _htmlPoisonGuard apni jagah
+    // barkarar; ye usi usool ka candidate-satah wala
+    // hissa hai). Dono launch par reset hote hain.
+    this._runClaimedCandidateUrls = new Map();
+    this._runPoisonedUrls = new Set();
     // v2.38.0: the browser session's REAL User-Agent, read once per
     // launch and reused by every direct fetch — the cookies a fetch
     // carries come from this same session, so the UA must name the
@@ -1398,6 +1462,10 @@ class FlowAutomationEngine {
       // v2.48.29: naya browser = nayi run-haalat — HTML-poison
       // wala hisaab bhi yahin se saaf (capture state ki tarah).
       this._htmlPoisonGuard = downloadFetch.createPoisonGuard();
+      // v2.48.76 (Item A + C): candidate dawa aur run-wide
+      // zeher wali kitabein bhi naye browser ke saath saaf.
+      this._runClaimedCandidateUrls = new Map();
+      this._runPoisonedUrls = new Set();
       this._fastDlFailedBlobs = new Set();
       this.page.on('response', async (res) => {
         try {
@@ -2613,7 +2681,7 @@ class FlowAutomationEngine {
   }
 
   // CONFIGURE GENERATION SETTINGS (exact Google Flow UI synchronization)
-  async configureGenerationSettings(settings, isRetry = false) {
+  async configureGenerationSettings(settings, isRetry = false, attemptNo = 1) {
     try {
       await this.ensureAgentModeDisabled();
       await sleep(1000);
@@ -2960,7 +3028,7 @@ class FlowAutomationEngine {
         if (modeType === 'Video' && finalPillText && (finalPillText.includes('Banana') || finalPillText.startsWith('Image'))) {
           if (!isRetry) {
             this.log(`The settings pill is still stuck on Image (${finalPillText}) — trying again to switch it to Video…`, 'warn');
-            return await this.configureGenerationSettings(settings, true);
+            return await this.configureGenerationSettings(settings, true, attemptNo);
           } else {
             this.log(`Settings pill par chetaavni: "${finalPillText}".`, 'warn');
           }
@@ -2993,6 +3061,36 @@ class FlowAutomationEngine {
           };
           const pillMismatch = settingsPillMismatch(requestedPill, parseSettingsPill(finalPillText));
           if (pillMismatch.length > 0) {
+            // v2.48.76 (Item B — SETTINGS REPAIR): pehli
+            // khilaf-warzi par account NAHI chhoda jata —
+            // panel aksar dobara-chunav se theek ho jata
+            // hai (field: 2026-11-10, account (7) 720p par
+            // atka tha aur pehli hi koshish par haar maan
+            // li gayi thi). Faisla khalis helper se aata
+            // hai (settingsRepairDecision): hadd ke andar
+            // ho to poora apply chakkar taze menu ke saath
+            // dobara — [ROOT] settings-repair line ke
+            // saath; hadd khatam ho tab hi asal mismatch
+            // natija caller tak jata hai (SETTINGS_
+            // MISMATCH, koi submit nahi, koi credit nahi).
+            const neededParts = [];
+            for (const f of pillMismatch) {
+              if (f === 'mode') neededParts.push(requestedPill.mode);
+              else if (f === 'resolution') neededParts.push(requestedPill.resolution);
+              else if (f === 'duration') neededParts.push(`${requestedPill.durationSec}s`);
+              else if (f === 'aspect') neededParts.push(requestedPill.aspect);
+            }
+            const repair = settingsRepairDecision({
+              attemptsDone: attemptNo,
+              mismatchFields: pillMismatch,
+              pillText: finalPillText,
+              neededText: neededParts.join(',')
+            });
+            if (repair.retry) {
+              this.log(repair.logLine, 'warn');
+              this.log(`Flow's settings panel does not match yet (${pillMismatch.join(', ')}) — opening the panel again and re-selecting (attempt ${repair.nextAttempt} of ${SETTINGS_REPAIR_MAX_ATTEMPTS})…`, 'warn');
+              return await this.configureGenerationSettings(settings, isRetry, repair.nextAttempt);
+            }
             this.log(`[ROOT] settings-mismatch pill="${finalPillText}" fields=${pillMismatch.join(',')} — run stopped before any submit; no credits spent`, 'error');
             this.log(`Flow's settings panel does not match this run's settings (${pillMismatch.join(', ')}) — the prompt was NOT sent and no credits were spent. This account will be skipped for the rest of the run.`, 'error');
             return { ok: false, settingsMismatch: pillMismatch, pillText: finalPillText };
@@ -4006,6 +4104,55 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.76 (Item A): candidate URL ka run-level dawa
+   * (claim). Ek candidate (flow-content / googlevideo
+   * URL) ek hi task ki video hai; jis task ne use pehle
+   * dawa kiya ya us se save kiya, baqi tasks ke liye wo
+   * candidate ADrishya hai — binding use pesh hi nahi
+   * karti. Apne hi task ka dobara dawa jaiz hai (retry
+   * rounds usi candidate par laut sakte hain).
+   */
+  _claimCandidateUrl(task, url) {
+    if (!task || !url) return;
+    try {
+      const key = this._taskKey(task);
+      if (key == null) return;
+      if (!this._runClaimedCandidateUrls) this._runClaimedCandidateUrls = new Map();
+      if (!this._runClaimedCandidateUrls.has(url)) this._runClaimedCandidateUrls.set(url, key);
+    } catch (e) {}
+  }
+
+  /** Candidate kisi AUR task ke dawa me hai kya? */
+  _candidateClaimedByOther(task, url) {
+    if (!task || !url || !this._runClaimedCandidateUrls) return false;
+    const owner = this._runClaimedCandidateUrls.get(url);
+    if (owner == null) return false;
+    return String(owner) !== String(this._taskKey(task));
+  }
+
+  /**
+   * v2.48.76 (Item C): ek URL ka zeher run-bhar ke liye
+   * darj karo — pehla saboot hi aakhri hai; dobara
+   * darj khamosh hai (line sirf pehli dafa banti hai,
+   * aur us me bhi sirf host ka naam — signed URL kabhi
+   * log nahi hota).
+   */
+  _markUrlPoisonedRunWide(url) {
+    if (!url || typeof url !== 'string') return;
+    if (!this._runPoisonedUrls) this._runPoisonedUrls = new Set();
+    if (this._runPoisonedUrls.has(url)) return;
+    this._runPoisonedUrls.add(url);
+    let host = 'unknown-host';
+    try { host = networkCapture.hostOf(url) || host; } catch (e) {}
+    this.log(`[ROOT] poisoned-url dropped host=${host} — it returned non-video bytes once and will not be fetched or offered again in this run`, 'warn');
+  }
+
+  /** URL is run me zeher-yafta hai kya? */
+  _urlPoisonedRunWide(url) {
+    return !!(url && this._runPoisonedUrls && this._runPoisonedUrls.has(url));
+  }
+
+  /**
    * v2.32.1: the set of paths THIS task may re-save onto — only the
    * files this very task already saved (its earlier download rounds)
    * plus the path recorded on the task object itself. Anything saved
@@ -4260,13 +4407,56 @@ class FlowAutomationEngine {
     // saveGuard ke khalis hisaab se hota hai, hash kabhi
     // log nahi hota.
     const bufHash = (!isImageMode && buffer && buffer.length > 0) ? saveGuard.contentHash(buffer) : null;
+    // v2.48.76 (Item A — DUPLICATE-SAVE PREVENTION): hash
+    // ka dawa (reservation) JAANCH KE SAATH HI, isi pal,
+    // koi await se PEHLE bandhta hai. .75 ka live saboot
+    // (2026-11-10, NSR Ep16): ek hi captured buffer do
+    // tasks ko bandh gaya; dono ne checkDuplicate pass
+    // kiya kyunki recordSave us waqt verify wale await
+    // ke BAAD hota tha — dono files likh gayin, byte-
+    // identical, aur sequence guard ne run ko INCOMPLETE
+    // kiya (ek asal take gayab). Ab: pehla save hash ko
+    // turant apne naam darj karta hai; dusra save — chahe
+    // kitni bhi deg race me ho — jaanch par hi rukta hai,
+    // file LIKHI HI NAHI jati, aur haara hua task apni
+    // asal video ke liye apni harvest jaari rakhta hai
+    // (ya park hota hai) — dusre ki file us ki save
+    // KABHI nahi ginati. Is call ki nakami par dawa
+    // chhoda jata hai (releaseHashReservation) taaki wahi
+    // task kisi aur buffer ke saath dobara dawa kar
+    // sake; FAST-DL wali wapsi (task.mediaSaved pehle
+    // se sach) par dawa NAHI chhoda jata — wo entry usi
+    // task ki khadi save ko darshati hai.
+    let hashReservedHere = false;
+    const releaseHashReservation = () => {
+      try {
+        if (hashReservedHere && bufHash && !task.mediaSaved) this._runSavedContentHashes.delete(bufHash);
+      } catch (e) {}
+      hashReservedHere = false;
+    };
     if (bufHash) {
       const verdict = saveGuard.checkDuplicate(this._runSavedContentHashes, this._taskKey(task), bufHash);
       if (verdict.duplicate) {
+        this.log(`[ROOT] duplicate-save blocked task=${task.promptIndex + 1} hash=${bufHash} already-saved-for=${verdict.otherPromptIndex + 1}`, 'warn');
         this.log(`[GUARD] duplicate-content rejected for Prompt #${task.promptIndex + 1} — fetched bytes are identical to Prompt #${verdict.otherPromptIndex + 1}'s saved file`, 'warn');
         task._saveRejectedReason = 'duplicate-content';
+        // v2.48.76 (Item A×C): ye candidate jeetne wale
+        // task ke naam dawa-basta hai — haare hue task ki
+        // baad wali binding rounds use dobara pesh nahi
+        // karengi (wo apni asal video ki talaash jaari
+        // rakhega ya park hoga).
+        try {
+          const winnerEntry = this._runSavedContentHashes.get(bufHash);
+          if (sourceUrl && winnerEntry && winnerEntry.key != null && !this._runClaimedCandidateUrls.has(sourceUrl)) {
+            this._runClaimedCandidateUrls.set(sourceUrl, winnerEntry.key);
+          }
+        } catch (e) {}
         releaseRaceClaim();
         return false;
+      }
+      if (!this._runSavedContentHashes.has(bufHash)) {
+        saveGuard.recordSave(this._runSavedContentHashes, this._taskKey(task), bufHash, task.promptIndex);
+        hashReservedHere = this._runSavedContentHashes.has(bufHash);
       }
     }
     // v1.7.0: never silently overwrite a file this engine did not
@@ -4290,6 +4480,7 @@ class FlowAutomationEngine {
         try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
         this.log(`The saved file ${fileName} failed the video check — this download has been treated as failed.`, 'warn');
         releaseRaceClaim();
+        releaseHashReservation();
         return false;
       }
       // v2.48.30: verify ke intezaar ke dauraan koi dusra
@@ -4300,6 +4491,7 @@ class FlowAutomationEngine {
         try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
         this.log(`[FAST-DL] [Prompt #${task.promptIndex + 1}] This save finished second in the race — the duplicate file was removed; the first save stands.`, 'warn');
         releaseRaceClaim();
+        releaseHashReservation();
         return false;
       }
     }
@@ -4326,7 +4518,15 @@ class FlowAutomationEngine {
     // v2.48.35 (GUARD): kamyaab save ki hash-kitab bandhi —
     // is run ke baaki tasks ke liye yahi hisaab duplicate
     // jaanch ka langar hai.
+    // v2.48.76 (Item A): darj aam taur par upar wale dawa
+    // (reservation) se pehle hi ho chuka hota hai — ye
+    // bulawa sirf peeche-ka-langar hai (recordSave maujood
+    // entry par no-op hai).
     if (bufHash) saveGuard.recordSave(this._runSavedContentHashes, this._taskKey(task), bufHash, task.promptIndex);
+    // v2.48.76 (Item A): jeeta hua candidate is task ke
+    // naam par dawa-basta hai — koi dusra task use ab
+    // bandh hi nahi sakta.
+    this._claimCandidateUrl(task, sourceUrl);
     this._markTaskUrlConsumed(task, sourceUrl);
     if (sourceUrl && this.capturedVideoBuffers && this.capturedVideoBuffers.has(sourceUrl)) {
       this.capturedVideoBytes -= this.capturedVideoBuffers.get(sourceUrl).length;
@@ -4783,6 +4983,10 @@ class FlowAutomationEngine {
       // video bhi de sakta hai.
       if (targetUrl && targetUrl.startsWith('http') && downloadFetch.looksLikeHtmlBuffer(savedBuffer)) {
         if (this._htmlPoisonGuard) this._htmlPoisonGuard.poison(targetUrl);
+        // v2.48.76 (Item C): wahi zeher ab run-wide
+        // candidate kitab me bhi — binding stages bhi is
+        // URL ko dobara pesh nahi karengi.
+        this._markUrlPoisonedRunWide(targetUrl);
         this.log(`[Prompt #${task.promptIndex + 1}] That link returned an HTML page — it is marked poisoned for this run and will not be fetched again.`, 'warn');
       }
       return false;
@@ -5407,6 +5611,7 @@ class FlowAutomationEngine {
         const verdict = saveGuard.checkDuplicate(this._runSavedContentHashes, this._taskKey(task), nativeHash);
         if (verdict.duplicate) {
           try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
+          this.log(`[ROOT] duplicate-save blocked task=${task.promptIndex + 1} hash=${nativeHash} already-saved-for=${verdict.otherPromptIndex + 1}`, 'warn');
           this.log(`[GUARD] duplicate-content rejected for Prompt #${task.promptIndex + 1} — fetched bytes are identical to Prompt #${verdict.otherPromptIndex + 1}'s saved file`, 'warn');
           return false;
         }
@@ -5602,7 +5807,7 @@ class FlowAutomationEngine {
   }
 
   /** Roop C: ⋮ (more options) menu ke andar ka Download item. */
-  async _nativeMenuForm(task, prep, downloadFolder, settings, tileIndexHint, attempts) {
+  async _nativeMenuForm(task, prep, downloadFolder, settings, tileIndexHint, attempts, awaitTimeoutMs = 0) {
     const n = task.promptIndex + 1;
     const findMoreControl = async (scopeIdx) => {
       try {
@@ -5766,7 +5971,11 @@ class FlowAutomationEngine {
     // resolution click ke baad browser download ke intezaar
     // ke saath-saath server channel par bhi nazar rehti hai
     // (taaza flow-content URL dikhte hi parallel fetch).
-    const ok = await this._nativeAwaitWithRace(task, prep, res.clickedAt || clickTime, 90000, downloadFolder, settings);
+    // v2.48.76 (Item C): tile-menu wali pehli koshish me
+    // file ka intezaar bandha hua hai (awaitTimeoutMs) —
+    // hadd ke andar file na aaye to editor fallback ko
+    // jagah milti hai; purane bulawon par 90s hi rehta hai.
+    const ok = await this._nativeAwaitWithRace(task, prep, res.clickedAt || clickTime, awaitTimeoutMs > 0 ? awaitTimeoutMs : 90000, downloadFolder, settings);
     if (ok) {
       // Owner ka standing rule: render→save gap har video ka ALAG.
       const gapBase = task.renderCompletedAt || clickTime;
@@ -5874,6 +6083,47 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.76 (Item C — TILE-MENU FIRST; OWNER REVISION
+   * 2026-11-10): render-complete par download ki SAB SE
+   * PEHLI koshish — tile ke 3-dots (⋯) menu se Download
+   * click, foran, bina kisi probe/intezaar ke. Tile
+   * fingerprint-first resolver se milti hai (andha index
+   * kabhi nahi); tile na mile to ye rasta EMAANDARI se
+   * haar manta hai aur editor-harvest fallback chalta
+   * hai. File browser-download se utarti hai aur dawa
+   * (claim) aam save point se hota hai (duration
+   * tasdeeq + Item A ki duplicate registry — native
+   * finalize bhi wahi kitab dekhta hai). File ka
+   * intezaar TILE_MENU_FILE_WAIT_MS tak bandha hai.
+   * Jeet par: '[ROOT] via=tile-menu gap=<X>s'.
+   */
+  async _tryTileMenuDownload(task, downloadFolder, settings, attempts, tileIndexHint) {
+    const n = (task.promptIndex || 0) + 1;
+    let tileIndex = null;
+    try { tileIndex = await this._resolveTileIndexForTask(task, typeof tileIndexHint === 'number' ? tileIndexHint : task.tileIndex); } catch (e) { tileIndex = null; }
+    if (typeof tileIndex !== 'number' || tileIndex < 0) {
+      this.log(`[ROOT] tile-menu skipped prompt=${n} reason=tile-not-found — the editor-harvest fallback will run`, 'warn');
+      attempts.push({ strategy: 'tile-menu', ok: false, note: 'the task\'s tile could not be located on the grid — the editor route runs next' });
+      return false;
+    }
+    let ok = false;
+    try {
+      ok = await this._downloadViaNativeUi(task, downloadFolder, settings, tileIndex, attempts, {
+        skipEditorForm: true,
+        menuAwaitTimeoutMs: TILE_MENU_FILE_WAIT_MS
+      });
+    } catch (e) { ok = false; }
+    if (ok || task.mediaSaved) {
+      const g = Math.max(0, (Date.now() - (task.renderCompletedAt || task.startTime || Date.now())) / 1000).toFixed(1);
+      this.log(`[ROOT] via=tile-menu gap=${g}s`, 'success');
+      attempts.push({ strategy: 'tile-menu', ok: true, note: 'the file came from the tile menu\'s Download item right after the render completed' });
+      return true;
+    }
+    attempts.push({ strategy: 'tile-menu', ok: false, note: `no completed file within ${Math.round(TILE_MENU_FILE_WAIT_MS / 1000)}s of the tile-menu Download click — the editor route runs next` });
+    return false;
+  }
+
+  /**
    * Native UI ke DO roop ek ke baad ek — pehla safal roop jeet
    * (inspection hissa 2, VERIFIED): pehle tile ke ⋮ menu ka exact
    * "Download" (grid se bahar jana hi nahi padta), phir editor ki
@@ -5884,11 +6134,17 @@ class FlowAutomationEngine {
     const prep = await this._nativePrepareWatch(downloadFolder);
     // v2.48.27: menu roop agar is round me pehle hi (menu-first)
     // chal chuka ho to yahan dobara NAHI — sirf editor roop.
+    // v2.48.76 (Item C): opts.skipEditorForm — tile-menu
+    // wali pehli koshish me editor roop NAHI chalta (editor
+    // sirf fallback route ka kaam hai); opts.menuAwaitTimeoutMs
+    // menu roop ke file-intezaar ki hadd hai.
     const forms = [];
     if (!opts.skipMenuForm) {
-      forms.push(() => this._nativeMenuForm(task, prep, downloadFolder, settings, tileIndexHint, attempts));
+      forms.push(() => this._nativeMenuForm(task, prep, downloadFolder, settings, tileIndexHint, attempts, opts.menuAwaitTimeoutMs || 0));
     }
-    forms.push(() => this._nativeEditorForm(task, prep, downloadFolder, settings, tileIndexHint, attempts));
+    if (!opts.skipEditorForm) {
+      forms.push(() => this._nativeEditorForm(task, prep, downloadFolder, settings, tileIndexHint, attempts));
+    }
     for (const run of forms) {
       if (this.isStopping) return false;
       let ok = false;
@@ -6040,7 +6296,10 @@ class FlowAutomationEngine {
     let bound = null;
     try { bound = this.netCapture.urlForKey(key); } catch (e) {}
     if (!bound && this._earlyBackend.has(key)) bound = this._earlyBackend.get(key);
-    if (bound && bound.url && !task.downloaded && !task.mediaSaved) {
+    // v2.48.76 (Item A + C): zeher-yafta ya dusre task ke
+    // dawa wala bandhan is task ko diya hi nahi jata.
+    if (bound && bound.url && !task.downloaded && !task.mediaSaved
+      && !this._urlPoisonedRunWide(bound.url) && !this._candidateClaimedByOther(task, bound.url)) {
       task.backendVideoUrl = bound.url;
       task.backendUrlVia = bound.via;
       if (!this.isStopping) this._kickBackendFetch(task, task._backendCtx);
@@ -6071,6 +6330,9 @@ class FlowAutomationEngine {
   async _onMainpageCandidate(info) {
     const entry = info && info.entry;
     if (!entry || !entry.url || !this.netCapture || this.isStopping) return;
+    // v2.48.76 (Item C): zeher-yafta candidate kisi task
+    // ko pesh hi nahi hota.
+    if (this._urlPoisonedRunWide(entry.url)) return;
     const tasks = [];
     try {
       for (const task of this._captureTasks.values()) {
@@ -6090,6 +6352,9 @@ class FlowAutomationEngine {
       let teacherUrl = null;
       try { teacherUrl = this.netCapture.teacherMintUrlForTemplate(null); } catch (e) {}
       if (teacherUrl && teacherUrl === entry.url) continue;
+      // v2.48.76 (Item A): dusre task ke dawa wala
+      // candidate is task ki binding ke liye adrishya.
+      if (this._candidateClaimedByOther(task, entry.url)) continue;
       let pendingOrder = [];
       let pendingOthers = 0;
       try {
@@ -6164,6 +6429,18 @@ class FlowAutomationEngine {
     if (!url || !ctx) return false;
     const n = (task.promptIndex || 0) + 1;
     if (task.mediaSaved) return true;
+    // v2.48.76 (Item A + C): zeher-yafta URL dobara fetch
+    // NAHI hota, aur dusre task ke dawa wala candidate is
+    // task ke liye adrishya hai — dono sooraton me ye
+    // rasta khamoshi se haar manta hai aur task apni
+    // baqi harvest par chalta hai. Jo URL yahan chalta
+    // hai wo isi task ke naam dawa ho jata hai.
+    if (this._urlPoisonedRunWide(url)) return false;
+    if (this._candidateClaimedByOther(task, url)) {
+      this.log(`[ROOT] candidate-skip task=${n} reason=claimed-by-other-task`, 'info');
+      return false;
+    }
+    this._claimCandidateUrl(task, url);
     // Pehchan: ye link network capture se bandha hai — yahi is task
     // ka apna hone ka saboot hai (tile wale apna-URL gate se upar
     // ki hifazat: workflowId / currentSrc / kram ki bandish).
@@ -6201,6 +6478,14 @@ class FlowAutomationEngine {
     try {
       const heldCap = (this.netCapture && typeof this.netCapture.mainpageBodyForUrl === 'function')
         ? this.netCapture.mainpageBodyForUrl(url) : null;
+      // v2.48.76 (Item C): kitab wali body HTML nikli to
+      // URL is run ke liye zeher-yafta hai — aage koi
+      // stage use dobara pesh nahi karega.
+      if (heldCap && heldCap.buffer && heldCap.buffer.length > 0
+        && !downloadFetch.looksLikeVideoBuffer(heldCap.buffer)
+        && downloadFetch.looksLikeHtmlBuffer(heldCap.buffer)) {
+        this._markUrlPoisonedRunWide(url);
+      }
       if (heldCap && heldCap.buffer && heldCap.buffer.length > 0 && downloadFetch.looksLikeVideoBuffer(heldCap.buffer)) {
         const capOk = await this._saveBufferForTask(task, ctx.downloadFolder, ctx.settings, heldCap.buffer, url, 'captured-buffer');
         if (capOk || task.mediaSaved) {
@@ -11547,9 +11832,28 @@ class FlowAutomationEngine {
       // editor rasta dobara aazmati hai (recovery isi
       // function se guzarti hai). Prompt KABHI dobara
       // submit nahi hota (sacred rule barkarar).
+      // v2.48.76 (Item C): owner ne .73 ka editor-only
+      // hukm PEHLI koshish ke liye badla — tartib ab
+      // ['tile-menu', 'editor-harvest'] hai
+      // (downloadRouteOrder.js wahid sachai rehti hai);
+      // editor fallback bilkul .73–.75 jaisa hi hai.
       for (const route of (task.downloadRouteOrder || [])) {
         if (task.mediaSaved || this.isStopping) break;
-        if (route === 'editor-harvest') {
+        if (route === 'tile-menu') {
+          // v2.48.76 (Item C): tartib ka pehla qadam —
+          // tile ke 3-dots menu se turant Download;
+          // bandhi hadd me file na aaye to loop agle
+          // raste (editor-harvest) par jata hai.
+          try {
+            await this._tryTileMenuDownload(task, downloadFolder, settings, attempts, tileIndexHint);
+          } catch (e) {
+            attempts.push({ strategy: 'tile-menu', ok: false, note: 'the tile-menu route hit a problem — the editor route ran next' });
+          } finally {
+            if (!task.mediaSaved) {
+              try { await this._returnToProjectGrid(); } catch (e) {}
+            }
+          }
+        } else if (route === 'editor-harvest') {
           try {
             await this._tryEditorHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
           } catch (e) {
@@ -11586,7 +11890,7 @@ class FlowAutomationEngine {
         }
       }
       // EMAANDAR FAIL: is ke baad koi rasta nahi bacha.
-      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: this video's editor playback stream did not produce its file, and the editor route is the only download route. The prompt was NOT resubmitted — the task parks for recovery, which retries the same editor route.`, 'warn');
+      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: neither the tile-menu download nor the editor route produced this video's file. The prompt was NOT resubmitted — the task parks for recovery, which retries the same routes.`, 'warn');
       return finishVideoAttempt({ ok: false, attempts });
     }
 
@@ -12406,6 +12710,22 @@ class FlowAutomationEngine {
               task._lastRecoveryScanAt = nowMs;
               await this._recoveryScanForTask(task, isImageMode);
             }
+            // v2.48.76 (Item E — LATE-TILE POLL): tile abhi
+            // 'absent' hai to monitor ke apne tick par hi
+            // project grid ki fingerprint talaash har
+            // lateTilePollEveryMs (5s) par chalti hai —
+            // der se aane wali tile ab 60s wali pehli
+            // scan ka intezaar nahi karti (.75 field,
+            // 2026-11-10: Prompt #6 ki tile 53s par mili
+            // thi — ab wo apne aane ke chand second ke
+            // andar bandh jayegi). _lastRecoveryScanAt
+            // stall-recovery ke saath share hai taaki ek
+            // hi task par scans ek saath na daudein.
+            if (stateNow === 'absent' && elapsedSec >= 5
+              && nowMs - (task._lastRecoveryScanAt || 0) >= this.lateTilePollEveryMs) {
+              task._lastRecoveryScanAt = nowMs;
+              await this._recoveryScanForTask(task, isImageMode);
+            }
           }
 
           // v2.6.0 — RENDER PROGRESS WATCHDOG (engine/
@@ -12905,4 +13225,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };

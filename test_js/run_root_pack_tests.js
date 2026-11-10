@@ -486,8 +486,12 @@ async function main() {
     // editor-harvest pehla, headless kram se bahar →
     // v2.48.73 (EDITOR-ONLY, owner decision 2026-11-09):
     // tartib SIRF editor-harvest; mainpage/grid bhi
-    // kram se bahar (code repo me rehta hai).
-    eq('MP-ORDER order is exactly editor-harvest only', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['editor-harvest']));
+    // kram se bahar (code repo me rehta hai) →
+    // v2.48.76 (TILE-MENU FIRST, owner revision
+    // 2026-11-10): tartib ab tile-menu (3-dots Download,
+    // pehli koshish) phir editor-harvest (fallback);
+    // mainpage/grid/headless kram se bahar hi rehte hain.
+    eq('MP-ORDER order is exactly tile-menu then editor-harvest', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['tile-menu', 'editor-harvest']));
     for (const banned of ['mainpage-harvest', 'grid-replay', 'headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'tile-src', 'quick-check']) {
       ok(`MP-ORDER ${banned} is absent from the order`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
     }
@@ -758,17 +762,22 @@ async function main() {
     const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
     eq('MP-FAIL inner returns not-ok', res.ok, false);
     // v2.48.73 (EDITOR-ONLY): kram sirf editor-harvest
-    // hai — editor haar jaye to koi dusri ranneeti
-    // aazmayi hi nahi jati; task park hota hai.
-    eq('MP-FAIL the task route order is the editor-only order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['editor-harvest']));
-    ok('MP-FAIL attempts carry editor-harvest first (v2.48.72)', res.attempts.some(a => a.strategy === 'editor-harvest'));
-    eq('MP-FAIL the only attempted strategy is editor-harvest', JSON.stringify(res.attempts.map(a => a.strategy)), JSON.stringify(['editor-harvest']));
+    // tha — editor haar jaye to koi dusri ranneeti
+    // aazmayi hi nahi jati thi; task park hota tha.
+    // v2.48.76 (TILE-MENU FIRST): kram ab tile-menu →
+    // editor-harvest hai; dono haar jayein tab hi
+    // emaandar fail. ('native-menu' tile-menu route ka
+    // andar ka qadam hai — route nahi.)
+    eq('MP-FAIL the task route order is tile-menu then editor-harvest', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['tile-menu', 'editor-harvest']));
+    ok('MP-FAIL attempts carry tile-menu', res.attempts.some(a => a.strategy === 'tile-menu'));
+    ok('MP-FAIL attempts carry editor-harvest', res.attempts.some(a => a.strategy === 'editor-harvest'));
+    eq('MP-FAIL tile-menu is attempted before editor-harvest', (() => { const s = res.attempts.map(a => a.strategy); return s.indexOf('tile-menu') >= 0 && s.indexOf('editor-harvest') > s.indexOf('tile-menu'); })(), true);
     ok('MP-FAIL attempts carry no mainpage-harvest (v2.48.73)', !res.attempts.some(a => a.strategy === 'mainpage-harvest'));
     ok('MP-FAIL attempts carry no grid-replay (v2.48.73)', !res.attempts.some(a => a.strategy === 'grid-replay'));
     ok('MP-FAIL attempts carry no headless-harvest (v2.48.72)', !res.attempts.some(a => a.strategy === 'headless-harvest'));
-    ok('MP-FAIL attempts carry no banned strategy', !res.attempts.some(a => ['replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-src', 'tile-src-fast', 'quick-check'].includes(a.strategy)));
+    ok('MP-FAIL attempts carry no banned strategy', !res.attempts.some(a => ['replay-context', 'direct-viewer', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-src', 'tile-src-fast', 'quick-check'].includes(a.strategy)));
     ok('MP-FAIL the honest-fail line was logged', logs.some(m => m.includes('Download failed honestly')));
-    ok('MP-FAIL the honest-fail line names the editor as the only route', logs.some(m => m.includes('Download failed honestly') && m.includes('editor route is the only download route')));
+    ok('MP-FAIL the honest-fail line names both routes', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the tile-menu download nor the editor route')));
     ok('MP-FAIL no bg flag anywhere in the log', !logs.some(m => m.includes('bg=')));
   }
   {
@@ -1632,18 +1641,21 @@ async function main() {
     // ko 'khula' deta hai, lekin koi stream nahi aati,
     // is liye editor attempt haar kar task park hota
     // hai.
-    ok('EH-FALL editor-harvest ran first in the cascade', seq.indexOf('editor-harvest') === 0);
+    // v2.48.76 (TILE-MENU FIRST): cascade ab tile-menu
+    // → editor-harvest hai — tile-menu pehle (us ke
+    // andar ka qadam 'native-menu' attempt bhi aata
+    // hai), editor fallback dusra; headless/mainpage/
+    // grid ab bhi cascade se bahar hain.
+    const routeSeq = seq.filter(s => ['tile-menu', 'editor-harvest'].includes(s));
+    eq('EH-FALL tile-menu ran first in the cascade, editor-harvest as fallback (v2.48.76)', JSON.stringify(routeSeq), JSON.stringify(['tile-menu', 'editor-harvest']));
     ok('EH-FALL headless-harvest did NOT run in the cascade', seq.indexOf('headless-harvest') === -1);
     ok('EH-FALL the task route order has no headless-harvest', !task.downloadRouteOrder.includes('headless-harvest'));
-    // v2.48.73: koi dusri ranneeti aazmayi hi nahi
-    // gayi — attempts sirf editor-harvest ke hain, aur
-    // haar ki line editor ko wahid rasta kehti hai.
     ok('EH-FALL mainpage-harvest did NOT run in the cascade (v2.48.73)', seq.indexOf('mainpage-harvest') === -1);
     ok('EH-FALL grid-replay did NOT run in the cascade (v2.48.73)', seq.indexOf('grid-replay') === -1);
-    eq('EH-FALL the only attempted strategy is editor-harvest', JSON.stringify(seq), JSON.stringify(['editor-harvest']));
-    ok('HH-FALL the honest-fail line names the editor as the only route', logs.some(m => m.includes('Download failed honestly') && m.includes('editor playback stream') && m.includes('editor route is the only download route') && !m.includes('grid replay')));
+    ok('EH-FALL attempts stay inside the tile-menu + editor family', seq.every(s => ['native-menu', 'tile-menu', 'editor-harvest'].includes(s)));
+    ok('HH-FALL the honest-fail line names both routes (v2.48.76)', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the tile-menu download nor the editor route')));
     eq('HH-FALL the probe still ran only once across rounds', st.probeCount, 1);
-    eq('HH-FALL the task route order is the editor-only order', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['editor-harvest']));
+    eq('HH-FALL the task route order is tile-menu then editor-harvest', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['tile-menu', 'editor-harvest']));
   }
   {
     // (h) v2.48.45 — LAUNCH DIAGNOSTICS + CLONE HARDENING.
@@ -5575,6 +5587,222 @@ async function main() {
     ok('X75 MODEL is the widest field (flex 3, ASPECT 3, others 2)', (barSrc75.match(/flex: 3,/g) || []).length === 2 && (barSrc75.match(/flex: 2,/g) || []).length === 3);
     ok('X75 all five fields share the same 34px control height', barSrc75.includes('height: 34'));
     ok('X75 the bar status text still ellipsizes only at the end of the full string', barSrc75.includes('overflow: TextOverflow.ellipsis') && barSrc75.includes('Live accounts'));
+  }
+
+  // ---------------------------------------------------------------------------
+  // X76. v2.48.76 — EP16 LIVE RUN (2026-11-10 09:54) KE
+  //   PAANCH FIX (owner: "jo jo bhi problem hai un sabhi
+  //   ko sahi karo"):
+  //   A. DUPLICATE-SAVE PREVENTION — ek hi captured
+  //      buffer do tasks ko save ho gaya tha (#3 ≡ #4
+  //      byte-identical; ek asal take gayab, run
+  //      INCOMPLETE). Ab hash ka dawa file likhne se
+  //      PEHLE, kisi await ke baghair bandhta hai; dusra
+  //      task file likhta hi nahi aur us ki save ginati
+  //      bhi nahi hoti; jeeta candidate jeetne wale ke
+  //      naam dawa-basta rehta hai.
+  //   B. SETTINGS REPAIR — account (7) pehli hi
+  //      720p/360p khilaf-warzi par chhor diya gaya tha;
+  //      ab apply chakkar hadd (3) tak khud theek hota
+  //      hai, har koshish [ROOT] settings-repair ke
+  //      saath; haar sirf asal, baar-baar wali nakami par.
+  //   C. TILE-MENU FIRST — render-complete par pehla
+  //      amal tile ke 3-dots menu ka Download (file ki
+  //      hadd bandhi hui); na aaye to editor-harvest
+  //      fallback (.73–.75 wala, hu-bahu). Zeher-yafta
+  //      URL pehle saboot ke baad run-bhar mara hua.
+  //   D. PARKED BUTTONS — Start All/Clear All head par
+  //      ek group me right-aligned; Start/Clear har row
+  //      ke right end par ek group me; ek hi size.
+  //   E. LATE-TILE POLL — tile monitor ke apne tick
+  //      par grid se milti hai (53s wali Prompt #6).
+  {
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+    const { execFileSync } = require('child_process');
+    const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+    const faSrc = read('engine/flowAutomation.js');
+    const { settingsRepairDecision, SETTINGS_REPAIR_MAX_ATTEMPTS, TILE_MENU_FILE_WAIT_MS } = require('../engine/flowAutomation');
+
+    // ---------- A: asal race, asal save point ----------
+    const dirA = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-x76a-'));
+    let bufA = null;
+    try {
+      const fx = path.join(dirA, 'fixture.mp4');
+      execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc2=duration=10:size=640x360:rate=10', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', fx], { stdio: 'pipe' });
+      bufA = fs.readFileSync(fx);
+      fs.unlinkSync(fx);
+    } catch (e) { bufA = null; }
+    ok('X76A a real mp4 fixture was generated (ffmpeg)', !!bufA && bufA.length > 100000);
+    if (bufA) {
+      const logsA = [];
+      const engA = new FlowAutomationEngine({ onLog: (e) => logsA.push(e.message) });
+      engA.currentAccount = { name: 'X76 Test' };
+      engA._downloadHelpers = { verify: { verifySavedFile: () => ({ ok: true, method: 'stub', durationSec: 10, expectedSec: 10, reason: 'ok' }), saveVerifyLine: () => 'save-verify stub' } };
+      const urlRace = 'https://flow-content.google/video/x76-race';
+      const tA1 = { promptIndex: 2, captureKey: 'k-x76a-1', videoId: 'k-x76a-1', taskId: 'x76a-t1', startTime: Date.now() };
+      const tA2 = { promptIndex: 3, captureKey: 'k-x76a-2', videoId: 'k-x76a-2', taskId: 'x76a-t2', startTime: Date.now() };
+      const [rA1, rA2] = await Promise.all([
+        engA._saveBufferForTask(tA1, dirA, { duration: '10s' }, bufA, urlRace),
+        engA._saveBufferForTask(tA2, dirA, { duration: '10s' }, bufA, urlRace)
+      ]);
+      eq('X76A exactly one of two racing saves of one buffer succeeds', [rA1, rA2].filter(Boolean).length, 1);
+      eq('X76A the first save wins the race', rA1, true);
+      eq('X76A the loser is refused before any write', rA2, false);
+      eq('X76A the loser is not counted as saved', tA2.mediaSaved === true, false);
+      eq('X76A the loser reason is duplicate-content', tA2._saveRejectedReason, 'duplicate-content');
+      eq('X76A exactly one file was written for the two tasks', fs.readdirSync(dirA).filter(f => f.endsWith('.mp4')).length, 1);
+      ok('X76A the blocked line names loser, hash and winner', logsA.some(m => m.startsWith('[ROOT] duplicate-save blocked task=4 hash=') && m.includes('already-saved-for=3')));
+      eq('X76A the won candidate is claimed for the winner', engA._candidateClaimedByOther(tA2, urlRace), true);
+      eq('X76A the winner is not blocked from its own candidate', engA._candidateClaimedByOther(tA1, urlRace), false);
+      const bufA2 = Buffer.from(bufA);
+      bufA2[bufA2.length - 20] ^= 0xff;
+      const tA3 = { promptIndex: 4, captureKey: 'k-x76a-3', videoId: 'k-x76a-3', taskId: 'x76a-t3', startTime: Date.now() };
+      eq('X76A a different buffer still saves normally', await engA._saveBufferForTask(tA3, dirA, { duration: '10s' }, bufA2, 'https://flow-content.google/video/x76-other'), true);
+
+      // Dawa ki rihaai: reservation ke BAAD fail hone
+      // wali save hash ko azaad karti hai — agla task
+      // usi buffer par duplicate-block NAHI hota (apni
+      // asal wajah se haarta hai).
+      let bufSmall = null;
+      try {
+        const fx2 = path.join(dirA, 'fixture-small.mp4');
+        execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=duration=10:size=128x72:rate=5', '-c:v', 'libx264', '-pix_fmt', 'yuv420p', fx2], { stdio: 'pipe' });
+        bufSmall = fs.readFileSync(fx2);
+        fs.unlinkSync(fx2);
+      } catch (e) { bufSmall = null; }
+      if (bufSmall) {
+        const tF1 = { promptIndex: 5, captureKey: 'k-x76a-5', videoId: 'k-x76a-5', taskId: 'x76a-t5', startTime: Date.now() };
+        const tF2 = { promptIndex: 6, captureKey: 'k-x76a-6', videoId: 'k-x76a-6', taskId: 'x76a-t6', startTime: Date.now() };
+        eq('X76A a too-small file fails the video check', await engA._saveBufferForTask(tF1, dirA, { duration: '10s' }, bufSmall, 'https://flow-content.google/video/x76-small'), false);
+        eq('X76A its reservation was released (not duplicate-blocked next time)', await engA._saveBufferForTask(tF2, dirA, { duration: '10s' }, bufSmall, 'https://flow-content.google/video/x76-small'), false);
+        eq('X76A the second save failed on its own merits, not as a duplicate', tF2._saveRejectedReason === 'duplicate-content', false);
+      }
+    }
+    ok('X76A the reservation is recorded before the file write', (() => {
+      const start = faSrc.indexOf('async _saveBufferForTask(');
+      const s = faSrc.slice(start, start + 16000);
+      const rec = s.indexOf('hashReservedHere = this._runSavedContentHashes.has(bufHash)');
+      const wr = s.indexOf('fs.writeSync');
+      return rec > 0 && wr > rec;
+    })());
+    ok('X76A the blocked line carries task, hash and winner', faSrc.includes('duplicate-save blocked task=${task.promptIndex + 1} hash=${bufHash} already-saved-for=${verdict.otherPromptIndex + 1}'));
+    ok('X76A saveGuard itself is untouched by the pack (registry lives outside it)', !read('engine/saveGuard.js').includes('duplicate-save blocked'));
+
+    // ---------- B: settings repair ----------
+    eq('X76B the repair budget is three attempts', SETTINGS_REPAIR_MAX_ATTEMPTS, 3);
+    const dB1 = settingsRepairDecision({ attemptsDone: 1, mismatchFields: ['resolution'], pillText: 'Video · 720p · 10s crop_9_16 x1', neededText: '360p' });
+    eq('X76B a first mismatch retries instead of abandoning', dB1.retry, true);
+    eq('X76B the retry is attempt 2', dB1.nextAttempt, 2);
+    eq('X76B the repair log line has the mandated shape', dB1.logLine, '[ROOT] settings-repair field=resolution attempt=2 pill=Video · 720p · 10s crop_9_16 x1 needed=360p');
+    const dB2 = settingsRepairDecision({ attemptsDone: 2, mismatchFields: ['resolution'], pillText: 'Video · 720p · 10s crop_9_16 x1', neededText: '360p' });
+    eq('X76B a second mismatch retries as attempt 3', dB2.retry && dB2.nextAttempt === 3, true);
+    eq('X76B after the bounded attempts the account may be skipped', settingsRepairDecision({ attemptsDone: 3, mismatchFields: ['resolution'], pillText: 'x', neededText: '360p' }).retry, false);
+    eq('X76B no mismatch means no repair', settingsRepairDecision({ attemptsDone: 1, mismatchFields: [] }).retry, false);
+    ok('X76B configure carries the attempt number', faSrc.includes('async configureGenerationSettings(settings, isRetry = false, attemptNo = 1)'));
+    ok('X76B the final gate consults the repair decision', faSrc.includes('settingsRepairDecision({'));
+    ok('X76B a retry re-runs the whole configure with the next attempt', faSrc.includes('return await this.configureGenerationSettings(settings, isRetry, repair.nextAttempt);'));
+    ok('X76B the repair decision is logged as a [ROOT] line', faSrc.includes('this.log(repair.logLine,'));
+
+    // ---------- C: tile-menu first + poison ----------
+    eq('X76C the shipped tile-menu file-wait bound is 20s', TILE_MENU_FILE_WAIT_MS, 20000);
+    eq('X76C the route order is tile-menu then editor-harvest', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['tile-menu', 'editor-harvest']));
+    {
+      const loopStart = faSrc.indexOf('for (const route of (task.downloadRouteOrder');
+      const loopSlice = faSrc.slice(loopStart, loopStart + 3200);
+      ok('X76C the dispatch tries tile-menu before editor-harvest', loopSlice.indexOf("route === 'tile-menu'") >= 0 && loopSlice.indexOf("route === 'editor-harvest'") > loopSlice.indexOf("route === 'tile-menu'"));
+    }
+    ok('X76C tile-menu runs the menu form only (editor form skipped, bound passed)', faSrc.includes('skipEditorForm: true') && faSrc.includes('menuAwaitTimeoutMs: TILE_MENU_FILE_WAIT_MS'));
+    ok('X76C the tile-menu route exists', typeof FlowAutomationEngine.prototype._tryTileMenuDownload, 'function');
+    {
+      const logsT = [];
+      const engT = new FlowAutomationEngine({ onLog: (e) => logsT.push(e.message) });
+      engT._resolveTileIndexForTask = async () => -1;
+      const attT = [];
+      eq('X76C tile-menu gives up honestly when the tile cannot be found', await engT._tryTileMenuDownload({ promptIndex: 0, startTime: Date.now() }, '/tmp', {}, attT), false);
+      ok('X76C the tile-not-found skip is logged', logsT.some(m => m.includes('tile-menu skipped') && m.includes('reason=tile-not-found')));
+      ok('X76C the skip leaves the fallback to run (attempt recorded)', attT.some(a => a.strategy === 'tile-menu' && !a.ok));
+      engT._resolveTileIndexForTask = async () => 0;
+      engT._downloadViaNativeUi = async () => true;
+      const tWin = { promptIndex: 1, startTime: Date.now() - 3000, renderCompletedAt: Date.now() - 2000 };
+      eq('X76C tile-menu claims the file when the menu download lands', await engT._tryTileMenuDownload(tWin, '/tmp', {}, []), true);
+      ok('X76C the win is logged as via=tile-menu with its own gap', logsT.some(m => /\[ROOT\] via=tile-menu gap=\d/.test(m)));
+    }
+    {
+      // Orchestrator tartib: tile-menu haar jaye to
+      // editor-harvest fallback usi round me chalta hai;
+      // tile-menu jeet jaye to editor kabhi nahi chalta.
+      const orderC = [];
+      const engO = new FlowAutomationEngine({ onLog: () => {} });
+      engO.page = fakePage('x76-order');
+      engO._readTileMediaState = async () => null;
+      engO._tryTileMenuDownload = async (t, f, s, attempts) => { orderC.push('tile-menu'); attempts.push({ strategy: 'tile-menu', ok: false, note: 'stub' }); return false; };
+      engO._tryEditorHarvest = async () => { orderC.push('editor-harvest'); };
+      const taskO = { promptIndex: 0, captureKey: 'k-x76-order', videoId: 'k-x76-order', startTime: Date.now(), renderCompletedAt: Date.now() };
+      const resO = await engO._downloadTaskMediaInner(taskO, '/tmp', { duration: '10s' }, 0);
+      eq('X76C the orchestrator runs tile-menu before the editor fallback', orderC.join(','), 'tile-menu,editor-harvest');
+      eq('X76C the orchestrator honest-fails when both routes fail', resO.ok, false);
+
+      const engW = new FlowAutomationEngine({ onLog: () => {} });
+      engW.page = fakePage('x76-order-win');
+      engW._readTileMediaState = async () => null;
+      let editorRan = false;
+      engW._tryTileMenuDownload = async (t, f, s, attempts) => { t.mediaSaved = true; attempts.push({ strategy: 'tile-menu', ok: true }); return true; };
+      engW._tryEditorHarvest = async () => { editorRan = true; };
+      const taskW = { promptIndex: 0, captureKey: 'k-x76-order-win', videoId: 'k-x76-order-win', startTime: Date.now(), renderCompletedAt: Date.now() };
+      const resW = await engW._downloadTaskMediaInner(taskW, '/tmp', { duration: '10s' }, 0);
+      eq('X76C a tile-menu win completes the attempt', resW.ok, true);
+      eq('X76C the winning strategy is tile-menu', resW.strategy, 'tile-menu');
+      eq('X76C the editor fallback never runs after a tile-menu win', editorRan, false);
+    }
+    {
+      // Zeher: pehla saboot hi aakhri — URL dobara na
+      // fetch hota hai, na kisi binding me pesh hota hai.
+      const logsP = [];
+      const engP = new FlowAutomationEngine({ onLog: (e) => logsP.push(e.message) });
+      const urlP = 'https://flow-content.google/video/poisoned-x76';
+      engP._markUrlPoisonedRunWide(urlP);
+      engP._markUrlPoisonedRunWide(urlP);
+      eq('X76C poison is recorded run-wide', engP._urlPoisonedRunWide(urlP), true);
+      eq('X76C the poison drop is logged exactly once', logsP.filter(m => m.includes('poisoned-url dropped')).length, 1);
+      ok('X76C the poison log names only the host, never the signed URL', logsP.some(m => m.includes('poisoned-url dropped host=flow-content.google')));
+      const tP = { promptIndex: 0, videoId: 'k-x76p', taskId: 'x76p-t', backendVideoUrl: urlP, startTime: Date.now() };
+      eq('X76C a poisoned URL is never fetched again', await engP._fetchBackendAndSave(tP, { downloadFolder: '/tmp', settings: {} }), false);
+      // Dawa: ek task ka candidate dusre ke liye adrishya.
+      const tC1 = { promptIndex: 0, videoId: 'k-x76c1', taskId: 'x76c-t1' };
+      const tC2 = { promptIndex: 1, videoId: 'k-x76c2', taskId: 'x76c-t2', backendVideoUrl: 'https://flow-content.google/video/claimed-x76', startTime: Date.now() };
+      engP._claimCandidateUrl(tC1, tC2.backendVideoUrl);
+      eq('X76C a claimed candidate is invisible to another task', engP._candidateClaimedByOther(tC2, tC2.backendVideoUrl), true);
+      eq('X76C the claimer itself is not blocked', engP._candidateClaimedByOther(tC1, tC2.backendVideoUrl), false);
+      eq('X76C a fetch for a candidate claimed by another task refuses', await engP._fetchBackendAndSave(tC2, { downloadFolder: '/tmp', settings: {} }), false);
+      ok('X76C the claim refusal is logged', logsP.some(m => m.includes('candidate-skip task=2 reason=claimed-by-other-task')));
+      ok('X76C poison marking is wired into the stream content gate', faSrc.includes('this._markUrlPoisonedRunWide(targetUrl);'));
+      ok('X76C poison marking is wired into the captured-buffer branch', faSrc.includes('this._markUrlPoisonedRunWide(url);'));
+    }
+
+    // ---------- D: parked buttons ----------
+    {
+      const ppSrc = read('lib/widgets/progress_panel.dart');
+      ok('X76D one shared parked button style exists', ppSrc.includes('_parkedButtonStyle') && ppSrc.includes('minimumSize: const Size(64, 28)'));
+      eq('X76D all four parked buttons use the shared style', (ppSrc.match(/style: _parkedButtonStyle/g) || []).length, 4);
+      const headSlice = ppSrc.slice(ppSrc.indexOf('PARKED DOWNLOADS'), ppSrc.indexOf('parked.take(4)'));
+      ok('X76D the head buttons form one grouped row at the right', headSlice.includes('MainAxisSize.min') && headSlice.includes("'Start All'") && headSlice.includes("'Clear All'"));
+      const rowSlice = ppSrc.slice(ppSrc.indexOf('Widget _parkedRow'), ppSrc.indexOf('// v2.33.0: the incomplete banner'));
+      ok('X76D row buttons are centred on the text line', rowSlice.includes('crossAxisAlignment: CrossAxisAlignment.center'));
+      ok('X76D row buttons form one grouped row at the right end', rowSlice.includes('MainAxisSize.min') && rowSlice.includes("'Start'") && rowSlice.includes("'Clear'"));
+      ok('X76D the section behaviour is unchanged (max 4 rows, full-list actions)', ppSrc.includes('parked.take(4)') && ppSrc.includes('startAllParked()') && ppSrc.includes('clearAllParked()'));
+    }
+
+    // ---------- E: late-tile poll ----------
+    {
+      const engE = new FlowAutomationEngine({ onLog: () => {} });
+      eq('X76E the late-tile poll cadence defaults to 5s', engE.lateTilePollEveryMs, 5000);
+      eq('X76E the late-tile poll cadence is overridable', new FlowAutomationEngine({ onLog: () => {} }, { lateTilePollEveryMs: 1234 }).lateTilePollEveryMs, 1234);
+      const pollIdx = faSrc.indexOf("stateNow === 'absent' && elapsedSec >= 5");
+      ok('X76E the monitor polls the grid for absent tiles on its own tick', pollIdx > 0 && faSrc.slice(pollIdx, pollIdx + 500).includes('lateTilePollEveryMs') && faSrc.slice(pollIdx, pollIdx + 500).includes('_recoveryScanForTask'));
+    }
+    try { fs.rmSync(dirA, { recursive: true, force: true }); } catch (e) {}
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

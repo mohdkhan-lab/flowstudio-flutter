@@ -18,6 +18,19 @@ import 'video_player_dialog.dart';
 class ProgressPanel extends StatelessWidget {
   const ProgressPanel({super.key});
 
+  // v2.48.76 (Item D): ONE button style for the whole
+  // Parked Downloads section — head (Start All / Clear
+  // All) and every row (Start / Clear) share the same
+  // size, padding and text size, so the four buttons
+  // always sit as one tidy, aligned group instead of
+  // scattering at different sizes and baselines.
+  static final ButtonStyle _parkedButtonStyle = TextButton.styleFrom(
+    minimumSize: const Size(64, 28),
+    padding: const EdgeInsets.symmetric(horizontal: 8),
+    textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  );
+
   static String _baseName(String path) {
     final parts = path.replaceAll('\\', '/').split('/');
     return parts.isNotEmpty ? parts.last : path;
@@ -240,13 +253,24 @@ class ProgressPanel extends StatelessWidget {
                 ),
               ),
               const Spacer(),
-              TextButton(
-                onPressed: () => generator.startAllParked(),
-                child: const Text('Start All'),
-              ),
-              TextButton(
-                onPressed: () => generator.clearAllParked(),
-                child: const Text('Clear All'),
+              // v2.48.76 (Item D): the two head buttons as
+              // ONE right-aligned group, same size and
+              // baseline as the row buttons below.
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  TextButton(
+                    style: _parkedButtonStyle,
+                    onPressed: () => generator.startAllParked(),
+                    child: const Text('Start All'),
+                  ),
+                  const SizedBox(width: 4),
+                  TextButton(
+                    style: _parkedButtonStyle,
+                    onPressed: () => generator.clearAllParked(),
+                    child: const Text('Clear All'),
+                  ),
+                ],
               ),
             ],
           ),
@@ -274,7 +298,11 @@ class ProgressPanel extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 3),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        // v2.48.76 (Item D): buttons centred on the text
+        // block's line, grouped at the row's right end —
+        // same shared style (size + baseline) as the
+        // section head's Start All / Clear All.
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Expanded(
             child: Column(
@@ -292,13 +320,21 @@ class ProgressPanel extends StatelessWidget {
               ],
             ),
           ),
-          TextButton(
-            onPressed: running ? null : () => generator.startParkedItem(item),
-            child: Text(running ? 'Checking…' : 'Start'),
-          ),
-          TextButton(
-            onPressed: running ? null : () => generator.clearParkedItem(item),
-            child: const Text('Clear'),
+          Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              TextButton(
+                style: _parkedButtonStyle,
+                onPressed: running ? null : () => generator.startParkedItem(item),
+                child: Text(running ? 'Checking…' : 'Start'),
+              ),
+              const SizedBox(width: 4),
+              TextButton(
+                style: _parkedButtonStyle,
+                onPressed: running ? null : () => generator.clearParkedItem(item),
+                child: const Text('Clear'),
+              ),
+            ],
           ),
         ],
       ),

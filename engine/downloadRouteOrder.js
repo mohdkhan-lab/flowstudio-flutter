@@ -128,9 +128,33 @@
 // to seedha save point par dete hain ('captured-buffer'
 // / editor-harvest via line ke saath); fetch sirf tab
 // jab kitab me mukammal body na ho.
+//
+// v2.48.76 (TILE-MENU FIRST — OWNER REVISION 2026-11-10):
+// owner ne .73 ke editor-only hukm ko PEHLI koshish ke
+// liye KHUD badla hai — un ke alfaaz ka saar: "video
+// bante hi editor open hota hai — mujhe ek millisecond
+// ka time bhi nahi lagna chahiye; exact video bante hi
+// editor open kare ya phir 3 dots par click karke turant
+// download hona chahiye." Tartib ab do qadmon ki hai:
+//   1. 'tile-menu' — render-complete par SAB SE PEHLA
+//      amal: tile ke 3-dots (⋯) menu se Download click
+//      (native machinery, v2.30-era ka field-sabit roop);
+//      file browser-download se utarti hai, dawa (claim)
+//      aam save point se (duration tasdeeq + .76 ki
+//      duplicate registry). File ki muddat bandhi hui
+//      hai (TILE_MENU_FILE_WAIT_MS) — us ke andar file na
+//      aaye to agla rasta.
+//   2. 'editor-harvest' — .73–.75 wala editor rasta,
+//      hu-bahu (captured-buffer pehle, 3b in-flight
+//      usool ke saath) — tile-menu haar jaye tab hi.
+// 'mainpage-harvest' / 'grid-replay' / 'headless-harvest'
+// attempt kram se BAHAR hi rehte hain (code repo me
+// rehta hai, aazmaya nahi jata). Editor kabhi PEHLA amal
+// nahi raha ab — lekin fallback ke taur par barkarar hai.
 // ---------------------------------------------------------------------------
 
 const DOWNLOAD_ROUTE_ORDER = Object.freeze([
+  'tile-menu',
   'editor-harvest'
 ]);
 

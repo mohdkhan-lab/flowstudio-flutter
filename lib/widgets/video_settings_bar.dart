@@ -20,6 +20,11 @@ import 'tactile_components.dart';
 // the download_mode setting). Still ONE row: every field is Expanded
 // and labels scale down (the v2.28.0 FittedBox pattern), so the bar
 // fits 1024×768 with no overflow and no new scroll area.
+// v2.48.86 (owner-approved dropdown Design 1): the selectors'
+// open menu is a custom MenuAnchor overlay — field width,
+// rounded corners, gold hairline border, soft shadow, gold
+// selected row with a ✓ — painted from AppTheme tokens (white
+// menu in the light theme). Selection logic is unchanged.
 // v2.48.75 (owner): the DOWNLOAD selector leaves the bar — the
 // download mode is a Settings-only choice now (Settings → Defaults →
 // DOWNLOAD MODE, the same default_download_mode binding; runs keep
@@ -296,53 +301,165 @@ class VideoSettingsBar extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 4),
-        Container(
-          height: 30,
-          padding: const EdgeInsets.symmetric(horizontal: 5),
-          decoration: BoxDecoration(
-            color: AppTheme.inputBg,
-            borderRadius: BorderRadius.circular(7),
-            border: Border.all(color: AppTheme.borderSoft),
-            boxShadow: [
-              BoxShadow(
-                color: AppTheme.dark ? const Color(0xFF0F172A) : AppTheme.borderSoft,
-                offset: const Offset(0, 1.5),
-                blurRadius: AppTheme.dark ? 0 : 1.0,
+        // v2.48.86 (owner-approved dropdown Design 1): the open
+        // menu is no longer the stock DropdownButton overlay (a
+        // flat block, wider than its field, no border, a grey
+        // selected band — the owner's screenshot complaint). A
+        // MenuAnchor menu in the owner's design language instead:
+        //   · menu width == THIS field's width
+        //   · rounded corners (10px) + a 1px gold hairline border
+        //   · a soft drop shadow over the surface below
+        //   · the selected row wears a gold tint, gold bold text
+        //     and a ✓ at its right edge
+        //   · the hovered row wears a lighter tint
+        // All colours come from AppTheme tokens, so the LIGHT
+        // theme (the owner's active surface) gets a white menu,
+        // gold hairline, light-gold selected tint with dark-gold
+        // text, and dark palettes get the sampled dark look.
+        // Values, items and the onChanged write path are exactly
+        // what the stock dropdown drove — a visual restyle of
+        // the menu overlay only.
+        LayoutBuilder(
+          builder: (context, fieldConstraints) {
+            final fieldWidth = fieldConstraints.maxWidth;
+            final current = items.contains(value) ? value : items.first;
+            final selectedTint = AppTheme.accentGold.withValues(
+              alpha: AppTheme.dark ? 0.20 : 0.14,
+            );
+            final hoverTint = AppTheme.accentGold.withValues(
+              alpha: AppTheme.dark ? 0.10 : 0.07,
+            );
+            final selectedText =
+                AppTheme.dark ? AppTheme.accentAmber : AppTheme.accentText;
+            return MenuAnchor(
+              alignmentOffset: const Offset(0, 2),
+              style: MenuStyle(
+                backgroundColor:
+                    WidgetStatePropertyAll(AppTheme.surfaceElevated),
+                elevation: const WidgetStatePropertyAll(8),
+                shadowColor: WidgetStatePropertyAll(
+                  Colors.black.withValues(alpha: 0.35),
+                ),
+                padding: const WidgetStatePropertyAll(EdgeInsets.all(4)),
+                minimumSize: WidgetStatePropertyAll(Size(fieldWidth, 0)),
+                maximumSize: WidgetStatePropertyAll(Size(fieldWidth, 340)),
+                shape: WidgetStatePropertyAll(
+                  RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(10),
+                    side: BorderSide(
+                      color: AppTheme.accentGold.withValues(
+                        alpha: AppTheme.dark ? 0.5 : 0.75,
+                      ),
+                      width: 1,
+                    ),
+                  ),
+                ),
               ),
-            ],
-          ),
-          child: DropdownButtonHideUnderline(
-            child: DropdownButton<String>(
-              value: items.contains(value) ? value : items.first,
-              dropdownColor: AppTheme.surfaceElevated,
-              isDense: true,
-              isExpanded: true,
-              style: TextStyle(
-                fontSize: 9.5,
-                fontWeight: FontWeight.bold,
-                color: AppTheme.textMain,
-              ),
-              icon: Icon(Icons.keyboard_arrow_down, size: 13, color: AppTheme.textDim),
-              items: items.map((String item) {
-                return DropdownMenuItem<String>(
-                  value: item,
-                  // v2.28.0: ONE line always — FittedBox scales the
-                  // label down to the column width instead of letting
-                  // it wrap ("Omni 1.1 / Flash" on two lines).
-                  child: FittedBox(
-                    fit: BoxFit.scaleDown,
-                    alignment: Alignment.centerLeft,
-                    child: Text(
-                      display[item] ?? item,
-                      maxLines: 1,
-                      softWrap: false,
+              menuChildren: [
+                for (final item in items)
+                  MenuItemButton(
+                    closeOnActivate: true,
+                    onPressed: () => onChanged(item),
+                    style: ButtonStyle(
+                      minimumSize:
+                          const WidgetStatePropertyAll(Size(0, 32)),
+                      padding: const WidgetStatePropertyAll(
+                        EdgeInsets.symmetric(horizontal: 10),
+                      ),
+                      textStyle: const WidgetStatePropertyAll(
+                        TextStyle(fontSize: 9.5, fontWeight: FontWeight.bold),
+                      ),
+                      foregroundColor: WidgetStatePropertyAll(
+                        item == current ? selectedText : AppTheme.textMain,
+                      ),
+                      backgroundColor:
+                          WidgetStateProperty.resolveWith((states) {
+                        if (item == current) return selectedTint;
+                        if (states.contains(WidgetState.hovered) ||
+                            states.contains(WidgetState.focused)) {
+                          return hoverTint;
+                        }
+                        return null;
+                      }),
+                    ),
+                    trailingIcon: item == current
+                        ? Icon(Icons.check, size: 12, color: selectedText)
+                        : null,
+                    child: SizedBox(
+                      width: fieldWidth - 28,
+                      // v2.28.0: ONE line always — FittedBox scales
+                      // the label down to the column width instead
+                      // of letting it wrap ("Omni 1.1 / Flash" on
+                      // two lines).
+                      child: FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          display[item] ?? item,
+                          maxLines: 1,
+                          softWrap: false,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+              builder: (context, controller, child) {
+                return GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    if (controller.isOpen) {
+                      controller.close();
+                    } else {
+                      controller.open();
+                    }
+                  },
+                  child: Container(
+                    height: 30,
+                    padding: const EdgeInsets.symmetric(horizontal: 5),
+                    decoration: BoxDecoration(
+                      color: AppTheme.inputBg,
+                      borderRadius: BorderRadius.circular(7),
+                      border: Border.all(color: AppTheme.borderSoft),
+                      boxShadow: [
+                        BoxShadow(
+                          color: AppTheme.dark
+                              ? const Color(0xFF0F172A)
+                              : AppTheme.borderSoft,
+                          offset: const Offset(0, 1.5),
+                          blurRadius: AppTheme.dark ? 0 : 1.0,
+                        ),
+                      ],
+                    ),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              display[current] ?? current,
+                              maxLines: 1,
+                              softWrap: false,
+                              style: TextStyle(
+                                fontSize: 9.5,
+                                fontWeight: FontWeight.bold,
+                                color: AppTheme.textMain,
+                              ),
+                            ),
+                          ),
+                        ),
+                        Icon(
+                          Icons.keyboard_arrow_down,
+                          size: 13,
+                          color: AppTheme.textDim,
+                        ),
+                      ],
                     ),
                   ),
                 );
-              }).toList(),
-              onChanged: onChanged,
-            ),
-          ),
+              },
+            );
+          },
         ),
       ],
     );

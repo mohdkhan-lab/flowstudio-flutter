@@ -12,6 +12,7 @@ import 'providers/system_stats_provider.dart';
 import 'services/automation_bridge.dart';
 import 'models/activity_log.dart';
 import 'widgets/top_strip.dart';
+import 'widgets/bottom_status_bar.dart';
 import 'widgets/notification_center.dart';
 import 'widgets/sidebar_accounts.dart';
 import 'widgets/prompts_editor.dart';
@@ -448,6 +449,13 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
                 },
               ),
             ),
+
+            // v2.48.86 (owner-approved Design B): the bottom
+            // status bar — TOTAL CREDITS left, the live PC-stats
+            // chips right. A fixed-height layout row under the
+            // Expanded body, so the flexible centre absorbs it
+            // and the FIT LAW holds.
+            const BottomStatusBar(),
               ],
             ),
             const Positioned.fill(child: NotificationOverlay()),

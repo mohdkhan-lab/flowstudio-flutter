@@ -6929,8 +6929,15 @@ async function main() {
         eq('X82S an unsuppliable disk stays null in the payload', pNull.diskFreeBytes, null);
       }
       const topStripSrc82 = read82('lib/widgets/top_strip.dart');
-      ok('X82S the pill renders the owner format exactly', topStripSrc82.includes("'CPU $cpu% · RAM $ram% · Active $active/$total'"));
-      ok('X82S the pill opens About this PC', topStripSrc82.includes("'About this PC'") && topStripSrc82.includes('_showAboutPc'));
+      // v2.48.86: the stats UI MOVED — the top-strip pill became
+      // the bottom status bar's three chips (owner Design B).
+      // These pins follow the UI to its new home; the per-chip
+      // values keep the owner's exact numbers (X86 pins the new
+      // structure in full).
+      const bottomBarSrc82 = read82('lib/widgets/bottom_status_bar.dart');
+      ok('X82S the stats chips render the owner values exactly', bottomBarSrc82.includes("'CPU $cpu%'") && bottomBarSrc82.includes("'RAM $ram%'") && bottomBarSrc82.includes("'Active $active/$total'"));
+      ok('X82S the stats chips open About this PC', bottomBarSrc82.includes("'About this PC'") && bottomBarSrc82.includes('_showAboutPc'));
+      ok('X82S the top strip no longer carries the stats pill', !topStripSrc82.includes('TOTAL CREDITS') && !topStripSrc82.includes('_buildPcStatsSegment'));
       ok('X82S the bridge Dart side routes system-stats events', read82('lib/services/automation_bridge.dart').includes("case 'system-stats':") && read82('lib/services/automation_bridge.dart').includes('onSystemStats'));
       ok('X82S the stats provider exists and holds the bridge callback', read82('lib/providers/system_stats_provider.dart').includes('class SystemStatsProvider'));
       ok('X82S the provider is registered in main', read82('lib/main.dart').includes('SystemStatsProvider()'));
@@ -7170,6 +7177,76 @@ async function main() {
     const ppSrc84 = read84('lib/widgets/progress_panel.dart');
     ok('X84 the Progress panel renders the external run',
       ppSrc84.includes('externalItems') && ppSrc84.includes('_externalSection') && ppSrc84.includes('EXTERNAL RUN'));
+  }
+
+  // ---------------------------------------------------------------------------
+  // X86 (v2.48.86) — OWNER-APPROVED DESIGNS, theme-aware.
+  // ITEM 1 (Design B): TOTAL CREDITS + the live PC stats leave
+  // the top strip for a BottomStatusBar at the very bottom of
+  // the window — LEFT: gold star motif + the credits number
+  // (gold, bold) + "Credits"; RIGHT: THREE separate chips
+  // [CPU n%] [RAM n%] [Active a/b] carrying the About-this-PC
+  // tap/hover. ITEM 2 (dropdown Design 1): the settings-bar
+  // selectors' open menu is a MenuAnchor overlay — menu width
+  // == field width, rounded 10px corners, 1px gold hairline,
+  // soft shadow, selected = gold tint + gold bold text + ✓,
+  // hover = lighter tint. All colours are AppTheme tokens, so
+  // the owner's LIGHT theme (white menu/bar, dark-gold accents)
+  // and every dark palette render the same design language.
+  // ---------------------------------------------------------------------------
+  {
+    const fsx86 = require('fs');
+    const pathx86 = require('path');
+    const read86 = (rel) => fsx86.readFileSync(pathx86.join(__dirname, '..', rel), 'utf8');
+
+    // --- Item 1: the bottom status bar ---
+    const barSrc86 = read86('lib/widgets/bottom_status_bar.dart');
+    ok('X86 the bottom status bar widget exists', barSrc86.includes('class BottomStatusBar'));
+    ok('X86 the bar is laid out in the main screen under the body', read86('lib/main.dart').includes('const BottomStatusBar()'));
+    ok('X86 Design B left: star motif + gold credits number + the word Credits',
+      barSrc86.includes('Icons.auto_awesome') && barSrc86.includes('accounts.totalCredits') && barSrc86.includes("'Credits'"));
+    ok('X86 Design B right: three separate chips (CPU / RAM / Active)',
+      barSrc86.includes("_chip('CPU $cpu%')") && barSrc86.includes("_chip('RAM $ram%')") && barSrc86.includes("_chip('Active $active/$total')"));
+    ok('X86 the chips carry About this PC (tap + tooltip, as the pill did)',
+      barSrc86.includes("message: 'About this PC'") && barSrc86.includes('_showAboutPc'));
+    ok('X86 the chips stay absent until the first real sample (no placeholders)',
+      barSrc86.includes('if (cpu == null || ram == null) return const SizedBox.shrink();'));
+    ok('X86 the bar is token-painted with the gold accent line on top',
+      barSrc86.includes('AppTheme.panelGrad') && barSrc86.includes('AppTheme.accentGold.withValues(alpha: 0.55)'));
+    const topSrc86 = read86('lib/widgets/top_strip.dart');
+    ok('X86 the top strip keeps brand + bell and drops credits/stats',
+      topSrc86.includes('_buildBellButton') && !topSrc86.includes('TOTAL CREDITS') && !topSrc86.includes('totalCredits'));
+
+    // --- Item 2: the dropdown menu restyle ---
+    const vsbSrc86 = read86('lib/widgets/video_settings_bar.dart');
+    ok('X86 the selectors use a MenuAnchor menu', vsbSrc86.includes('MenuAnchor(') && vsbSrc86.includes('MenuItemButton('));
+    ok('X86 the bar no longer uses the stock DropdownButton overlay', !vsbSrc86.includes('DropdownButton<String>'));
+    ok('X86 the menu width equals the field width (min/max size from the field)',
+      vsbSrc86.includes('minimumSize: WidgetStatePropertyAll(Size(fieldWidth, 0))') && vsbSrc86.includes('maximumSize: WidgetStatePropertyAll(Size(fieldWidth, 340))'));
+    ok('X86 the menu has rounded corners + the gold hairline border',
+      vsbSrc86.includes('BorderRadius.circular(10)') && vsbSrc86.includes('AppTheme.accentGold.withValues(') && vsbSrc86.includes('width: 1'));
+    ok('X86 the menu floats on a soft shadow over the elevated surface',
+      vsbSrc86.includes('AppTheme.surfaceElevated') && vsbSrc86.includes('shadowColor'));
+    ok('X86 the selected row shows a check mark', vsbSrc86.includes('Icons.check') && vsbSrc86.includes('trailingIcon'));
+    ok('X86 selected + hover tints resolve from the accent token',
+      vsbSrc86.includes('selectedTint') && vsbSrc86.includes('hoverTint') && vsbSrc86.includes('WidgetState.hovered'));
+    ok('X86 selection still writes through the same onChanged path', vsbSrc86.includes('onPressed: () => onChanged(item)'));
+    ok('X86 the closed field keeps its 30px height', vsbSrc86.includes('height: 30'));
+
+    // --- Item 3: light-theme contrast repair (owner: the light
+    // theme was washed out on white; dark must stay crisp and
+    // UNCHANGED). The owner's surface is the gold LIGHT palette.
+    const themeSrc86 = read86('lib/theme/app_theme.dart');
+    const goldLight86 = themeSrc86.slice(themeSrc86.indexOf("'gold': AppPalette(\n      id: 'gold', dark: false"));
+    ok('X86 gold-light textDim deepened to slate-600', goldLight86.includes('textDim: Color(0xFF475569)'));
+    ok('X86 gold-light textFaint raised to slate-500 (≈4.5:1+ on white)', goldLight86.includes('textFaint: Color(0xFF64748B)'));
+    ok('X86 gold-light border strengthened to slate-300', goldLight86.includes('border: Color(0xFFCBD5E1)'));
+    ok('X86 gold-light borderSoft is the old border (slate-200)', goldLight86.includes('borderSoft: Color(0xFFE2E8F0)'));
+    ok('X86 gold-light inputs get the slate-100 fill, distinct from white cards', goldLight86.includes('inputBg: Color(0xFFF1F5F9)'));
+    ok('X86 no light palette keeps the washed-out slate-400 faint', !themeSrc86.includes('textFaint: Color(0xFF94A3B8)'));
+    ok('X86 the DARK gold palette is untouched by the contrast repair',
+      themeSrc86.includes('textDim: Color(0xFFD4AF37)') && themeSrc86.includes('borderSoft: Color(0x3DFBBF24)'));
+    ok('X86 the By MK caption uses the text-tuned accent', read86('lib/widgets/top_strip.dart').includes('color: AppTheme.accentText'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

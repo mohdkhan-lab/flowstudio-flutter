@@ -1,10 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
-import '../providers/accounts_provider.dart';
 import '../providers/notifications_provider.dart';
 import '../providers/settings_provider.dart';
-import '../providers/system_stats_provider.dart';
 import 'tactile_components.dart';
 
 class TopStrip extends StatelessWidget {
@@ -20,9 +18,7 @@ class TopStrip extends StatelessWidget {
     // event happened to rebuild it — the owner's "the theme does
     // not change the whole interface". The value itself is unused.
     context.watch<SettingsProvider>();
-    final accounts = context.watch<AccountsProvider>();
     final notif = context.watch<NotificationsProvider>();
-    final pcStats = context.watch<SystemStatsProvider>();
 
     return TactileSectionContainer(
       margin: const EdgeInsets.fromLTRB(14, 12, 14, 0),
@@ -93,7 +89,13 @@ class TopStrip extends StatelessWidget {
                       'By MK',
                       style: TextStyle(
                         fontSize: 9.5,
-                        color: AppTheme.accentAmber,
+                        // v2.48.86: accentText, not accentAmber —
+                        // accentText is the palette's text-tuned
+                        // accent (readable on the light theme);
+                        // accentAmber is a decorative gradient
+                        // companion and washes out as small text
+                        // on white.
+                        color: AppTheme.accentText,
                         fontWeight: FontWeight.w500,
                       ),
                     ),
@@ -103,7 +105,7 @@ class TopStrip extends StatelessWidget {
                 // Version Pill — Tactile 3D
                 TactileChip(
                   color: AppTheme.accentText,
-                  label: 'v2.48.85',
+                  label: 'v2.48.86',
                   height: 22,
                   borderRadius: 11,
                   bevelDepth: 1.5,
@@ -160,41 +162,12 @@ class TopStrip extends StatelessWidget {
           ),
           const SizedBox(width: 14),
 
-          // Total Credits & Sync
-          Column(
-            crossAxisAlignment: CrossAxisAlignment.end,
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                'TOTAL CREDITS',
-                style: TextStyle(
-                  fontSize: 8.5,
-                  fontWeight: FontWeight.w800,
-                  letterSpacing: 0.8,
-                  color: AppTheme.textFaint,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(width: 8),
-          Text(
-            // v2.46.3 (owner ka order): kul yog par bhi koi '~'
-            // nahi — sirf asal number dikhega (v2.45.0 ka estimate
-            // nishan owner ne hatane ko kaha).
-            '${accounts.totalCredits}',
-            style: TextStyle(
-              fontSize: 26,
-              fontWeight: FontWeight.w900,
-              color: AppTheme.accentGold,
-              height: 1,
-            ),
-          ),
-          // v2.30.0 (owner): the Sync button that sat next to TOTAL
-          // CREDITS is REMOVED — the top shows only the label and the
-          // number. Syncing lives in the sidebar (Sync Selected /
-          // Verify All), where it always also worked.
-          _buildPcStatsSegment(context, pcStats, accounts),
-          const SizedBox(width: 14),
+          // v2.48.86 (owner-approved Design B): the credits total
+          // and the live PC-stats pill have LEFT the top strip — they
+          // live in the new BottomStatusBar at the very bottom of
+          // the window (credits left, three stats chips right,
+          // About this PC on the chips). The strip keeps the
+          // brand, the social icons and the bell.
           // Notification Center: the bell — red badge with the
           // unread count; tapping toggles the panel overlay
           // (NotificationOverlay in main.dart).
@@ -202,145 +175,6 @@ class TopStrip extends StatelessWidget {
                 ],
               ),
             ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  // v2.48.83 (live PC-stats pill — owner order 2026-11-10): the
-  // engine's REAL, live PC stats in the owner's exact format —
-  // 'CPU 56% · RAM 89% · Active 1/1'. CPU/RAM come from the
-  // engine's ~2s system-stats samples of this very PC; Active is
-  // the accounts with a live generation browser right now, of all
-  // accounts. Until the first real sample lands the segment is
-  // simply absent — no placeholder numbers, ever. The whole
-  // segment rides inside the strip's scale-down cluster, so the
-  // FIT LAW holds (nothing overflows; the cluster shrinks as a
-  // unit). Tapping the pill opens About this PC.
-  Widget _buildPcStatsSegment(
-    BuildContext context,
-    SystemStatsProvider pcStats,
-    AccountsProvider accounts,
-  ) {
-    final cpu = pcStats.cpuPercent;
-    final ram = pcStats.ramPercent;
-    if (cpu == null || ram == null) return const SizedBox.shrink();
-    final active = accounts.accounts.where((a) => a.isActive).length;
-    final total = accounts.accounts.length;
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        const SizedBox(width: 14),
-        Container(width: 1, height: 24, color: AppTheme.borderSoft),
-        const SizedBox(width: 14),
-        Tooltip(
-          message: 'About this PC',
-          child: InkWell(
-            borderRadius: BorderRadius.circular(11),
-            onTap: () => _showAboutPc(context, pcStats.stats),
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-              decoration: BoxDecoration(
-                color: AppTheme.overlay08,
-                borderRadius: BorderRadius.circular(11),
-                border: Border.all(color: AppTheme.borderSoft),
-              ),
-              child: Text(
-                'CPU $cpu% · RAM $ram% · Active $active/$total',
-                style: TextStyle(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w600,
-                  color: AppTheme.textMain,
-                  height: 1,
-                ),
-              ),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-
-  // About this PC — every value is the engine's real sample for
-  // this machine; a field the platform could not supply is left
-  // out rather than filled in.
-  void _showAboutPc(BuildContext context, Map<String, dynamic>? stats) {
-    if (stats == null) return;
-    String gb(dynamic bytes) {
-      if (bytes is num) return (bytes / 1073741824).toStringAsFixed(1);
-      return '';
-    }
-
-    final rows = <MapEntry<String, String>>[];
-    final hostname = stats['hostname']?.toString() ?? '';
-    if (hostname.isNotEmpty) rows.add(MapEntry('PC name', hostname));
-    final os = stats['os']?.toString() ?? '';
-    if (os.isNotEmpty) rows.add(MapEntry('OS', os));
-    final cpuModel = stats['cpuModel']?.toString() ?? '';
-    if (cpuModel.isNotEmpty) {
-      final cores = stats['cpuCores'];
-      rows.add(MapEntry(
-        'CPU',
-        cores is num ? '$cpuModel · ${cores.round()} cores' : cpuModel,
-      ));
-    }
-    if (stats['ramTotalBytes'] is num) {
-      rows.add(MapEntry('RAM', '${gb(stats['ramTotalBytes'])} GB total'));
-    }
-    if (stats['diskFreeBytes'] is num && stats['diskTotalBytes'] is num) {
-      final path = stats['diskPath']?.toString() ?? '';
-      rows.add(MapEntry(
-        'Disk free',
-        '${gb(stats['diskFreeBytes'])} GB free of ${gb(stats['diskTotalBytes'])} GB'
-        '${path.isNotEmpty ? ' — $path' : ''}',
-      ));
-    }
-    if (rows.isEmpty) return;
-    showDialog(
-      context: context,
-      builder: (dialogContext) => AlertDialog(
-        title: const Text('About this PC'),
-        content: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            for (final row in rows)
-              Padding(
-                padding: const EdgeInsets.symmetric(vertical: 3),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    SizedBox(
-                      width: 76,
-                      child: Text(
-                        row.key,
-                        style: TextStyle(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w700,
-                          color: AppTheme.textDim,
-                        ),
-                      ),
-                    ),
-                    Expanded(
-                      child: Text(
-                        row.value,
-                        style: TextStyle(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w600,
-                          color: AppTheme.textMain,
-                        ),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-          ],
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(dialogContext).pop(),
-            child: const Text('Close'),
           ),
         ],
       ),

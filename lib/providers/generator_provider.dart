@@ -28,6 +28,24 @@ class GeneratorProvider with ChangeNotifier {
   // a later Generate run's own cards.
   final List<PromptItem> _recoveryItems = [];
   final Map<String, PromptItem> _recoveryByTaskId = {};
+  // v2.48.85 (P1 completion — owner's blanket rule: ANY
+  // running process must be visible in Progress): cards
+  // for a run that started OUTSIDE this screen — the
+  // engine-side route (MCP flowstudio_generate, or an
+  // MCP redo). The bridge announces such a run with a
+  // 'run-started' event carrying its exact task list;
+  // the provider adopts one card per task here, keyed by
+  // engine task id, and the run's own task-updated /
+  // video-progress / video-completed events drive them
+  // exactly like an in-app run's cards. Deliberately NOT
+  // part of _items: these prompts were never in the
+  // Prompts box, and adopting them must never disturb a
+  // later Generate run's own cards or its state machine.
+  final List<PromptItem> _externalItems = [];
+  final Map<String, PromptItem> _externalByTaskId = {};
+  String _externalRunLabel = '';
+  String _externalRunTag = '';
+  Timer? _externalWatchdog;
   GenerationState _state = GenerationState.idle;
   final int _currentIndex = 0;
   // v2.30.3 (phantom progress fix): true only once a run has
@@ -108,6 +126,21 @@ class GeneratorProvider with ChangeNotifier {
     // first item still generating.
     AutomationBridge.instance.onVideoCompleted = (data) {
       _stampEngineEvent();
+      // v2.48.85 (P1 completion): a completion that belongs
+      // to an ADOPTED external card lands on that card —
+      // but only when no OWN item matches precisely
+      // (index/text): the loose fallbacks inside
+      // _matchCompletedItem stay reserved for own runs, so
+      // an external event can never settle an own card and
+      // an own completion can never be stolen by a stale
+      // external card.
+      if (_matchTaskItem(data) == null) {
+        final ext = _matchExternalItem(data);
+        if (ext != null) {
+          _applyExternalCompleted(ext, data);
+          return;
+        }
+      }
       final item = _matchCompletedItem(data);
       if (item == null) return;
       // Notification Center: remember the pre-event state so the
@@ -203,7 +236,24 @@ class GeneratorProvider with ChangeNotifier {
           completed: statusStr == 'Completed',
           notifyFailures: statusStr != 'Stopped',
         );
+        // v2.48.85: the same terminal status settles any
+        // ADOPTED external cards still open — an external
+        // run's end must not leave its cards spinning.
+        // (Its per-task outcomes already landed through
+        // task-updated / video-completed; this is only
+        // the net for a card whose own event never came.)
+        _settleExternalRun(reason);
       }
+    };
+    // v2.48.85 (P1 completion): an ENGINE-side run (the
+    // MCP direct route, or an MCP redo) announces itself
+    // — adopt live Progress cards for it so NO run is
+    // invisible. The echo of this app's OWN starts is
+    // recognised by originToken and ignored (its cards
+    // already exist and are driven as before).
+    AutomationBridge.instance.onRunStarted = (data) {
+      _stampEngineEvent();
+      _adoptExternalRun(data);
     };
     // v2.30.1: the engine's per-task updates (WorkerPool.onTaskUpdate)
     // reach the app as 'task-updated' SSE events — until now the
@@ -224,7 +274,18 @@ class GeneratorProvider with ChangeNotifier {
         _applyRecoveryUpdate(data);
         return;
       }
-      final item = _matchTaskItem(data);
+      // v2.48.85 (P1 completion): own items match first
+      // (unchanged); an update that matches none of them
+      // may belong to an ADOPTED external card. External
+      // cards take the same status transitions below, but
+      // raise no notification popups — their cards and the
+      // Activity log are their record.
+      var item = _matchTaskItem(data);
+      var external = false;
+      if (item == null) {
+        item = _matchExternalItem(data);
+        external = item != null;
+      }
       if (item == null) return;
       final statusStr = data['status']?.toString() ?? '';
       if (statusStr == 'done') {
@@ -251,13 +312,16 @@ class GeneratorProvider with ChangeNotifier {
           // paths this 'done' IS the download landing (see the
           // v2.30.3 note above) — notify it like the
           // video-completed path does. The status guard above
-          // keeps it to the transition.
-          NotificationsProvider.shared?.add(
-            type: NotificationType.download,
-            title: 'Download complete',
-            message: _downloadMessage(item),
-            fileName: item.outputFileName,
-          );
+          // keeps it to the transition. Adopted external
+          // cards stay silent here (v2.48.85).
+          if (!external) {
+            NotificationsProvider.shared?.add(
+              type: NotificationType.download,
+              title: 'Download complete',
+              message: _downloadMessage(item),
+              fileName: item.outputFileName,
+            );
+          }
           notifyListeners();
         }
       } else if (statusStr == 'generating') {
@@ -273,19 +337,28 @@ class GeneratorProvider with ChangeNotifier {
       } else if (statusStr == 'failed') {
         // Only settle an item this run actually started — a stray
         // update for a never-started prompt must not fail its card.
+        // v2.48.85: an adopted external card starts life QUEUED
+        // (it was never pre-flipped to generating the way own
+        // cards are at startGeneration), so a queued external
+        // card may settle failed directly — e.g. a task the
+        // engine fails at the end of the run without a submit.
         if (item.status == PromptStatus.generating ||
-            item.status == PromptStatus.downloading) {
+            item.status == PromptStatus.downloading ||
+            (external && item.status == PromptStatus.queued)) {
           item.status = PromptStatus.failed;
           item.error = data['reason']?.toString() ?? 'Generation failed';
           // Notification Center: the card settled failed here —
           // notify once; a later video-completed for the same item
-          // sees the failed status and stays silent.
-          NotificationsProvider.shared?.add(
-            type: NotificationType.error,
-            title: 'Error — Video #${item.index} failed',
-            message: item.error ?? 'Generation failed',
-            fileName: item.outputFileName,
-          );
+          // sees the failed status and stays silent. Adopted
+          // external cards stay silent here (v2.48.85).
+          if (!external) {
+            NotificationsProvider.shared?.add(
+              type: NotificationType.error,
+              title: 'Error — Video #${item.index} failed',
+              message: item.error ?? 'Generation failed',
+              fileName: item.outputFileName,
+            );
+          }
           notifyListeners();
         }
       }
@@ -299,7 +372,11 @@ class GeneratorProvider with ChangeNotifier {
     // run heartbeat (a generating tile reports every few seconds).
     AutomationBridge.instance.onVideoProgress = (data) {
       _stampEngineEvent();
-      final item = _matchTaskItem(data);
+      // v2.48.85: own items first; an adopted external
+      // card is the fallback match (progress events carry
+      // the prompt text, which _matchExternalItem uses
+      // after its task-id / index attempts).
+      final item = _matchTaskItem(data) ?? _matchExternalItem(data);
       if (item == null) return;
       var changed = false;
       final accName = data['accountName']?.toString();
@@ -534,6 +611,17 @@ class GeneratorProvider with ChangeNotifier {
   /// Progress panel's RECOVERY section.
   List<PromptItem> get recoveryItems => List.unmodifiable(_recoveryItems);
 
+  /// v2.48.85 (P1 completion): the adopted cards of a run
+  /// that started OUTSIDE this screen (engine-side /
+  /// MCP), for the Progress panel's EXTERNAL RUN section.
+  List<PromptItem> get externalItems => List.unmodifiable(_externalItems);
+
+  /// v2.48.85: the external run's header label (e.g.
+  /// 'via MCP' / 'via MCP · Redo') and its file-naming
+  /// tag, for the Progress panel.
+  String get externalRunLabel => _externalRunLabel;
+  String get externalRunTag => _externalRunTag;
+
   /// v2.48.70 (Item C): one 'recovery' task-updated event
   /// from the engine. The pool emits phase 'start' when a
   /// parked task's project check begins (with the account
@@ -592,6 +680,200 @@ class GeneratorProvider with ChangeNotifier {
         break;
     }
     notifyListeners();
+  }
+
+  // ------------------------------------------------------------------
+  // v2.48.85 (P1 completion): ADOPTED EXTERNAL RUNS.
+  //
+  // The bridge announces an engine-side run with a
+  // 'run-started' event ({ source, kind, project, tag,
+  // originToken, tasks: [{taskId, promptIndex, promptText,
+  // tag}] }). Adoption rules:
+  //  - the echo of THIS app's own start (originToken
+  //    match) is ignored — its cards already exist;
+  //  - a task whose (index, text) matches one of this
+  //    screen's own failed/pending/queued cards flips
+  //    THAT card back to queued with the run's source
+  //    stamped (the MCP-redo-of-my-run case: the card
+  //    the owner already sees is the truthful place);
+  //  - every other task gets an adopted card here,
+  //    driven by the run's own engine events (matched by
+  //    task id first, then prompt index, then text).
+  // A settled previous external run's cards are replaced
+  // by the next adoption; a still-open one is appended
+  // to (bounded) — the bridge never runs two pools at
+  // once, so overlap means a settle signal was missed,
+  // and keeping both sets visible is the honest answer.
+  // ------------------------------------------------------------------
+
+  bool _externalItemOpen(PromptItem i) =>
+      i.status == PromptStatus.pending ||
+      i.status == PromptStatus.queued ||
+      i.status == PromptStatus.generating ||
+      i.status == PromptStatus.downloading;
+
+  void _adoptExternalRun(Map<String, dynamic> data) {
+    if (AutomationBridge.instance
+        .isOwnRunToken(data['originToken']?.toString())) {
+      return;
+    }
+    final tasksRaw = data['tasks'];
+    if (tasksRaw is! List || tasksRaw.isEmpty) return;
+    final kind = data['kind']?.toString() ?? 'start';
+    final source = data['source']?.toString() ?? 'MCP';
+    _externalRunLabel = kind == 'redo' ? 'via $source · Redo' : 'via $source';
+    _externalRunTag = data['tag']?.toString() ?? '';
+    if (!_externalItems.any(_externalItemOpen)) {
+      for (final old in _externalItems) {
+        if (old.taskId != null) _externalByTaskId.remove(old.taskId);
+      }
+      _externalItems.clear();
+    }
+    for (final raw in tasksRaw) {
+      if (raw is! Map) continue;
+      final task = Map<String, dynamic>.from(raw);
+      final taskId = task['taskId']?.toString() ?? '';
+      final idxRaw = task['promptIndex'];
+      final promptIndex = idxRaw is num ? idxRaw.toInt() : 0;
+      final text = task['promptText']?.toString() ?? '';
+      final tag = task['tag']?.toString() ?? '';
+      // Merge into an own card when this screen already
+      // shows that exact prompt (see the rules above).
+      PromptItem? own;
+      for (final i in _items) {
+        if (i.index == promptIndex + 1 && i.text == text) {
+          own = i;
+          break;
+        }
+      }
+      if (own != null &&
+          (own.status == PromptStatus.failed ||
+              own.status == PromptStatus.pending ||
+              own.status == PromptStatus.queued)) {
+        own.status = PromptStatus.queued;
+        own.error = null;
+        own.progress = 0;
+        own.source = kind == 'redo' ? 'Redo' : source;
+        continue;
+      }
+      if (taskId.isNotEmpty && _externalByTaskId.containsKey(taskId)) {
+        continue;
+      }
+      final item = PromptItem(
+        index: promptIndex + 1,
+        text: text,
+        label: tag.isEmpty ? null : tag,
+        status: PromptStatus.queued,
+        taskId: taskId.isEmpty ? null : taskId,
+        source: source,
+      );
+      _externalItems.add(item);
+      if (taskId.isNotEmpty) _externalByTaskId[taskId] = item;
+    }
+    // Bounded: only the newest 100 adopted cards stay.
+    while (_externalItems.length > 100) {
+      final dropped = _externalItems.removeAt(0);
+      if (dropped.taskId != null) _externalByTaskId.remove(dropped.taskId);
+    }
+    _armExternalWatchdog();
+    notifyListeners();
+  }
+
+  /// v2.48.85: match an engine event to an adopted
+  /// external card — by task id, then by prompt index,
+  /// then by exact prompt text. No loose fallbacks: an
+  /// event that matches nothing changes nothing.
+  PromptItem? _matchExternalItem(Map<String, dynamic> data) {
+    if (_externalItems.isEmpty) return null;
+    final taskId = data['taskId']?.toString();
+    if (taskId != null && taskId.isNotEmpty) {
+      final byId = _externalByTaskId[taskId];
+      if (byId != null) return byId;
+    }
+    final idxRaw = data['promptIndex'] ?? data['prompt_index'];
+    if (idxRaw is int) {
+      for (final i in _externalItems) {
+        if (i.index == idxRaw + 1) return i;
+      }
+    }
+    final promptText = (data['promptText'] ?? data['prompt'])?.toString();
+    if (promptText != null && promptText.isNotEmpty) {
+      for (final i in _externalItems) {
+        if (i.text == promptText) return i;
+      }
+    }
+    return null;
+  }
+
+  /// v2.48.85: a video-completed event for an adopted
+  /// card — the same outcome logic as the own-run path
+  /// (failure words, account, file name, real credits),
+  /// minus the notification popups.
+  void _applyExternalCompleted(PromptItem item, Map<String, dynamic> data) {
+    final err = data['error']?.toString();
+    final statusStr = data['status']?.toString() ?? '';
+    final failed = (err != null && err.isNotEmpty) ||
+        statusStr.toLowerCase().startsWith('violation') ||
+        statusStr.toLowerCase().contains('fail');
+    final accName = data['accountName']?.toString();
+    if (accName != null && accName.isNotEmpty) item.accountName = accName;
+    final fileName = data['fileName']?.toString();
+    if (fileName != null && fileName.isNotEmpty) item.outputFileName = fileName;
+    final creditsRaw = data['creditsUsed'];
+    if (creditsRaw is num) item.creditsUsed = creditsRaw.toInt();
+    if (failed) {
+      item.status = PromptStatus.failed;
+      item.error = err ?? statusStr;
+    } else {
+      item.status = PromptStatus.completed;
+      item.progress = 1.0;
+      item.localFilePath = data['filePath']?.toString();
+      _completionTimes.add(DateTime.now());
+      _refreshEngineStats();
+    }
+    notifyListeners();
+  }
+
+  /// v2.48.85: end the adopted run in the UI — every
+  /// still-open external card is failed with the run's
+  /// terminal reason (cards that already settled keep
+  /// their real outcome).
+  void _settleExternalRun(String reason) {
+    if (_externalItems.isEmpty) return;
+    var changed = false;
+    for (final item in _externalItems) {
+      if (_externalItemOpen(item)) {
+        item.status = PromptStatus.failed;
+        item.error ??= reason;
+        changed = true;
+      }
+    }
+    if (changed) notifyListeners();
+  }
+
+  // v2.48.85: the adopted run's own silence watchdog —
+  // the same 10-minute no-event limit the in-app run
+  // lives by, so an external run whose event stream
+  // dies cannot leave its cards spinning forever. It
+  // disarms itself once no external card is open.
+  void _armExternalWatchdog() {
+    _externalWatchdog?.cancel();
+    _externalWatchdog = Timer.periodic(const Duration(seconds: 30), (_) {
+      if (!_externalItems.any(_externalItemOpen)) {
+        _externalWatchdog?.cancel();
+        _externalWatchdog = null;
+        return;
+      }
+      final last = _lastEngineEventAt;
+      if (last != null &&
+          DateTime.now().difference(last) > _engineSilenceLimit) {
+        _settleExternalRun(
+          'The engine stopped responding — no update arrived for over 10 minutes, so this run was ended here. Check the Activity log.',
+        );
+        _externalWatchdog?.cancel();
+        _externalWatchdog = null;
+      }
+    });
   }
 
   // v2.48.74 (Item C REVISED — owner): the Parked
@@ -986,6 +1268,11 @@ class GeneratorProvider with ChangeNotifier {
       namingPattern: settings.settings.namingPattern,
       project: _projectName.trim(),
       skipFirstTaskDownload: skipFirstTaskDownload,
+      // v2.48.85 (P1 completion): this start carries the
+      // app's origin token — the bridge's 'run-started'
+      // echo of it will be recognised as our own run and
+      // NOT adopted as an external one.
+      originToken: AutomationBridge.instance.newOwnRunToken(),
     );
 
     if (!success) {
@@ -1103,6 +1390,10 @@ class GeneratorProvider with ChangeNotifier {
     final result = await AutomationBridge.instance.redoMissing(
       accountIds: tickedIds,
       parallelBrowsers: settings.settings.parallelBrowsers,
+      // v2.48.85 (P1 completion): our own redo's echo is
+      // recognised by this token and not adopted — the
+      // cards above are flipped by this very method.
+      originToken: AutomationBridge.instance.newOwnRunToken(),
     );
     if (result['ok'] == true && result['started'] == true) {
       for (final item in missing) {
@@ -1141,6 +1432,7 @@ class GeneratorProvider with ChangeNotifier {
   @override
   void dispose() {
     _disarmRunWatchdog();
+    _externalWatchdog?.cancel();
     super.dispose();
   }
 }

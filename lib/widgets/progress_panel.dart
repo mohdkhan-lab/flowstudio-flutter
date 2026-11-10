@@ -131,6 +131,15 @@ class ProgressPanel extends StatelessWidget {
             i.status == PromptStatus.recovering)
         .toList();
 
+    // v2.48.85 (P1 completion): ADOPTED external run
+    // cards (a run started outside this screen — the
+    // MCP engine route). With no in-app run on display
+    // they take the main list; beside an in-app run
+    // they get their own section below it. A run must
+    // never be invisible in Progress.
+    final externalItems = generator.externalItems;
+    final showExternalMain = !showRunCards && externalItems.isNotEmpty;
+
     return TactileSectionContainer(
       padding: const EdgeInsets.all(12),
       child: Column(
@@ -183,28 +192,89 @@ class ProgressPanel extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
                 Expanded(
-                  child: !showRunCards
-                      ? Center(
-                          child: Text(
-                            'No prompts yet — paste prompts on the left,\nthen press Generate.',
-                            textAlign: TextAlign.center,
-                            style: TextStyle(fontSize: 11, color: AppTheme.textFaint, height: 1.5),
-                          ),
-                        )
-                      : ListView.separated(
+                  child: showRunCards
+                      ? ListView.separated(
                           itemCount: items.length,
                           separatorBuilder: (_, _) => const SizedBox(height: 6),
                           itemBuilder: (context, index) {
                             final item = items[index];
                             return _buildCard(context, item, generator.selectedTag);
                           },
-                        ),
+                        )
+                      : showExternalMain
+                          ? ListView.separated(
+                              itemCount: externalItems.length,
+                              separatorBuilder: (_, _) => const SizedBox(height: 6),
+                              itemBuilder: (context, index) {
+                                final item = externalItems[index];
+                                return _buildCard(context, item, generator.externalRunTag);
+                              },
+                            )
+                          : Center(
+                              child: Text(
+                                'No prompts yet — paste prompts on the left,\nthen press Generate.',
+                                textAlign: TextAlign.center,
+                                style: TextStyle(fontSize: 11, color: AppTheme.textFaint, height: 1.5),
+                              ),
+                            ),
                 ),
+                if (showRunCards && externalItems.isNotEmpty) ...[
+                  const SizedBox(height: 10),
+                  _externalSection(context, generator, externalItems),
+                ],
                 if (parkedItems.isNotEmpty) ...[
                   const SizedBox(height: 10),
                   _parkedSection(context, generator, parkedItems),
                 ],
               ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // v2.48.85 (P1 completion): the EXTERNAL RUN section —
+  // the adopted cards of a run that started outside
+  // this screen (the MCP engine route), shown under an
+  // in-app run's cards when both exist (with no in-app
+  // run they take the main list instead — see build()).
+  // Same live cards as any run: stage pill, percentage,
+  // account and the 'via MCP' source mark on each card.
+  // Blue-tinted box, so it can never be mistaken for
+  // the gold Parked downloads section. At most ~3 cards
+  // tall so the panel keeps its single-screen fit; the
+  // list scrolls inside its box.
+  Widget _externalSection(BuildContext context, GeneratorProvider generator, List<PromptItem> external) {
+    return Container(
+      padding: const EdgeInsets.all(8),
+      decoration: BoxDecoration(
+        color: AppTheme.blue.withValues(alpha: 0.07),
+        borderRadius: BorderRadius.circular(8),
+        border: Border.all(color: AppTheme.blue.withValues(alpha: 0.35)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text(
+            'EXTERNAL RUN · ${generator.externalRunLabel.toUpperCase()}',
+            style: TextStyle(
+              fontSize: 11,
+              fontWeight: FontWeight.w800,
+              letterSpacing: 1.2,
+              color: AppTheme.blue,
+            ),
+          ),
+          const SizedBox(height: 8),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 210),
+            child: ListView.separated(
+              shrinkWrap: true,
+              itemCount: external.length,
+              separatorBuilder: (_, _) => const SizedBox(height: 6),
+              itemBuilder: (context, index) {
+                return _buildCard(context, external[index], generator.externalRunTag);
+              },
             ),
           ),
         ],

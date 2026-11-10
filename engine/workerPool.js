@@ -123,6 +123,17 @@ class WorkerPool {
     // 1:1. Reads self-validate against the engine's live browser, so a
     // missed unregister can never leave a stale ACTIVE behind.
     this.activeBrowsers = new Map();
+    // v2.48.85 (RUN GRID — owner order 2026-11-10): the
+    // current run's FIXED browser grid, computed once at
+    // run start when the run is in VISIBLE mode:
+    // { count, area, cells: Map<workerIndex, bounds> }.
+    // Worker #i owns cell #i for the whole run; a closed
+    // window's cell stays EMPTY (no reflow — the owner's
+    // explicit decision), and a worker that opens its next
+    // account's browser lands back in its own cell. Null
+    // for background / headless runs and between runs —
+    // those keep the parked + shown-set tiling untouched.
+    this._runGrid = null;
     this.queuePromise = null;
     this.currentBatchId = null;
 
@@ -201,14 +212,30 @@ class WorkerPool {
     if (!accountId || !engine) return;
     this.activeBrowsers.set(accountId, engine);
     this._emitActiveBrowsers();
+    // v2.48.85 (RUN GRID): a grid-managed window never
+    // joins the shown-set reflow — it sits in its own
+    // FIXED cell (the launch already placed it there;
+    // this apply is the belt-and-braces snap for a window
+    // that is being re-registered mid-run).
+    if (engine.gridCellBounds) {
+      if (engine.windowShown === true && !engine.headlessGeneration) {
+        engine.applyWindowBounds(engine.gridCellBounds).catch(() => {});
+      }
+      return;
+    }
     // A worker that starts SHOWN (visible-mode launch) joins the
     // shown set — the equal grid reflows around it.
     this._reflowShownWindows();
   }
 
   _unregisterActiveBrowser(accountId) {
+    const engine = accountId ? this.activeBrowsers.get(accountId) : null;
     if (accountId && this.activeBrowsers.delete(accountId)) {
       this._emitActiveBrowsers();
+      // v2.48.85 (RUN GRID): a grid window leaving changes
+      // NOTHING for the others — its cell stays empty
+      // (owner's fixed-cell decision), so no reflow runs.
+      if (engine && engine.gridCellBounds) return;
       // A stopped worker leaves the shown set — the remaining
       // shown windows reflow to fill the work area again.
       this._reflowShownWindows();
@@ -262,7 +289,10 @@ class WorkerPool {
   }
 
   async _reflowShownWindowsNow() {
-    const shown = this._shownEngines();
+    // v2.48.85 (RUN GRID): grid-managed windows are NOT
+    // part of this set — their cells are fixed at run
+    // start and never move, whatever the shown set does.
+    const shown = this._shownEngines().filter(e => !e.gridCellBounds);
     if (shown.length === 0) return;
     const area = await this._workArea();
     if (!area) return;
@@ -317,8 +347,14 @@ class WorkerPool {
     // set first, so it lands directly in the equal grid instead of
     // flashing through the legacy single-window bounds. The set is
     // the registry order with this engine counted as shown.
+    // v2.48.85 (RUN GRID): a grid-managed window skips the
+    // shown-set maths entirely — showing returns it to its
+    // OWN fixed cell, hiding parks it, and the shown set
+    // neither gains nor loses a reflow because of it.
     let shownBounds = null;
-    if (target) {
+    if (target && engine.gridCellBounds) {
+      shownBounds = engine.gridCellBounds;
+    } else if (target) {
       const area = await this._workArea();
       if (area) {
         const prospective = [];
@@ -336,7 +372,8 @@ class WorkerPool {
     this._emitActiveBrowsers();
     // The shown set changed size either way — reflow the grid so
     // every shown window ends up the same size, filling the area.
-    if (done) {
+    // (Grid-managed windows are outside that set — no reflow.)
+    if (done && !engine.gridCellBounds) {
       await this._reflowShownWindows();
     }
     return { ok: done, windowShown: engine.windowShown === true };
@@ -1280,6 +1317,28 @@ class WorkerPool {
       }
 
       const actualWorkersCount = Math.min(this.concurrency, pool.length, pendingTasks.length);
+      // v2.48.85 (RUN GRID — owner order 2026-11-10): a
+      // VISIBLE-mode run lays its worker browsers out in a
+      // FIXED grid over this PC's real work area, computed
+      // ONCE here from the workers that will actually
+      // start: worker #i owns cell #i for the whole run.
+      // Background runs (windows parked off-screen) and
+      // headless runs (no windows at all) get NO grid —
+      // their behaviour is untouched. An unreadable work
+      // area also leaves the run grid-less (windows open
+      // maximized as before) rather than guessing a size.
+      this._runGrid = null;
+      if (!this.headless && !this.headlessGeneration && actualWorkersCount > 0) {
+        const area = await this._workArea();
+        if (area) {
+          const cells = new Map();
+          for (let i = 0; i < actualWorkersCount; i++) {
+            cells.set(i, browserMode.tileWindowBounds(i, actualWorkersCount, area));
+          }
+          this._runGrid = { count: actualWorkersCount, area, cells };
+          this.log(`Browser grid: ${actualWorkersCount} worker window(s) will open side by side in fixed cells across the screen — if one closes, its cell stays empty and the others do not move.`, 'info');
+        }
+      }
       // v2.7.0 (FIX 4): ginati pehle din se saaf — owner ki "main
       // problem" yahi thi: Settings me seema 3 thi, live account sirf
       // 1 tha, isliye 1 worker chala, aur app ne wajah kahin nahi
@@ -2119,6 +2178,9 @@ class WorkerPool {
         }, {
           headless: this.headless,
         headlessGeneration: this.headlessGeneration,
+          // v2.48.85 (RUN GRID): this worker's fixed cell
+          // (null outside a visible grid run).
+          gridCellBounds: this._runGrid ? (this._runGrid.cells.get(workerIndex) || null) : null,
           workerId,
           creditPort,
           // v2.31.3: persisted download-attempt ledger (3-round cap).
@@ -2900,6 +2962,9 @@ class WorkerPool {
         }
       } catch (e) {}
       this._rootLogExport = null;
+      // v2.48.85 (RUN GRID): the grid belongs to this run
+      // only — the next run computes its own from scratch.
+      this._runGrid = null;
       sleepBlocker.release();
       if (queueResolver) queueResolver();
       this.queuePromise = null;

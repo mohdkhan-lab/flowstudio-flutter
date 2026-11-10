@@ -174,7 +174,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.84';
+const APP_VERSION = '2.48.85';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -184,6 +184,14 @@ let activeWorkerPool = null;
 // union their task ids, so the completeness view always covers
 // the whole project rather than only the last batch.
 let lastRunInfo = null;
+// v2.48.85 (P1 COMPLETION — owner's blanket rule: ANY
+// running process must be visible in Progress): the most
+// recent 'run-started' payload of an ENGINE-side run
+// (direct /api/generation/start or redo — the runs that
+// never pass through the app's own Generate). Kept so a
+// UI that (re)connects mid-run can adopt the run's cards
+// at once; cleared when the owning run finishes.
+let activeRunStarted = null;
 const sseClients = new Set();
 
 function broadcastEvent(eventName, data) {
@@ -397,7 +405,7 @@ async function startBridge() {
   // cannot tell them apart, and neither can the Activity history.
   // onRunStart is wired here too: it records the run's composition
   // into lastRunInfo, which the redo route reads.
-  function buildPool({ parallelBrowsers, accountIds, getSettingsHint } = {}) {
+  function buildPool({ parallelBrowsers, accountIds, getSettingsHint, runStarted } = {}) {
     // v2.22.0 fix: browser visibility comes from the engine's own
     // 'browser_background' setting — the SAME key the original
     // Electron main.js uses ('1' or unset = background ON, '0' =
@@ -484,6 +492,42 @@ async function startBridge() {
             settings: hint
           };
         }
+        // v2.48.85 (P1 COMPLETION): an ENGINE-side run
+        // announces itself to the app the moment its tasks
+        // exist — 'run-started' carries the run's source,
+        // project/tag and the exact task list (read back
+        // from the DB rows, so every card binds to its real
+        // task id), and the app adopts live Progress cards
+        // for it. Only the routes that pass a descriptor
+        // (direct start, redo) broadcast; the app marks its
+        // OWN starts with an originToken and ignores its
+        // own echo. Recovery pools pass no descriptor —
+        // their work already shows as recovery cards.
+        if (runStarted) {
+          try {
+            const tasks = (info.taskIds || [])
+              .map(id => { try { return dbService.getTask(id); } catch (e) { return null; } })
+              .filter(Boolean)
+              .map(r => ({
+                taskId: r.id,
+                promptIndex: typeof r.prompt_index === 'number' ? r.prompt_index : 0,
+                promptText: r.prompt_text || '',
+                tag: r.prompt_tag || ''
+              }));
+            const payload = {
+              source: runStarted.source || 'MCP',
+              kind: runStarted.kind || 'start',
+              project: runStarted.project || '',
+              tag: runStarted.tag || '',
+              originToken: runStarted.originToken || '',
+              accountIds: Array.isArray(runStarted.accountIds) ? runStarted.accountIds : null,
+              batchId: info.batchId || null,
+              tasks
+            };
+            activeRunStarted = payload;
+            broadcastEvent('run-started', payload);
+          } catch (e) {}
+        }
       }
     });
   }
@@ -524,6 +568,16 @@ async function startBridge() {
       // namuna bhi foran — patti pehli paint se hi asal ho.
       try {
         res.write(`event: system-stats\ndata: ${JSON.stringify(currentSystemStats())}\n\n`);
+      } catch (e) {}
+      // v2.48.85 (P1 COMPLETION): an ENGINE-side run that
+      // is live right now re-announces itself to a
+      // (re)connecting UI, so its Progress cards appear
+      // even if the app came up (or reconnected) after
+      // the run had already started.
+      try {
+        if (activeWorkerPool && activeRunStarted) {
+          res.write(`event: run-started\ndata: ${JSON.stringify(activeRunStarted)}\n\n`);
+        }
       } catch (e) {}
 
       req.on('close', () => {
@@ -1421,7 +1475,22 @@ async function startBridge() {
         const pool = buildPool({
           parallelBrowsers: config.parallelBrowsers || 1,
           accountIds: Array.isArray(config.accountIds) ? config.accountIds : null,
-          getSettingsHint: () => settings
+          getSettingsHint: () => settings,
+          // v2.48.85 (P1 COMPLETION): this route is the
+          // ENGINE-side start — its runs must announce
+          // themselves to the app ('run-started') so the
+          // Progress panel shows live cards for them.
+          // The app tags its OWN starts with an
+          // originToken and ignores its own echo; any
+          // tokenless caller is external (the MCP server).
+          runStarted: {
+            source: 'MCP',
+            kind: 'start',
+            project: projectName || '',
+            tag: typeof config.tag === 'string' ? config.tag : '',
+            originToken: typeof config.originToken === 'string' ? config.originToken : '',
+            accountIds: Array.isArray(config.accountIds) ? config.accountIds : null
+          }
         });
 
         activeWorkerPool = pool;
@@ -1536,6 +1605,7 @@ async function startBridge() {
           broadcastEvent('automation-log', { message: `Generation error: ${err.message}`, level: 'error' });
         }).finally(() => {
           activeWorkerPool = null;
+          activeRunStarted = null;
           broadcastEvent('automation-log', { message: 'Generation queue finished.', level: 'success' });
         });
 
@@ -1599,7 +1669,20 @@ async function startBridge() {
         const pool = buildPool({
           parallelBrowsers: body.parallelBrowsers || 1,
           accountIds: Array.isArray(body.accountIds) ? body.accountIds : null,
-          getSettingsHint: () => lastRunInfo ? lastRunInfo.settings : {}
+          getSettingsHint: () => lastRunInfo ? lastRunInfo.settings : {},
+          // v2.48.85 (P1 COMPLETION): a redo is an
+          // engine-side run too — it announces itself the
+          // same way; the app flips its own matching
+          // failed cards when it has them and adopts
+          // cards for the rest.
+          runStarted: {
+            source: 'MCP',
+            kind: 'redo',
+            project: '',
+            tag: '',
+            originToken: typeof body.originToken === 'string' ? body.originToken : '',
+            accountIds: Array.isArray(body.accountIds) ? body.accountIds : null
+          }
         });
         activeWorkerPool = pool;
         broadcastEvent('automation-log', {
@@ -1613,6 +1696,7 @@ async function startBridge() {
           broadcastEvent('automation-log', { message: `Generation error: ${err.message}`, level: 'error' });
         }).finally(() => {
           activeWorkerPool = null;
+          activeRunStarted = null;
           broadcastEvent('automation-log', { message: 'Generation queue finished.', level: 'success' });
         });
         return sendJson(200, { ok: true, started: true, missing: report.missing.length });

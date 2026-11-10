@@ -1451,6 +1451,16 @@ class FlowAutomationEngine {
     // (true). Only the Show/Hide toggle (setBrowserWindowShown)
     // changes it afterwards — generation never does.
     this.windowShown = false;
+    // v2.48.85 (RUN GRID — owner order 2026-11-10): this
+    // engine's FIXED cell in the run's browser grid, assigned
+    // by the pool at run start (worker #i -> cell #i, computed
+    // once from the real work area). Only a visible-mode
+    // launch reads it: the window opens in the cell (never
+    // maximized) and the pool never reflows it — a closed
+    // grid window leaves its cell empty. Null outside a
+    // visible grid run (background / headless / recovery),
+    // where every behaviour stays exactly as before.
+    this.gridCellBounds = options.gridCellBounds || null;
     this.currentSettings = {};
     this.headless = !!options.headless;
     // Headless generation (owner's opt-in): TRUE headless Chrome
@@ -1652,11 +1662,16 @@ class FlowAutomationEngine {
     // ONE case where the plan launches true headless Chrome — no
     // window exists at all; see browserMode.launchPlan.
     const plan = browserMode.launchPlan(this.headless, this.headlessGeneration);
+    // v2.48.85 (RUN GRID): a grid-managed visible launch
+    // opens IN its fixed cell (explicit position + size,
+    // never --start-maximized); every other launch keeps
+    // the plan's own window arguments exactly as before.
+    const gridBounds = plan.windowMode === 'visible' ? this.gridCellBounds : null;
     const args = [
       `--user-data-dir=${profilePath}`,
       '--no-first-run',
       '--no-default-browser-check',
-      ...(plan.startMaximized ? ['--start-maximized'] : plan.extraArgs),
+      ...browserMode.launchWindowArgs(plan, gridBounds),
       ...(plan.antiThrottleArgs || []),
       '--disable-session-crashed-bubble',
       '--hide-crash-restore-bubble',
@@ -1856,6 +1871,16 @@ class FlowAutomationEngine {
       // v2.25.0: the launch plan decides where the window STARTS —
       // background = parked off-screen, visible = on screen.
       this.windowShown = !plan.background;
+      // v2.48.85 (RUN GRID): the launch arguments already ask
+      // Chrome to open in the fixed cell, but a profile can
+      // restore a previous maximized state over them — snap
+      // the window into its cell with the proven CDP bounds
+      // call so the grid is true from the first moment. Pure
+      // movement, best-effort: a failure leaves the window as
+      // Chrome opened it and can never touch generation.
+      if (gridBounds && this.windowShown) {
+        try { await this._setWindowBounds(gridBounds); } catch (e) {}
+      }
       // A window that starts PARKED also starts WITHOUT a taskbar
       // button (owner's order): it may reach the screen only
       // through the app's own Show/Hide button. Best-effort Win32

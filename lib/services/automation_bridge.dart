@@ -14,7 +14,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '2.48.84';
+  static const String appVersion = '2.48.85';
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();
@@ -59,6 +59,43 @@ class AutomationBridge {
   // pass; the main screen consumes it by filling the Prompts box
   // and invoking the same Generate handler the button invokes.
   Function(Map<String, dynamic> data)? onMcpUiGenerateRequest;
+  // v2.48.85 (P1 completion): an ENGINE-side run (direct
+  // /api/generation/start or redo — e.g. the MCP
+  // flowstudio_generate tool) announced itself with a
+  // 'run-started' event: { source, kind, project, tag,
+  // originToken, tasks: [{taskId, promptIndex, promptText,
+  // tag}] }. The generator provider adopts live Progress
+  // cards for such runs — a run must never be invisible
+  // just because it did not start from this screen.
+  Function(Map<String, dynamic> data)? onRunStarted;
+
+  // v2.48.85: origin tokens of the starts THIS app itself
+  // sent to the engine (its own Generate / Redo). The
+  // bridge echoes the token in 'run-started'; a match
+  // means "this announcement is my own run" and the app
+  // ignores it — its cards already exist. A short memory
+  // (last 8) covers events that arrive late or out of
+  // order across two quick starts.
+  final List<String> _ownRunTokens = [];
+  int _ownRunTokenSeq = 0;
+
+  /// v2.48.85: mint + remember the origin token for a
+  /// start this app is about to send to the engine.
+  String newOwnRunToken() {
+    final token =
+        'app-${DateTime.now().microsecondsSinceEpoch}-${_ownRunTokenSeq++}';
+    _ownRunTokens.add(token);
+    while (_ownRunTokens.length > 8) {
+      _ownRunTokens.removeAt(0);
+    }
+    return token;
+  }
+
+  /// v2.48.85: is this 'run-started' announcement the
+  /// echo of a start THIS app sent?
+  bool isOwnRunToken(String? token) {
+    return token != null && token.isNotEmpty && _ownRunTokens.contains(token);
+  }
 
   AutomationBridge._();
 
@@ -454,6 +491,14 @@ class AutomationBridge {
                 // v2.48.83: live PC stats from the engine — the
                 // payload IS the stats object (see systemStats.js).
                 onSystemStats?.call(data);
+                break;
+              case 'run-started':
+                // v2.48.85 (P1 completion): an engine-side
+                // run announced itself — the generator
+                // provider adopts Progress cards for it
+                // (and ignores the echo of the app's own
+                // starts, recognised by originToken).
+                onRunStarted?.call(data);
                 break;
               default:
                 // 'automation-log' and any unnamed frame carrying a message
@@ -965,6 +1010,10 @@ class AutomationBridge {
     // may ask for the first prompt's download step to be
     // skipped (its task stays parked). Never persisted.
     bool skipFirstTaskDownload = false,
+    // v2.48.85: this app's origin token for the start —
+    // the bridge echoes it in 'run-started' so the app
+    // can tell its own run apart from an external one.
+    String? originToken,
   }) async {
     try {
       final res = await http.post(
@@ -984,6 +1033,7 @@ class AutomationBridge {
           'namingPattern': namingPattern,
           'project': project,
           'skipFirstTaskDownload': skipFirstTaskDownload,
+          if (originToken != null) 'originToken': originToken,
         }),
       );
       return res.statusCode == 200;
@@ -1001,6 +1051,8 @@ class AutomationBridge {
   Future<Map<String, dynamic>> redoMissing({
     List<String>? accountIds,
     int? parallelBrowsers,
+    // v2.48.85: origin token, as in startGeneration.
+    String? originToken,
   }) async {
     try {
       final res = await http.post(
@@ -1009,6 +1061,7 @@ class AutomationBridge {
         body: json.encode({
           'accountIds': accountIds,
           'parallelBrowsers': parallelBrowsers,
+          if (originToken != null) 'originToken': originToken,
         }),
       );
       final data = json.decode(res.body);

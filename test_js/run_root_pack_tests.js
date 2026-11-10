@@ -6977,6 +6977,201 @@ async function main() {
     ok('X83 the smoke guard test exists and pins the refusal', guardSrc83.includes('SMOKE REFUSED') && guardSrc83.includes('received NO POST'));
   }
 
+  // ---------------------------------------------------------------------------
+  // X84 (v2.48.85) — ITEM 1: RUN GRID, FIXED CELLS (owner
+  // order 2026-11-10): a visible-mode run's worker
+  // browsers open in a fixed grid over the REAL work
+  // area — worker #i owns cell #i; a closed window's
+  // cell stays EMPTY (no reflow); manual Show/Hide
+  // tiling, background parking and headless are
+  // untouched. ITEM 2 (P1 completion): engine-side runs
+  // (MCP direct route / redo) announce 'run-started'
+  // and the app adopts live Progress cards for them.
+  // ---------------------------------------------------------------------------
+  {
+    const fsx84 = require('fs');
+    const pathx84 = require('path');
+    const read84 = (rel) => fsx84.readFileSync(pathx84.join(__dirname, '..', rel), 'utf8');
+    const bm84 = require('../engine/browserMode');
+
+    // (i) geometry: counts 1..9 — no overlap, exact fill,
+    // every cell inside the area, stable per index.
+    const area84 = { left: 100, top: 50, width: 1600, height: 900 };
+    for (let n = 1; n <= 9; n++) {
+      const cells = [];
+      for (let i = 0; i < n; i++) cells.push(bm84.tileWindowBounds(i, n, area84));
+      let overlap = false;
+      for (let a = 0; a < n && !overlap; a++) {
+        for (let b = a + 1; b < n; b++) {
+          const A = cells[a], B = cells[b];
+          if (A.left < B.left + B.width && B.left < A.left + A.width &&
+              A.top < B.top + B.height && B.top < A.top + A.height) overlap = true;
+        }
+      }
+      ok(`X84 grid geometry count=${n}: cells never overlap`, !overlap);
+      // The cells sit on a cols x rows lattice over the
+      // area; a trailing slot of a partial last row stays
+      // empty by design (the same fixed-cell principle),
+      // so exactness means: every cell the SAME size (the
+      // last column/row absorbs the <=1px rounding
+      // remainder) and the used set's bounding box equal
+      // to the whole work area, edge to edge.
+      const ws84 = cells.map(c => c.width);
+      const hs84 = cells.map(c => c.height);
+      ok(`X84 grid geometry count=${n}: all cells share one size (<=1px remainder)`,
+        Math.max(...ws84) - Math.min(...ws84) <= 1 && Math.max(...hs84) - Math.min(...hs84) <= 1);
+      const bb84 = {
+        l: Math.min(...cells.map(c => c.left)),
+        t: Math.min(...cells.map(c => c.top)),
+        r: Math.max(...cells.map(c => c.left + c.width)),
+        b: Math.max(...cells.map(c => c.top + c.height))
+      };
+      ok(`X84 grid geometry count=${n}: the used cells span the work area edge to edge`,
+        bb84.l === area84.left && bb84.t === area84.top &&
+        bb84.r === area84.left + area84.width && bb84.b === area84.top + area84.height);
+      ok(`X84 grid geometry count=${n}: every cell sits inside the work area`,
+        cells.every(c => c.left >= area84.left && c.top >= area84.top &&
+          c.left + c.width <= area84.left + area84.width &&
+          c.top + c.height <= area84.top + area84.height));
+      eq(`X84 grid geometry count=${n}: cell #0 is stable across calls`,
+        JSON.stringify(bm84.tileWindowBounds(0, n, area84)), JSON.stringify(cells[0]));
+    }
+
+    // launch args: grid cell wins in visible mode only.
+    const visPlan84 = bm84.launchPlan(false, false);
+    const bgPlan84 = bm84.launchPlan(true, false);
+    const hlPlan84 = bm84.launchPlan(true, true);
+    const cell84 = bm84.tileWindowBounds(1, 4, area84);
+    const gridArgs84 = bm84.launchWindowArgs(visPlan84, cell84);
+    ok('X84 a grid launch opens IN its cell (position + size args)',
+      gridArgs84.includes(`--window-position=${cell84.left},${cell84.top}`) &&
+      gridArgs84.includes(`--window-size=${cell84.width},${cell84.height}`));
+    ok('X84 a grid launch never passes --start-maximized', !gridArgs84.includes('--start-maximized'));
+    eq('X84 a visible launch without a cell still maximizes (unchanged)',
+      JSON.stringify(bm84.launchWindowArgs(visPlan84, null)), JSON.stringify(['--start-maximized']));
+    eq('X84 the grid never touches a background (parked) launch',
+      JSON.stringify(bm84.launchWindowArgs(bgPlan84, cell84)), JSON.stringify(bgPlan84.extraArgs));
+    eq('X84 the grid never touches a headless launch',
+      JSON.stringify(bm84.launchWindowArgs(hlPlan84, cell84)), JSON.stringify(hlPlan84.extraArgs));
+
+    // (ii)+(iii)+(iv) pool behaviour with fake engines.
+    const { WorkerPool: WP84 } = require('../engine/workerPool');
+    const pool84 = new WP84({ onLog: () => {} });
+    pool84._workArea = async () => area84;
+    const tick84 = () => new Promise(r => setImmediate(r));
+    const fake84 = (id, grid) => ({
+      windowShown: true,
+      headlessGeneration: false,
+      browser: {},
+      page: { isClosed: () => false },
+      currentAccount: { id },
+      gridCellBounds: grid || null,
+      applied: [],
+      shownCalls: [],
+      async applyWindowBounds(b) { this.applied.push(b); return true; },
+      async setBrowserWindowShown(target, bounds) {
+        this.windowShown = target;
+        this.shownCalls.push({ target, bounds });
+        return true;
+      }
+    });
+    const cells84 = [0, 1, 2, 3].map(i => bm84.tileWindowBounds(i, 4, area84));
+    const g84 = cells84.map((c, i) => fake84(`acc-g${i}`, c));
+    for (let i = 0; i < 4; i++) pool84._registerActiveBrowser(`acc-g${i}`, g84[i]);
+    await tick84(); await tick84();
+    for (let i = 0; i < 4; i++) {
+      eq(`X84 grid worker #${i + 1} is snapped to its OWN cell at registration`,
+        JSON.stringify(g84[i].applied[g84[i].applied.length - 1]), JSON.stringify(cells84[i]));
+    }
+    // (ii) fixed cells: #2 closes — nobody else moves.
+    const lens84 = g84.map(e => e.applied.length);
+    pool84._unregisterActiveBrowser('acc-g1');
+    await tick84(); await tick84();
+    ok('X84 FIXED CELLS: when grid window #2 closes, #1/#3/#4 receive NO new bounds',
+      g84[0].applied.length === lens84[0] && g84[2].applied.length === lens84[2] && g84[3].applied.length === lens84[3]);
+    // (iv) a manually shown (non-grid) window reflows on
+    // its own shown set — the grid windows stay out of it.
+    const m84 = fake84('acc-m', null);
+    pool84._registerActiveBrowser('acc-m', m84);
+    await tick84(); await tick84(); await tick84();
+    eq('X84 a manually shown window still tiles over the full work area (its own set)',
+      JSON.stringify(m84.applied[m84.applied.length - 1]),
+      JSON.stringify(bm84.tileWindowBounds(0, 1, area84)));
+    ok('X84 the manual reflow never moves a grid window',
+      g84[0].applied.length === lens84[0] && g84[2].applied.length === lens84[2] && g84[3].applied.length === lens84[3]);
+    // (iii) a worker that opens its NEXT browser takes
+    // its own pre-assigned cell — never the empty one.
+    const g2b84 = fake84('acc-g2', cells84[2]);
+    pool84._registerActiveBrowser('acc-g2', g2b84);
+    await tick84(); await tick84();
+    eq('X84 a re-opened worker browser lands in its OWN cell, not the empty one',
+      JSON.stringify(g2b84.applied[g2b84.applied.length - 1]), JSON.stringify(cells84[2]));
+    // toggle: hide + show a grid window returns it to
+    // its own fixed cell.
+    const t84 = await pool84.toggleBrowserWindow('acc-g3');
+    ok('X84 hiding a grid window works', t84.ok === true && g84[3].windowShown === false);
+    const lensB84 = g84.map(e => e.applied.length);
+    const t84b = await pool84.toggleBrowserWindow('acc-g3');
+    await tick84(); await tick84();
+    ok('X84 showing a grid window works', t84b.ok === true && g84[3].windowShown === true);
+    eq('X84 a re-shown grid window returns to its OWN fixed cell',
+      JSON.stringify(g84[3].shownCalls[g84[3].shownCalls.length - 1].bounds), JSON.stringify(cells84[3]));
+    ok('X84 the grid toggle triggers no reflow of the other grid windows',
+      g84[0].applied.length === lensB84[0] && g84[2].applied.length === lensB84[2]);
+
+    // (v)+(vi) wiring pins.
+    const faSrc84 = read84('engine/flowAutomation.js');
+    ok('X84 the engine carries its fixed cell from the pool option',
+      faSrc84.includes('this.gridCellBounds = options.gridCellBounds || null'));
+    ok('X84 the launch window args come from browserMode.launchWindowArgs',
+      faSrc84.includes('browserMode.launchWindowArgs(plan, gridBounds)'));
+    ok('X84 a grid launch snaps the window into its cell after launch',
+      faSrc84.includes('await this._setWindowBounds(gridBounds)'));
+    const wpSrc84 = read84('engine/workerPool.js');
+    ok('X84 runQueue computes the run grid from the real work area + actual workers',
+      wpSrc84.includes('cells.set(i, browserMode.tileWindowBounds(i, actualWorkersCount, area))'));
+    ok('X84 the run grid is visible-mode only (background/headless untouched)',
+      wpSrc84.includes('if (!this.headless && !this.headlessGeneration && actualWorkersCount > 0)'));
+    ok('X84 each worker engine receives its own cell',
+      wpSrc84.includes('gridCellBounds: this._runGrid ? (this._runGrid.cells.get(workerIndex) || null) : null'));
+    ok('X84 the shown-set reflow excludes grid-managed windows',
+      wpSrc84.includes('const shown = this._shownEngines().filter(e => !e.gridCellBounds);'));
+    ok('X84 a grid window leaving skips the reflow (its cell stays empty)',
+      wpSrc84.includes('if (engine && engine.gridCellBounds) return;'));
+
+    // ITEM 2 (P1 completion) wiring pins.
+    const bridgeSrc84 = read84('engine_bridge.js');
+    ok('X84 the bridge broadcasts run-started for engine-side runs',
+      bridgeSrc84.includes("broadcastEvent('run-started', payload)"));
+    ok('X84 run-started tasks are read back from the real DB rows',
+      bridgeSrc84.includes('dbService.getTask(id)') && bridgeSrc84.includes('promptIndex: typeof r.prompt_index'));
+    ok('X84 the direct start route passes a run-started descriptor',
+      bridgeSrc84.includes("kind: 'start'") && bridgeSrc84.includes("originToken: typeof config.originToken"));
+    ok('X84 the redo route passes a run-started descriptor',
+      bridgeSrc84.includes("kind: 'redo'") && bridgeSrc84.includes("originToken: typeof body.originToken"));
+    ok('X84 a reconnecting UI is re-offered the live external run',
+      bridgeSrc84.includes('if (activeWorkerPool && activeRunStarted)'));
+    const abSrc84 = read84('lib/services/automation_bridge.dart');
+    ok('X84 the app routes the run-started SSE event',
+      abSrc84.includes("case 'run-started':") && abSrc84.includes('onRunStarted'));
+    ok('X84 the app recognises its own starts by origin token',
+      abSrc84.includes('newOwnRunToken') && abSrc84.includes('isOwnRunToken'));
+    ok('X84 the app sends its origin token with its own starts',
+      abSrc84.includes("'originToken': originToken"));
+    const gpSrc84 = read84('lib/providers/generator_provider.dart');
+    ok('X84 the provider adopts external runs',
+      gpSrc84.includes('_adoptExternalRun') && gpSrc84.includes('_externalByTaskId'));
+    ok('X84 external events match adopted cards (task id / index / text)',
+      gpSrc84.includes('_matchExternalItem'));
+    ok('X84 a terminal progress status settles adopted cards too',
+      gpSrc84.includes('_settleExternalRun(reason)'));
+    ok('X84 the provider passes an origin token on its own start + redo',
+      gpSrc84.includes('originToken: AutomationBridge.instance.newOwnRunToken()'));
+    const ppSrc84 = read84('lib/widgets/progress_panel.dart');
+    ok('X84 the Progress panel renders the external run',
+      ppSrc84.includes('externalItems') && ppSrc84.includes('_externalSection') && ppSrc84.includes('EXTERNAL RUN'));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

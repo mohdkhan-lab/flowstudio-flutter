@@ -194,6 +194,30 @@ function tileWindowBounds(index, count, workArea) {
   };
 }
 
+/**
+ * v2.48.85 (RUN GRID — owner order 2026-11-10): the Chrome
+ * launch window arguments for one launch. Without a grid
+ * cell this is exactly the historical choice — a visible
+ * window opens MAXIMIZED, every other plan carries its own
+ * extraArgs. With a grid cell (a visible-mode generation
+ * window that owns one fixed cell of the run grid — see
+ * tileWindowBounds and workerPool's run grid), the window
+ * opens IN its cell instead: an explicit position + size,
+ * never --start-maximized, so the browser is born inside
+ * the grid instead of being dragged into it afterwards.
+ * Pure: (plan, cell) -> args array.
+ */
+function launchWindowArgs(plan, gridBounds) {
+  if (gridBounds && plan && plan.windowMode === 'visible') {
+    return [
+      `--window-position=${Math.round(gridBounds.left)},${Math.round(gridBounds.top)}`,
+      `--window-size=${Math.max(1, Math.round(gridBounds.width))},${Math.max(1, Math.round(gridBounds.height))}`
+    ];
+  }
+  if (!plan) return [];
+  return plan.startMaximized ? ['--start-maximized'] : [...(plan.extraArgs || [])];
+}
+
 module.exports = {
   SETTING_KEY,
   DEFAULT_BACKGROUND,
@@ -204,6 +228,7 @@ module.exports = {
   resolveBackgroundEnabled,
   resolveHeadlessGenerationEnabled,
   launchPlan,
+  launchWindowArgs,
   describeMode,
   parkedWindowBounds,
   tileWindowBounds

@@ -3380,7 +3380,7 @@ class FlowAutomationEngine {
         // sirf verify-poll ka kaam karta hai — duration ke
         // readSelectedDuration wala hi pattern. Aur Item B ka
         // lock: settings.quality yahan SIRF generation ke liye
-        // padhi jati hai; settings.downloadMode is function me
+        // padhi jati hai; download mode is function me
         // kahin padha hi nahi jata.
         // v2.48.79 (Item C): ye jhanda step 4.5 me banta hai
         // aur aakhri pill gate (step 9) me padha jata hai —

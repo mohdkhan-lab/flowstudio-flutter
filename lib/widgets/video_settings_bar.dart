@@ -59,13 +59,12 @@ class VideoSettingsBar extends StatelessWidget {
           return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // One row of 5 labelled dropdowns (v2.48.76: all 5 fields
-          // equally balanced with Expanded, clean 6px gaps, and concise
-          // duration labels so all 5 options have proper space and
-          // identical font baseline).
+          // Design 4: Two-Row Balanced Grid (Spacious 3x2 Layout)
+          // Row 1: MODEL (flex 2), RESOLUTION (flex 1), BROWSERS (flex 1)
           Row(
             children: [
               Expanded(
+                flex: 2,
                 child: _buildSettingField(
                   label: 'MODEL',
                   value: settings.model,
@@ -76,7 +75,42 @@ class VideoSettingsBar extends StatelessWidget {
                   },
                 ),
               ),
-              const SizedBox(width: 4),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _buildSettingField(
+                  label: 'RESOLUTION',
+                  value: settings.quality == '360p' ? '360p' : '720p',
+                  items: const ['360p', '720p'],
+                  onChanged: (val) {
+                    if (val != null) settingsProv.updateQuality(val);
+                  },
+                ),
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: _buildSettingField(
+                  label: 'BROWSERS',
+                  value: '${settings.parallelBrowsers}',
+                  items: const ['1', '2', '3', '4'],
+                  display: const {
+                    '1': '1 parallel',
+                    '2': '2 parallel',
+                    '3': '3 parallel',
+                    '4': '4 parallel',
+                  },
+                  onChanged: (val) {
+                    if (val != null) settingsProv.updateParallelBrowsers(int.tryParse(val) ?? 1);
+                  },
+                ),
+              ),
+            ],
+          ),
+
+          const SizedBox(height: 8),
+
+          // Row 2: DURATION & ASPECT (9:16 and 16:9 only, no extra words)
+          Row(
+            children: [
               Expanded(
                 child: _buildSettingField(
                   label: 'DURATION',
@@ -94,56 +128,24 @@ class VideoSettingsBar extends StatelessWidget {
                   },
                 ),
               ),
-              const SizedBox(width: 4),
-              // Aspect Ratio locked to Shorts & Reels (9:16)
+              const SizedBox(width: 6),
+              // Aspect Ratio: only 9:16 and 16:9 (no names/words)
               Expanded(
                 child: _buildSettingField(
                   label: 'ASPECT',
-                  value: '9:16',
-                  items: const ['9:16'],
+                  value: (settings.aspectRatio == '9:16' || settings.aspectRatio == '16:9')
+                      ? settings.aspectRatio
+                      : '9:16',
+                  items: const ['9:16', '16:9'],
                   display: const {
-                    '9:16': '9:16 (Shorts & Reels)',
+                    '9:16': '9:16',
+                    '16:9': '16:9',
                   },
                   onChanged: (val) {
                     if (val != null) settingsProv.updateAspectRatio(val);
                   },
                 ),
               ),
-              const SizedBox(width: 4),
-              Expanded(
-                child: _buildSettingField(
-                  // v2.48.74 (Item A): generation resolution —
-                  // bound to the EXISTING settings.quality the
-                  // engine already applies (stored '1080p' means
-                  // a 720p generation, so the bar shows 720p).
-                  label: 'RESOLUTION',
-                  value: settings.quality == '360p' ? '360p' : '720p',
-                  items: const ['360p', '720p'],
-                  onChanged: (val) {
-                    if (val != null) settingsProv.updateQuality(val);
-                  },
-                ),
-              ),
-              const SizedBox(width: 4),
-              Expanded(
-                child: _buildSettingField(
-                  label: 'BROWSERS',
-                  value: '${settings.parallelBrowsers}',
-                  items: const ['1', '2', '3', '4'],
-                  display: const {
-                    '1': '1 parallel',
-                    '2': '2 parallel',
-                    '3': '3 parallel',
-                    '4': '4 parallel',
-                  },
-                  onChanged: (val) {
-                    if (val != null) settingsProv.updateParallelBrowsers(int.tryParse(val) ?? 1);
-                  },
-                ),
-              ),
-              // v2.48.75 (owner): NO download selector here —
-              // the download mode lives in Settings only
-              // (Settings → Defaults → DOWNLOAD MODE).
             ],
           ),
 

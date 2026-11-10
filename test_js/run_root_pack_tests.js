@@ -1647,13 +1647,13 @@ async function main() {
     // hai), editor fallback dusra; headless/mainpage/
     // grid ab bhi cascade se bahar hain.
     const routeSeq = seq.filter(s => ['stream-first', 'tile-menu', 'editor-harvest'].includes(s));
-    eq('EH-FALL stream-first ran first in the cascade, then tile-menu, editor-harvest last (v2.48.82)', JSON.stringify(routeSeq), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
+    eq('EH-FALL stream-first ran first in the cascade, then tile-menu, editor-harvest last (v2.48.83)', JSON.stringify(routeSeq), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
     ok('EH-FALL headless-harvest did NOT run in the cascade', seq.indexOf('headless-harvest') === -1);
     ok('EH-FALL the task route order has no headless-harvest', !task.downloadRouteOrder.includes('headless-harvest'));
     ok('EH-FALL mainpage-harvest did NOT run in the cascade (v2.48.73)', seq.indexOf('mainpage-harvest') === -1);
     ok('EH-FALL grid-replay did NOT run in the cascade (v2.48.73)', seq.indexOf('grid-replay') === -1);
     ok('EH-FALL attempts stay inside the stream-first + tile-menu + editor family', seq.every(s => ['native-menu', 'stream-first', 'tile-menu', 'editor-harvest'].includes(s)));
-    ok('HH-FALL the honest-fail line names all three routes (v2.48.82)', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the stream-first capture, the tile-menu download nor the editor route')));
+    ok('HH-FALL the honest-fail line names all three routes (v2.48.83)', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the stream-first capture, the tile-menu download nor the editor route')));
     eq('HH-FALL the probe still ran only once across rounds', st.probeCount, 1);
     eq('HH-FALL the task route order is stream-first then tile-menu then editor-harvest', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
   }
@@ -5707,11 +5707,11 @@ async function main() {
 
     // ---------- C: tile-menu first + poison ----------
     eq('X76C the shipped tile-menu file-wait bound is 20s', TILE_MENU_FILE_WAIT_MS, 20000);
-    eq('X76C the route order is stream-first then tile-menu then editor-harvest (v2.48.82)', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
+    eq('X76C the route order is stream-first then tile-menu then editor-harvest (v2.48.83)', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
     {
       const loopStart = faSrc.indexOf('for (const route of (task.downloadRouteOrder');
       const loopSlice = faSrc.slice(loopStart, loopStart + 5200);
-      ok('X76C the dispatch tries stream-first before tile-menu before editor-harvest (v2.48.82)', loopSlice.indexOf("route === 'stream-first'") >= 0 && loopSlice.indexOf("route === 'tile-menu'") > loopSlice.indexOf("route === 'stream-first'") && loopSlice.indexOf("route === 'editor-harvest'") > loopSlice.indexOf("route === 'tile-menu'"));
+      ok('X76C the dispatch tries stream-first before tile-menu before editor-harvest (v2.48.83)', loopSlice.indexOf("route === 'stream-first'") >= 0 && loopSlice.indexOf("route === 'tile-menu'") > loopSlice.indexOf("route === 'stream-first'") && loopSlice.indexOf("route === 'editor-harvest'") > loopSlice.indexOf("route === 'tile-menu'"));
     }
     ok('X76C tile-menu runs the menu form only (editor form skipped, bound passed)', faSrc.includes('skipEditorForm: true') && faSrc.includes('menuAwaitTimeoutMs: TILE_MENU_FILE_WAIT_MS'));
     ok('X76C the tile-menu route exists', typeof FlowAutomationEngine.prototype._tryTileMenuDownload, 'function');
@@ -6730,7 +6730,9 @@ async function main() {
   }
 
   // ---------------------------------------------------------------------------
-  // X82 (v2.48.82) — STREAM-FIRST DOWNLOAD + LIVE PC-STATS PILL.
+  // X82 (v2.48.83 — this pack was renumbered from .82 after
+  // the version collision with Antigravity's ultrawide .82,
+  // commit 78d54e2) — STREAM-FIRST DOWNLOAD + PC-STATS PILL.
   // Stream-first: render-complete par page khud jo poori stream
   // wire par mangti hai (asb 302 → googlevideo itag 18/22, dur =
   // task ki duration) wahi tartib ka pehla dawa hai — koi click

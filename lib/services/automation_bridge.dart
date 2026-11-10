@@ -14,7 +14,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '2.48.82';
+  static const String appVersion = '2.48.83';
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();
@@ -42,7 +42,7 @@ class AutomationBridge {
   // v2.25.0 (parked browser): [{ 'id': ..., 'windowShown': bool }] for
   // every account with a live generation browser right now.
   Function(List<Map<String, dynamic>> accounts)? onActiveBrowsers;
-  // v2.48.82 (live PC-stats pill): the engine's ~2s 'system-stats'
+  // v2.48.83 (live PC-stats pill): the engine's ~2s 'system-stats'
   // payload — real CPU/RAM percentages for this PC plus the
   // About-this-PC detail (hostname, OS, CPU model/cores, total RAM,
   // free disk on the download drive). Any field may be null when
@@ -451,7 +451,7 @@ class AutomationBridge {
                 }
                 break;
               case 'system-stats':
-                // v2.48.82: live PC stats from the engine — the
+                // v2.48.83: live PC stats from the engine — the
                 // payload IS the stats object (see systemStats.js).
                 onSystemStats?.call(data);
                 break;
@@ -766,7 +766,7 @@ class AutomationBridge {
     return [];
   }
 
-  /// v2.48.82 (live PC-stats pill): the engine's current PC-stats
+  /// v2.48.83 (live PC-stats pill): the engine's current PC-stats
   /// sample (the same payload the 'system-stats' SSE event carries),
   /// or null when the engine is unreachable.
   Future<Map<String, dynamic>?> getSystemStats() async {

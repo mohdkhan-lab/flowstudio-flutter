@@ -1,7 +1,7 @@
 import 'package:flutter/foundation.dart';
 import '../services/automation_bridge.dart';
 
-/// v2.48.82 (live PC-stats pill — owner order 2026-11-10): the
+/// v2.48.83 (live PC-stats pill — owner order 2026-11-10): the
 /// engine's real, live PC stats for the top strip. The Node engine
 /// samples this PC every ~2s (CPU from os.cpus() time deltas, RAM
 /// from os total/free) and pushes a 'system-stats' SSE event; this

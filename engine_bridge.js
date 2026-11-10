@@ -174,7 +174,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.82';
+const APP_VERSION = '2.48.83';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -198,7 +198,7 @@ function broadcastEvent(eventName, data) {
 }
 
 // ---------------------------------------------------------------------------
-// v2.48.82 (LIVE PC-STATS PILL — OWNER ORDER 2026-11-10): is PC ki
+// v2.48.83 (LIVE PC-STATS PILL — OWNER ORDER 2026-11-10): is PC ki
 // asal, live haalat (CPU % / RAM %) har ~2s me 'system-stats' SSE
 // event se UI ko — hisaab khalis engine/systemStats.js me hai
 // (CPU = os.cpus() ke do namunon ka delta; RAM = os ke total/free
@@ -520,7 +520,7 @@ async function startBridge() {
         const snap = activeWorkerPool ? activeWorkerPool.getActiveBrowsers() : [];
         res.write(`event: active-browsers\ndata: ${JSON.stringify({ accounts: snap })}\n\n`);
       } catch (e) {}
-      // v2.48.82: (re)connecting UI ko PC-stats ka maujooda
+      // v2.48.83: (re)connecting UI ko PC-stats ka maujooda
       // namuna bhi foran — patti pehli paint se hi asal ho.
       try {
         res.write(`event: system-stats\ndata: ${JSON.stringify(currentSystemStats())}\n\n`);
@@ -937,7 +937,7 @@ async function startBridge() {
         return sendJson(200, { ok: true, accounts });
       }
 
-      // v2.48.82 (LIVE PC-STATS PILL): is PC ki asal haalat ka
+      // v2.48.83 (LIVE PC-STATS PILL): is PC ki asal haalat ka
       // maujooda namuna (wahi payload jo 'system-stats' SSE
       // event har ~2s me bhejta hai).
       if (pathname === '/api/system/stats' && req.method === 'GET') {

@@ -1,7 +1,7 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// v2.48.82 (STREAM-FIRST DOWNLOAD — OWNER ORDER 2026-11-10):
+// v2.48.83 (STREAM-FIRST DOWNLOAD — OWNER ORDER 2026-11-10):
 // render-complete par SAB SE PEHLA download rasta. Owner ke
 // alfaaz ka saar (.81 field test ke baad): "video bante hi
 // turant download hona chahiye — 14.9s ka gap bilkul nahi

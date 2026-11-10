@@ -1,7 +1,7 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// v2.48.82 (LIVE PC-STATS PILL — OWNER ORDER 2026-11-10):
+// v2.48.83 (LIVE PC-STATS PILL — OWNER ORDER 2026-11-10):
 // app ke upar wali patti me asal, live PC haalat —
 // 'CPU 56% · RAM 89% · Active 1/1' wali shakal ka CPU/RAM
 // hissa yahin se banta hai. Saare number ASAL hain, isi

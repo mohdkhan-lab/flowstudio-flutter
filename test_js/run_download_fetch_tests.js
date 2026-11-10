@@ -382,7 +382,7 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
 
   // Fallback = tartib ka pehla rasta chhor kar baaki —
   // v2.48.76: fallback sirf editor-harvest tha.
-  // v2.48.82 (STREAM-FIRST): pehla rasta ab stream-first
+  // v2.48.83 (STREAM-FIRST): pehla rasta ab stream-first
   // hai, is liye fallback = tile-menu + editor-harvest.
   const fb = fallbackRouteOrder();
   eq('MAINPAGE fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);

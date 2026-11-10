@@ -103,7 +103,7 @@ class TopStrip extends StatelessWidget {
                 // Version Pill — Tactile 3D
                 TactileChip(
                   color: AppTheme.accentText,
-                  label: 'v2.48.82',
+                  label: 'v2.48.83',
                   height: 22,
                   borderRadius: 11,
                   bevelDepth: 1.5,
@@ -208,7 +208,7 @@ class TopStrip extends StatelessWidget {
     );
   }
 
-  // v2.48.82 (live PC-stats pill — owner order 2026-11-10): the
+  // v2.48.83 (live PC-stats pill — owner order 2026-11-10): the
   // engine's REAL, live PC stats in the owner's exact format —
   // 'CPU 56% · RAM 89% · Active 1/1'. CPU/RAM come from the
   // engine's ~2s system-stats samples of this very PC; Active is

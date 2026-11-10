@@ -152,7 +152,7 @@
 // rehta hai, aazmaya nahi jata). Editor kabhi PEHLA amal
 // nahi raha ab — lekin fallback ke taur par barkarar hai.
 //
-// v2.48.82 (STREAM-FIRST — OWNER ORDER 2026-11-10):
+// v2.48.83 (STREAM-FIRST — OWNER ORDER 2026-11-10):
 // .81 ke field test ke baad owner ka hukm: "video bante
 // hi turant download hona chahiye — 14.9s ka gap bilkul
 // nahi chahiye." Usi run ke log ne sabit kiya ke asal

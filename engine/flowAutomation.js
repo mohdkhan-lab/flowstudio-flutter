@@ -1323,7 +1323,7 @@ class FlowAutomationEngine {
     // (dbService) — workerPool deta hai; na mile to
     // memory band (purana bartav).
     this._resolutionMemoryKv = options.resolutionMemoryKv || null;
-    // v2.48.82 (STREAM-FIRST): claimable stream ke
+    // v2.48.83 (STREAM-FIRST): claimable stream ke
     // intezaar ki bandhi hadd — production me
     // streamFirst.STREAM_FIRST_WAIT_MS (3s); tests
     // is override se hadd chhoti kar sakte hain.
@@ -6593,7 +6593,7 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.82 (STREAM-FIRST): is pal capture kitab me is
+   * v2.48.83 (STREAM-FIRST): is pal capture kitab me is
    * task ke naam bandhne wala claimable full stream hai
    * to us ka dawa-faisla (khalis hisaab
    * streamFirst.streamFirstEntryPick me hai — kitab,
@@ -6637,7 +6637,7 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.82 (STREAM-FIRST — OWNER ORDER 2026-11-10):
+   * v2.48.83 (STREAM-FIRST — OWNER ORDER 2026-11-10):
    * tartib ka SAB SE PEHLA rasta. Render-complete par
    * page khud asal file ki poori stream wire par mangti
    * hai (asb 302 → googlevideo itag 18/22, dur = task
@@ -12515,7 +12515,7 @@ class FlowAutomationEngine {
       // ['tile-menu', 'editor-harvest'] hai
       // (downloadRouteOrder.js wahid sachai rehti hai);
       // editor fallback bilkul .73–.75 jaisa hi hai.
-      // v2.48.82 (STREAM-FIRST): tartib ab
+      // v2.48.83 (STREAM-FIRST): tartib ab
       // ['stream-first', 'tile-menu', 'editor-harvest']
       // hai — pehla qadam wire par aayi asal stream ka
       // dawa hai (koi click nahi); tile-menu aur editor
@@ -12523,7 +12523,7 @@ class FlowAutomationEngine {
       for (const route of (task.downloadRouteOrder || [])) {
         if (task.mediaSaved || this.isStopping) break;
         if (route === 'stream-first') {
-          // v2.48.82: tartib ka pehla qadam — bandhi
+          // v2.48.83: tartib ka pehla qadam — bandhi
           // hadd tak claimable full stream ka intezaar
           // aur dawa; na mile to loop agle raste
           // (tile-menu) par jata hai.

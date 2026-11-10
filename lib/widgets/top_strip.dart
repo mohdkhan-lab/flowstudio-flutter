@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
+import '../providers/accounts_provider.dart';
 import '../providers/notifications_provider.dart';
 import '../providers/settings_provider.dart';
 import 'tactile_components.dart';
@@ -18,6 +19,7 @@ class TopStrip extends StatelessWidget {
     // event happened to rebuild it — the owner's "the theme does
     // not change the whole interface". The value itself is unused.
     context.watch<SettingsProvider>();
+    final accounts = context.watch<AccountsProvider>();
     final notif = context.watch<NotificationsProvider>();
 
     return TactileSectionContainer(
@@ -94,7 +96,8 @@ class TopStrip extends StatelessWidget {
                         // accent (readable on the light theme);
                         // accentAmber is a decorative gradient
                         // companion and washes out as small text
-                        // on white.
+                        // on white. (Kept through the v2.48.87
+                        // bottom-bar revert — this is Item 3.)
                         color: AppTheme.accentText,
                         fontWeight: FontWeight.w500,
                       ),
@@ -105,7 +108,7 @@ class TopStrip extends StatelessWidget {
                 // Version Pill — Tactile 3D
                 TactileChip(
                   color: AppTheme.accentText,
-                  label: 'v2.48.86',
+                  label: 'v2.48.87',
                   height: 22,
                   borderRadius: 11,
                   bevelDepth: 1.5,
@@ -162,12 +165,40 @@ class TopStrip extends StatelessWidget {
           ),
           const SizedBox(width: 14),
 
-          // v2.48.86 (owner-approved Design B): the credits total
-          // and the live PC-stats pill have LEFT the top strip — they
-          // live in the new BottomStatusBar at the very bottom of
-          // the window (credits left, three stats chips right,
-          // About this PC on the chips). The strip keeps the
-          // brand, the social icons and the bell.
+          // Total Credits & Sync
+          Column(
+            crossAxisAlignment: CrossAxisAlignment.end,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                'TOTAL CREDITS',
+                style: TextStyle(
+                  fontSize: 8.5,
+                  fontWeight: FontWeight.w800,
+                  letterSpacing: 0.8,
+                  color: AppTheme.textFaint,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(width: 8),
+          Text(
+            // v2.46.3 (owner ka order): kul yog par bhi koi '~'
+            // nahi — sirf asal number dikhega (v2.45.0 ka estimate
+            // nishan owner ne hatane ko kaha).
+            '${accounts.totalCredits}',
+            style: TextStyle(
+              fontSize: 26,
+              fontWeight: FontWeight.w900,
+              color: AppTheme.accentGold,
+              height: 1,
+            ),
+          ),
+          // v2.30.0 (owner): the Sync button that sat next to TOTAL
+          // CREDITS is REMOVED — the top shows only the label and the
+          // number. Syncing lives in the sidebar (Sync Selected /
+          // Verify All), where it always also worked.
+          const SizedBox(width: 14),
           // Notification Center: the bell — red badge with the
           // unread count; tapping toggles the panel overlay
           // (NotificationOverlay in main.dart).

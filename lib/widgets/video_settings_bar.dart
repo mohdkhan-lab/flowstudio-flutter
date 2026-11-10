@@ -342,7 +342,22 @@ class VideoSettingsBar extends StatelessWidget {
                 ),
                 padding: const WidgetStatePropertyAll(EdgeInsets.all(4)),
                 minimumSize: WidgetStatePropertyAll(Size(fieldWidth, 0)),
-                maximumSize: WidgetStatePropertyAll(Size(fieldWidth, 340)),
+                // v2.48.87 (owner field report — .86 menus CLIPPED):
+                // the .86 style also capped the menu HEIGHT at
+                // 340. That hard clamp, stacked on the overlay's
+                // own fit-to-window clamp when the menu opens
+                // downward in the window's lower half, sized the
+                // panel by the clamp instead of by its content —
+                // the last row was sliced mid-height and the
+                // panel's bottom border/corner fell outside the
+                // painted area (RESOLUTION and BROWSERS shots).
+                // The stock DropdownButton imposed no such cap,
+                // which is why it rendered fully. The height is
+                // now UNBOUNDED (width still pinned to the field):
+                // the panel is exactly as tall as its rows — see
+                // the fixed row height on the items below.
+                maximumSize:
+                    WidgetStatePropertyAll(Size(fieldWidth, double.infinity)),
                 shape: WidgetStatePropertyAll(
                   RoundedRectangleBorder(
                     borderRadius: BorderRadius.circular(10),
@@ -361,8 +376,14 @@ class VideoSettingsBar extends StatelessWidget {
                     closeOnActivate: true,
                     onPressed: () => onChanged(item),
                     style: ButtonStyle(
+                      // v2.48.87: the row height is FIXED (min ==
+                      // max == 32), so the menu panel's height is
+                      // deterministic — padding 8 + rows x 32 —
+                      // and always renders completely.
                       minimumSize:
                           const WidgetStatePropertyAll(Size(0, 32)),
+                      maximumSize: const WidgetStatePropertyAll(
+                          Size(double.infinity, 32)),
                       padding: const WidgetStatePropertyAll(
                         EdgeInsets.symmetric(horizontal: 10),
                       ),

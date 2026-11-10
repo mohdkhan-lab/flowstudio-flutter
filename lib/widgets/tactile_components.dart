@@ -532,12 +532,16 @@ class _TactileSectionContainerState extends State<TactileSectionContainer> {
             width: 1.0,
           ),
           boxShadow: [
+            // v2.48.87 Item 4 (owner-approved LIGHT DESIGN 3 'Gehra frame'):
+            // light cards sit on a DEEP slate canvas, so the resting shadow
+            // is strengthened (alpha .04 -> .16, blur 5 -> 10) to visibly
+            // lift the white cards off the frame. Dark values unchanged.
             BoxShadow(
               color: Colors.black.withValues(
-                alpha: AppTheme.dark ? (_isHovered ? 0.45 : 0.35) : (_isHovered ? 0.07 : 0.04),
+                alpha: AppTheme.dark ? (_isHovered ? 0.45 : 0.35) : (_isHovered ? 0.22 : 0.16),
               ),
-              blurRadius: AppTheme.dark ? (_isHovered ? 16 : 12) : (_isHovered ? 10 : 5),
-              offset: AppTheme.dark ? const Offset(0, 4) : const Offset(0, 1.5),
+              blurRadius: AppTheme.dark ? (_isHovered ? 16 : 12) : (_isHovered ? 14 : 10),
+              offset: AppTheme.dark ? const Offset(0, 4) : const Offset(0, 2.5),
             ),
             if (_isHovered)
               BoxShadow(

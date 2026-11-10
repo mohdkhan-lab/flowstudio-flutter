@@ -6745,7 +6745,6 @@ async function main() {
     const read82 = (rel) => fsx.readFileSync(pathx.join(__dirname, '..', rel), 'utf8');
     const faSrc82 = read82('engine/flowAutomation.js');
     const streamFirst82 = require('../engine/streamFirst');
-    const systemStats82 = require('../engine/systemStats');
     const saveGuardMod82 = require('../engine/saveGuard');
 
     const GV82 = 'https://rr4---sn-x82test.googlevideo.com/videoplayback?expire=999&id=x82vid&itag=18&dur=10.054&source=youtube';
@@ -6895,55 +6894,32 @@ async function main() {
       eq('X82F the stream-first route method exists', typeof FlowAutomationEngine.prototype._tryStreamFirstDownload, 'function');
     }
 
-    // ---------- S: PC-stats hisaab + UI shakal ----------
+    // ---------- S: PC-stats — FEATURE REMOVED AT THE ROOT ----------
+    // v2.48.87 (owner's direct order, 2026-11-10, given with a
+    // screenshot): "jo CPU and RAM wala feature add kiya hai
+    // usko JAD SE hi hata do" — the whole live PC-stats feature
+    // (added in v2.48.83 as a top-strip pill, moved to a bottom
+    // status bar in v2.48.86) is REMOVED at the root: no engine
+    // sampling/emission, no Dart routing/provider, no pill, no
+    // About-this-PC dialog. TOTAL CREDITS (the accounts/credits
+    // system) is NOT part of that feature and stays in the top
+    // strip. The old presence pins are replaced by these
+    // ABSENCE pins, one per layer the feature used to touch.
     {
-      eq('X82S cpu delta: half the time busy is 50%', systemStats82.cpuUsagePercent({ idle: 100, total: 200 }, { idle: 200, total: 400 }), 50);
-      eq('X82S cpu delta: all idle is 0%', systemStats82.cpuUsagePercent({ idle: 100, total: 200 }, { idle: 300, total: 400 }), 0);
-      eq('X82S cpu delta: no idle advance is 100%', systemStats82.cpuUsagePercent({ idle: 100, total: 200 }, { idle: 100, total: 400 }), 100);
-      eq('X82S cpu delta: the first sample cannot give a percent', systemStats82.cpuUsagePercent(null, { idle: 100, total: 200 }), null);
-      eq('X82S cpu delta: a frozen clock gives no percent', systemStats82.cpuUsagePercent({ idle: 100, total: 200 }, { idle: 100, total: 200 }), null);
-      {
-        const cpusAt = (user, idle) => [{ times: { user, nice: 0, sys: 0, idle, irq: 0 } }];
-        const samples = [cpusAt(0, 100), cpusAt(50, 150), cpusAt(150, 150)];
-        let idx = 0;
-        const sampler = systemStats82.createCpuSampler(() => samples[Math.min(idx++, samples.length - 1)]);
-        eq('X82S the sampler primes on its first sample', sampler.sample(), null);
-        eq('X82S the sampler then reports the real delta', sampler.sample(), 50);
-        eq('X82S the sampler keeps tracking deltas', sampler.sample(), 100);
-      }
-      eq('X82S ram percent is (total-free)/total', systemStats82.ramUsagePercent(16000000000, 4000000000), 75);
-      eq('X82S ram percent with no total is null, never a fake zero', systemStats82.ramUsagePercent(0, 0), null);
-      eq('X82S ram percent clamps free above total', systemStats82.ramUsagePercent(100, 150), 0);
-      {
-        const p = systemStats82.buildSystemStatsPayload(
-          { cpuPercent: 56, totalmem: 16000000000, freemem: 2000000000, at: 123 },
-          { hostname: 'PC-ONE', osLabel: 'Windows 11 Pro', cpuModel: 'Intel Core', cpuCores: 8, disk: { path: 'C:\\dl', freeBytes: 5000000000, totalBytes: 50000000000 } }
-        );
-        eq('X82S the payload carries the cpu percent', p.cpuPercent, 56);
-        eq('X82S the payload computes the ram percent', p.ramPercent, 88);
-        eq('X82S the payload carries the hostname', p.hostname, 'PC-ONE');
-        eq('X82S the payload carries the cpu cores', p.cpuCores, 8);
-        eq('X82S the payload carries the disk free bytes', p.diskFreeBytes, 5000000000);
-        const pNull = systemStats82.buildSystemStatsPayload({ cpuPercent: null, totalmem: 0, freemem: 0 }, {});
-        eq('X82S an unsuppliable cpu stays null in the payload', pNull.cpuPercent, null);
-        eq('X82S an unsuppliable disk stays null in the payload', pNull.diskFreeBytes, null);
-      }
-      const topStripSrc82 = read82('lib/widgets/top_strip.dart');
-      // v2.48.86: the stats UI MOVED — the top-strip pill became
-      // the bottom status bar's three chips (owner Design B).
-      // These pins follow the UI to its new home; the per-chip
-      // values keep the owner's exact numbers (X86 pins the new
-      // structure in full).
-      const bottomBarSrc82 = read82('lib/widgets/bottom_status_bar.dart');
-      ok('X82S the stats chips render the owner values exactly', bottomBarSrc82.includes("'CPU $cpu%'") && bottomBarSrc82.includes("'RAM $ram%'") && bottomBarSrc82.includes("'Active $active/$total'"));
-      ok('X82S the stats chips open About this PC', bottomBarSrc82.includes("'About this PC'") && bottomBarSrc82.includes('_showAboutPc'));
-      ok('X82S the top strip no longer carries the stats pill', !topStripSrc82.includes('TOTAL CREDITS') && !topStripSrc82.includes('_buildPcStatsSegment'));
-      ok('X82S the bridge Dart side routes system-stats events', read82('lib/services/automation_bridge.dart').includes("case 'system-stats':") && read82('lib/services/automation_bridge.dart').includes('onSystemStats'));
-      ok('X82S the stats provider exists and holds the bridge callback', read82('lib/providers/system_stats_provider.dart').includes('class SystemStatsProvider'));
-      ok('X82S the provider is registered in main', read82('lib/main.dart').includes('SystemStatsProvider()'));
+      const fsS = require('fs');
+      const pathS = require('path');
+      ok('X82S the engine stats module is deleted', !fsS.existsSync(pathS.join(__dirname, '..', 'engine/systemStats.js')));
       const bridgeSrc82 = read82('engine_bridge.js');
-      ok('X82S the bridge broadcasts system-stats', bridgeSrc82.includes("broadcastEvent('system-stats'"));
-      ok('X82S the bridge serves the stats endpoint', bridgeSrc82.includes("'/api/system/stats'"));
+      ok('X82S the bridge no longer requires the stats module', !bridgeSrc82.includes("require('./engine/systemStats')"));
+      ok('X82S the bridge no longer samples or broadcasts stats', !bridgeSrc82.includes('system-stats') && !bridgeSrc82.includes('collectSystemStats'));
+      ok('X82S the bridge no longer serves the stats endpoint', !bridgeSrc82.includes("'/api/system/stats'"));
+      const bridgeDart82 = read82('lib/services/automation_bridge.dart');
+      ok('X82S the Dart bridge no longer routes stats events', !bridgeDart82.includes("case 'system-stats':") && !bridgeDart82.includes('onSystemStats') && !bridgeDart82.includes('getSystemStats'));
+      ok('X82S the stats provider file is deleted', !fsS.existsSync(pathS.join(__dirname, '..', 'lib/providers/system_stats_provider.dart')));
+      ok('X82S the stats provider is not registered in main', !read82('lib/main.dart').includes('SystemStatsProvider'));
+      const topStripSrc82 = read82('lib/widgets/top_strip.dart');
+      ok('X82S the top strip has no stats pill and no About this PC', !topStripSrc82.includes('_buildPcStatsSegment') && !topStripSrc82.includes('About this PC') && !topStripSrc82.includes('SystemStatsProvider'));
+      ok('X82S TOTAL CREDITS stays in the top strip (not part of the removed feature)', topStripSrc82.includes('TOTAL CREDITS') && topStripSrc82.includes('accounts.totalCredits'));
     }
   }
 
@@ -7181,48 +7157,59 @@ async function main() {
 
   // ---------------------------------------------------------------------------
   // X86 (v2.48.86) — OWNER-APPROVED DESIGNS, theme-aware.
-  // ITEM 1 (Design B): TOTAL CREDITS + the live PC stats leave
-  // the top strip for a BottomStatusBar at the very bottom of
-  // the window — LEFT: gold star motif + the credits number
-  // (gold, bold) + "Credits"; RIGHT: THREE separate chips
-  // [CPU n%] [RAM n%] [Active a/b] carrying the About-this-PC
-  // tap/hover. ITEM 2 (dropdown Design 1): the settings-bar
-  // selectors' open menu is a MenuAnchor overlay — menu width
-  // == field width, rounded 10px corners, 1px gold hairline,
-  // soft shadow, selected = gold tint + gold bold text + ✓,
-  // hover = lighter tint. All colours are AppTheme tokens, so
-  // the owner's LIGHT theme (white menu/bar, dark-gold accents)
-  // and every dark palette render the same design language.
+  // ITEM 1 (Design B) put TOTAL CREDITS + the live PC stats in
+  // a BottomStatusBar at the very bottom of the window. In
+  // v2.48.87 the owner revoked Item 1 AND the stats feature
+  // itself, in two direct orders the same day ("taskbar wala
+  // options hata do, is ki koi zaroorat nahi — jaisa pehle tha
+  // waisa kar do", then, with a screenshot: "jo CPU and RAM
+  // wala feature add kiya hai usko JAD SE hi hata do"): the
+  // bar file is deleted, main.dart is back to its pre-.86
+  // structure, TOTAL CREDITS is back in the top strip — and
+  // the PC-stats feature is removed at the root (see the X82S
+  // absence pins; the Item 1 pins below pin this end state).
+  // ITEM 2 (dropdown Design 1) STANDS; ITEM 3's light values
+  // are SUPERSEDED in v2.48.87 Item 4 by the owner-approved
+  // LIGHT DESIGN 3 ('Gehra frame') — see the Item 3 pins.
+  // v2.48.87 also FIXES the .86 dropdown
+  // clipping (owner field report): the MenuStyle height cap
+  // is gone and the row height is fixed — Item 2 pins below
+  // cover the fix.
   // ---------------------------------------------------------------------------
   {
     const fsx86 = require('fs');
     const pathx86 = require('path');
     const read86 = (rel) => fsx86.readFileSync(pathx86.join(__dirname, '..', rel), 'utf8');
 
-    // --- Item 1: the bottom status bar ---
-    const barSrc86 = read86('lib/widgets/bottom_status_bar.dart');
-    ok('X86 the bottom status bar widget exists', barSrc86.includes('class BottomStatusBar'));
-    ok('X86 the bar is laid out in the main screen under the body', read86('lib/main.dart').includes('const BottomStatusBar()'));
-    ok('X86 Design B left: star motif + gold credits number + the word Credits',
-      barSrc86.includes('Icons.auto_awesome') && barSrc86.includes('accounts.totalCredits') && barSrc86.includes("'Credits'"));
-    ok('X86 Design B right: three separate chips (CPU / RAM / Active)',
-      barSrc86.includes("_chip('CPU $cpu%')") && barSrc86.includes("_chip('RAM $ram%')") && barSrc86.includes("_chip('Active $active/$total')"));
-    ok('X86 the chips carry About this PC (tap + tooltip, as the pill did)',
-      barSrc86.includes("message: 'About this PC'") && barSrc86.includes('_showAboutPc'));
-    ok('X86 the chips stay absent until the first real sample (no placeholders)',
-      barSrc86.includes('if (cpu == null || ram == null) return const SizedBox.shrink();'));
-    ok('X86 the bar is token-painted with the gold accent line on top',
-      barSrc86.includes('AppTheme.panelGrad') && barSrc86.includes('AppTheme.accentGold.withValues(alpha: 0.55)'));
+    // --- Item 1 REVERTED + stats feature ROOT-REMOVED (v2.48.87) ---
+    ok('X86 the bottom status bar file is gone (v2.48.87 revert)',
+      !fsx86.existsSync(pathx86.join(__dirname, '..', 'lib/widgets/bottom_status_bar.dart')));
+    ok('X86 the main layout no longer carries the bottom bar',
+      !read86('lib/main.dart').includes('BottomStatusBar'));
     const topSrc86 = read86('lib/widgets/top_strip.dart');
-    ok('X86 the top strip keeps brand + bell and drops credits/stats',
-      topSrc86.includes('_buildBellButton') && !topSrc86.includes('TOTAL CREDITS') && !topSrc86.includes('totalCredits'));
+    ok('X86 the top strip keeps brand + bell and has TOTAL CREDITS back',
+      topSrc86.includes('TOTAL CREDITS') && topSrc86.includes('accounts.totalCredits') && topSrc86.includes('_buildBellButton'));
+    ok('X86 the top strip carries NO stats pill and NO About this PC (root removal)',
+      !topSrc86.includes('_buildPcStatsSegment') && !topSrc86.includes('About this PC') && !topSrc86.includes('CPU $cpu%'));
 
     // --- Item 2: the dropdown menu restyle ---
     const vsbSrc86 = read86('lib/widgets/video_settings_bar.dart');
     ok('X86 the selectors use a MenuAnchor menu', vsbSrc86.includes('MenuAnchor(') && vsbSrc86.includes('MenuItemButton('));
     ok('X86 the bar no longer uses the stock DropdownButton overlay', !vsbSrc86.includes('DropdownButton<String>'));
     ok('X86 the menu width equals the field width (min/max size from the field)',
-      vsbSrc86.includes('minimumSize: WidgetStatePropertyAll(Size(fieldWidth, 0))') && vsbSrc86.includes('maximumSize: WidgetStatePropertyAll(Size(fieldWidth, 340))'));
+      vsbSrc86.includes('minimumSize: WidgetStatePropertyAll(Size(fieldWidth, 0))') && vsbSrc86.includes('Size(fieldWidth, double.infinity)'));
+    // v2.48.87 dropdown-clipping fix (owner field report on
+    // .86: RESOLUTION/BROWSERS menus cut mid-row, bottom
+    // border missing): the .86 MenuStyle hard-clamped the
+    // menu height at 340 and the panel truncated instead of
+    // sizing to its content. The cap is gone, the row height
+    // is fixed, and nothing in the bar clips the overlay.
+    ok('X87 the menu height is NOT clamped (the .86 340 cap is gone)',
+      !vsbSrc86.includes('Size(fieldWidth, 340)') && vsbSrc86.includes('Size(fieldWidth, double.infinity)'));
+    ok('X87 the menu row height is fixed (item max height pinned at 32)',
+      vsbSrc86.includes('Size(double.infinity, 32)'));
+    ok('X87 the bar container does not clip the menu overlay',
+      !vsbSrc86.includes('ClipRRect') && !vsbSrc86.includes('clipBehavior') && !vsbSrc86.includes('ClipRect'));
     ok('X86 the menu has rounded corners + the gold hairline border',
       vsbSrc86.includes('BorderRadius.circular(10)') && vsbSrc86.includes('AppTheme.accentGold.withValues(') && vsbSrc86.includes('width: 1'));
     ok('X86 the menu floats on a soft shadow over the elevated surface',
@@ -7233,18 +7220,37 @@ async function main() {
     ok('X86 selection still writes through the same onChanged path', vsbSrc86.includes('onPressed: () => onChanged(item)'));
     ok('X86 the closed field keeps its 30px height', vsbSrc86.includes('height: 30'));
 
-    // --- Item 3: light-theme contrast repair (owner: the light
-    // theme was washed out on white; dark must stay crisp and
-    // UNCHANGED). The owner's surface is the gold LIGHT palette.
+    // --- Item 3: light-theme contrast repair — SUPERSEDED in
+    // v2.48.87 Item 4 by the owner-approved LIGHT DESIGN 3
+    // ('Gehra frame', picked 2026-11-10 from the design-3
+    // sample): the .86 mid-step values (textDim #475569 /
+    // textFaint #64748B / border #CBD5E1 / inputBg #F1F5F9)
+    // are replaced by a DEEP slate frame the white cards sit
+    // on. Gold family (the owner's surface): canvas #CBD5E1,
+    // cards pure white with the STRONG border #788AA0 (border
+    // AND borderSoft), inputs #E2E8F0, chips/washes #B6C4D6
+    // (bg2), text #0A0F16 / #334155 / #475569; gold accents
+    // unchanged; the shared card decoration's light shadow is
+    // strengthened so cards lift off the frame; every other
+    // light family follows the same structure in its own hue;
+    // dark palettes untouched.
     const themeSrc86 = read86('lib/theme/app_theme.dart');
     const goldLight86 = themeSrc86.slice(themeSrc86.indexOf("'gold': AppPalette(\n      id: 'gold', dark: false"));
-    ok('X86 gold-light textDim deepened to slate-600', goldLight86.includes('textDim: Color(0xFF475569)'));
-    ok('X86 gold-light textFaint raised to slate-500 (≈4.5:1+ on white)', goldLight86.includes('textFaint: Color(0xFF64748B)'));
-    ok('X86 gold-light border strengthened to slate-300', goldLight86.includes('border: Color(0xFFCBD5E1)'));
-    ok('X86 gold-light borderSoft is the old border (slate-200)', goldLight86.includes('borderSoft: Color(0xFFE2E8F0)'));
-    ok('X86 gold-light inputs get the slate-100 fill, distinct from white cards', goldLight86.includes('inputBg: Color(0xFFF1F5F9)'));
-    ok('X86 no light palette keeps the washed-out slate-400 faint', !themeSrc86.includes('textFaint: Color(0xFF94A3B8)'));
-    ok('X86 the DARK gold palette is untouched by the contrast repair',
+    ok('X87 gold-light canvas is the DEEP slate frame #CBD5E1', goldLight86.includes('bgBody: Color(0xFFCBD5E1)'));
+    ok('X87 gold-light cards stay pure white (surface + panelTop #FFFFFF)',
+      goldLight86.includes('surface: Color(0xFFFFFFFF)') && goldLight86.includes('panelTop: Color(0xFFFFFFFF)'));
+    ok('X87 gold-light STRONG border #788AA0 (border and borderSoft alike)',
+      goldLight86.includes('border: Color(0xFF788AA0)') && goldLight86.includes('borderSoft: Color(0xFF788AA0)'));
+    ok('X87 gold-light inputs get the #E2E8F0 fill', goldLight86.includes('inputBg: Color(0xFFE2E8F0)'));
+    ok('X87 gold-light chip/wash partner bg2 is #B6C4D6', goldLight86.includes('bg2: Color(0xFFB6C4D6)'));
+    ok('X87 gold-light textMain is near-black #0A0F16', goldLight86.includes('textMain: Color(0xFF0A0F16)'));
+    ok('X87 gold-light textDim is #334155', goldLight86.includes('textDim: Color(0xFF334155)'));
+    ok('X87 gold-light textFaint is #475569', goldLight86.includes('textFaint: Color(0xFF475569)'));
+    ok('X87 gold-light gold accent unchanged', goldLight86.includes('accentGold: Color(0xFFD97706)'));
+    ok('X87 no light palette keeps the washed-out slate-400 faint', !themeSrc86.includes('textFaint: Color(0xFF94A3B8)'));
+    ok('X87 the light card shadow is strengthened in the shared card decoration',
+      read86('lib/widgets/tactile_components.dart').includes('(_isHovered ? 0.22 : 0.16)'));
+    ok('X86 the DARK gold palette is untouched by the light rework',
       themeSrc86.includes('textDim: Color(0xFFD4AF37)') && themeSrc86.includes('borderSoft: Color(0x3DFBBF24)'));
     ok('X86 the By MK caption uses the text-tuned accent', read86('lib/widgets/top_strip.dart').includes('color: AppTheme.accentText'));
   }

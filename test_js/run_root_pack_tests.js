@@ -5584,9 +5584,9 @@ async function main() {
     ok('X75 the selector label never wraps (softWrap off)', barSrc75.includes('softWrap: false'));
     ok('X75 the selector label is capped at one line', barSrc75.includes('maxLines: 1'));
     ok('X75 the selector label scales down instead of breaking (FittedBox)', barSrc75.includes('FittedBox(') && barSrc75.includes('BoxFit.scaleDown'));
-    ok('X75 MODEL is the widest field (flex 3, ASPECT 3, others 2)', (barSrc75.match(/flex: 3,/g) || []).length === 2 && (barSrc75.match(/flex: 2,/g) || []).length === 3);
-    ok('X75 all five fields share the same 34px control height', barSrc75.includes('height: 34'));
-    ok('X75 the bar status text still ellipsizes only at the end of the full string', barSrc75.includes('overflow: TextOverflow.ellipsis') && barSrc75.includes('Live accounts'));
+    ok('X75 all five setting fields are equally balanced (Expanded)', (barSrc75.match(/Expanded\(/g) || []).length >= 5);
+    ok('X75 all five fields share the tuned 30px control height', barSrc75.includes('height: 30'));
+    ok('X75 the bar status text still ellipsizes only at the end of the full string', barSrc75.includes('overflow: TextOverflow.ellipsis') && barSrc75.includes('Live'));
   }
 
   // ---------------------------------------------------------------------------

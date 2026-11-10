@@ -59,13 +59,13 @@ class VideoSettingsBar extends StatelessWidget {
           return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          // One row of 5 labelled dropdowns (design; v2.48.75:
-          // flex widths sized to each field's content — MODEL
-          // widest — so no label or value is squeezed).
+          // One row of 5 labelled dropdowns (v2.48.76: all 5 fields
+          // equally balanced with Expanded, clean 6px gaps, and concise
+          // duration labels so all 5 options have proper space and
+          // identical font baseline).
           Row(
             children: [
               Expanded(
-                flex: 3,
                 child: _buildSettingField(
                   label: 'MODEL',
                   value: settings.model,
@@ -76,45 +76,41 @@ class VideoSettingsBar extends StatelessWidget {
                   },
                 ),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 4),
               Expanded(
-                flex: 2,
                 child: _buildSettingField(
                   label: 'DURATION',
                   value: settings.duration,
                   items: const ['4s', '6s', '8s', '10s', '15s'],
                   display: const {
-                    '4s': '4 seconds',
-                    '6s': '6 seconds',
-                    '8s': '8 seconds',
-                    '10s': '10 seconds',
-                    '15s': '15 seconds',
+                    '4s': '4s',
+                    '6s': '6s',
+                    '8s': '8s',
+                    '10s': '10s',
+                    '15s': '15s',
                   },
                   onChanged: (val) {
                     if (val != null) settingsProv.updateDuration(val);
                   },
                 ),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 4),
+              // Aspect Ratio locked to Shorts & Reels (9:16)
               Expanded(
-                flex: 3,
                 child: _buildSettingField(
                   label: 'ASPECT',
-                  value: settings.aspectRatio,
-                  items: const ['9:16', '16:9', '1:1'],
+                  value: '9:16',
+                  items: const ['9:16'],
                   display: const {
-                    '9:16': '9:16 Vertical',
-                    '16:9': '16:9 Landscape',
-                    '1:1': '1:1 Square',
+                    '9:16': '9:16 (Shorts & Reels)',
                   },
                   onChanged: (val) {
                     if (val != null) settingsProv.updateAspectRatio(val);
                   },
                 ),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 4),
               Expanded(
-                flex: 2,
                 child: _buildSettingField(
                   // v2.48.74 (Item A): generation resolution —
                   // bound to the EXISTING settings.quality the
@@ -128,9 +124,8 @@ class VideoSettingsBar extends StatelessWidget {
                   },
                 ),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 4),
               Expanded(
-                flex: 2,
                 child: _buildSettingField(
                   label: 'BROWSERS',
                   value: '${settings.parallelBrowsers}',
@@ -162,7 +157,7 @@ class VideoSettingsBar extends StatelessWidget {
                 message: 'Stop generation',
                 child: TactileButton(
                   type: TactileType.stop,
-                  height: 32,
+                  height: 30,
                   padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
                   borderRadius: 7,
                   bevelDepth: 2.5,
@@ -172,14 +167,14 @@ class VideoSettingsBar extends StatelessWidget {
                   label: 'Stop',
                 ),
               ),
-              SizedBox(width: compact ? 6 : 8),
+              SizedBox(width: compact ? 4 : 6),
 
               // Pause / Resume Button (Tactile 3D)
               Tooltip(
                 message: isPaused ? 'Resume generation' : 'Pause generation',
                 child: TactileButton(
                   type: TactileType.pause,
-                  height: 32,
+                  height: 30,
                   padding: EdgeInsets.symmetric(horizontal: compact ? 8 : 12),
                   borderRadius: 7,
                   bevelDepth: 2.5,
@@ -198,9 +193,9 @@ class VideoSettingsBar extends StatelessWidget {
                 ),
               ),
 
-              SizedBox(width: compact ? 6 : 8),
+              SizedBox(width: compact ? 4 : 6),
 
-              // Estimate (design): "N prompts · est. X credits · Y Live accounts"
+              // Estimate (design): "N prompts · est. X credits · Y Live" (concise, no truncation)
               Expanded(
                 child: Text(
                   () {
@@ -211,8 +206,8 @@ class VideoSettingsBar extends StatelessWidget {
                       promptCount: promptCount,
                     );
                     return est == null
-                        ? '$promptCount prompts · $liveCount Live accounts'
-                        : '$promptCount prompts · $est · $liveCount Live accounts';
+                        ? '$promptCount prompts · $liveCount Live'
+                        : '$promptCount prompts · $est · $liveCount Live';
                   }(),
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
@@ -222,17 +217,21 @@ class VideoSettingsBar extends StatelessWidget {
               ),
               SizedBox(width: compact ? 6 : 8),
 
-              // Generate Button — Tactile 3D (Mechanical Bevel + 2.0px Lift)
+              // Generate Button — Tactile 3D (Tuned height 31, disabled on 0 prompts)
               Tooltip(
-                message: isRunning ? 'Generation in progress...' : 'Start generation (Ctrl + Enter)',
+                message: promptCount == 0
+                    ? 'Enter at least 1 prompt to generate'
+                    : isRunning
+                        ? 'Generation in progress...'
+                        : 'Start generation (Ctrl + Enter)',
                 child: TactileButton(
                   type: TactileType.primary,
-                  height: 38,
-                  padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 20),
+                  height: 31,
+                  padding: EdgeInsets.symmetric(horizontal: compact ? 12 : 18),
                   borderRadius: 8,
-                  bevelDepth: 3.5,
-                  enabled: !isRunning,
-                  onTap: !isRunning
+                  bevelDepth: 2.5,
+                  enabled: !isRunning && promptCount > 0,
+                  onTap: (!isRunning && promptCount > 0)
                       ? () => generator.startGeneration(
                             accounts: accounts,
                             activity: activity,
@@ -242,12 +241,12 @@ class VideoSettingsBar extends StatelessWidget {
                   child: Row(
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      const Icon(Icons.play_arrow, size: 15, color: Colors.white),
+                      const Icon(Icons.play_arrow, size: 14, color: Colors.white),
                       const SizedBox(width: 4),
                       Text(
                         isRunning ? 'Running...' : 'Generate',
                         style: const TextStyle(
-                          fontSize: 12.5,
+                          fontSize: 11.5,
                           fontWeight: FontWeight.w800,
                           color: Colors.white,
                         ),
@@ -287,17 +286,17 @@ class VideoSettingsBar extends StatelessWidget {
             maxLines: 1,
             softWrap: false,
             style: TextStyle(
-              fontSize: 10,
+              fontSize: 8.5,
               fontWeight: FontWeight.w800,
               letterSpacing: 0.8,
               color: AppTheme.textFaint,
             ),
           ),
         ),
-        const SizedBox(height: 5),
+        const SizedBox(height: 4),
         Container(
-          height: 34,
-          padding: const EdgeInsets.symmetric(horizontal: 6),
+          height: 30,
+          padding: const EdgeInsets.symmetric(horizontal: 5),
           decoration: BoxDecoration(
             color: AppTheme.inputBg,
             borderRadius: BorderRadius.circular(7),
@@ -317,11 +316,11 @@ class VideoSettingsBar extends StatelessWidget {
               isDense: true,
               isExpanded: true,
               style: TextStyle(
-                fontSize: 12,
+                fontSize: 9.5,
                 fontWeight: FontWeight.bold,
                 color: AppTheme.textMain,
               ),
-              icon: Icon(Icons.keyboard_arrow_down, size: 14, color: AppTheme.textDim),
+              icon: Icon(Icons.keyboard_arrow_down, size: 13, color: AppTheme.textDim),
               items: items.map((String item) {
                 return DropdownMenuItem<String>(
                   value: item,

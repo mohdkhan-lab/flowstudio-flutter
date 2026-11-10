@@ -29,6 +29,21 @@ import 'package:google_fonts/google_fonts.dart';
 /// fills on white cards. The white-card + gold-accent identity
 /// of the light theme is unchanged — this is legibility only.
 ///
+/// v2.48.88 (owner, .87 light screenshot): ONE LIGHT THEME ONLY —
+/// "jitne bhi light themes ke colour templates hain un sab ko
+/// hata do, sirf white me yahi rakho." All 13 light palettes are
+/// REMOVED; light mode now resolves every theme id to the single
+/// owner-approved Design-3 WHITE palette ([_whiteLight]: deep
+/// slate canvas #CBD5E1, pure-white cards, strong #788AA0
+/// borders, #E2E8F0 inputs, near-black/slate text, GOLD the only
+/// accent). A stored theme named for a removed light palette
+/// falls back to white cleanly (see [paletteFor]). The 13 DARK
+/// palettes are byte-identical — the theme grid still offers
+/// every family in Dark mode; in Light mode it offers the one
+/// white theme. The palette-derived `blue` token also resolves
+/// to the gold accent in light mode (owner: no blue in the
+/// white theme); dark keeps its #64D2FF.
+///
 /// Every token below is still a getter on [AppTheme], so the 200+
 /// existing call sites keep working unchanged — they now delegate to
 /// the currently applied [AppPalette].
@@ -99,7 +114,11 @@ class AppPalette {
       dark ? const Color(0x1F30D158) : const Color(0x1F34C759);
   Color get red => dark ? const Color(0xFFFF453A) : const Color(0xFFFF3B30);
   Color get redBg => dark ? const Color(0x1FFF453A) : const Color(0x1FFF3B30);
-  Color get blue => dark ? const Color(0xFF64D2FF) : const Color(0xFF0071E3);
+  // v2.48.88: in light mode this is the GOLD accent, not a blue —
+  // the single white theme carries no blue anywhere (the token
+  // feeds info/running accents in Progress + Notifications +
+  // card hovers). Dark keeps its sky blue, byte-identical.
+  Color get blue => dark ? const Color(0xFF64D2FF) : const Color(0xFFD97706);
 
   // Subtle inner overlays (white-alpha on dark palettes, black-alpha on
   // light palettes — same values the app has always used per mode).
@@ -152,6 +171,11 @@ class AppTheme {
     'ember',
   ];
 
+  /// v2.48.88: the ONE light theme's picker name. In Light mode
+  /// the theme grid shows exactly this single card (see
+  /// settings_view._buildThemeGrid).
+  static const String whiteThemeName = 'Studio White';
+
   static const Map<String, String> themeNames = {
     'gold': 'Royal Velvet Gold',
     'macos': 'macOS Classic',
@@ -172,9 +196,12 @@ class AppTheme {
 
   /// The palette for theme [id] in the given mode. Unknown ids fall
   /// back to Royal Velvet Gold, so a bad stored value can never break the UI.
+  /// v2.48.88: LIGHT mode ignores [id] entirely — there is exactly
+  /// one light palette (the white theme), so a stored theme named
+  /// for any of the removed light palettes lands on white cleanly.
   static AppPalette paletteFor(String id, bool isDark) {
-    final table = isDark ? _darkPalettes : _lightPalettes;
-    return table[id] ?? (isDark ? _goldDark : _macosLight);
+    if (!isDark) return _whiteLight;
+    return _darkPalettes[id] ?? _goldDark;
   }
 
   /// Applies theme [id] + mode [isDark] as the live palette. Called
@@ -228,17 +255,23 @@ class AppTheme {
     panelTop: Color(0xFF222734), panelBottom: Color(0xFF141720),
   );
 
-  static const AppPalette _macosLight = AppPalette(
-    id: 'macos', dark: false,
+  // v2.48.88: THE one and only light palette — the owner-approved
+  // Design-3 white theme (these are exactly the v2.48.87 'gold'
+  // light values: deep slate frame, pure-white cards, STRONG
+  // #788AA0 borders, #E2E8F0 inputs, near-black / slate text,
+  // gold the only accent). Every light-mode lookup resolves
+  // here; the 13 per-family light palettes are gone.
+  static const AppPalette _whiteLight = AppPalette(
+    id: 'white', dark: false,
     bgBody: Color(0xFFCBD5E1), bg2: Color(0xFFB6C4D6),
     surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
     inputBg: Color(0xFFE2E8F0),
     border: Color(0xFF788AA0), borderSoft: Color(0xFF788AA0),
-    accentGold: Color(0xFF0071E3), accentAmber: Color(0xFF409CFF),
-    accentText: Color(0xFF0071E3),
+    accentGold: Color(0xFFD97706), accentAmber: Color(0xFFF59E0B),
+    accentText: Color(0xFFB45309),
     textMain: Color(0xFF0A0F16), textDim: Color(0xFF334155),
     textFaint: Color(0xFF475569),
-    gradStart: Color(0xFF409CFF), gradEnd: Color(0xFF0071E3),
+    gradStart: Color(0xFFF59E0B), gradEnd: Color(0xFFD97706),
     panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
   );
 
@@ -395,166 +428,10 @@ class AppTheme {
     ),
   };
 
-  static const Map<String, AppPalette> _lightPalettes = {
-    'macos': _macosLight,
-    'midnight': AppPalette(
-      id: 'midnight', dark: false,
-      bgBody: Color(0xFF93B4DC), bg2: Color(0xFF84A9D8),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFDCEAFB),
-      border: Color(0xFF5B84B8), borderSoft: Color(0xFF5B84B8),
-      accentGold: Color(0xFF0067D8), accentAmber: Color(0xFF1A94FF),
-      accentText: Color(0xFF0067D8),
-      textMain: Color(0xFF12263F), textDim: Color(0xFF38536E),
-      textFaint: Color(0xFF4C6884),
-      gradStart: Color(0xFF1A94FF), gradEnd: Color(0xFF0066D6),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-    'graphite': AppPalette(
-      id: 'graphite', dark: false,
-      bgBody: Color(0xFFBCBCC2), bg2: Color(0xFFA8A8AE),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFE4E4E9),
-      border: Color(0xFF8E8E96), borderSoft: Color(0xFF8E8E96),
-      accentGold: Color(0xFF0071E3), accentAmber: Color(0xFF1A94FF),
-      accentText: Color(0xFF0071E3),
-      textMain: Color(0xFF1D1D1F), textDim: Color(0xFF4A4A4F),
-      textFaint: Color(0xFF62626A),
-      gradStart: Color(0xFF1A94FF), gradEnd: Color(0xFF0066D6),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-    'gold': AppPalette(
-      id: 'gold', dark: false,
-      bgBody: Color(0xFFCBD5E1), bg2: Color(0xFFB6C4D6),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFE2E8F0),
-      border: Color(0xFF788AA0), borderSoft: Color(0xFF788AA0),
-      accentGold: Color(0xFFD97706), accentAmber: Color(0xFFF59E0B),
-      accentText: Color(0xFFB45309),
-      textMain: Color(0xFF0A0F16), textDim: Color(0xFF334155),
-      textFaint: Color(0xFF475569),
-      gradStart: Color(0xFFF59E0B), gradEnd: Color(0xFFD97706),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-    'emerald': AppPalette(
-      id: 'emerald', dark: false,
-      bgBody: Color(0xFF7FC79B), bg2: Color(0xFF6BB98C),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFD8F2E2),
-      border: Color(0xFF4E9E6E), borderSoft: Color(0xFF4E9E6E),
-      accentGold: Color(0xFF0E9F5A), accentAmber: Color(0xFF34C759),
-      accentText: Color(0xFF0E9F5A),
-      textMain: Color(0xFF0E2A1C), textDim: Color(0xFF2F5942),
-      textFaint: Color(0xFF406350),
-      gradStart: Color(0xFF34C759), gradEnd: Color(0xFF0E9F5A),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-    'purple': AppPalette(
-      id: 'purple', dark: false,
-      bgBody: Color(0xFFAC93E4), bg2: Color(0xFF9B7FE0),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFE4DAFA),
-      border: Color(0xFF8268C8), borderSoft: Color(0xFF8268C8),
-      accentGold: Color(0xFF7D3FE0), accentAmber: Color(0xFFD18CFF),
-      accentText: Color(0xFF7D3FE0),
-      textMain: Color(0xFF241640), textDim: Color(0xFF4E4378),
-      textFaint: Color(0xFF635892),
-      gradStart: Color(0xFFD18CFF), gradEnd: Color(0xFF7D3FE0),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-    'slate': AppPalette(
-      id: 'slate', dark: false,
-      bgBody: Color(0xFF9DB0C4), bg2: Color(0xFF8AA2B8),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFE1E6ED),
-      border: Color(0xFF68809C), borderSoft: Color(0xFF68809C),
-      accentGold: Color(0xFF0B7AC0), accentAmber: Color(0xFF8AD9FF),
-      accentText: Color(0xFF0B7AC0),
-      textMain: Color(0xFF1B2430), textDim: Color(0xFF3E4F5E),
-      textFaint: Color(0xFF54687A),
-      gradStart: Color(0xFF8AD9FF), gradEnd: Color(0xFF0B7AC0),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-    'sunset': AppPalette(
-      id: 'sunset', dark: false,
-      bgBody: Color(0xFFFDBA74), bg2: Color(0xFFFCA94F),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFFFE8CC),
-      border: Color(0xFFF08A2D), borderSoft: Color(0xFFF08A2D),
-      accentGold: Color(0xFFEA580C), accentAmber: Color(0xFFFB923C),
-      accentText: Color(0xFFC2410C),
-      textMain: Color(0xFF0A0F16), textDim: Color(0xFF334155),
-      textFaint: Color(0xFF475569),
-      gradStart: Color(0xFFFB923C), gradEnd: Color(0xFFEA580C),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-    'teal': AppPalette(
-      id: 'teal', dark: false,
-      bgBody: Color(0xFF7CC2BB), bg2: Color(0xFF66B3AA),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFD2EFEC),
-      border: Color(0xFF4A9A90), borderSoft: Color(0xFF4A9A90),
-      accentGold: Color(0xFF0B9484), accentAmber: Color(0xFF5EEAD4),
-      accentText: Color(0xFF0B9484),
-      textMain: Color(0xFF0A2A28), textDim: Color(0xFF2E5450),
-      textFaint: Color(0xFF406862),
-      gradStart: Color(0xFF5EEAD4), gradEnd: Color(0xFF0B9484),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-    'rose': AppPalette(
-      id: 'rose', dark: false,
-      bgBody: Color(0xFFE58CA3), bg2: Color(0xFFDE7591),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFFBDCE4),
-      border: Color(0xFFC95674), borderSoft: Color(0xFFC95674),
-      accentGold: Color(0xFFDE2A55), accentAmber: Color(0xFFFF8FA8),
-      accentText: Color(0xFFDE2A55),
-      textMain: Color(0xFF33101C), textDim: Color(0xFF6E3A4C),
-      textFaint: Color(0xFF7C4858),
-      gradStart: Color(0xFFFF8FA8), gradEnd: Color(0xFFDE2A55),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-    // v2.39.0: same sample mapping as the dark palettes above.
-    'crimson': AppPalette(
-      id: 'crimson', dark: false,
-      bgBody: Color(0xFFD69CA6), bg2: Color(0xFFCC8A96),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFF6E7E9),
-      border: Color(0xFFB47683), borderSoft: Color(0xFFB47683),
-      accentGold: Color(0xFFD92B3A), accentAmber: Color(0xFFF2707C),
-      accentText: Color(0xFFD92B3A),
-      textMain: Color(0xFF2B2124), textDim: Color(0xFF59444C),
-      textFaint: Color(0xFF685259),
-      gradStart: Color(0xFFF2707C), gradEnd: Color(0xFFD92B3A),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-    'matte': AppPalette(
-      id: 'matte', dark: false,
-      bgBody: Color(0xFFAEAEAA), bg2: Color(0xFF9C9C98),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFE4E4E0),
-      border: Color(0xFF8A8A86), borderSoft: Color(0xFF8A8A86),
-      accentGold: Color(0xFF5F6468), accentAmber: Color(0xFF8B9096),
-      accentText: Color(0xFF5F6468),
-      textMain: Color(0xFF262626), textDim: Color(0xFF4C4C4C),
-      textFaint: Color(0xFF5E5E5E),
-      gradStart: Color(0xFF8B9096), gradEnd: Color(0xFF5F6468),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-    'ember': AppPalette(
-      id: 'ember', dark: false,
-      bgBody: Color(0xFFFDBA74), bg2: Color(0xFFFCA94F),
-      surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-      inputBg: Color(0xFFFFE8CC),
-      border: Color(0xFFE07F24), borderSoft: Color(0xFFE07F24),
-      accentGold: Color(0xFFD97706), accentAmber: Color(0xFFF59E0B),
-      accentText: Color(0xFFB45309),
-      textMain: Color(0xFF0A0F16), textDim: Color(0xFF334155),
-      textFaint: Color(0xFF475569),
-      gradStart: Color(0xFFF59E0B), gradEnd: Color(0xFFD97706),
-      panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
-    ),
-  };
+  // v2.48.88: the _lightPalettes table is GONE — all 13 per-family
+  // light palettes removed at the owner's order. Light mode has
+  // exactly one palette ([_whiteLight] above); [paletteFor]
+  // returns it for every id. Dark keeps its full table below.
 
   // ------------------------------------------------------------------
   // Live tokens — unchanged public API, now delegating to [_current].

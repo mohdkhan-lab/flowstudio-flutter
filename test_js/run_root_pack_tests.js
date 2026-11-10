@@ -7234,25 +7234,102 @@ async function main() {
     // strengthened so cards lift off the frame; every other
     // light family follows the same structure in its own hue;
     // dark palettes untouched.
+    // v2.48.88: those gold-family values are now THE single
+    // white palette (_whiteLight) — the other 12 light
+    // palettes are deleted (see the X88 block). The pins below
+    // are re-pointed at the _whiteLight block; the VALUES they
+    // assert are byte-identical to .87's gold-light palette.
     const themeSrc86 = read86('lib/theme/app_theme.dart');
-    const goldLight86 = themeSrc86.slice(themeSrc86.indexOf("'gold': AppPalette(\n      id: 'gold', dark: false"));
-    ok('X87 gold-light canvas is the DEEP slate frame #CBD5E1', goldLight86.includes('bgBody: Color(0xFFCBD5E1)'));
-    ok('X87 gold-light cards stay pure white (surface + panelTop #FFFFFF)',
+    const whiteStart87 = themeSrc86.indexOf('static const AppPalette _whiteLight');
+    const goldLight86 = themeSrc86.slice(whiteStart87, themeSrc86.indexOf('\n  );', whiteStart87));
+    ok('X87 white-palette canvas is the DEEP slate frame #CBD5E1', goldLight86.includes('bgBody: Color(0xFFCBD5E1)'));
+    ok('X87 white-palette cards stay pure white (surface + panelTop #FFFFFF)',
       goldLight86.includes('surface: Color(0xFFFFFFFF)') && goldLight86.includes('panelTop: Color(0xFFFFFFFF)'));
-    ok('X87 gold-light STRONG border #788AA0 (border and borderSoft alike)',
+    ok('X87 white-palette STRONG border #788AA0 (border and borderSoft alike)',
       goldLight86.includes('border: Color(0xFF788AA0)') && goldLight86.includes('borderSoft: Color(0xFF788AA0)'));
-    ok('X87 gold-light inputs get the #E2E8F0 fill', goldLight86.includes('inputBg: Color(0xFFE2E8F0)'));
-    ok('X87 gold-light chip/wash partner bg2 is #B6C4D6', goldLight86.includes('bg2: Color(0xFFB6C4D6)'));
-    ok('X87 gold-light textMain is near-black #0A0F16', goldLight86.includes('textMain: Color(0xFF0A0F16)'));
-    ok('X87 gold-light textDim is #334155', goldLight86.includes('textDim: Color(0xFF334155)'));
-    ok('X87 gold-light textFaint is #475569', goldLight86.includes('textFaint: Color(0xFF475569)'));
-    ok('X87 gold-light gold accent unchanged', goldLight86.includes('accentGold: Color(0xFFD97706)'));
+    ok('X87 white-palette inputs get the #E2E8F0 fill', goldLight86.includes('inputBg: Color(0xFFE2E8F0)'));
+    ok('X87 white-palette chip/wash partner bg2 is #B6C4D6', goldLight86.includes('bg2: Color(0xFFB6C4D6)'));
+    ok('X87 white-palette textMain is near-black #0A0F16', goldLight86.includes('textMain: Color(0xFF0A0F16)'));
+    ok('X87 white-palette textDim is #334155', goldLight86.includes('textDim: Color(0xFF334155)'));
+    ok('X87 white-palette textFaint is #475569', goldLight86.includes('textFaint: Color(0xFF475569)'));
+    ok('X87 white-palette gold accent unchanged', goldLight86.includes('accentGold: Color(0xFFD97706)'));
     ok('X87 no light palette keeps the washed-out slate-400 faint', !themeSrc86.includes('textFaint: Color(0xFF94A3B8)'));
     ok('X87 the light card shadow is strengthened in the shared card decoration',
       read86('lib/widgets/tactile_components.dart').includes('(_isHovered ? 0.22 : 0.16)'));
     ok('X86 the DARK gold palette is untouched by the light rework',
       themeSrc86.includes('textDim: Color(0xFFD4AF37)') && themeSrc86.includes('borderSoft: Color(0x3DFBBF24)'));
     ok('X86 the By MK caption uses the text-tuned accent', read86('lib/widgets/top_strip.dart').includes('color: AppTheme.accentText'));
+  }
+
+  // ---------------------------------------------------------------------------
+  // X88 (v2.48.88) — ONE LIGHT THEME + FULL WHITE-THEME ELEMENT
+  // AUDIT (owner, .87 screenshot: "jitne bhi light themes ke
+  // colour templates hain un sab ko hata do, sirf white me yahi
+  // rakho" + "elements, sections, buttons pura app white theme
+  // ke according nahi hua").
+  // ITEM 1: the 13 light palettes collapse to the single
+  // owner-approved Design-3 WHITE palette (_whiteLight — the
+  // .87 gold-family values). paletteFor resolves EVERY id to
+  // it in light mode, so a stored theme named for a removed
+  // light palette falls back to white cleanly. The picker
+  // shows one card ('Studio White') in light mode. Dark
+  // palettes are byte-identical (13 dark: true palettes).
+  // ITEM 2: every widget audited for light-mode strays —
+  // hard-coded #F1F5F9 slabs, the sky-blue checking accent,
+  // the white70 checkbox edge, white-on-tint hover/filter
+  // text, the violet notification type, the vivid avatar +
+  // history tile palettes, and the palette `blue` token —
+  // all now resolve from the white palette's tokens or a
+  // theme-split whose dark branch is the old value.
+  // ---------------------------------------------------------------------------
+  {
+    const fsx88 = require('fs');
+    const pathx88 = require('path');
+    const read88 = (rel) => fsx88.readFileSync(pathx88.join(__dirname, '..', rel), 'utf8');
+    const count88 = (hay, needle) => hay.split(needle).length - 1;
+
+    const themeSrc88 = read88('lib/theme/app_theme.dart');
+    // --- Item 1: exactly one light palette + clean fallback ---
+    ok('X88 the single white palette exists', themeSrc88.includes('static const AppPalette _whiteLight'));
+    ok('X88 exactly ONE light palette remains in app_theme', count88(themeSrc88, 'dark: false') === 1);
+    ok('X88 all 13 dark palettes are still present', count88(themeSrc88, 'dark: true') === 13);
+    ok('X88 the light palettes table is gone', !themeSrc88.includes('Map<String, AppPalette> _lightPalettes'));
+    ok('X88 paletteFor resolves every light id to the white palette (stored-theme fallback)',
+      themeSrc88.includes('if (!isDark) return _whiteLight;'));
+    ok('X88 the white theme carries its picker name', themeSrc88.includes("whiteThemeName = 'Studio White'"));
+    const settingsSrc88 = read88('lib/widgets/settings_view.dart');
+    ok('X88 the theme grid offers ONE card in light mode (full grid only in dark)',
+      settingsSrc88.includes("AppTheme.dark ? AppTheme.themeIds : const ['gold']"));
+    ok('X88 the light picker card is labelled with the white theme name',
+      settingsSrc88.includes('AppTheme.whiteThemeName'));
+    ok('X88 the light blue token IS the gold accent (dark keeps its sky blue)',
+      themeSrc88.includes('dark ? const Color(0xFF64D2FF) : const Color(0xFFD97706)'));
+    ok('X88 a dark family accent survives byte-identical (macos dark blue)',
+      themeSrc88.includes('accentGold: Color(0xFF0A84FF)'));
+
+    // --- Item 2: the audited strays are token-sourced in light ---
+    const tactileSrc88 = read88('lib/widgets/tactile_components.dart');
+    ok('X88 no hard-coded #F1F5F9 slab remains in tactile components', !tactileSrc88.includes('0xFFF1F5F9'));
+    ok('X88 tactile stop/pause/icon/secondary light fills come from inputBg',
+      count88(tactileSrc88, 'AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg') === 4);
+    const sidebarSrc88 = read88('lib/widgets/sidebar_accounts.dart');
+    ok('X88 no hard-coded #F1F5F9 slab remains in the sidebar', !sidebarSrc88.includes('0xFFF1F5F9'));
+    ok('X88 sidebar bottom buttons take their light fill from inputBg',
+      count88(sidebarSrc88, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg') === 2);
+    ok('X88 the checking filter accent is sky blue on dark only, ACTIVE gold in light',
+      sidebarSrc88.includes('AppTheme.dark ? const Color(0xFF38BDF8) : AppTheme.activeGold'));
+    ok('X88 the checkbox edge is white70 on dark only, the border token in light',
+      sidebarSrc88.includes('AppTheme.dark ? Colors.white70 : AppTheme.border'));
+    ok('X88 filter buttons never put white text on a pale tint in light',
+      sidebarSrc88.includes('AppTheme.dark ? Colors.white : activeTint'));
+    ok('X88 avatar discs have a white-theme slate/gold palette',
+      sidebarSrc88.includes('_cardPaletteLight') && sidebarSrc88.includes('AppTheme.dark ? _cardPalette : _cardPaletteLight'));
+    const notifSrc88 = read88('lib/widgets/notification_center.dart');
+    ok('X88 the login notification type is violet on dark only, accentText in light',
+      notifSrc88.includes('AppTheme.dark ? const Color(0xFF9B7EDE) : AppTheme.accentText'));
+    const historySrc88 = read88('lib/widgets/history_view.dart');
+    ok('X88 history file tiles have a white-theme slate/gold palette',
+      historySrc88.includes('_tilePaletteLight') && historySrc88.includes('AppTheme.dark ? _tilePalette : _tilePaletteLight'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

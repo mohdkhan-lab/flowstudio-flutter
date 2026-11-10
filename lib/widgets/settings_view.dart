@@ -1277,7 +1277,11 @@ class _SettingsViewState extends State<SettingsView> {
   // v2.34.0. Same look: 5 cards per row, 48px row height, 6px
   // gaps, identical cards.
   Widget _buildThemeGrid(SettingsProvider prov, AppSettings s) {
-    final ids = AppTheme.themeIds;
+    // v2.48.88: LIGHT mode has exactly ONE theme — the white
+    // palette — so the grid shows a single card (the stored
+    // family id still applies in Dark mode, whose grid is the
+    // full 13, unchanged).
+    final ids = AppTheme.dark ? AppTheme.themeIds : const ['gold'];
     final rows = <Widget>[];
     for (var start = 0; start < ids.length; start += 5) {
       if (rows.isNotEmpty) rows.add(const SizedBox(height: 6));
@@ -1307,9 +1311,14 @@ class _SettingsViewState extends State<SettingsView> {
   // selected — same tap behaviour as the old tall card.
   Widget _buildThemeCardCompact(SettingsProvider prov, AppSettings s, String id) {
     final pal = AppTheme.paletteFor(id, AppTheme.dark);
-    final selected = s.theme == id;
+    // v2.48.88: in Light mode the single card IS the applied
+    // white theme (always shown selected; tapping changes
+    // nothing — there is no other light theme to pick). The
+    // stored family id is left untouched so Dark mode keeps
+    // the owner's chosen family.
+    final selected = AppTheme.dark ? s.theme == id : true;
     return InkWell(
-      onTap: () => prov.setTheme(id),
+      onTap: AppTheme.dark ? () => prov.setTheme(id) : () {},
       borderRadius: BorderRadius.circular(8),
       child: Container(
         padding: const EdgeInsets.all(3),
@@ -1327,7 +1336,9 @@ class _SettingsViewState extends State<SettingsView> {
             SizedBox(height: 20, child: _buildThemePreviewCompact(pal)),
             const SizedBox(height: 3),
             Text(
-              AppTheme.themeNames[id] ?? id,
+              AppTheme.dark
+                  ? (AppTheme.themeNames[id] ?? id)
+                  : AppTheme.whiteThemeName,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               textAlign: TextAlign.center,

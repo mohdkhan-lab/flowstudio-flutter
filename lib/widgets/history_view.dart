@@ -162,6 +162,7 @@ class _HistoryViewState extends State<HistoryView> {
     super.dispose();
   }
 
+  // Dark palettes: the original file-tile colours (unchanged).
   static const List<Color> _tilePalette = [
     Color(0xFF24406B), // navy
     Color(0xFF7A3B2E), // rust
@@ -171,6 +172,20 @@ class _HistoryViewState extends State<HistoryView> {
     Color(0xFF7A2430), // deep red
     Color(0xFF1F5E6E), // teal
     Color(0xFF3A3A72), // indigo
+  ];
+
+  // v2.48.88: in the white theme the file tiles wear the theme's
+  // own family — deep slate / gold / stone tones (dark enough
+  // for the white play triangle), no navy/purple/teal/indigo.
+  static const List<Color> _tilePaletteLight = [
+    Color(0xFF475569), // slate
+    Color(0xFF78716C), // stone
+    Color(0xFF334155), // deep slate
+    Color(0xFF64748B), // slate mid
+    Color(0xFF8A6508), // dark gold
+    Color(0xFF57534E), // stone deep
+    Color(0xFF3F4A5A), // blue-slate (desaturated)
+    Color(0xFF6B5B3E), // bronze
   ];
 
   @override
@@ -915,7 +930,8 @@ class _HistoryViewState extends State<HistoryView> {
     final name = f['name']?.toString() ?? '';
     final size = (f['size'] as num?) ?? 0;
     final date = _mtimeOf(f);
-    final tileColor = _tilePalette[index % _tilePalette.length];
+    final tilePalette = AppTheme.dark ? _tilePalette : _tilePaletteLight;
+    final tileColor = tilePalette[index % tilePalette.length];
     final project = _projectOf(f);
     final local = _isLocalPick(f);
 

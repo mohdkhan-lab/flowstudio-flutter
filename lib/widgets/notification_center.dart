@@ -64,8 +64,10 @@ class _NotificationOverlayState extends State<NotificationOverlay> {
         return AppTheme.activeGold;
       case NotificationType.login:
         // AppTheme has no purple token; a muted violet that reads
-        // on both palettes (same family as History's file tiles).
-        return const Color(0xFF9B7EDE);
+        // on the dark palettes (same family as History's file
+        // tiles). v2.48.88: the white theme carries no violet —
+        // the login type wears the dark-gold accentText there.
+        return AppTheme.dark ? const Color(0xFF9B7EDE) : AppTheme.accentText;
       case NotificationType.download:
         return AppTheme.blue;
     }
@@ -80,7 +82,10 @@ class _NotificationOverlayState extends State<NotificationOverlay> {
       case NotificationType.warning:
         return AppTheme.activeGold.withValues(alpha: 0.16);
       case NotificationType.login:
-        return const Color(0xFF9B7EDE).withValues(alpha: 0.16);
+        // v2.48.88: pairs with _typeColor — gold tint in light.
+        return AppTheme.dark
+            ? const Color(0xFF9B7EDE).withValues(alpha: 0.16)
+            : AppTheme.accentText.withValues(alpha: 0.14);
       case NotificationType.download:
         return AppTheme.blue.withValues(alpha: 0.15);
     }

@@ -138,7 +138,9 @@ class _TactileButtonState extends State<TactileButton> {
       case TactileType.stop:
         gradient = null;
         // Clean slate background — subtle red accent text/icon only
-        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : const Color(0xFFF1F5F9));
+        // v2.48.88: the light fill is the palette inputBg token
+        // (#E2E8F0 in the white theme), not a hard-coded slab.
+        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg);
         borderColor = _isHovered ? AppTheme.border : AppTheme.borderSoft;
         bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.red;
@@ -150,7 +152,7 @@ class _TactileButtonState extends State<TactileButton> {
       case TactileType.pause:
         gradient = null;
         // Clean slate background — subtle amber accent text/icon only
-        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : const Color(0xFFF1F5F9));
+        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg);
         borderColor = _isHovered ? AppTheme.border : AppTheme.borderSoft;
         bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.accentGold;
@@ -163,7 +165,7 @@ class _TactileButtonState extends State<TactileButton> {
         gradient = null;
         bgColor = widget.isActive
             ? AppTheme.accentGold.withValues(alpha: 0.20)
-            : (_isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : const Color(0xFFF1F5F9)));
+            : (_isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg));
         borderColor = widget.isActive
             ? AppTheme.accentGold
             : (_isHovered ? AppTheme.accentAmber : AppTheme.borderSoft);
@@ -175,7 +177,7 @@ class _TactileButtonState extends State<TactileButton> {
       case TactileType.secondary:
         gradient = null;
         // Clean slate background — NO red or brown fills
-        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : const Color(0xFFF1F5F9));
+        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg);
         borderColor = _isHovered ? AppTheme.accentAmber : AppTheme.borderSoft;
         bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.glowPrimary;

@@ -151,7 +151,10 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                 thirdLabel,
                 thirdCount,
                 thirdKey,
-                accentColor: isCheckingNow ? const Color(0xFF38BDF8) : const Color(0xFFF5B301),
+                // v2.48.88: the checking accent is sky blue on dark
+                // palettes only — in the white theme it is the
+                // fixed ACTIVE gold (no blue in light mode).
+                accentColor: isCheckingNow ? (AppTheme.dark ? const Color(0xFF38BDF8) : AppTheme.activeGold) : const Color(0xFFF5B301),
                 tooltip: isCheckingNow
                     ? '$checkingCount cookies currently verifying'
                     : '$loginRequiredCount expired cookies requiring login',
@@ -251,7 +254,11 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                       value: acc.isChecked,
                                       activeColor: AppTheme.accentGold,
                                       checkColor: Colors.black,
-                                      side: const BorderSide(color: Colors.white70, width: 1.5),
+                                      // v2.48.88: white70 is invisible on
+                                      // the white theme's white rows — the
+                                      // unchecked box edge is the strong
+                                      // border token in light mode.
+                                      side: BorderSide(color: AppTheme.dark ? Colors.white70 : AppTheme.border, width: 1.5),
                                       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(2)),
                                       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                                       onChanged: (_) => accountsProv.toggleAccount(acc.id),
@@ -810,6 +817,7 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
   List<Map<String, dynamic>> _profiles = [];
   bool _loadingProfiles = true;
 
+  // Dark palettes: the original vivid identity discs (unchanged).
   static const List<Color> _cardPalette = [
     Color(0xFF0A84FF),
     Color(0xFF30D158),
@@ -819,6 +827,20 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
     Color(0xFF2DD4BF),
     Color(0xFFFF8A3D),
     Color(0xFF64D2FF),
+  ];
+
+  // v2.48.88: in the white theme the avatar discs wear the
+  // theme's own family — deep slate / gold / stone tones, all
+  // dark enough for the white initial, no blue/purple/teal.
+  static const List<Color> _cardPaletteLight = [
+    Color(0xFFB45309),
+    Color(0xFF475569),
+    Color(0xFF334155),
+    Color(0xFF78716C),
+    Color(0xFF64748B),
+    Color(0xFF92400E),
+    Color(0xFF3F4A5A),
+    Color(0xFF57534E),
   ];
 
   @override
@@ -842,7 +864,8 @@ class _AddAccountDialogState extends State<_AddAccountDialog> {
     for (final c in seed.toLowerCase().codeUnits) {
       h = (h * 31 + c) & 0x7fffffff;
     }
-    return _cardPalette[h % _cardPalette.length];
+    final palette = AppTheme.dark ? _cardPalette : _cardPaletteLight;
+    return palette[h % palette.length];
   }
 
   @override
@@ -1170,7 +1193,13 @@ class _HoverPillBtnState extends State<_HoverPillBtn> {
               style: TextStyle(
                 fontSize: 12,
                 fontWeight: FontWeight.bold,
-                color: _hovered ? Colors.white : AppTheme.accentText,
+                // v2.48.88: hover lifts the pill on a pale gold
+                // tint — white text vanishes on it in light mode;
+                // the hover label is the dark-gold accentText
+                // there (dark keeps its white-on-tint).
+                color: _hovered
+                    ? (AppTheme.dark ? Colors.white : AppTheme.accentText)
+                    : AppTheme.accentText,
               ),
             ),
           ),
@@ -1246,7 +1275,10 @@ class _HoverRoundAddBtnState extends State<_HoverRoundAddBtn> {
             child: Icon(
               Icons.add,
               size: 18,
-              color: _hovered ? Colors.white : AppTheme.accentText,
+              // v2.48.88: same light-hover rule as _HoverPillBtn.
+              color: _hovered
+                  ? (AppTheme.dark ? Colors.white : AppTheme.accentText)
+                  : AppTheme.accentText,
             ),
           ),
         ),
@@ -1346,7 +1378,14 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
                     style: TextStyle(
                       fontSize: 9,
                       fontWeight: FontWeight.w700,
-                      color: isActive ? Colors.white : (_hovered ? Colors.white : AppTheme.textDim),
+                      // v2.48.88: the active/hover fills are pale
+                      // alpha tints — white text reads on them in
+                      // dark mode only. In the white theme the
+                      // label wears the tint colour itself (or
+                      // textMain on hover), never white-on-tint.
+                      color: isActive
+                          ? (AppTheme.dark ? Colors.white : activeTint)
+                          : (_hovered ? (AppTheme.dark ? Colors.white : AppTheme.textMain) : AppTheme.textDim),
                     ),
                   ),
                   const SizedBox(height: 1),
@@ -1356,8 +1395,8 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
                       fontSize: 13,
                       fontWeight: FontWeight.w800,
                       color: isActive
-                          ? Colors.white
-                          : (_hovered ? Colors.white : (widget.accentColor ?? AppTheme.textDim)),
+                          ? (AppTheme.dark ? Colors.white : activeTint)
+                          : (_hovered ? (AppTheme.dark ? Colors.white : (widget.accentColor ?? AppTheme.textDim)) : (widget.accentColor ?? AppTheme.textDim)),
                     ),
                   ),
                 ],
@@ -1496,9 +1535,10 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
             transform: Matrix4.translationValues(0, translateY, 0),
             decoration: BoxDecoration(
               // Clean dark slate background — NO red fill brick!
+              // v2.48.88: light fill = the inputBg token, not a slab.
               color: _hovered && enabled
                   ? AppTheme.surfaceElevated
-                  : (AppTheme.dark ? AppTheme.overlay08 : const Color(0xFFF1F5F9)),
+                  : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg),
               borderRadius: BorderRadius.circular(6),
               border: Border.all(
                 color: _hovered && enabled
@@ -1589,7 +1629,7 @@ class _HoverBottomSettingsBtnState extends State<_HoverBottomSettingsBtn> {
               // Clean dark slate background — NO brown fill brick!
               color: _hovered
                   ? AppTheme.surfaceElevated
-                  : (AppTheme.dark ? AppTheme.overlay08 : const Color(0xFFF1F5F9)),
+                  : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
                 color: active

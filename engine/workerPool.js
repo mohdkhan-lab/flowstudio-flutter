@@ -17,6 +17,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const sequenceReport = require('./sequenceReport');
+const { duplicateQueueEntryLogLine } = require('./queueDedupe');
 const browserMode = require('./browserMode');
 const windowStyle = require('./windowStyle');
 const { sleepBlocker } = require('./sleepBlocker');
@@ -995,6 +996,13 @@ class WorkerPool {
       } else {
         batchId = `batch_${Date.now()}`;
         pendingTasks = dbService.createBatchTasks(batchId, prompts, settings);
+        // v2.48.78 (Item B): queue-build dedupe ne is
+        // batch ki koi (tag + text) ek jaisi entry
+        // girayi ho to har ek [ROOT] line se darj —
+        // ek bheja gaya prompt hamesha ek hi task.
+        for (const droppedTag of (pendingTasks.droppedDuplicates || [])) {
+          this.log(duplicateQueueEntryLogLine(droppedTag), 'warn');
+        }
         // v2.48.63 (SKIP SCOPE — Item C): skip-flag ki
         // nishani ab task ki PEHCHAN (DB id) hai, sirf is
         // batch ke promptIndex-0 wale task par. .62 ka

@@ -43,8 +43,20 @@ function displayTag(row) {
 function buildSequenceReport(rows, { exists, namingMode = 'tag', hashOf } = {}) {
   const existsFn = typeof exists === 'function' ? exists : () => false;
   const hashFn = typeof hashOf === 'function' ? hashOf : null;
+  // v2.48.78 (Item B): ek hi task row (ek hi id)
+  // fehrist me do baar aa jaye to wo EK hi scene
+  // hai — do missing kabhi nahi. (2026-11-10: ek
+  // prompt ke do missing records ban gaye the.)
+  const seenRowIds = new Set();
   const list = (Array.isArray(rows) ? rows : [])
     .filter(r => r && typeof r === 'object')
+    .filter(r => {
+      const id = String(r.id || '');
+      if (!id) return true;
+      if (seenRowIds.has(id)) return false;
+      seenRowIds.add(id);
+      return true;
+    })
     .slice()
     .sort((a, b) => (a.prompt_index || 0) - (b.prompt_index || 0));
 
@@ -167,9 +179,18 @@ function selectMissingItems(rows, report) {
     if (r && r.id) byId.set(String(r.id), r);
   }
   const items = [];
+  // v2.48.78 (Item B): report me ek hi task ki
+  // missing entry do baar aa jaye to bhi recreated
+  // item EK hi banta hai — ek scene, ek hi redo.
+  const seenMissingIds = new Set();
   for (const m of (report && Array.isArray(report.missing)) ? report.missing : []) {
     const row = byId.get(String(m.taskId));
     if (!row) continue;
+    const mid = String(m.taskId || '');
+    if (mid) {
+      if (seenMissingIds.has(mid)) continue;
+      seenMissingIds.add(mid);
+    }
     const parts = splitLabelPrefix(row.prompt_text || '');
     const ownTag = typeof row.prompt_tag === 'string' ? row.prompt_tag.trim() : '';
     items.push({

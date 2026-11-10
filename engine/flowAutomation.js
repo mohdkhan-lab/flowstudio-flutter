@@ -548,6 +548,111 @@ function settingsRepairDecision(input) {
 }
 
 /**
+ * v2.48.78 (Item A — SETTINGS SELECTION HARDENING,
+ * owner field test 2026-11-10 11:39–11:43): .76 ki
+ * repair ghadi to chal gayi (3 attempts, imaandar
+ * mismatch, 0 credits), lekin us ke neeche wala
+ * RESOLUTION CLICK kabhi asar hi nahi karta tha —
+ * "Selecting the Resolution: [360p]…" ke ~0.36s baad
+ * pill phir [720p] hi padhta tha, teenon baar. Code
+ * ki tehqeeq me wajah saaf mili: chunav SIRF ek
+ * synthetic DOM .click() tha (page.evaluate ke andar,
+ * us element par jis ka poora innerText target se
+ * milta tha) aur tasdeeq us ke sirf 350ms baad EK
+ * baar padhi jati thi — na panel ke asal options ka
+ * koi dump, na scroll-into-view, na pill badalne ka
+ * intezaar (poll), na dusri click strategy. Us
+ * profile par synthetic click Flow ke Material
+ * toggle handler tak pohanchta hi nahi tha (usi
+ * function ke andar MODE wala chunav — jo asal
+ * mouse click bhi karta hai — theek chalta tha).
+ * Ab har pill-field ka chunav _selectPanelOption se
+ * hota hai: pehle panel ke asal options ka [ROOT]
+ * dump, phir EXACT text par scroll-into-view + asal
+ * mouse click, phir pill/state badalne ka poll
+ * (SETTINGS_SELECT_WAIT_MS tak); pehli strategy se
+ * pill na badle to dusri strategy (andar wala
+ * label/radio element ya toggle host) usi attempt
+ * ke andar — aur har strategy [ROOT] line me darj.
+ */
+const SETTINGS_SELECT_WAIT_MS = 2500;
+const SETTINGS_SELECT_POLL_MS = 200;
+
+/** Panel jo options asal me dikha raha hai — dump line. */
+function settingsOptionsDumpLine(field, options) {
+  const list = (Array.isArray(options) ? options : [])
+    .map(o => String(o == null ? '' : o).replace(/\s+/g, ' ').trim())
+    .filter(Boolean);
+  return `[ROOT] settings-options field=${field} options=[${list.join(', ')}]`;
+}
+
+/** Ek click strategy ka natija — [ROOT] line. */
+function settingsClickLogLine(field, strategy, changed) {
+  return `[ROOT] settings-click field=${field} strategy=${strategy} changed=${changed}`;
+}
+
+/**
+ * v2.48.78 (Item A): panel ke ek field-group ka
+ * TARGET option dhoondhne wala page-side source —
+ * resolutionStateSource wali hi shakal (khalis
+ * string, Node par bhi jaali document se test hoti
+ * hai). kind ('resolution'|'duration'|'count'|
+ * 'aspect') aur wantText (lowercase) source me garam
+ * hokar jate hain. Lautta hai:
+ *   { found, options: [visible texts],
+ *     self: {x,y}|null, inner: {x,y}|null,
+ *     host: {x,y}|null }
+ * self = option element ka markaz (scroll-into-view
+ * ke BAAD); inner = us ke andar wale label/span/
+ * input ka markaz; host = toggle host (mat-button-
+ * toggle / role wala parent) ka markaz, jab wo
+ * element se alag ho. Marker 'fsPanelTarget' test
+ * routing ke liye hai.
+ */
+function panelOptionTargetSource(kind, wantText) {
+  const kindJson = JSON.stringify(String(kind || ''));
+  const wantJson = JSON.stringify(String(wantText || '').toLowerCase());
+  return '(() => {\n'
+    + '/*fsPanelTarget*/\n'
+    + 'try {\n'
+    + '  const kind = ' + kindJson + ';\n'
+    + '  const want = ' + wantJson + ';\n'
+    + '  const pop = Array.from(document.querySelectorAll(\'.cdk-overlay-pane, .settings-content\')).find(p => p.getClientRects().length > 0) || document.querySelector(\'.settings-content\');\n'
+    + '  if (!pop) return { found: false, options: [], self: null, inner: null, host: null };\n'
+    + '  const visible = (el) => { try { return el.getClientRects().length > 0; } catch (e) { return false; } };\n'
+    + '  const textOf = (el) => (el.innerText || \'\').replace(/\\s+/g, \' \').trim();\n'
+    + '  const inGroup = (t) => {\n'
+    + '    const low = t.toLowerCase();\n'
+    + '    if (kind === \'resolution\') return low === \'360p\' || low === \'720p\';\n'
+    + '    if (kind === \'duration\') return /^\\d+\\s*s$/.test(low);\n'
+    + '    if (kind === \'count\') return /^x\\d+$/.test(low);\n'
+    + '    if (kind === \'aspect\') return low.includes(\':\') || /^\\d+_\\d+$/.test(low);\n'
+    + '    return false;\n'
+    + '  };\n'
+    + '  const btns = Array.from(pop.querySelectorAll(\'button, [role="radio"], [role="tab"]\')).filter(visible);\n'
+    + '  const group = btns.filter(b => inGroup(textOf(b)));\n'
+    + '  const options = group.map(textOf);\n'
+    + '  const matches = (t) => {\n'
+    + '    const low = t.toLowerCase();\n'
+    + '    if (kind === \'aspect\') return low === want || low === want.replace(\':\', \'_\') || low.includes(want);\n'
+    + '    return low === want;\n'
+    + '  };\n'
+    + '  const target = group.find(b => matches(textOf(b)));\n'
+    + '  if (!target) return { found: false, options, self: null, inner: null, host: null };\n'
+    + '  try { target.scrollIntoView({ block: \'center\', inline: \'center\' }); } catch (e) {}\n'
+    + '  const centre = (el) => { try { const r = el.getBoundingClientRect(); if (!r || (r.width === 0 && r.height === 0)) return null; return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; } catch (e) { return null; } };\n'
+    + '  const self = centre(target);\n'
+    + '  let inner = null;\n'
+    + '  try { const innerEl = target.querySelector(\'input, label, span, i, mat-icon\'); if (innerEl && innerEl !== target) inner = centre(innerEl); } catch (e) {}\n'
+    + '  let host = null;\n'
+    + '  try { const hostEl = target.closest ? target.closest(\'mat-button-toggle, [role="radio"], [role="tab"]\') : null; if (hostEl && hostEl !== target) host = centre(hostEl); } catch (e) {}\n'
+    + '  if (!host) { try { const p = target.parentElement; if (p && p !== pop) host = centre(p); } catch (e) {} }\n'
+    + '  return { found: !!self, options, self, inner, host };\n'
+    + '} catch (e) { return { found: false, options: [], self: null, inner: null, host: null }; }\n'
+    + '})()';
+}
+
+/**
  * v2.48.59 (OMNI 1.2 FLASH): Omni Flash 1.2 ki qeemat
  * PER-SECOND hai (Google Flow support page, verified
  * 2026-11-06; CREDIT-RATES-OMNI-1.2-2026-11-06.md) —
@@ -1018,6 +1123,10 @@ class FlowAutomationEngine {
     // v2.48.76 (Item E): der se aane wali tile ke liye
     // monitor ke tick par grid-poll ki muddat.
     this.lateTilePollEveryMs = Number(options.lateTilePollEveryMs) > 0 ? Number(options.lateTilePollEveryMs) : 5000;
+    // v2.48.78 (Item A): settings chunav ke baad pill/
+    // state badalne ke poll ki hadd (asal click ke
+    // baad UI settle hone ka intezaar).
+    this.settingsSelectWaitMs = Number(options.settingsSelectWaitMs) > 0 ? Number(options.settingsSelectWaitMs) : SETTINGS_SELECT_WAIT_MS;
 
     // Credit port: every method is a no-op unless the pool binds it.
     const noopPort = {
@@ -2681,6 +2790,92 @@ class FlowAutomationEngine {
   }
 
   // CONFIGURE GENERATION SETTINGS (exact Google Flow UI synchronization)
+  // v2.48.78 (Item A): panel ke field-group ka target
+  // option page se padho (options + click points).
+  // Koi bhi nakami par khaali natija — bulane wala
+  // apni purani rawish par rehta hai.
+  async _panelOptionTarget(kind, wantText) {
+    try {
+      const res = await this.page.evaluate(panelOptionTargetSource(kind, wantText));
+      if (!res || typeof res !== 'object') return { found: false, options: [], self: null, inner: null, host: null };
+      return {
+        found: !!res.found,
+        options: Array.isArray(res.options) ? res.options : [],
+        self: res.self || null,
+        inner: res.inner || null,
+        host: res.host || null
+      };
+    } catch (e) {
+      return { found: false, options: [], self: null, inner: null, host: null };
+    }
+  }
+
+  // v2.48.78 (Item A): verify() ke sach hone ka poll —
+  // pehle foran, phir SETTINGS_SELECT_POLL_MS par,
+  // settingsSelectWaitMs ki hadd tak. UI ka settle
+  // waqt ab andaze se nahi, asal badlav se naapa
+  // jata hai (purani 350ms wali ek-baar-ki reading
+  // ka badal).
+  async _pollSettingsVerify(verify) {
+    const deadline = Date.now() + Math.max(0, this.settingsSelectWaitMs || SETTINGS_SELECT_WAIT_MS);
+    for (;;) {
+      let ok = false;
+      try { ok = !!(await verify()); } catch (e) { ok = false; }
+      if (ok) return true;
+      const remaining = deadline - Date.now();
+      if (remaining <= 0) return false;
+      await sleep(Math.min(SETTINGS_SELECT_POLL_MS, remaining));
+    }
+  }
+
+  // v2.48.78 (Item A): ek pill-field ka sakht chunav.
+  //   1) panel ke asal options ka [ROOT] dump (har
+  //      settings attempt par ek baar),
+  //   2) strategy 'mouse': exact-text option par
+  //      scroll-into-view ke baad ASAL mouse click,
+  //      phir verify ka poll (verify diya gaya ho),
+  //   3) strategy 'inner': pill na badle to andar
+  //      wale label/radio element ya toggle host par
+  //      click, phir poll dobara.
+  // Har strategy [ROOT] settings-click line se darj.
+  // verify na diya gaya ho (aspect/count — un ka
+  // in-panel read-back maujood nahi) to click ke
+  // baad purani 350ms wali muddat barkarar aur
+  // changed='unchecked' darj hota hai; aakhri
+  // darwaza (pill gate) wahan bhi waisa hi hai.
+  async _selectPanelOption({ field, kind, wantText, verify } = {}) {
+    const target = await this._panelOptionTarget(kind, wantText);
+    this.log(settingsOptionsDumpLine(field, target.options), 'info');
+    if (!target.found || !target.self) {
+      return { ok: false, found: false, strategy: null };
+    }
+    const clickAt = async (pt) => {
+      if (!pt || !this.page || !this.page.mouse || typeof this.page.mouse.click !== 'function') return false;
+      try { await this.page.mouse.click(pt.x, pt.y); return true; } catch (e) { return false; }
+    };
+    const strategies = [
+      { name: 'mouse', point: target.self },
+      { name: 'inner', point: target.inner || target.host }
+    ];
+    let lastStrategy = null;
+    for (const strat of strategies) {
+      if (!strat.point) continue;
+      lastStrategy = strat.name;
+      await clickAt(strat.point);
+      let changed = null;
+      if (typeof verify === 'function') {
+        changed = await this._pollSettingsVerify(verify);
+      } else {
+        await sleep(350);
+      }
+      this.log(settingsClickLogLine(field, strat.name, changed === null ? 'unchecked' : String(changed)), 'info');
+      if (changed !== false) {
+        return { ok: true, found: true, strategy: strat.name };
+      }
+    }
+    return { ok: false, found: true, strategy: lastStrategy };
+  }
+
   async configureGenerationSettings(settings, isRetry = false, attemptNo = 1) {
     try {
       await this.ensureAgentModeDisabled();
@@ -2867,20 +3062,31 @@ class FlowAutomationEngine {
         }
 
         // 4. Select Aspect Ratio
+        // v2.48.78 (Item A): chunav ab saanjhe sakht
+        // raaste (_selectPanelOption) se — asal mouse
+        // click, options ka dump; is field ka in-panel
+        // read-back maujood nahi, is liye verify nahi
+        // (aakhri pill gate hi is ki tasdeeq hai).
         const targetAspect = settings.aspectRatio || (modeType === 'Image' ? '1:1' : '9:16');
         this.log(`Selecting the Size (aspect ratio): [${targetAspect}]…`, 'info');
-        await this.page.evaluate((aspect) => {
-          const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content') || document.body;
-          const btns = Array.from(pop.querySelectorAll('button, [role="radio"], [role="tab"]'));
-          const cleanAspect = aspect.replace(':', '_');
-          const targetBtn = btns.find(b => {
-            const txt = (b.innerText || '').trim();
-            const aria = (b.getAttribute('aria-label') || '').trim();
-            return txt.includes(aspect) || txt.includes(cleanAspect) || aria.includes(aspect) || aria.includes(cleanAspect);
+        await this._selectPanelOption({ field: 'aspect', kind: 'aspect', wantText: targetAspect, verify: null });
+
+        // v2.48.78 (Item A): duration ka in-panel
+        // read-back yahan UPAR le aaya gaya — pehle ye
+        // sirf step 7 me tha; ab step 5 ka sakht chunav
+        // bhi isi ko apna verify banata hai (ek hi
+        // reader, do jagah istemal).
+        const readSelectedDuration = async () => {
+          return await this.page.evaluate(() => {
+            const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content');
+            if (!pop) return null;
+            const btns = Array.from(pop.querySelectorAll('button, [role="radio"], [role="tab"]'));
+            const durBtns = btns.filter(b => /^\d+\s*s$/.test((b.innerText || '').trim().toLowerCase()));
+            const sel = durBtns.find(b => b.getAttribute('aria-checked') === 'true' || b.getAttribute('aria-selected') === 'true' || b.getAttribute('aria-pressed') === 'true' || b.getAttribute('data-state') === 'on' || b.classList.contains('selected') || b.classList.contains('active'));
+            return sel ? (sel.innerText || '').trim().toLowerCase() : null;
           });
-          if (targetBtn) targetBtn.click();
-        }, targetAspect);
-        await sleep(350);
+        };
+        const wantDur = (settings.duration || '6s').toLowerCase();
 
         // 4.5 Select the generation Resolution (v2.40.0): the
         // panel's 360p/720p buttons fix the ORIGINAL quality Flow
@@ -2906,13 +3112,24 @@ class FlowAutomationEngine {
             this.log('The 360p/720p buttons were not found on Flow\'s panel — the generation keeps the resolution the panel already shows.', 'warn');
           } else {
             if (resState.selected !== genResolution) {
-              await this.page.evaluate((res) => {
-                const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content') || document.body;
-                const btns = Array.from(pop.querySelectorAll('button, [role="radio"], [role="tab"]'));
-                const targetBtn = btns.find(b => (b.innerText || '').trim().toLowerCase() === res);
-                if (targetBtn) targetBtn.click();
-              }, genResolution);
-              await sleep(350);
+              // v2.48.78 (Item A): purana synthetic DOM
+              // click is account par asar hi nahi karta
+              // tha (field saboot: teenon attempts me
+              // pill 720p hi raha). Ab sakht chunav —
+              // options dump, asal mouse click, pill/
+              // state badalne ka poll, na badle to
+              // andar wale element par dusri strategy.
+              // Tasdeeq ki baaki saari lines (neeche
+              // wali confirmed/fallback) bilkul waisi.
+              await this._selectPanelOption({
+                field: 'resolution',
+                kind: 'resolution',
+                wantText: genResolution,
+                verify: async () => {
+                  const s = await readResolutionState();
+                  return !!(s && s.selected === genResolution);
+                }
+              });
               resState = await readResolutionState();
             }
             if (resState.selected) {
@@ -2943,20 +3160,19 @@ class FlowAutomationEngine {
         }
 
         // 5. Select Duration
+        // v2.48.78 (Item A): wahi sakht chunav — verify
+        // in-panel read-back (readSelectedDuration) hai,
+        // is liye click ke baad asal badlav ka poll
+        // chalta hai, sirf 350ms ki neend nahi.
         if (modeType === 'Video') {
           const targetDuration = settings.duration || '6s';
           this.log(`Selecting the Duration: [${targetDuration}]…`, 'info');
-          await this.page.evaluate((dur) => {
-            const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content') || document.body;
-            const btns = Array.from(pop.querySelectorAll('button, [role="radio"], [role="tab"]'));
-            const targetBtn = btns.find(b => {
-              const txt = (b.innerText || '').trim().toLowerCase();
-              const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
-              return txt === dur.toLowerCase() || aria === dur.toLowerCase();
-            });
-            if (targetBtn) targetBtn.click();
-          }, targetDuration);
-          await sleep(350);
+          await this._selectPanelOption({
+            field: 'duration',
+            kind: 'duration',
+            wantText: wantDur,
+            verify: async () => (await readSelectedDuration()) === wantDur
+          });
         }
 
         // 6. Select Outputs Count — v2.4.0: always x1 (locked). The
@@ -2965,17 +3181,10 @@ class FlowAutomationEngine {
         // keeps the credit math honest.
         const targetCount = 'x1';
         this.log(`Selecting the output count: [${targetCount}]…`, 'info');
-        await this.page.evaluate((cnt) => {
-          const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content') || document.body;
-          const btns = Array.from(pop.querySelectorAll('button, [role="radio"], [role="tab"]'));
-          const targetBtn = btns.find(b => {
-            const txt = (b.innerText || '').trim().toLowerCase();
-            const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
-            return txt === cnt.toLowerCase() || aria === cnt.toLowerCase();
-          });
-          if (targetBtn) targetBtn.click();
-        }, targetCount);
-        await sleep(350);
+        // v2.48.78 (Item A): wahi sakht chunav (is
+        // field ka bhi in-panel read-back nahi — pill
+        // gate hi aakhri tasdeeq hai).
+        await this._selectPanelOption({ field: 'count', kind: 'count', wantText: targetCount, verify: null });
 
         // 7. Verify the duration ACTUALLY selected (v1.6.2): read the
         // popover's selected duration back; if Flow shows a different
@@ -2983,31 +3192,18 @@ class FlowAutomationEngine {
         // twin), click the right one and re-read. The click alone is
         // never trusted again — the 6s→8s report proved why.
         if (modeType === 'Video') {
-          const readSelectedDuration = async () => {
-            return await this.page.evaluate(() => {
-              const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content');
-              if (!pop) return null;
-              const btns = Array.from(pop.querySelectorAll('button, [role="radio"], [role="tab"]'));
-              const durBtns = btns.filter(b => /^\d+\s*s$/.test((b.innerText || '').trim().toLowerCase()));
-              const sel = durBtns.find(b => b.getAttribute('aria-checked') === 'true' || b.getAttribute('aria-selected') === 'true' || b.getAttribute('aria-pressed') === 'true' || b.getAttribute('data-state') === 'on' || b.classList.contains('selected') || b.classList.contains('active'));
-              return sel ? (sel.innerText || '').trim().toLowerCase() : null;
-            });
-          };
-          const wantDur = (settings.duration || '6s').toLowerCase();
+          // v2.48.78 (Item A): reader + wantDur ab
+          // UPAR (step 4.5 se pehle) ek hi jagah hain;
+          // dobara-chunav bhi yahan sakht raaste se.
           let shownDur = await readSelectedDuration();
           for (let attempt = 0; attempt < 2 && shownDur && shownDur !== wantDur; attempt++) {
             this.log(`The duration on Flow shows [${shownDur}], need [${wantDur}] — setting it again...`, 'warn');
-            await this.page.evaluate((dur) => {
-              const pop = Array.from(document.querySelectorAll('.cdk-overlay-pane, .settings-content')).find(p => p.getClientRects().length > 0) || document.querySelector('.settings-content') || document.body;
-              const btns = Array.from(pop.querySelectorAll('button, [role="radio"], [role="tab"]'));
-              const targetBtn = btns.find(b => {
-                const txt = (b.innerText || '').trim().toLowerCase();
-                const aria = (b.getAttribute('aria-label') || '').trim().toLowerCase();
-                return txt === dur.toLowerCase() || aria === dur.toLowerCase();
-              });
-              if (targetBtn) targetBtn.click();
-            }, settings.duration || '6s');
-            await sleep(350);
+            await this._selectPanelOption({
+              field: 'duration',
+              kind: 'duration',
+              wantText: wantDur,
+              verify: async () => (await readSelectedDuration()) === wantDur
+            });
             shownDur = await readSelectedDuration();
           }
           if (shownDur) {
@@ -13225,4 +13421,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, panelOptionTargetSource, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };

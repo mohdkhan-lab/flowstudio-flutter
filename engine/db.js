@@ -5,6 +5,9 @@ const path = require('path');
 // khalis helpers (dono bina-dependency ke hain).
 const { parseDurationSeconds } = require('./downloadFetch');
 const { tileFingerprint } = require('./tileIdentity');
+// v2.48.78 (Item B): queue-build dedupe — ek batch
+// me (tag + text) ek jaise entries ek hi task.
+const { dedupeBatchEntries } = require('./queueDedupe');
 
 /**
  * FlowStudio Lite — SQLite (sql.js) storage.
@@ -459,7 +462,7 @@ const dbService = {
     delete persistedSettings.skipFirstTaskDownload;
     delete persistedSettings._skipFirstTaskId;
     const settingsJson = JSON.stringify(persistedSettings);
-    (Array.isArray(prompts) ? prompts : []).forEach((p, idx) => {
+    const normalizedItems = (Array.isArray(prompts) ? prompts : []).map((p, idx) => {
       // v2.3.0: a prompt item may be a plain string (old callers) or
       // { text, tag, index } from the smart parser / missing-retry.
       // `index` preserves the ORIGINAL prompt position — a retried
@@ -475,6 +478,21 @@ const dbService = {
             index: (p.index !== undefined ? p.index : (Number.isInteger(p.prompt_index) ? p.prompt_index - 1 : undefined))
           }
         : { text: String(p || ''), tag: '', index: undefined };
+      return { ...item, srcIdx: idx };
+    });
+    // v2.48.78 (Item B): QUEUE-BUILD DEDUPE — ek batch
+    // ke andar (tag + prompt text) bilkul ek jaise
+    // entries sirf EK task banti hain. Field saboot
+    // (2026-11-10): ek bheja gaya prompt do missing
+    // scenes / do guna redo-credits ban gaya tha,
+    // kyunke yahan har entry hu-bahu row ban jati thi.
+    // Girayi hui entries returned rows par
+    // `droppedDuplicates` (tags) ki shakal me bulane
+    // wale tak jati hain — wahi har ek ke liye
+    // [ROOT] duplicate-queue-entry line log karta hai.
+    const { kept: keptItems, droppedTags } = dedupeBatchEntries(normalizedItems);
+    for (const item of keptItems) {
+      const idx = item.srcIdx;
       const promptIndex = Number.isInteger(item.index) ? item.index : idx;
       // v2.48.70 (ITEM D): identity card ke do hisse
       // birth par hi bhar do — expected duration
@@ -502,8 +520,10 @@ const dbService = {
         expectedDurationSec,
         promptFingerprint
       ]);
-    });
-    return this.getPendingTasks(batchId);
+    }
+    const createdRows = this.getPendingTasks(batchId);
+    createdRows.droppedDuplicates = droppedTags;
+    return createdRows;
   },
 
   getPendingTasks(batchId = null) {

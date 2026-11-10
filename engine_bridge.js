@@ -74,6 +74,7 @@ const promptParser = require('./engine/promptParser');
 const historyOrigin = require('./engine/historyOrigin');
 const projectFolder = require('./engine/projectFolder');
 const sequenceReport = require('./engine/sequenceReport');
+const { duplicateQueueEntryLogLine } = require('./engine/queueDedupe');
 const { recordActivity, getActivityStore } = require('./engine/activityStore');
 const mcp = require('./mcp_server');
 const { ensureBridgePort } = require('./engine/portTakeover');
@@ -171,7 +172,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.77';
+const APP_VERSION = '2.48.78';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -1506,6 +1507,12 @@ async function startBridge() {
         if (plan.recreateItems.length > 0) {
           const newBatchId = `batch_${Date.now()}`;
           const created = dbService.createBatchTasks(newBatchId, plan.recreateItems, lastRunInfo.settings || {});
+          // v2.48.78 (Item B): redo ke recreated items
+          // me bhi (tag + text) duplicate giraya gaya
+          // ho to [ROOT] line app ke log me darj.
+          for (const droppedTag of (created.droppedDuplicates || [])) {
+            broadcastEvent('automation-log', { message: duplicateQueueEntryLogLine(droppedTag), level: 'warning' });
+          }
           for (const row of created) redoTasks.push(row);
         }
         if (redoTasks.length === 0) {

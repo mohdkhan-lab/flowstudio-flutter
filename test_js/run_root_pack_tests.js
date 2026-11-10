@@ -5805,6 +5805,289 @@ async function main() {
     try { fs.rmSync(dirA, { recursive: true, force: true }); } catch (e) {}
   }
 
+  // ---------------------------------------------------------------------------
+  // X78. v2.48.78 — .76 FIELD TEST (2026-11-10
+  //   11:39–11:43) KE DO ROOT CAUSE:
+  //   A. SETTINGS SELECTION HARDENING — repair ghadi
+  //      chalti thi lekin us ke neeche wala resolution
+  //      CLICK (ek synthetic DOM .click() + 350ms baad
+  //      ek-baar ki reading) is account par kabhi asar
+  //      nahi karta tha: pill teenon attempts me 720p
+  //      hi raha. Ab: options ka [ROOT] dump, EXACT
+  //      text par scroll-into-view + asal mouse click,
+  //      pill badalne ka poll (2.5s tak), na badle to
+  //      andar wale element par dusri strategy — har
+  //      strategy [ROOT] settings-click line ke saath.
+  //   B. ONE PROMPT = ONE RECORD — ek bheja gaya
+  //      prompt do missing scenes ban gaya tha (dono
+  //      NSR15-D3-76TEST) aur Redo ne 2× credits ka
+  //      plan banaya. Queue-build (createBatchTasks)
+  //      me ab (tag + text) dedupe hai —
+  //      [ROOT] duplicate-queue-entry dropped — aur
+  //      sequence report/selectMissingItems ek hi
+  //      task ko do baar gin hi nahi sakte.
+  // ---------------------------------------------------------------------------
+  {
+    const fs = require('fs');
+    const path = require('path');
+    const os = require('os');
+    const { execFileSync } = require('child_process');
+    const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+    const faSrc = read('engine/flowAutomation.js');
+    const {
+      SETTINGS_SELECT_WAIT_MS, settingsOptionsDumpLine, settingsClickLogLine,
+      panelOptionTargetSource
+    } = require('../engine/flowAutomation');
+
+    // ---------- A1: khalis lines + hadd ----------
+    eq('X78A the pill-change poll budget is 2.5s', SETTINGS_SELECT_WAIT_MS, 2500);
+    eq('X78A the engine default wait matches the budget', new FlowAutomationEngine({ onLog: () => {} }).settingsSelectWaitMs, 2500);
+    eq('X78A the engine wait is overridable for tests', new FlowAutomationEngine({ onLog: () => {} }, { settingsSelectWaitMs: 321 }).settingsSelectWaitMs, 321);
+    eq('X78A the options dump line has the mandated shape', settingsOptionsDumpLine('resolution', ['360p', '720p']), '[ROOT] settings-options field=resolution options=[360p, 720p]');
+    eq('X78A an empty panel dumps as an empty list', settingsOptionsDumpLine('resolution', []), '[ROOT] settings-options field=resolution options=[]');
+    eq('X78A the click line names field, strategy and outcome', settingsClickLogLine('resolution', 'inner', 'true'), '[ROOT] settings-click field=resolution strategy=inner changed=true');
+
+    // ---------- A2: page-side target source, jaali DOM ----------
+    {
+      let scrolled = false;
+      const mkEl = (text, opts = {}) => ({
+        innerText: text,
+        getClientRects: () => [1],
+        getBoundingClientRect: () => ({ x: opts.x || 0, y: opts.y || 0, width: 40, height: 20 }),
+        scrollIntoView: () => { scrolled = true; },
+        querySelector: () => (opts.innerEl || null),
+        closest: () => (opts.hostEl || null),
+        parentElement: opts.parentEl || null
+      });
+      const innerEl = { getBoundingClientRect: () => ({ x: 100, y: 50, width: 10, height: 10 }) };
+      const hostEl = { getBoundingClientRect: () => ({ x: 200, y: 60, width: 90, height: 30 }) };
+      const btn360 = mkEl('360p', { x: 0, y: 0, innerEl, hostEl });
+      const btn720 = mkEl('720p', { x: 50, y: 0 });
+      const btnDur = mkEl('10s', { x: 0, y: 30 });
+      const pop = { getClientRects: () => [1], querySelectorAll: () => [btn360, btn720, btnDur] };
+      const fakeDoc = { querySelectorAll: () => [pop], querySelector: () => pop };
+      const runTarget = (kind, want) => new Function('document', `return ${panelOptionTargetSource(kind, want)};`)(fakeDoc);
+      const tRes = runTarget('resolution', '360p');
+      eq('X78A the survey lists only the resolution group', JSON.stringify(tRes.options), JSON.stringify(['360p', '720p']));
+      eq('X78A the exact-text target is found', tRes.found, true);
+      eq('X78A the target centre comes from its rect', JSON.stringify(tRes.self), JSON.stringify({ x: 20, y: 10 }));
+      eq('X78A the inner element point is captured for the fallback', JSON.stringify(tRes.inner), JSON.stringify({ x: 105, y: 55 }));
+      eq('X78A the host point is captured for the fallback', JSON.stringify(tRes.host), JSON.stringify({ x: 245, y: 75 }));
+      ok('X78A the target is scrolled into view before clicking', scrolled);
+      const tMiss = runTarget('resolution', '1080p');
+      eq('X78A a missing option is honestly not found', tMiss.found, false);
+      eq('X78A the options are still listed when the target is absent', JSON.stringify(tMiss.options), JSON.stringify(['360p', '720p']));
+      const tDur = runTarget('duration', '10s');
+      eq('X78A the duration group survey finds its own options', JSON.stringify(tDur.options), JSON.stringify(['10s']));
+      eq('X78A the duration target is found', tDur.found, true);
+    }
+
+    // ---------- A3: helper ka bartav (stub page) ----------
+    const mkHelperEng = (clickFn, target, waitMs) => {
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { settingsSelectWaitMs: waitMs || 2500 });
+      eng.page = {
+        isClosed: () => false,
+        mouse: { click: clickFn },
+        evaluate: async () => target
+      };
+      return { eng, logs };
+    };
+    const targetOk = { found: true, options: ['360p', '720p'], self: { x: 10, y: 10 }, inner: { x: 20, y: 20 }, host: { x: 30, y: 30 } };
+    {
+      // der se settle hone wala panel: click ke 400ms
+      // baad pill badalta hai — poll use pakadta hai,
+      // purani 350ms wali ek reading haar jati.
+      let state = '720p';
+      const { eng, logs } = mkHelperEng(async (x) => { if (x === 10) setTimeout(() => { state = '360p'; }, 400); }, targetOk);
+      const r = await eng._selectPanelOption({ field: 'resolution', kind: 'resolution', wantText: '360p', verify: async () => state === '360p' });
+      eq('X78A a delayed settle still selects successfully', r.ok, true);
+      eq('X78A the winning strategy is the real mouse click', r.strategy, 'mouse');
+      ok('X78A the dump line was logged before clicking', logs.some(m => m === '[ROOT] settings-options field=resolution options=[360p, 720p]'));
+      ok('X78A the mouse strategy outcome is logged as changed', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=mouse changed=true'));
+    }
+    {
+      // pehli strategy murda, dusri (andar wala
+      // element) zinda — wahi asal field wala pattern.
+      let state = '720p';
+      const { eng, logs } = mkHelperEng(async (x) => { if (x === 20) state = '360p'; }, targetOk);
+      const r = await eng._selectPanelOption({ field: 'resolution', kind: 'resolution', wantText: '360p', verify: async () => state === '360p' });
+      eq('X78A the fallback strategy rescues a dead first click', r.ok, true);
+      eq('X78A the winning strategy is the inner element', r.strategy, 'inner');
+      ok('X78A the dead first strategy is logged as unchanged', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=mouse changed=false'));
+      ok('X78A the fallback outcome is logged as changed', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=inner changed=true'));
+    }
+    {
+      // kabhi na badalne wala panel: dono strategies
+      // imaandari se haar — koi jhooti kamyabi nahi.
+      const { eng, logs } = mkHelperEng(async () => {}, targetOk, 300);
+      const r = await eng._selectPanelOption({ field: 'resolution', kind: 'resolution', wantText: '360p', verify: async () => false });
+      eq('X78A a panel that never changes is not a success', r.ok, false);
+      ok('X78A both strategies are logged as unchanged', logs.filter(m => m.includes('settings-click field=resolution') && m.includes('changed=false')).length === 2);
+    }
+    {
+      const { eng, logs } = mkHelperEng(async () => {}, { found: false, options: ['720p'], self: null, inner: null, host: null });
+      const r = await eng._selectPanelOption({ field: 'resolution', kind: 'resolution', wantText: '360p', verify: async () => false });
+      eq('X78A a missing option is honestly not selectable', r.ok, false);
+      eq('X78A the not-found result is marked as such', r.found, false);
+      ok('X78A the dump still lists what the panel offered', logs.some(m => m === '[ROOT] settings-options field=resolution options=[720p]'));
+    }
+
+    // ---------- A4: poora configure — scripted fake page ----------
+    const mkConfigurePage = (state) => ({
+      isClosed: () => false,
+      mouse: {
+        click: async (x, y) => {
+          // is nakli panel me SIRF andar wale element
+          // (2,2) par click asar karta hai — bilkul
+          // asal field wala bartav.
+          if (state.recoverable && x === 2 && y === 2) {
+            state.res = '360p';
+            state.pill = 'Video · 360p · 10s crop_9_16 x1';
+          }
+        }
+      },
+      keyboard: { press: async () => {} },
+      evaluate: async (fn) => {
+        if (typeof fn === 'string') {
+          if (fn.includes('resolutionBtnSelected')) return { found: true, selected: state.res };
+          if (fn.includes('fsPanelTarget')) return { found: true, options: ['360p', '720p'], self: { x: 1, y: 1 }, inner: { x: 2, y: 2 }, host: { x: 3, y: 3 } };
+          return undefined;
+        }
+        const src = fn.toString();
+        if (src.includes('agent-mode-chip')) return false;
+        if (src.includes('removeBtns')) return undefined;
+        if (src.includes('settings-trigger-button') && src.includes('found: true')) return { found: true, x: 5, y: 5, text: state.pill };
+        if (src.includes("aria === 'video'")) return { clicked: false };
+        if (src.includes('btnFrames')) return undefined;
+        if (src.includes('modelDropdown')) return 'Omni Flash';
+        if (src.includes('durBtns')) return '10s';
+        if (src.includes('settings-trigger-button')) return state.pill;
+        return undefined;
+      }
+    });
+    {
+      // Panel theek ho jata hai (fallback strategy
+      // se) — configure kamyab, koi mismatch nahi.
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { settingsSelectWaitMs: 400 });
+      const state = { res: '720p', pill: 'Video · 720p · 10s crop_9_16 x1', recoverable: true };
+      eng.page = mkConfigurePage(state);
+      const res = await eng.configureGenerationSettings({ type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p' });
+      eq('X78A a panel recovered by the fallback click configures cleanly', res, undefined);
+      ok('X78A the recovery came through the inner strategy', logs.some(m => m === '[ROOT] settings-click field=resolution strategy=inner changed=true'));
+      ok('X78A the resolution was confirmed at the needed value', logs.some(m => m.includes('Resolution confirmed on Flow: [360p]')));
+      ok('X78A no mismatch was recorded for the recovered panel', !logs.some(m => m.includes('[ROOT] settings-mismatch')));
+    }
+    {
+      // Panel kabhi nahi badalta — theek 3 attempts,
+      // har attempt par options dump, phir imaandar
+      // mismatch (koi submit nahi — configure ka
+      // natija hi us ka saboot hai).
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { settingsSelectWaitMs: 150 });
+      const state = { res: '720p', pill: 'Video · 720p · 10s crop_9_16 x1', recoverable: false };
+      eng.page = mkConfigurePage(state);
+      const res = await eng.configureGenerationSettings({ type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p' });
+      ok('X78A a never-changing panel ends in a settings mismatch', !!(res && Array.isArray(res.settingsMismatch)));
+      eq('X78A the mismatch names only the resolution', JSON.stringify(res && res.settingsMismatch), JSON.stringify(['resolution']));
+      eq('X78A the options were dumped once per attempt (3 attempts)', logs.filter(m => m.includes('[ROOT] settings-options field=resolution')).length, 3);
+      ok('X78A repair attempts 2 and 3 were logged', logs.some(m => m.includes('[ROOT] settings-repair field=resolution attempt=2')) && logs.some(m => m.includes('[ROOT] settings-repair field=resolution attempt=3')));
+      ok('X78A the honest mismatch line closed the run', logs.some(m => m.includes('[ROOT] settings-mismatch') && m.includes('fields=resolution')));
+    }
+    ok('X78A configure selects resolution through the hardened helper', faSrc.includes("field: 'resolution',") && faSrc.includes('kind: \'resolution\','));
+    ok('X78A duration shares the hardened helper', faSrc.includes("field: 'duration',") && faSrc.includes("kind: 'duration',"));
+    ok('X78A aspect shares the hardened helper', faSrc.includes("field: 'aspect',") && faSrc.includes("kind: 'aspect',"));
+    ok('X78A count shares the hardened helper', faSrc.includes("field: 'count',") && faSrc.includes("kind: 'count',"));
+    ok('X78A the old synthetic resolution click is gone', !faSrc.includes("const targetBtn = btns.find(b => (b.innerText || '').trim().toLowerCase() === res);"));
+
+    // ---------- B: one prompt = one record ----------
+    const { dedupeBatchEntries, duplicateQueueEntryLogLine } = require('../engine/queueDedupe');
+    const seq = require('../engine/sequenceReport');
+    {
+      const d = dedupeBatchEntries([
+        { text: 'Take D text', tag: 'NSR15-D3-76TEST', index: 0 },
+        { text: 'Take D text', tag: 'NSR15-D3-76TEST', index: 1 },
+        { text: 'Take D text', tag: 'OTHER-TAG', index: 2 },
+        { text: 'Different text', tag: 'NSR15-D3-76TEST', index: 3 },
+        { text: '', tag: 'EMPTY', index: 4 },
+        { text: '', tag: 'EMPTY', index: 5 }
+      ]);
+      eq('X78B an identical (tag + text) entry is kept exactly once', d.kept.filter(k => k.tag === 'NSR15-D3-76TEST' && k.text === 'Take D text').length, 1);
+      eq('X78B the dropped entry reports its tag', JSON.stringify(d.droppedTags), JSON.stringify(['NSR15-D3-76TEST']));
+      eq('X78B the same text under another tag is a real entry', d.kept.filter(k => k.tag === 'OTHER-TAG').length, 1);
+      eq('X78B the same tag with different text is a real entry', d.kept.filter(k => k.text === 'Different text').length, 1);
+      eq('X78B empty-text entries are outside the dedupe', d.kept.filter(k => k.tag === 'EMPTY').length, 2);
+      eq('X78B the dropped log line has the mandated shape', duplicateQueueEntryLogLine('NSR15-D3-76TEST'), '[ROOT] duplicate-queue-entry dropped tag=NSR15-D3-76TEST');
+    }
+    {
+      // Ek hi row do baar ginayi hi nahi ja sakti,
+      // aur ek hi missing entry do recreated items
+      // nahi bana sakti — pipeline ki har seedhi par.
+      const row = { id: 't-x77', prompt_index: 0, prompt_tag: 'TAGX', prompt_text: 'hello prompt', status: 'failed', error_reason: 'boom' };
+      const rep = seq.buildSequenceReport([row, row], { exists: () => false });
+      eq('X78B the same row twice counts as one scene', rep.total, 1);
+      eq('X78B the same row twice yields one missing record', rep.missing.length, 1);
+      const items = seq.selectMissingItems([row], { missing: [rep.missing[0], rep.missing[0]] });
+      eq('X78B a duplicated missing entry recreates exactly one item', items.length, 1);
+      const plan = seq.planRedo([row, row], rep);
+      eq('X78B the redo plan recreates exactly one scene', plan.recreateItems.length, 1);
+      eq('X78B the redo plan has no phantom existing task', plan.existingTaskIds.length, 0);
+    }
+    {
+      // Asal DB round-trip (alag process, throwaway
+      // data dir): MCP-style ek prompt, settings par
+      // fail — missing record theek EK. Aur ek batch
+      // me ghusaya hua duplicate entry — task theek
+      // EK, dropped darj ke saath.
+      const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-x77-db-'));
+      const dbPath = JSON.stringify(path.join(__dirname, '..', 'engine', 'db.js'));
+      const seqPath = JSON.stringify(path.join(__dirname, '..', 'engine', 'sequenceReport.js'));
+      const script = `(async () => {
+        const { dbService } = require(${dbPath});
+        const seq = require(${seqPath});
+        await dbService.ensureInit();
+        const D = 'Vertical photorealistic Hindi drama scene — Take D verbatim text';
+        const single = dbService.createBatchTasks('b-x77-single', [{ text: D, tag: 'NSR15-D3-76TEST', index: 0 }], {});
+        dbService.failTask(single[0].id, 'settings mismatch');
+        const rowsSingle = [dbService.getTask(single[0].id)];
+        const repSingle = seq.buildSequenceReport(rowsSingle, { exists: () => false });
+        const planSingle = seq.planRedo(rowsSingle, repSingle);
+        const dup = dbService.createBatchTasks('b-x77-dup', [
+          { text: D, tag: 'NSR15-D3-76TEST', index: 0 },
+          { text: D, tag: 'NSR15-D3-76TEST', index: 1 }
+        ], {});
+        const allDupRows = dbService.query("SELECT * FROM queue_tasks WHERE batch_id = 'b-x77-dup'", []);
+        console.log(JSON.stringify({
+          singleRows: single.length,
+          singleDropped: single.droppedDuplicates || null,
+          singleMissing: repSingle.missing.length,
+          singleRedo: planSingle.recreateItems.length,
+          dupRows: dup.length,
+          dupRowsInDb: allDupRows.length,
+          dupDropped: dup.droppedDuplicates || null
+        }));
+      })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+      let rt = null;
+      try {
+        const out = execFileSync(process.execPath, ['-e', script], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+        rt = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+      } catch (e) { rt = null; }
+      ok('X78B the db round-trip child ran', !!rt);
+      eq('X78B one submitted prompt creates one task row', rt && rt.singleRows, 1);
+      eq('X78B a clean single prompt drops nothing', JSON.stringify(rt && rt.singleDropped), JSON.stringify([]));
+      eq('X78B one prompt failing at settings leaves exactly one missing record', rt && rt.singleMissing, 1);
+      eq('X78B its redo plan recreates exactly one scene', rt && rt.singleRedo, 1);
+      eq('X78B a duplicated batch entry creates exactly one task', rt && rt.dupRows, 1);
+      eq('X78B the database itself holds exactly one row for the duplicated batch', rt && rt.dupRowsInDb, 1);
+      eq('X78B the duplicate drop is reported with its tag', JSON.stringify(rt && rt.dupDropped), JSON.stringify(['NSR15-D3-76TEST']));
+      try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+    }
+    ok('X78B createBatchTasks runs the dedupe', read('engine/db.js').includes('dedupeBatchEntries(normalizedItems)'));
+    ok('X78B the pool logs every dropped entry as a [ROOT] line', read('engine/workerPool.js').includes('duplicateQueueEntryLogLine(droppedTag)'));
+    ok('X78B the redo route logs drops from recreated items', read('engine_bridge.js').includes('created.droppedDuplicates'));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

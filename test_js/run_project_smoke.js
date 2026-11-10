@@ -16,6 +16,19 @@
 //  - redo-missing afterwards finds both scenes missing (they never
 //    ran — no accounts) and starts a redo of the EXISTING tasks
 // Usage: node test_js/run_project_smoke.js
+//
+// v2.48.83 (P2 — SMOKE ISOLATION, field incident 2026-11-10):
+// this smoke runs ONLY against the isolated bridge child it
+// spawns itself (throwaway APPDATA, loopback port 48190). The
+// old version trusted WHATEVER answered on 48190 — run on a
+// machine where the live app was already up, its child died
+// (EADDRINUSE), every call landed on the LIVE bridge, and its
+// start call rewrote the live app's download_folder to a
+// fs-smoke temp dir and spent real accounts' credits. Now: a
+// pre-flight probe refuses to run if anything already serves
+// the port, and a post-boot liveness check proves the
+// answering bridge is the spawned child before any mutating
+// call is made. test_js/run_smoke_guard_tests.js pins both.
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -43,6 +56,31 @@ async function req(method, p, body) {
   return { status: res.status, data };
 }
 
+// v2.48.83 (P2): one short status probe, used BEFORE spawning
+// anything — if a bridge already serves the port, this machine
+// has a live instance and the smoke must not run at all.
+async function probeStatus(timeoutMs = 1500) {
+  try {
+    const ctrl = new AbortController();
+    const t = setTimeout(() => ctrl.abort(), timeoutMs);
+    const res = await fetch(BASE + '/api/status', { signal: ctrl.signal });
+    clearTimeout(t);
+    let data = null;
+    try { data = await res.json(); } catch (e) { }
+    return { status: res.status, data };
+  } catch (e) {
+    return null;
+  }
+}
+
+// v2.48.83 (P2): hard refusal — exit code 2, no checks run,
+// and above all NO mutating call has been or will be made.
+function refuse(reason) {
+  console.error(`SMOKE REFUSED: ${reason}`);
+  console.error('The smoke runs ONLY against the isolated bridge it spawns itself (throwaway APPDATA on 127.0.0.1:48190). It never attaches to an already-running instance: doing so would mutate that instance\'s real settings (the 2026-11-10 incident left the live app\'s download folder pointing at a fs-smoke temp dir) and could spend real accounts\' credits. Close the live app / free port 48190, then re-run.');
+  process.exit(2);
+}
+
 async function waitStatus(timeoutMs = 20000) {
   const t0 = Date.now();
   while (Date.now() - t0 < timeoutMs) {
@@ -56,6 +94,15 @@ async function waitStatus(timeoutMs = 20000) {
 }
 
 async function main() {
+  // v2.48.83 (P2): PRE-FLIGHT — if anything already answers
+  // on 48190, a bridge is already running on this machine
+  // (most likely the LIVE app). Refuse before spawning or
+  // sending anything at all.
+  const pre = await probeStatus();
+  if (pre && pre.status === 200) {
+    refuse(`a FlowStudio bridge is already serving on ${BASE} (version ${pre.data && pre.data.version}) before the smoke spawned anything — a live instance appears to be running.`);
+  }
+
   const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'fs-smoke-'));
   const appData = path.join(tmp, 'appdata');
   const outDir = path.join(tmp, 'out');
@@ -74,6 +121,16 @@ async function main() {
   try {
     const status = await waitStatus();
     check('bridge boots', !!status, bridgeLog.slice(-400));
+    // v2.48.83 (P2): CHILD-IDENTITY PROOF — before ANY
+    // mutating call, prove the answering bridge is the
+    // child spawned above. If the child died (classically
+    // EADDRINUSE because something else holds the port)
+    // yet something answered, that something is a foreign
+    // bridge and every call from here would mutate IT.
+    await sleep(800);
+    if (child.exitCode !== null) {
+      refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
+    }
     check('status version is 2.48.83', status && status.version === '2.48.83', JSON.stringify(status));
 
     const redoEarly = await req('POST', '/api/generation/redo-missing', {});

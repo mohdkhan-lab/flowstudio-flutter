@@ -522,6 +522,20 @@ class ProgressPanel extends StatelessWidget {
                   style: TextStyle(fontSize: 8.5, fontWeight: FontWeight.w800, color: pill.$2, letterSpacing: 0.4),
                 ),
               ),
+              // v2.48.83 (P1 — progress visibility): WHO
+              // started this run, when it was not the
+              // owner's own Generate ('via MCP', 'Redo').
+              if (item.source != null && item.source!.isNotEmpty) ...[
+                const SizedBox(width: 6),
+                Text(
+                  item.source == 'Redo' ? 'Redo' : 'via ${item.source}',
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                    color: AppTheme.textFaint,
+                  ),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 6),

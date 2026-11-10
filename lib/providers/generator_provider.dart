@@ -65,6 +65,20 @@ class GeneratorProvider with ChangeNotifier {
   void armSkipFirstTaskDownloadOnce() {
     _skipFirstTaskDownloadOnce = true;
   }
+  // v2.48.83 (P1 — progress visibility): one-shot run
+  // source, armed ONLY by the MCP in-app generate handler
+  // ('MCP') and consumed (captured + cleared) by the very
+  // next startGeneration call, with the same discipline
+  // as the skip flag above — so the Progress cards of an
+  // MCP-started run can say where the run came from. A
+  // manual Generate never arms it. Never persisted.
+  String? _pendingRunSource;
+
+  /// v2.48.83: arm the one-shot run source for the next
+  /// run started from this provider.
+  void markNextRunSource(String source) {
+    _pendingRunSource = source;
+  }
   // v2.27.0: real completion times of THIS session, for the Activity
   // stats line ("Today: M videos · Spent today: C credits").
   final List<DateTime> _completionTimes = [];
@@ -891,6 +905,10 @@ class GeneratorProvider with ChangeNotifier {
     // can never leak into a later manual run.
     final skipFirstTaskDownload = _skipFirstTaskDownloadOnce;
     _skipFirstTaskDownloadOnce = false;
+    // v2.48.83 (P1): the one-shot run source rides the
+    // same capture-and-clear discipline as the skip flag.
+    final runSource = _pendingRunSource;
+    _pendingRunSource = null;
     // v2.30.3: re-entry guard. The Generate button stays enabled
     // while paused, and a second start used to re-submit EVERY
     // prompt (including finished ones) to the engine. A run must
@@ -923,6 +941,13 @@ class GeneratorProvider with ChangeNotifier {
     }
 
     _state = GenerationState.running;
+    // v2.48.83 (P1): stamp the run's source onto its
+    // cards — 'MCP' for an MCP-started run, null for the
+    // owner's own Generate (stamping null also clears a
+    // stale mark when the same items are re-run by hand).
+    for (final item in _items) {
+      item.source = runSource;
+    }
     notifyListeners();
 
     activity.addLog(
@@ -1084,6 +1109,8 @@ class GeneratorProvider with ChangeNotifier {
         item.status = PromptStatus.generating;
         item.error = null;
         item.progress = 0;
+        // v2.48.83 (P1): the card says this pass is a redo.
+        item.source = 'Redo';
       }
       _state = GenerationState.running;
       _runStarted = true;

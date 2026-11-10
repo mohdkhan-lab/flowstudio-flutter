@@ -10,6 +10,7 @@ import 'providers/generator_provider.dart';
 import 'providers/notifications_provider.dart';
 import 'providers/system_stats_provider.dart';
 import 'services/automation_bridge.dart';
+import 'models/activity_log.dart';
 import 'widgets/top_strip.dart';
 import 'widgets/notification_center.dart';
 import 'widgets/sidebar_accounts.dart';
@@ -207,6 +208,17 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
       final quality = pushed['quality']?.toString().trim() ?? '';
       if (quality.isNotEmpty) settings.updateQuality(quality);
     }
+    // v2.48.83 (P1 — progress visibility): a run started
+    // from MCP must SAY so. Mark its source for the
+    // Progress cards and leave an Activity line naming
+    // MCP, so the owner can always tell who started the
+    // run he is watching — a run never appears from
+    // nowhere.
+    generator.markNextRunSource('MCP');
+    context.read<ActivityProvider>().addLog(
+      'MCP (flowstudio_generate_in_app): ${prompts.length} prompt(s) received — this run was started from MCP; watch it in Progress.',
+      level: LogLevel.info,
+    );
     generator.startGeneration(
       accounts: context.read<AccountsProvider>(),
       activity: context.read<ActivityProvider>(),

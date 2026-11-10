@@ -6940,6 +6940,43 @@ async function main() {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // X83 (v2.48.83 follow-up) — P1 PROGRESS VISIBILITY source
+  // marking + P2 SMOKE ISOLATION pins.
+  // P1 audit (code-verified): every run source already lands
+  // in Progress — in-app Generate and MCP
+  // flowstudio_generate_in_app share startGeneration and
+  // its cards (the MCP handler fills the Prompts box and
+  // invokes the same flow); Redo Missing flips the failed
+  // cards back to generating; pause-resume keeps its cards;
+  // download-recovery feeds the parked section's recovery
+  // cards. The one field no card showed was WHO started
+  // the run — these pins hold the source marking in place.
+  // P2: the smoke's refusal contract; the behaviour itself
+  // is proven by test_js/run_smoke_guard_tests.js (6/0).
+  // ---------------------------------------------------------------------------
+  {
+    const fsx83 = require('fs');
+    const pathx83 = require('path');
+    const read83 = (rel) => fsx83.readFileSync(pathx83.join(__dirname, '..', rel), 'utf8');
+
+    ok('X83 the MCP in-app handler marks the run source as MCP', read83('lib/main.dart').includes("markNextRunSource('MCP')"));
+    ok('X83 the MCP in-app handler leaves an Activity line naming MCP as the source', read83('lib/main.dart').includes('this run was started from MCP'));
+    ok('X83 PromptItem carries a source field', read83('lib/models/prompt_item.dart').includes('String? source;'));
+    const genSrc83 = read83('lib/providers/generator_provider.dart');
+    ok('X83 the provider holds the one-shot pending run source', genSrc83.includes('_pendingRunSource') && genSrc83.includes('markNextRunSource'));
+    ok('X83 startGeneration stamps the captured source onto the run cards', genSrc83.includes('item.source = runSource'));
+    ok('X83 redo stamps its cards as Redo', genSrc83.includes("item.source = 'Redo'"));
+    ok('X83 the Progress card renders the run source', read83('lib/widgets/progress_panel.dart').includes('item.source'));
+
+    const smokeSrc83 = read83('test_js/run_project_smoke.js');
+    ok('X83 the smoke refuses when a bridge already serves the port', smokeSrc83.includes('SMOKE REFUSED') && smokeSrc83.includes('a FlowStudio bridge is already serving'));
+    ok('X83 the smoke runs a pre-flight probe before spawning', smokeSrc83.includes('probeStatus'));
+    ok('X83 the smoke proves the answering bridge is its own child before any mutating call', smokeSrc83.includes('child.exitCode !== null'));
+    const guardSrc83 = read83('test_js/run_smoke_guard_tests.js');
+    ok('X83 the smoke guard test exists and pins the refusal', guardSrc83.includes('SMOKE REFUSED') && guardSrc83.includes('received NO POST'));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

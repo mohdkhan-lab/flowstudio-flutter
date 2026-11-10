@@ -40,6 +40,12 @@ class PromptItem {
   // video was made in (shown on the row).
   String? taskId;
   String? projectId;
+  // v2.48.83 (P1 — progress visibility): WHO started the
+  // run this card belongs to ('MCP', 'Redo'; null = the
+  // owner's own Generate). Stamped by GeneratorProvider
+  // at run start so the Progress card can say where the
+  // run came from — a run must never appear from nowhere.
+  String? source;
   // v2.29.0: the REAL credit cost of this video, from the engine's
   // video-completed payload (the card hardcoded "7 credits" before).
   // Null when the engine did not report one — the card then shows no
@@ -61,6 +67,7 @@ class PromptItem {
     this.creditsUsed,
     this.taskId,
     this.projectId,
+    this.source,
   });
 
   PromptItem copyWith({

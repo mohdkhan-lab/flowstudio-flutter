@@ -133,11 +133,11 @@ class _PromptsEditorState extends State<PromptsEditor> {
                     color: AppTheme.inputBg,
                     borderRadius: BorderRadius.circular(6),
                     border: Border.all(color: AppTheme.borderSoft),
-                    boxShadow: const [
+                    boxShadow: [
                       BoxShadow(
-                        color: Color(0xFF0F172A),
-                        offset: Offset(0, 1.8),
-                        blurRadius: 0,
+                        color: AppTheme.dark ? const Color(0xFF0F172A) : AppTheme.borderSoft,
+                        offset: const Offset(0, 1.5),
+                        blurRadius: AppTheme.dark ? 0 : 1.0,
                       ),
                     ],
                   ),

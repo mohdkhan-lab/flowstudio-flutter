@@ -927,8 +927,12 @@ class _SettingsViewState extends State<SettingsView> {
         color: AppTheme.surface,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.dark ? Colors.black26 : const Color(0x0A000000),
+            blurRadius: AppTheme.dark ? 10 : 4,
+            offset: AppTheme.dark ? const Offset(0, 4) : const Offset(0, 2),
+          ),
         ],
       ),
       child: Column(
@@ -1229,8 +1233,12 @@ class _SettingsViewState extends State<SettingsView> {
         color: AppTheme.surface,
         borderRadius: BorderRadius.circular(13),
         border: Border.all(color: AppTheme.borderSoft),
-        boxShadow: const [
-          BoxShadow(color: Colors.black26, blurRadius: 10, offset: Offset(0, 4)),
+        boxShadow: [
+          BoxShadow(
+            color: AppTheme.dark ? Colors.black26 : const Color(0x0A000000),
+            blurRadius: AppTheme.dark ? 10 : 4,
+            offset: AppTheme.dark ? const Offset(0, 4) : const Offset(0, 2),
+          ),
         ],
       ),
       child: Column(

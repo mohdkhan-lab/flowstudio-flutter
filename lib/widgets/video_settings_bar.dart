@@ -303,11 +303,11 @@ class VideoSettingsBar extends StatelessWidget {
             color: AppTheme.inputBg,
             borderRadius: BorderRadius.circular(7),
             border: Border.all(color: AppTheme.borderSoft),
-            boxShadow: const [
+            boxShadow: [
               BoxShadow(
-                color: Color(0xFF0F172A),
-                offset: Offset(0, 2.0),
-                blurRadius: 0,
+                color: AppTheme.dark ? const Color(0xFF0F172A) : AppTheme.borderSoft,
+                offset: const Offset(0, 1.5),
+                blurRadius: AppTheme.dark ? 0 : 1.0,
               ),
             ],
           ),

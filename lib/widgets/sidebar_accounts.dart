@@ -1496,7 +1496,9 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
             transform: Matrix4.translationValues(0, translateY, 0),
             decoration: BoxDecoration(
               // Clean dark slate background — NO red fill brick!
-              color: _hovered && enabled ? AppTheme.surfaceElevated : AppTheme.overlay08,
+              color: _hovered && enabled
+                  ? AppTheme.surfaceElevated
+                  : (AppTheme.dark ? AppTheme.overlay08 : const Color(0xFFF1F5F9)),
               borderRadius: BorderRadius.circular(6),
               border: Border.all(
                 color: _hovered && enabled
@@ -1505,7 +1507,9 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
               ),
               boxShadow: [
                 BoxShadow(
-                  color: enabled ? (widget.isRed ? AppTheme.red.withValues(alpha: 0.3) : bevelColor) : Colors.black26,
+                  color: enabled
+                      ? (widget.isRed ? AppTheme.red.withValues(alpha: 0.3) : bevelColor)
+                      : (AppTheme.dark ? Colors.black26 : AppTheme.borderSoft),
                   offset: Offset(0, bevel),
                   blurRadius: 0,
                 ),
@@ -1527,7 +1531,11 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
                 fontWeight: FontWeight.w600,
                 color: widget.isRed
                     ? (widget.isDim ? const Color(0x80F87171) : AppTheme.red)
-                    : (widget.isDim ? AppTheme.textFaint : (_hovered ? Colors.white : AppTheme.textMain)),
+                    : (widget.isDim
+                        ? AppTheme.textFaint
+                        : (_hovered
+                            ? (AppTheme.dark ? Colors.white : AppTheme.textMain)
+                            : AppTheme.textMain)),
               ),
             ),
           ),
@@ -1579,7 +1587,9 @@ class _HoverBottomSettingsBtnState extends State<_HoverBottomSettingsBtn> {
             transform: Matrix4.translationValues(0, translateY, 0),
             decoration: BoxDecoration(
               // Clean dark slate background — NO brown fill brick!
-              color: _hovered ? AppTheme.surfaceElevated : AppTheme.overlay08,
+              color: _hovered
+                  ? AppTheme.surfaceElevated
+                  : (AppTheme.dark ? AppTheme.overlay08 : const Color(0xFFF1F5F9)),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
                 color: active
@@ -1608,7 +1618,11 @@ class _HoverBottomSettingsBtnState extends State<_HoverBottomSettingsBtn> {
               style: TextStyle(
                 fontSize: 11.5,
                 fontWeight: active ? FontWeight.bold : FontWeight.w600,
-                color: active ? AppTheme.accentText : (_hovered ? Colors.white : AppTheme.textDim),
+                color: active
+                    ? AppTheme.accentText
+                    : (_hovered
+                        ? (AppTheme.dark ? Colors.white : AppTheme.textMain)
+                        : AppTheme.textDim),
               ),
             ),
           ),

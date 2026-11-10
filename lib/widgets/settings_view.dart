@@ -929,7 +929,7 @@ class _SettingsViewState extends State<SettingsView> {
         border: Border.all(color: AppTheme.borderSoft),
         boxShadow: [
           BoxShadow(
-            color: AppTheme.dark ? Colors.black26 : const Color(0x0A000000),
+            color: AppTheme.dark ? Colors.black26 : AppTheme.warmShadow.withValues(alpha: 0.05),
             blurRadius: AppTheme.dark ? 10 : 4,
             offset: AppTheme.dark ? const Offset(0, 4) : const Offset(0, 2),
           ),
@@ -1235,7 +1235,7 @@ class _SettingsViewState extends State<SettingsView> {
         border: Border.all(color: AppTheme.borderSoft),
         boxShadow: [
           BoxShadow(
-            color: AppTheme.dark ? Colors.black26 : const Color(0x0A000000),
+            color: AppTheme.dark ? Colors.black26 : AppTheme.warmShadow.withValues(alpha: 0.05),
             blurRadius: AppTheme.dark ? 10 : 4,
             offset: AppTheme.dark ? const Offset(0, 4) : const Offset(0, 2),
           ),
@@ -1446,7 +1446,11 @@ class _SettingsViewState extends State<SettingsView> {
               boxShadow: isActive
                   ? [
                       BoxShadow(
-                        color: Colors.black.withValues(alpha: AppTheme.dark ? 0.4 : 0.14),
+                        // v2.48.90: the active mode chip's shadow
+                        // is warm in light mode, never black.
+                        color: AppTheme.dark
+                            ? Colors.black.withValues(alpha: 0.4)
+                            : AppTheme.warmShadow.withValues(alpha: 0.16),
                         blurRadius: 4,
                         offset: const Offset(0, 1),
                       ),

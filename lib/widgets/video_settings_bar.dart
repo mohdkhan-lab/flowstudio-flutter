@@ -338,7 +338,11 @@ class VideoSettingsBar extends StatelessWidget {
                     WidgetStatePropertyAll(AppTheme.surfaceElevated),
                 elevation: const WidgetStatePropertyAll(8),
                 shadowColor: WidgetStatePropertyAll(
-                  Colors.black.withValues(alpha: 0.35),
+                  // v2.48.90: the Design-1 menu's soft shadow is
+                  // warm in light mode, never black.
+                  AppTheme.dark
+                      ? Colors.black.withValues(alpha: 0.35)
+                      : AppTheme.warmShadow.withValues(alpha: 0.38),
                 ),
                 padding: const WidgetStatePropertyAll(EdgeInsets.all(4)),
                 minimumSize: WidgetStatePropertyAll(Size(fieldWidth, 0)),

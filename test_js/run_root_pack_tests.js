@@ -7239,28 +7239,35 @@ async function main() {
     // palettes are deleted (see the X88 block). The pins below
     // are re-pointed at the _whiteLight block; the VALUES they
     // assert are byte-identical to .87's gold-light palette.
+    // v2.48.90 (owner's own recoloured sample, image-46): the
+    // VALUES are superseded by the WARM CREAM scheme — the
+    // pins below assert the cream values (see the X90 block
+    // for the full story + the button/glow pins).
     const themeSrc86 = read86('lib/theme/app_theme.dart');
     const whiteStart87 = themeSrc86.indexOf('static const AppPalette _whiteLight');
     const goldLight86 = themeSrc86.slice(whiteStart87, themeSrc86.indexOf('\n  );', whiteStart87));
-    ok('X87 white-palette canvas is the DEEP slate frame #CBD5E1', goldLight86.includes('bgBody: Color(0xFFCBD5E1)'));
-    ok('X87 white-palette cards stay pure white (surface + panelTop #FFFFFF)',
-      goldLight86.includes('surface: Color(0xFFFFFFFF)') && goldLight86.includes('panelTop: Color(0xFFFFFFFF)'));
-    ok('X87 white-palette STRONG border #788AA0 (border and borderSoft alike)',
-      goldLight86.includes('border: Color(0xFF788AA0)') && goldLight86.includes('borderSoft: Color(0xFF788AA0)'));
-    ok('X87 white-palette inputs get the #E2E8F0 fill', goldLight86.includes('inputBg: Color(0xFFE2E8F0)'));
-    ok('X87 white-palette chip/wash partner bg2 is #B6C4D6', goldLight86.includes('bg2: Color(0xFFB6C4D6)'));
+    ok('X87 white-palette canvas is the deeper warm cream #E9DCB8 (cream in .90)', goldLight86.includes('bgBody: Color(0xFFE9DCB8)'));
+    ok('X87 white-palette cards are warm white (surface + panelTop #FFFCF2)',
+      goldLight86.includes('surface: Color(0xFFFFFCF2)') && goldLight86.includes('panelTop: Color(0xFFFFFCF2)'));
+    ok('X87 white-palette STRONG tan border #C9BB96 (border and borderSoft alike)',
+      goldLight86.includes('border: Color(0xFFC9BB96)') && goldLight86.includes('borderSoft: Color(0xFFC9BB96)'));
+    ok('X87 white-palette inputs get the pale warm cream #E9E2CC fill', goldLight86.includes('inputBg: Color(0xFFE9E2CC)'));
+    ok('X87 white-palette chip/wash partner bg2 is #DECFA3', goldLight86.includes('bg2: Color(0xFFDECFA3)'));
     // v2.48.89 (owner, on the REAL .88 screenshot): the text
     // ramp deepens one more full step — these three pins are
     // re-pointed at the new values (see the X89 block for the
     // measured contrast floors). The .87 structure (canvas /
     // cards / border / input / bg2 / gold) is unchanged.
-    ok('X87 white-palette textMain is near-black #05080C (deepened in .89)', goldLight86.includes('textMain: Color(0xFF05080C)'));
-    ok('X87 white-palette textDim is #1E293B (deepened in .89)', goldLight86.includes('textDim: Color(0xFF1E293B)'));
-    ok('X87 white-palette textFaint is #334155 (deepened in .89)', goldLight86.includes('textFaint: Color(0xFF334155)'));
+    // v2.48.90: the ramp warms to brown-black for the cream
+    // scheme (textMain #1A1408 / textDim #3E3420 / textFaint
+    // #4F422A) at the same-or-better contrast (X90 block).
+    ok('X87 white-palette textMain is warm near-black #1A1408 (cream in .90)', goldLight86.includes('textMain: Color(0xFF1A1408)'));
+    ok('X87 white-palette textDim is #3E3420 (cream in .90)', goldLight86.includes('textDim: Color(0xFF3E3420)'));
+    ok('X87 white-palette textFaint is #4F422A (cream in .90)', goldLight86.includes('textFaint: Color(0xFF4F422A)'));
     ok('X87 white-palette gold accent unchanged', goldLight86.includes('accentGold: Color(0xFFD97706)'));
     ok('X87 no light palette keeps the washed-out slate-400 faint', !themeSrc86.includes('textFaint: Color(0xFF94A3B8)'));
-    ok('X87 the light card shadow is strengthened in the shared card decoration',
-      read86('lib/widgets/tactile_components.dart').includes('(_isHovered ? 0.22 : 0.16)'));
+    ok('X87 the light card shadow is strengthened in the shared card decoration (warm-built since .90)',
+      read86('lib/widgets/tactile_components.dart').includes('AppTheme.warmShadow.withValues(alpha: _isHovered ? 0.30 : 0.22)'));
     ok('X86 the DARK gold palette is untouched by the light rework',
       themeSrc86.includes('textDim: Color(0xFFD4AF37)') && themeSrc86.includes('borderSoft: Color(0x3DFBBF24)'));
     ok('X86 the By MK caption uses the text-tuned accent', read86('lib/widgets/top_strip.dart').includes('color: AppTheme.accentText'));
@@ -7316,14 +7323,17 @@ async function main() {
     const tactileSrc88 = read88('lib/widgets/tactile_components.dart');
     ok('X88 no hard-coded #F1F5F9 slab remains in tactile components', !tactileSrc88.includes('0xFFF1F5F9'));
     // v2.48.89: the gold type joins the same pattern (count 4 -> 5).
-    ok('X88 tactile stop/pause/icon/secondary/gold light fills come from inputBg',
-      count88(tactileSrc88, 'AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg') === 5);
+    // v2.48.90: the light side of the pattern is buttonBg — the
+    // ONE uniform warm-tan button face (count unchanged).
+    ok('X88 tactile stop/pause/icon/secondary/gold light fills come from buttonBg (uniform in .90)',
+      count88(tactileSrc88, 'AppTheme.dark ? AppTheme.overlay10 : AppTheme.buttonBg') === 5);
     const sidebarSrc88 = read88('lib/widgets/sidebar_accounts.dart');
     ok('X88 no hard-coded #F1F5F9 slab remains in the sidebar', !sidebarSrc88.includes('0xFFF1F5F9'));
     // v2.48.89: the '+ Add Cookies' pill and the inactive filter
     // tabs join the same pattern (count 2 -> 4).
-    ok('X88 sidebar bottom buttons + add-cookies pill + filter tabs take their light fill from inputBg',
-      count88(sidebarSrc88, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg') === 4);
+    // v2.48.90: the light side is buttonBg (uniform warm tan).
+    ok('X88 sidebar bottom buttons + add-cookies pill + filter tabs take their light fill from buttonBg (uniform in .90)',
+      count88(sidebarSrc88, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg') === 4);
     ok('X88 the checking filter accent is sky blue on dark only, ACTIVE gold in light',
       sidebarSrc88.includes('AppTheme.dark ? const Color(0xFF38BDF8) : AppTheme.activeGold'));
     ok('X88 the checkbox edge is white70 on dark only, the border token in light',
@@ -7384,27 +7394,35 @@ async function main() {
     const white89 = themeSrc89.slice(whiteStart89, themeSrc89.indexOf('\n  );', whiteStart89));
 
     // --- (1) the deepened ramp, pinned by value AND by contrast ---
-    ok('X89 white textMain is #05080C', white89.includes('textMain: Color(0xFF05080C)'));
-    ok('X89 white textDim is #1E293B', white89.includes('textDim: Color(0xFF1E293B)'));
-    ok('X89 white textFaint is #334155', white89.includes('textFaint: Color(0xFF334155)'));
-    ok('X89 white accentText is deep amber-800 #92400E', white89.includes('accentText: Color(0xFF92400E)'));
-    ok('X89 textMain contrast vs white >= 7:1', contrast89('05080C') >= 7);
-    ok('X89 textDim contrast vs white >= 7:1', contrast89('1E293B') >= 7);
-    ok('X89 textFaint (the hint/disabled floor) contrast vs white >= 7:1', contrast89('334155') >= 7);
-    ok('X89 accentText contrast vs white >= 7:1', contrast89('92400E') >= 7);
+    // v2.48.90: the ramp is recoloured warm for the cream
+    // scheme (brown-black family) at equal-or-better contrast;
+    // the value pins assert the cream hexes and the contrast
+    // pins keep the >= 7:1 floor (the X90 block re-derives the
+    // floors against the cream card itself).
+    ok('X89 white textMain is #1A1408 (warm near-black, cream in .90)', white89.includes('textMain: Color(0xFF1A1408)'));
+    ok('X89 white textDim is #3E3420 (cream in .90)', white89.includes('textDim: Color(0xFF3E3420)'));
+    ok('X89 white textFaint is #4F422A (cream in .90)', white89.includes('textFaint: Color(0xFF4F422A)'));
+    ok('X89 white accentText is deep warm amber #854008 (cream in .90)', white89.includes('accentText: Color(0xFF854008)'));
+    ok('X89 textMain contrast vs white >= 7:1', contrast89('1A1408') >= 7);
+    ok('X89 textDim contrast vs white >= 7:1', contrast89('3E3420') >= 7);
+    ok('X89 textFaint (the hint/disabled floor) contrast vs white >= 7:1', contrast89('4F422A') >= 7);
+    ok('X89 accentText contrast vs white >= 7:1', contrast89('854008') >= 7);
 
     // --- (2) semantic text deepens in light; dark bytes intact ---
-    ok('X89 light green text is #166534 (dark keeps #30D158)',
-      themeSrc89.includes('dark ? const Color(0xFF30D158) : const Color(0xFF166534)'));
-    ok('X89 light green contrast vs white >= 7:1', contrast89('166534') >= 7);
+    // v2.48.90: green deepens #166534 -> #14532D and the gold
+    // #92400E -> #854008 (both measured ~6.9:1 on the cream
+    // card — under the 7:1 floor; see the X90 block).
+    ok('X89 light green text is #14532D (dark keeps #30D158)',
+      themeSrc89.includes('dark ? const Color(0xFF30D158) : const Color(0xFF14532D)'));
+    ok('X89 light green contrast vs white >= 7:1', contrast89('14532D') >= 7);
     ok('X89 light red text is #B91C1C (dark keeps #FF453A)',
       themeSrc89.includes('dark ? const Color(0xFFFF453A) : const Color(0xFFB91C1C)'));
     ok('X89 light red contrast vs white >= 6:1', contrast89('B91C1C') >= 6);
-    ok('X89 light activeGold is #92400E (dark keeps #F5B301)',
-      themeSrc89.includes('dark ? const Color(0xFFF5B301) : const Color(0xFF92400E)'));
+    ok('X89 light activeGold is #854008 (dark keeps #F5B301)',
+      themeSrc89.includes('dark ? const Color(0xFFF5B301) : const Color(0xFF854008)'));
     const sidebarSrc89 = read89('lib/widgets/sidebar_accounts.dart');
-    ok('X89 sidebar status ambers are bright on dark only, #92400E in light',
-      count89(sidebarSrc89, 'AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E)') === 5);
+    ok('X89 sidebar status ambers are bright on dark only, #854008 in light (cream in .90)',
+      count89(sidebarSrc89, 'AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008)') === 5);
     ok('X89 the Login status word is deep orange #9A3412 in light',
       sidebarSrc89.includes('AppTheme.dark ? const Color(0xFFFF9F0A) : const Color(0xFF9A3412)'));
     ok('X89 the filter-tab idle accent is ACTIVE gold in light (no bright #F5B301 text)',
@@ -7418,13 +7436,143 @@ async function main() {
       count89(tactileSrc89, 'AppTheme.dark ? AppTheme.textDim.withValues(alpha: 0.55) : AppTheme.textFaint') === 3 &&
       tactileSrc89.includes('AppTheme.dark ? AppTheme.red.withValues(alpha: 0.45) : AppTheme.textFaint'));
 
-    // --- (3) the flagged fills rest on inputBg in light ---
-    ok('X89 tactile pill toggles rest on inputBg in light (Simple/Details, Bulk/Agent)',
-      tactileSrc89.includes('AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg'));
-    ok('X89 the gold tactile type rests on inputBg in light (+ Add Tag)',
-      count89(tactileSrc89, 'AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg') === 5);
-    ok('X89 add-cookies pill + filter tabs rest on inputBg in light',
-      count89(sidebarSrc89, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg') === 4);
+    // --- (3) the flagged fills rest on the uniform button face ---
+    // (inputBg in .88/.89; buttonBg since v2.48.90 — see X90.)
+    ok('X89 tactile pill toggles rest on buttonBg in light (Simple/Details, Bulk/Agent)',
+      tactileSrc89.includes('AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg'));
+    ok('X89 the gold tactile type rests on buttonBg in light (+ Add Tag)',
+      count89(tactileSrc89, 'AppTheme.dark ? AppTheme.overlay10 : AppTheme.buttonBg') === 5);
+    ok('X89 add-cookies pill + filter tabs rest on buttonBg in light',
+      count89(sidebarSrc89, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg') === 4);
+  }
+
+  // ---------------------------------------------------------------------------
+  // X90 (v2.48.90) — WARM CREAM recolour + UNIFORM BUTTONS +
+  // WARM GLOW (owner's own recoloured sample, image-46, with
+  // three orders: "asa color karo" — make the colours like
+  // this sample; buttons must not show "sometimes dark,
+  // sometimes light"; and when things glow it turns "black
+  // faded" — fix the glow).
+  // ITEM 1: the single light palette is recoloured from the
+  // cool slate-white of .87–.89 to the sample's WARM CREAM:
+  // canvas #E9DCB8 (deeper warm cream), cards #FFFCF2 (warm
+  // white), inputs #E9E2CC (pale warm cream), borders #C9BB96
+  // (tan/khaki, strong — border AND borderSoft), warm gold
+  // accents unchanged. It stays ONE light theme.
+  // TEXT STAYS DEEP: the ramp warms to brown-black and every
+  // role is re-derived against the CREAM CARD (#FFFCF2):
+  // textMain #1A1408 ~17.8:1, textDim #3E3420 ~11.9:1,
+  // textFaint #4F422A ~9.5:1 (and ~7.6:1 even on the input
+  // fill — the hint floor holds on fields too), accentText
+  // and activeGold #854008 ~7.5:1, green #14532D ~8.9:1,
+  // red #B91C1C ~6.3:1. (#92400E / #166534 from .89 measured
+  // only ~6.9:1 on the cream card — under the floor — hence
+  // the extra deepening step.)
+  // ITEM 2: ONE uniform button design in light mode. A new
+  // palette token, buttonBg (warm tan #D8CFB4), is now the
+  // resting face of EVERY button family: all six TactileButton
+  // types (pill/gold/danger/stop/pause/icon/secondary — the
+  // danger type was the last black-alpha holdout, resting on
+  // raw overlay10), the sidebar's Add Cookies pill, filter
+  // tabs, action-grid buttons, Settings/Back button and the
+  // round + button. Generate stays the gold primary gradient.
+  // Borders are the strong tan token; text stays deep.
+  // ITEM 3: the GLOW fix. The black-faded glow was the shared
+  // section container's BLACK shadow (.16 rest / .22 hover on
+  // light since .87) plus the buttons' unbranched black
+  // resting shadow (alpha .30 in both modes) and the other
+  // black-alpha light shadows (cards, settings cards, mode
+  // chip, logo tile, notification panels, the dropdown
+  // menu's shadowColor). A new token, warmShadow (deep warm
+  // gold-brown #7A5C14), now builds EVERY light-mode shadow;
+  // hover GLOWS were already gold (accent) and stay gold.
+  // No black-based shadow/glow is reachable in light mode.
+  // Dark palettes and every dark branch are byte-identical.
+  // (Left alone, as in .88: the video player's internals —
+  // the black video surface itself — and the checkbox glyph.)
+  // ---------------------------------------------------------------------------
+  {
+    const fsx90 = require('fs');
+    const pathx90 = require('path');
+    const read90 = (rel) => fsx90.readFileSync(pathx90.join(__dirname, '..', rel), 'utf8');
+    const count90 = (hay, needle) => hay.split(needle).length - 1;
+
+    const lum90 = (hex) => [0, 2, 4]
+      .map((i) => parseInt(hex.substr(i, 2), 16) / 255)
+      .map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)))
+      .reduce((acc, v, i) => acc + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const onCard90 = (hex) => (lum90('FFFCF2') + 0.05) / (lum90(hex) + 0.05);
+    const onInput90 = (hex) => (lum90('E9E2CC') + 0.05) / (lum90(hex) + 0.05);
+
+    const themeSrc90 = read90('lib/theme/app_theme.dart');
+    const whiteStart90 = themeSrc90.indexOf('static const AppPalette _whiteLight');
+    const white90 = themeSrc90.slice(whiteStart90, themeSrc90.indexOf('\n  );', whiteStart90));
+
+    // --- Item 1: the cream values ---
+    ok('X90 cream canvas is the deeper warm cream #E9DCB8', white90.includes('bgBody: Color(0xFFE9DCB8)'));
+    ok('X90 cream wash partner bg2 is #DECFA3', white90.includes('bg2: Color(0xFFDECFA3)'));
+    ok('X90 cream cards are warm white #FFFCF2 (surface + elevated + panelTop)',
+      white90.includes('surface: Color(0xFFFFFCF2)') && white90.includes('surfaceElevated: Color(0xFFFFFCF2)') && white90.includes('panelTop: Color(0xFFFFFCF2)'));
+    ok('X90 cream panel gradient bottom is #FAF2DB', white90.includes('panelBottom: Color(0xFFFAF2DB)'));
+    ok('X90 cream inputs are pale warm cream #E9E2CC', white90.includes('inputBg: Color(0xFFE9E2CC)'));
+    ok('X90 cream borders are tan/khaki #C9BB96 (strong, both roles)',
+      white90.includes('border: Color(0xFFC9BB96)') && white90.includes('borderSoft: Color(0xFFC9BB96)'));
+    ok('X90 still exactly ONE light theme (the .88 structure stands)', count90(themeSrc90, 'dark: false') === 1);
+
+    // --- Item 1b: the deep-text discipline, re-derived vs the cream card ---
+    ok('X90 textMain vs cream card >= 7:1', onCard90('1A1408') >= 7);
+    ok('X90 textDim vs cream card >= 7:1', onCard90('3E3420') >= 7);
+    ok('X90 textFaint (the floor) vs cream card >= 7:1', onCard90('4F422A') >= 7);
+    ok('X90 textFaint vs the input fill >= 7:1 (hints stay readable on fields)', onInput90('4F422A') >= 7);
+    ok('X90 accentText vs cream card >= 7:1', onCard90('854008') >= 7);
+    ok('X90 activeGold vs cream card >= 7:1', onCard90('854008') >= 7);
+    ok('X90 green vs cream card >= 7:1', onCard90('14532D') >= 7);
+    ok('X90 red vs cream card >= 6:1', onCard90('B91C1C') >= 6);
+
+    // --- Item 2: one uniform button face ---
+    ok('X90 the palette carries the uniform button face token (warm tan #D8CFB4)',
+      themeSrc90.includes('Color get buttonBg') && themeSrc90.includes('const Color(0xFFD8CFB4)'));
+    ok('X90 AppTheme exposes buttonBg', themeSrc90.includes('static Color get buttonBg'));
+    const tactileSrc90 = read90('lib/widgets/tactile_components.dart');
+    ok('X90 every tactile button family rests on buttonBg in light (7 sites: 5 overlay10 + pill + danger)',
+      count90(tactileSrc90, 'AppTheme.buttonBg') === 7);
+    ok('X90 the danger type rests on buttonBg (its black-alpha overlay10 fill is gone)',
+      tactileSrc90.includes('bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.buttonBg;'));
+    const sidebarSrc90 = read90('lib/widgets/sidebar_accounts.dart');
+    ok('X90 every sidebar button rests on buttonBg in light (5 sites: pill, tabs, grid, settings, round +)',
+      count90(sidebarSrc90, 'AppTheme.buttonBg') === 5);
+    ok('X90 Generate stays the gold primary (accent gradient untouched)',
+      tactileSrc90.includes('gradient = isInteractive ? AppTheme.accentGrad : null;'));
+
+    // --- Item 3: the warm glow/shadow root fix ---
+    ok('X90 the palette carries the warm shadow base (deep gold-brown #7A5C14)',
+      themeSrc90.includes('Color get warmShadow') && themeSrc90.includes('const Color(0xFF7A5C14)'));
+    ok('X90 the warm shadow base is a warm hue (R > G > B — gold family, never neutral black)',
+      0x7A > 0x5C && 0x5C > 0x14);
+    ok('X90 AppTheme exposes warmShadow', themeSrc90.includes('static Color get warmShadow'));
+    ok('X90 the section-container light shadow is warm-built (the black-faded glow source, fixed)',
+      tactileSrc90.includes('AppTheme.warmShadow.withValues(alpha: _isHovered ? 0.30 : 0.22)'));
+    ok('X90 the section container no longer builds any shadow from plain black in light',
+      !tactileSrc90.includes('AppTheme.dark ? (_isHovered ? 0.45 : 0.35) : (_isHovered ? 0.22 : 0.16)'));
+    ok('X90 the button resting shadow is warm in light (the unbranched black .30 is gone)',
+      !tactileSrc90.includes('color: Colors.black.withValues(alpha: 0.30),') &&
+      tactileSrc90.includes('AppTheme.warmShadow.withValues(alpha: 0.28)'));
+    ok('X90 the card resting shadow is warm in light (no black-alpha smudge)',
+      tactileSrc90.includes('AppTheme.warmShadow.withValues(alpha: 0.05)') && !tactileSrc90.includes('const Color(0x0A000000)'));
+    const settingsSrc90 = read90('lib/widgets/settings_view.dart');
+    ok('X90 the settings card shadows are warm in light (2 sites)',
+      count90(settingsSrc90, 'AppTheme.warmShadow.withValues(alpha: 0.05)') === 2);
+    ok('X90 the mode-toggle active shadow is warm in light',
+      settingsSrc90.includes('AppTheme.warmShadow.withValues(alpha: 0.16)'));
+    ok('X90 the top-strip logo tile shadow is warm in light',
+      read90('lib/widgets/top_strip.dart').includes('AppTheme.warmShadow.withValues(alpha: 0.45)'));
+    const notifSrc90 = read90('lib/widgets/notification_center.dart');
+    ok('X90 the notification panel shadows are warm in light (no unbranched black45/black54)',
+      notifSrc90.includes('AppTheme.warmShadow') && !notifSrc90.includes('color: Colors.black45,') && !notifSrc90.includes('color: Colors.black54,'));
+    ok('X90 the dropdown menu shadow is warm in light (Design-1 menu)',
+      read90('lib/widgets/video_settings_bar.dart').includes('AppTheme.warmShadow.withValues(alpha: 0.38)'));
+    ok('X90 hover GLOWS stay gold (the glow colour token is the gold accent)',
+      themeSrc90.includes('Color get glowPrimary => accentGold'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

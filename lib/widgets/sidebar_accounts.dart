@@ -707,18 +707,21 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // amber-800 #92400E (~7.1:1 on white) — the fixed bright golds
   // are small-text pale offenders in the white theme. Dark keeps
   // the fixed brights byte-identical.
+  // v2.48.90: #92400E measures ~6.9:1 on the warm cream card,
+  // so the light amber deepens one more step to #854008
+  // (~7.5:1) — the same value as the palette's accentText.
   (String, Color) _statusChip(GoogleAccount acc) {
     if (acc.status == AccountStatus.checking) {
-      return ('CHECKING', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
+      return ('CHECKING', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008));
     }
     // v2.29.0: "Need Login" is an amber LOGIN chip, not red FAIL.
     if (acc.status == AccountStatus.loginRequired) {
-      return ('LOGIN', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
+      return ('LOGIN', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008));
     }
     // v2.46.0: credits khatam/kam FAIL nahi hai — apne lafz, apne
     // rang (grey / amber). FAIL sirf asal problem ke liye bacha.
     if (_isNoCredits(acc)) return ('NO CREDITS', AppTheme.textDim);
-    if (_isLowCredits(acc)) return ('LOW CREDITS', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
+    if (_isLowCredits(acc)) return ('LOW CREDITS', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008));
     if (_isLiveAcc(acc)) return ('LIVE', AppTheme.green);
     return ('FAIL', AppTheme.red);
   }
@@ -731,7 +734,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // in flight reads "Checking" from the account state itself.
   (String, Color) _statusWord(GoogleAccount acc) {
     if (acc.status == AccountStatus.checking) {
-      return ('Checking', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
+      return ('Checking', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008));
     }
     if (acc.pendingCheck) {
       return ('Waiting', AppTheme.textFaint);
@@ -744,7 +747,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     // v2.46.0: credits wali haalat apne lafz se — Fail sirf asal
     // problem (cookie/login/error) ke liye.
     if (_isNoCredits(acc)) return ('No Credits', AppTheme.textDim);
-    if (_isLowCredits(acc)) return ('Low Credits', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
+    if (_isLowCredits(acc)) return ('Low Credits', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008));
     if (_isLiveAcc(acc)) return ('Live', AppTheme.green);
     return ('Fail', AppTheme.red);
   }
@@ -1185,7 +1188,9 @@ class _HoverPillBtnState extends State<_HoverPillBtn> {
               // v2.48.89: light mode rests on inputBg — the
               // near-clear overlay08 read as a dark slate slab in
               // the owner's .88 screenshot.
-              color: _hovered ? AppTheme.accentGold.withValues(alpha: 0.18) : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg),
+              // v2.48.90: light mode rests on buttonBg — the ONE
+              // uniform warm-tan button face (see AppPalette).
+              color: _hovered ? AppTheme.accentGold.withValues(alpha: 0.18) : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg),
               borderRadius: BorderRadius.circular(17),
               border: Border.all(
                 color: _hovered ? AppTheme.accentGold : AppTheme.borderHighlight,
@@ -1269,9 +1274,15 @@ class _HoverRoundAddBtnState extends State<_HoverRoundAddBtn> {
             transform: Matrix4.translationValues(0, translateY, 0),
             decoration: BoxDecoration(
               shape: BoxShape.circle,
+              // v2.48.90: in light mode the resting face joins
+              // the uniform button design (buttonBg warm tan);
+              // the hover keeps its gold tint. Dark keeps the
+              // gold-tint fills in both states, byte-identical.
               color: _hovered
                   ? AppTheme.accentGold.withValues(alpha: 0.25)
-                  : AppTheme.accentGold.withValues(alpha: 0.12),
+                  : (AppTheme.dark
+                      ? AppTheme.accentGold.withValues(alpha: 0.12)
+                      : AppTheme.buttonBg),
               border: Border.all(
                 color: _hovered ? AppTheme.accentGold : AppTheme.borderHighlight,
                 width: 1.2,
@@ -1365,9 +1376,11 @@ class _HoverFilterBtnState extends State<_HoverFilterBtn> {
                 // v2.48.89: inactive light tabs rest on inputBg
                 // (the overlay08 fill read dark-slab in the
                 // owner's .88 screenshot).
+                // v2.48.90: inactive light tabs rest on buttonBg,
+                // the uniform warm-tan button face.
                 color: isActive
                     ? activeTint.withValues(alpha: _hovered ? 0.25 : 0.16)
-                    : (_hovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg)),
+                    : (_hovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg)),
                 borderRadius: BorderRadius.circular(8),
                 border: Border.all(
                   color: isActive
@@ -1558,9 +1571,11 @@ class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
             decoration: BoxDecoration(
               // Clean dark slate background — NO red fill brick!
               // v2.48.88: light fill = the inputBg token, not a slab.
+              // v2.48.90: light fill = buttonBg, the uniform
+              // warm-tan button face shared by every button.
               color: _hovered && enabled
                   ? AppTheme.surfaceElevated
-                  : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg),
+                  : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg),
               borderRadius: BorderRadius.circular(6),
               border: Border.all(
                 color: _hovered && enabled
@@ -1654,7 +1669,7 @@ class _HoverBottomSettingsBtnState extends State<_HoverBottomSettingsBtn> {
               // Clean dark slate background — NO brown fill brick!
               color: _hovered
                   ? AppTheme.surfaceElevated
-                  : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg),
+                  : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg),
               borderRadius: BorderRadius.circular(8),
               border: Border.all(
                 color: active

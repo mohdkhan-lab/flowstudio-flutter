@@ -109,8 +109,11 @@ class AppPalette {
   // value deepens one full step to amber-800 #92400E (~7.1:1 on
   // white) — #CF8A04 measured only ~2.9:1 as small text. The dark
   // value is byte-identical.
+  // v2.48.90: on the owner's WARM CREAM card (#FFFCF2) #92400E
+  // measures only ~6.9:1, so the light value deepens one more
+  // step to #854008 (~7.5:1 on the cream card). Dark identical.
   Color get activeGold =>
-      dark ? const Color(0xFFF5B301) : const Color(0xFF92400E);
+      dark ? const Color(0xFFF5B301) : const Color(0xFF854008);
 
   // Status colours — mac greens/reds, FIXED across all themes.
   // v2.48.89: the LIGHT branches deepen to clearly-readable text
@@ -118,9 +121,12 @@ class AppPalette {
   // ~6.5:1; the old mac tints #34C759/#FF3B30 measured ~2.2:1 and
   // ~3.5:1 as the small Live/Fail texts). The tint backgrounds
   // follow their text colour. Dark branches byte-identical.
-  Color get green => dark ? const Color(0xFF30D158) : const Color(0xFF166534);
+  // v2.48.90: #166534 measures only ~6.9:1 on the cream card, so
+  // the light green deepens to green-900 #14532D (~8.9:1); the
+  // tint background follows. Red holds at #B91C1C (~6.3:1).
+  Color get green => dark ? const Color(0xFF30D158) : const Color(0xFF14532D);
   Color get greenBg =>
-      dark ? const Color(0x1F30D158) : const Color(0x1F166534);
+      dark ? const Color(0x1F30D158) : const Color(0x1F14532D);
   Color get red => dark ? const Color(0xFFFF453A) : const Color(0xFFB91C1C);
   Color get redBg => dark ? const Color(0x1FFF453A) : const Color(0x1FB91C1C);
   // v2.48.88: in light mode this is the GOLD accent, not a blue —
@@ -143,6 +149,24 @@ class AppPalette {
   Color get bevelSecondary => dark ? const Color(0xFF060910) : borderSoft;
   Color get borderHighlight => accentGold.withValues(alpha: dark ? 0.45 : 0.35);
   Color get glowPrimary => accentGold;
+
+  // v2.48.90 (owner's warm-cream sample — "asa color karo"): the
+  // ONE uniform light-mode button face, a warm tan #D8CFB4.
+  // Every button's light branch rests on this token, so no
+  // button reads dark-filled on one surface and light on
+  // another. Only ever read on light branches — the dark value
+  // simply mirrors the overlay fill dark buttons already use.
+  Color get buttonBg => dark ? overlay10 : const Color(0xFFD8CFB4);
+
+  // v2.48.90 (owner: when the UI glows it turns "black faded"):
+  // the warm shadow base for light mode — a deep warm
+  // gold-brown #7A5C14. Every light-mode shadow is built from
+  // this colour (or from the gold accent itself), never from
+  // black, so glows and shadows read as a soft warm tint on
+  // the cream surfaces. Only read on light branches; the dark
+  // value is plain black, exactly what dark shadows already use.
+  Color get warmShadow =>
+      dark ? const Color(0xFF000000) : const Color(0xFF7A5C14);
 
   LinearGradient get accentGrad => LinearGradient(
         colors: [gradStart, gradEnd],
@@ -276,18 +300,31 @@ class AppTheme {
   // textFaint #334155 — the FLOOR for every hint/placeholder/
   // disabled text in light mode) and accentText deepens to
   // amber-800 #92400E (#B45309 measured only ~5.0:1 on white).
+  // v2.48.90 (owner's own recoloured sample, image-46 — "asa
+  // color karo"): the palette is RECOLOURED to the sample's
+  // WARM CREAM scheme, superseding the cool slate-white above.
+  // Tones sampled from his sample: canvas a deeper warm cream
+  // #E9DCB8, cards/panels warm white #FFFCF2, input/textarea
+  // fills pale warm cream #E9E2CC, borders tan/khaki #C9BB96
+  // (border AND borderSoft — the strong-border discipline is
+  // kept), warm gold accents unchanged. TEXT STAYS DEEP, warmed
+  // to brown-black and re-derived against the cream card so
+  // the .89 discipline holds: textMain #1A1408 (~17.8:1),
+  // textDim #3E3420 (~11.9:1), textFaint #4F422A (~9.5:1 on
+  // the card, ~7.6:1 even on input fills — still the floor),
+  // accentText #854008 (~7.5:1). Still ONE single light theme.
   static const AppPalette _whiteLight = AppPalette(
     id: 'white', dark: false,
-    bgBody: Color(0xFFCBD5E1), bg2: Color(0xFFB6C4D6),
-    surface: Color(0xFFFFFFFF), surfaceElevated: Color(0xFFFFFFFF),
-    inputBg: Color(0xFFE2E8F0),
-    border: Color(0xFF788AA0), borderSoft: Color(0xFF788AA0),
+    bgBody: Color(0xFFE9DCB8), bg2: Color(0xFFDECFA3),
+    surface: Color(0xFFFFFCF2), surfaceElevated: Color(0xFFFFFCF2),
+    inputBg: Color(0xFFE9E2CC),
+    border: Color(0xFFC9BB96), borderSoft: Color(0xFFC9BB96),
     accentGold: Color(0xFFD97706), accentAmber: Color(0xFFF59E0B),
-    accentText: Color(0xFF92400E),
-    textMain: Color(0xFF05080C), textDim: Color(0xFF1E293B),
-    textFaint: Color(0xFF334155),
+    accentText: Color(0xFF854008),
+    textMain: Color(0xFF1A1408), textDim: Color(0xFF3E3420),
+    textFaint: Color(0xFF4F422A),
     gradStart: Color(0xFFF59E0B), gradEnd: Color(0xFFD97706),
-    panelTop: Color(0xFFFFFFFF), panelBottom: Color(0xFFFFFFFF),
+    panelTop: Color(0xFFFFFCF2), panelBottom: Color(0xFFFAF2DB),
   );
 
   static const Map<String, AppPalette> _darkPalettes = {
@@ -493,6 +530,11 @@ class AppTheme {
   static Color get bevelSecondary => _current.bevelSecondary;
   static Color get borderHighlight => _current.borderHighlight;
   static Color get glowPrimary => _current.glowPrimary;
+
+  // v2.48.90: the uniform light-mode button face + the warm
+  // light-mode shadow base (see AppPalette).
+  static Color get buttonBg => _current.buttonBg;
+  static Color get warmShadow => _current.warmShadow;
 
   static LinearGradient get accentGrad => _current.accentGrad;
   static LinearGradient get panelGrad => _current.panelGrad;

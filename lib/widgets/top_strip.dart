@@ -45,11 +45,16 @@ class TopStrip extends StatelessWidget {
                   decoration: BoxDecoration(
                     gradient: AppTheme.accentGrad,
                     borderRadius: BorderRadius.circular(8),
-                    boxShadow: const [
+                    boxShadow: [
                       BoxShadow(
-                        color: Colors.black45,
+                        // v2.48.90: warm shadow in light mode —
+                        // the logo tile never drops a black smudge
+                        // on the cream top strip.
+                        color: AppTheme.dark
+                            ? Colors.black45
+                            : AppTheme.warmShadow.withValues(alpha: 0.45),
                         blurRadius: 4,
-                        offset: Offset(0, 2),
+                        offset: const Offset(0, 2),
                       ),
                     ],
                   ),
@@ -108,7 +113,7 @@ class TopStrip extends StatelessWidget {
                 // Version Pill — Tactile 3D
                 TactileChip(
                   color: AppTheme.accentText,
-                  label: 'v2.48.89',
+                  label: 'v2.48.90',
                   height: 22,
                   borderRadius: 11,
                   bevelDepth: 1.5,

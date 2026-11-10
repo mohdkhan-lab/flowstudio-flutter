@@ -104,9 +104,11 @@ class _TactileButtonState extends State<TactileButton> {
         // token (same pattern as stop/pause/secondary since .88) —
         // the near-clear overlay08 read as a dark slate slab in the
         // owner's .88 screenshot (Bulk/Agent Prompt, Simple/Details).
+        // v2.48.90: the light fill is now the ONE uniform button
+        // face (buttonBg, warm tan #D8CFB4) — see AppPalette.
         bgColor = widget.isActive
             ? AppTheme.accentGold
-            : (_isHovered ? AppTheme.accentGold.withValues(alpha: 0.16) : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.inputBg));
+            : (_isHovered ? AppTheme.accentGold.withValues(alpha: 0.16) : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg));
         borderColor = widget.isActive
             ? AppTheme.accentGold
             : (_isHovered ? AppTheme.accentAmber : AppTheme.borderSoft);
@@ -124,7 +126,9 @@ class _TactileButtonState extends State<TactileButton> {
         // Clean dark slate background — NO brown/gold fill bricks
         // v2.48.89: light mode rests on inputBg (the '+ Add Tag'
         // chip read dark-filled in the owner's .88 screenshot).
-        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg);
+        // v2.48.90: light mode rests on buttonBg, the uniform
+        // warm-tan button face, like every other button type.
+        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.buttonBg);
         borderColor = _isHovered ? AppTheme.accentGold : AppTheme.accentGold.withValues(alpha: 0.5);
         bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.accentGold;
@@ -134,7 +138,12 @@ class _TactileButtonState extends State<TactileButton> {
       case TactileType.danger:
         gradient = null;
         // Clean dark slate background — NOT solid red fill
-        bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.overlay10;
+        // v2.48.90: the light rest fill is the uniform buttonBg
+        // token (buttonBg's dark value IS overlay10, so dark
+        // rendering is unchanged) — the raw overlay10 was a
+        // black-alpha fill in light mode, the one button family
+        // still reading dark after the .88/.89 inputBg pass.
+        bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.buttonBg;
         borderColor = _isHovered ? AppTheme.red.withValues(alpha: 0.8) : AppTheme.borderSoft;
         bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.red;
@@ -148,7 +157,9 @@ class _TactileButtonState extends State<TactileButton> {
         // Clean slate background — subtle red accent text/icon only
         // v2.48.88: the light fill is the palette inputBg token
         // (#E2E8F0 in the white theme), not a hard-coded slab.
-        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg);
+        // v2.48.90: the light fill is the uniform buttonBg token
+        // (warm tan #D8CFB4 in the cream theme).
+        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.buttonBg);
         borderColor = _isHovered ? AppTheme.border : AppTheme.borderSoft;
         bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.red;
@@ -160,7 +171,7 @@ class _TactileButtonState extends State<TactileButton> {
       case TactileType.pause:
         gradient = null;
         // Clean slate background — subtle amber accent text/icon only
-        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg);
+        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.buttonBg);
         borderColor = _isHovered ? AppTheme.border : AppTheme.borderSoft;
         bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.accentGold;
@@ -173,7 +184,7 @@ class _TactileButtonState extends State<TactileButton> {
         gradient = null;
         bgColor = widget.isActive
             ? AppTheme.accentGold.withValues(alpha: 0.20)
-            : (_isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg));
+            : (_isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.buttonBg));
         borderColor = widget.isActive
             ? AppTheme.accentGold
             : (_isHovered ? AppTheme.accentAmber : AppTheme.borderSoft);
@@ -185,7 +196,7 @@ class _TactileButtonState extends State<TactileButton> {
       case TactileType.secondary:
         gradient = null;
         // Clean slate background — NO red or brown fills
-        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.inputBg);
+        bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.buttonBg);
         borderColor = _isHovered ? AppTheme.accentAmber : AppTheme.borderSoft;
         bevelColor = AppTheme.bevelSecondary;
         glowColor = AppTheme.glowPrimary;
@@ -278,7 +289,14 @@ class _TactileButtonState extends State<TactileButton> {
                 )
               else if (!_isPressed && isInteractive)
                 BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.30),
+                  // v2.48.90 (owner: light glow/shadow read as
+                  // "black faded"): the resting button shadow is
+                  // black only on dark palettes — in light mode
+                  // it is built from the warm gold-brown
+                  // warmShadow base, never black.
+                  color: AppTheme.dark
+                      ? Colors.black.withValues(alpha: 0.30)
+                      : AppTheme.warmShadow.withValues(alpha: 0.28),
                   blurRadius: 3,
                   offset: const Offset(0, 1.5),
                 ),
@@ -387,7 +405,11 @@ class _TactileCardState extends State<TactileCard> {
                 )
               else
                 BoxShadow(
-                  color: AppTheme.dark ? Colors.black26 : const Color(0x0A000000),
+                  // v2.48.90: the light resting shadow is a warm
+                  // tint (warmShadow), not a black-alpha smudge.
+                  color: AppTheme.dark
+                      ? Colors.black26
+                      : AppTheme.warmShadow.withValues(alpha: 0.05),
                   blurRadius: 4,
                   offset: const Offset(0, 2),
                 ),
@@ -546,10 +568,18 @@ class _TactileSectionContainerState extends State<TactileSectionContainer> {
             // light cards sit on a DEEP slate canvas, so the resting shadow
             // is strengthened (alpha .04 -> .16, blur 5 -> 10) to visibly
             // lift the white cards off the frame. Dark values unchanged.
+            // v2.48.90 (owner: the glow "black faded ho jata hai"):
+            // that strengthened light shadow was still BLACK —
+            // on the warm cream canvas it read as a black faded
+            // smear that deepened on hover. The light shadow is
+            // now built from warmShadow (deep warm gold-brown),
+            // a touch stronger (.22 rest / .30 hover) so the
+            // cream cards still lift off the deeper cream frame.
+            // Dark palettes keep their black shadow byte-identical.
             BoxShadow(
-              color: Colors.black.withValues(
-                alpha: AppTheme.dark ? (_isHovered ? 0.45 : 0.35) : (_isHovered ? 0.22 : 0.16),
-              ),
+              color: AppTheme.dark
+                  ? Colors.black.withValues(alpha: _isHovered ? 0.45 : 0.35)
+                  : AppTheme.warmShadow.withValues(alpha: _isHovered ? 0.30 : 0.22),
               blurRadius: AppTheme.dark ? (_isHovered ? 16 : 12) : (_isHovered ? 14 : 10),
               offset: AppTheme.dark ? const Offset(0, 4) : const Offset(0, 2.5),
             ),

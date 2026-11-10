@@ -148,11 +148,14 @@ class _NotificationOverlayState extends State<NotificationOverlay> {
           color: AppTheme.surfaceElevated,
           borderRadius: BorderRadius.circular(12),
           border: Border.all(color: AppTheme.border),
-          boxShadow: const [
+          boxShadow: [
             BoxShadow(
-              color: Colors.black45,
+              // v2.48.90: warm shadow in light mode, never black.
+              color: AppTheme.dark
+                  ? Colors.black45
+                  : AppTheme.warmShadow.withValues(alpha: 0.40),
               blurRadius: 16,
-              offset: Offset(0, 6),
+              offset: const Offset(0, 6),
             ),
           ],
         ),
@@ -226,11 +229,14 @@ class _NotificationOverlayState extends State<NotificationOverlay> {
         color: AppTheme.surfaceElevated,
         borderRadius: BorderRadius.circular(14),
         border: Border.all(color: AppTheme.border),
-        boxShadow: const [
+        boxShadow: [
           BoxShadow(
-            color: Colors.black54,
+            // v2.48.90: warm shadow in light mode, never black.
+            color: AppTheme.dark
+                ? Colors.black54
+                : AppTheme.warmShadow.withValues(alpha: 0.45),
             blurRadius: 24,
-            offset: Offset(0, 10),
+            offset: const Offset(0, 10),
           ),
         ],
       ),

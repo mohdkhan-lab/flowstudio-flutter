@@ -7243,16 +7243,21 @@ async function main() {
     // VALUES are superseded by the WARM CREAM scheme — the
     // pins below assert the cream values (see the X90 block
     // for the full story + the button/glow pins).
+    // v2.48.91 (2026-11-10): the VALUES are superseded once
+    // more — by the owner's own "Warm Sand" spec, designed on
+    // the Theme Designer page and pasted into chat, applied
+    // EXACTLY 1:1 (see the X90 block). The pins below assert
+    // the Warm Sand values.
     const themeSrc86 = read86('lib/theme/app_theme.dart');
     const whiteStart87 = themeSrc86.indexOf('static const AppPalette _whiteLight');
     const goldLight86 = themeSrc86.slice(whiteStart87, themeSrc86.indexOf('\n  );', whiteStart87));
-    ok('X87 white-palette canvas is the deeper warm cream #E9DCB8 (cream in .90)', goldLight86.includes('bgBody: Color(0xFFE9DCB8)'));
-    ok('X87 white-palette cards are warm white (surface + panelTop #FFFCF2)',
-      goldLight86.includes('surface: Color(0xFFFFFCF2)') && goldLight86.includes('panelTop: Color(0xFFFFFCF2)'));
-    ok('X87 white-palette STRONG tan border #C9BB96 (border and borderSoft alike)',
-      goldLight86.includes('border: Color(0xFFC9BB96)') && goldLight86.includes('borderSoft: Color(0xFFC9BB96)'));
-    ok('X87 white-palette inputs get the pale warm cream #E9E2CC fill', goldLight86.includes('inputBg: Color(0xFFE9E2CC)'));
-    ok('X87 white-palette chip/wash partner bg2 is #DECFA3', goldLight86.includes('bg2: Color(0xFFDECFA3)'));
+    ok('X87 white-palette canvas is the Warm Sand #E7DCC8 (owner spec in .91)', goldLight86.includes('bgBody: Color(0xFFE7DCC8)'));
+    ok('X87 white-palette cards are warm white (surface + panelTop #FFFDF6, Warm Sand in .91)',
+      goldLight86.includes('surface: Color(0xFFFFFDF6)') && goldLight86.includes('panelTop: Color(0xFFFFFDF6)'));
+    ok('X87 white-palette STRONG borders from the Warm Sand spec (border #C4B28C, borderSoft #D3C49E)',
+      goldLight86.includes('border: Color(0xFFC4B28C)') && goldLight86.includes('borderSoft: Color(0xFFD3C49E)'));
+    ok('X87 white-palette inputs get the Warm Sand cream #EFE6D2 fill', goldLight86.includes('inputBg: Color(0xFFEFE6D2)'));
+    ok('X87 white-palette chip/wash partner bg2 is #DCCFB3 (bgBody shifted by the .90 delta, .91)', goldLight86.includes('bg2: Color(0xFFDCCFB3)'));
     // v2.48.89 (owner, on the REAL .88 screenshot): the text
     // ramp deepens one more full step — these three pins are
     // re-pointed at the new values (see the X89 block for the
@@ -7261,10 +7266,13 @@ async function main() {
     // v2.48.90: the ramp warms to brown-black for the cream
     // scheme (textMain #1A1408 / textDim #3E3420 / textFaint
     // #4F422A) at the same-or-better contrast (X90 block).
-    ok('X87 white-palette textMain is warm near-black #1A1408 (cream in .90)', goldLight86.includes('textMain: Color(0xFF1A1408)'));
-    ok('X87 white-palette textDim is #3E3420 (cream in .90)', goldLight86.includes('textDim: Color(0xFF3E3420)'));
-    ok('X87 white-palette textFaint is #4F422A (cream in .90)', goldLight86.includes('textFaint: Color(0xFF4F422A)'));
-    ok('X87 white-palette gold accent unchanged', goldLight86.includes('accentGold: Color(0xFFD97706)'));
+    // v2.48.91: the ramp is the owner's Warm Sand spec, 1:1
+    // (textMain #211806 / textDim #453A20 / textFaint
+    // #5C4E2E — floors re-derived in the X90 block).
+    ok('X87 white-palette textMain is warm near-black #211806 (Warm Sand in .91)', goldLight86.includes('textMain: Color(0xFF211806)'));
+    ok('X87 white-palette textDim is #453A20 (Warm Sand in .91)', goldLight86.includes('textDim: Color(0xFF453A20)'));
+    ok('X87 white-palette textFaint is #5C4E2E (Warm Sand in .91)', goldLight86.includes('textFaint: Color(0xFF5C4E2E)'));
+    ok('X87 white-palette accentGold is the Warm Sand spec gold #B45309', goldLight86.includes('accentGold: Color(0xFFB45309)'));
     ok('X87 no light palette keeps the washed-out slate-400 faint', !themeSrc86.includes('textFaint: Color(0xFF94A3B8)'));
     ok('X87 the light card shadow is strengthened in the shared card decoration (warm-built since .90)',
       read86('lib/widgets/tactile_components.dart').includes('AppTheme.warmShadow.withValues(alpha: _isHovered ? 0.30 : 0.22)'));
@@ -7314,8 +7322,8 @@ async function main() {
       settingsSrc88.includes("AppTheme.dark ? AppTheme.themeIds : const ['gold']"));
     ok('X88 the light picker card is labelled with the white theme name',
       settingsSrc88.includes('AppTheme.whiteThemeName'));
-    ok('X88 the light blue token IS the gold accent (dark keeps its sky blue)',
-      themeSrc88.includes('dark ? const Color(0xFF64D2FF) : const Color(0xFFD97706)'));
+    ok('X88 the light blue token IS the gold accent (dark keeps its sky blue; follows accentGold — Warm Sand #B45309 in .91)',
+      themeSrc88.includes('dark ? const Color(0xFF64D2FF) : const Color(0xFFB45309)'));
     ok('X88 a dark family accent survives byte-identical (macos dark blue)',
       themeSrc88.includes('accentGold: Color(0xFF0A84FF)'));
 
@@ -7399,30 +7407,39 @@ async function main() {
     // the value pins assert the cream hexes and the contrast
     // pins keep the >= 7:1 floor (the X90 block re-derives the
     // floors against the cream card itself).
-    ok('X89 white textMain is #1A1408 (warm near-black, cream in .90)', white89.includes('textMain: Color(0xFF1A1408)'));
-    ok('X89 white textDim is #3E3420 (cream in .90)', white89.includes('textDim: Color(0xFF3E3420)'));
-    ok('X89 white textFaint is #4F422A (cream in .90)', white89.includes('textFaint: Color(0xFF4F422A)'));
-    ok('X89 white accentText is deep warm amber #854008 (cream in .90)', white89.includes('accentText: Color(0xFF854008)'));
-    ok('X89 textMain contrast vs white >= 7:1', contrast89('1A1408') >= 7);
-    ok('X89 textDim contrast vs white >= 7:1', contrast89('3E3420') >= 7);
-    ok('X89 textFaint (the hint/disabled floor) contrast vs white >= 7:1', contrast89('4F422A') >= 7);
-    ok('X89 accentText contrast vs white >= 7:1', contrast89('854008') >= 7);
+    // v2.48.91: the ramp is the owner's own "Warm Sand" spec
+    // (Theme Designer page), applied 1:1 — value pins assert
+    // his hexes; the >= 7:1-vs-white contrast pins still hold
+    // for all four (textMain ~17.5, textDim ~11.2, textFaint
+    // ~8.1, accentText ~7.1 — computed).
+    ok('X89 white textMain is #211806 (warm near-black, Warm Sand in .91)', white89.includes('textMain: Color(0xFF211806)'));
+    ok('X89 white textDim is #453A20 (Warm Sand in .91)', white89.includes('textDim: Color(0xFF453A20)'));
+    ok('X89 white textFaint is #5C4E2E (Warm Sand in .91)', white89.includes('textFaint: Color(0xFF5C4E2E)'));
+    ok('X89 white accentText is the Warm Sand spec amber #92400E (.91)', white89.includes('accentText: Color(0xFF92400E)'));
+    ok('X89 textMain contrast vs white >= 7:1', contrast89('211806') >= 7);
+    ok('X89 textDim contrast vs white >= 7:1', contrast89('453A20') >= 7);
+    ok('X89 textFaint (the hint/disabled floor) contrast vs white >= 7:1', contrast89('5C4E2E') >= 7);
+    ok('X89 accentText contrast vs white >= 7:1', contrast89('92400E') >= 7);
 
     // --- (2) semantic text deepens in light; dark bytes intact ---
     // v2.48.90: green deepens #166534 -> #14532D and the gold
     // #92400E -> #854008 (both measured ~6.9:1 on the cream
     // card — under the 7:1 floor; see the X90 block).
+    // v2.48.91: the owner's Warm Sand spec names green #14532D
+    // and red #B91C1C — identical to the .90 values, so those
+    // two pins stand untouched; activeGold follows accentText
+    // back to the spec's #92400E (the .89 value).
     ok('X89 light green text is #14532D (dark keeps #30D158)',
       themeSrc89.includes('dark ? const Color(0xFF30D158) : const Color(0xFF14532D)'));
     ok('X89 light green contrast vs white >= 7:1', contrast89('14532D') >= 7);
     ok('X89 light red text is #B91C1C (dark keeps #FF453A)',
       themeSrc89.includes('dark ? const Color(0xFFFF453A) : const Color(0xFFB91C1C)'));
     ok('X89 light red contrast vs white >= 6:1', contrast89('B91C1C') >= 6);
-    ok('X89 light activeGold is #854008 (dark keeps #F5B301)',
-      themeSrc89.includes('dark ? const Color(0xFFF5B301) : const Color(0xFF854008)'));
+    ok('X89 light activeGold is #92400E (dark keeps #F5B301; follows accentText, Warm Sand in .91)',
+      themeSrc89.includes('dark ? const Color(0xFFF5B301) : const Color(0xFF92400E)'));
     const sidebarSrc89 = read89('lib/widgets/sidebar_accounts.dart');
-    ok('X89 sidebar status ambers are bright on dark only, #854008 in light (cream in .90)',
-      count89(sidebarSrc89, 'AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008)') === 5);
+    ok('X89 sidebar status ambers are bright on dark only, #92400E in light (follow accentText, Warm Sand in .91)',
+      count89(sidebarSrc89, 'AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E)') === 5);
     ok('X89 the Login status word is deep orange #9A3412 in light',
       sidebarSrc89.includes('AppTheme.dark ? const Color(0xFFFF9F0A) : const Color(0xFF9A3412)'));
     ok('X89 the filter-tab idle accent is ACTIVE gold in light (no bright #F5B301 text)',
@@ -7490,6 +7507,27 @@ async function main() {
   // Dark palettes and every dark branch are byte-identical.
   // (Left alone, as in .88: the video player's internals —
   // the black video surface itself — and the checkbox glyph.)
+  //
+  // v2.48.91 (2026-11-10) — the VALUES below are superseded by
+  // the owner's own "Warm Sand" design: he built it on the
+  // Theme Designer page and pasted the final spec into chat;
+  // it is applied EXACTLY 1:1 (bgBody #E7DCC8, surface
+  // #FFFDF6, panelBottom #F7EFDC, inputBg #EFE6D2, border
+  // #C4B28C, borderSoft #D3C49E, textMain #211806, textDim
+  // #453A20, textFaint #5C4E2E, accentGold #B45309,
+  // accentText #92400E, buttonBg #E3D5B5, warmShadow #8A6D1F,
+  // green #14532D, red #B91C1C). Unnamed tokens follow their
+  // relationships: bg2 #DCCFB3 (.90 delta), accentAmber
+  // #D97706 (one amber step lighter), gradStart/gradEnd =
+  // accentAmber/accentGold, activeGold = accentText, blue =
+  // accentGold, bevels = border/borderSoft, glow = accent.
+  // Structure (Items 2/3) is unchanged. Contrast floors are
+  // re-derived against the Warm Sand card #FFFDF6 and pin the
+  // TRUE computed values where the owner's exact hex sits a
+  // hair under a round floor (accentText/activeGold 6.97:1 on
+  // the card — pinned >= 6.9; textFaint on the input fill
+  // 6.55:1 — pinned >= 6.5): the owner's colours are NOT
+  // adjusted to fit a pin.
   // ---------------------------------------------------------------------------
   {
     const fsx90 = require('fs');
@@ -7501,37 +7539,40 @@ async function main() {
       .map((i) => parseInt(hex.substr(i, 2), 16) / 255)
       .map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)))
       .reduce((acc, v, i) => acc + v * [0.2126, 0.7152, 0.0722][i], 0);
-    const onCard90 = (hex) => (lum90('FFFCF2') + 0.05) / (lum90(hex) + 0.05);
-    const onInput90 = (hex) => (lum90('E9E2CC') + 0.05) / (lum90(hex) + 0.05);
+    const onCard90 = (hex) => (lum90('FFFDF6') + 0.05) / (lum90(hex) + 0.05);
+    const onInput90 = (hex) => (lum90('EFE6D2') + 0.05) / (lum90(hex) + 0.05);
 
     const themeSrc90 = read90('lib/theme/app_theme.dart');
     const whiteStart90 = themeSrc90.indexOf('static const AppPalette _whiteLight');
     const white90 = themeSrc90.slice(whiteStart90, themeSrc90.indexOf('\n  );', whiteStart90));
 
-    // --- Item 1: the cream values ---
-    ok('X90 cream canvas is the deeper warm cream #E9DCB8', white90.includes('bgBody: Color(0xFFE9DCB8)'));
-    ok('X90 cream wash partner bg2 is #DECFA3', white90.includes('bg2: Color(0xFFDECFA3)'));
-    ok('X90 cream cards are warm white #FFFCF2 (surface + elevated + panelTop)',
-      white90.includes('surface: Color(0xFFFFFCF2)') && white90.includes('surfaceElevated: Color(0xFFFFFCF2)') && white90.includes('panelTop: Color(0xFFFFFCF2)'));
-    ok('X90 cream panel gradient bottom is #FAF2DB', white90.includes('panelBottom: Color(0xFFFAF2DB)'));
-    ok('X90 cream inputs are pale warm cream #E9E2CC', white90.includes('inputBg: Color(0xFFE9E2CC)'));
-    ok('X90 cream borders are tan/khaki #C9BB96 (strong, both roles)',
-      white90.includes('border: Color(0xFFC9BB96)') && white90.includes('borderSoft: Color(0xFFC9BB96)'));
+    // --- Item 1: the owner's Warm Sand spec values (.91, 1:1) ---
+    ok('X90 Warm Sand canvas is #E7DCC8 (owner spec in .91)', white90.includes('bgBody: Color(0xFFE7DCC8)'));
+    ok('X90 Warm Sand wash partner bg2 is #DCCFB3 (bgBody by the .90 delta, .91)', white90.includes('bg2: Color(0xFFDCCFB3)'));
+    ok('X90 Warm Sand cards are #FFFDF6 (surface + elevated + panelTop, owner spec in .91)',
+      white90.includes('surface: Color(0xFFFFFDF6)') && white90.includes('surfaceElevated: Color(0xFFFFFDF6)') && white90.includes('panelTop: Color(0xFFFFFDF6)'));
+    ok('X90 Warm Sand panel gradient bottom is #F7EFDC (owner spec in .91)', white90.includes('panelBottom: Color(0xFFF7EFDC)'));
+    ok('X90 Warm Sand inputs are #EFE6D2 (owner spec in .91)', white90.includes('inputBg: Color(0xFFEFE6D2)'));
+    ok('X90 Warm Sand borders (border #C4B28C, borderSoft #D3C49E, owner spec in .91)',
+      white90.includes('border: Color(0xFFC4B28C)') && white90.includes('borderSoft: Color(0xFFD3C49E)'));
     ok('X90 still exactly ONE light theme (the .88 structure stands)', count90(themeSrc90, 'dark: false') === 1);
 
-    // --- Item 1b: the deep-text discipline, re-derived vs the cream card ---
-    ok('X90 textMain vs cream card >= 7:1', onCard90('1A1408') >= 7);
-    ok('X90 textDim vs cream card >= 7:1', onCard90('3E3420') >= 7);
-    ok('X90 textFaint (the floor) vs cream card >= 7:1', onCard90('4F422A') >= 7);
-    ok('X90 textFaint vs the input fill >= 7:1 (hints stay readable on fields)', onInput90('4F422A') >= 7);
-    ok('X90 accentText vs cream card >= 7:1', onCard90('854008') >= 7);
-    ok('X90 activeGold vs cream card >= 7:1', onCard90('854008') >= 7);
-    ok('X90 green vs cream card >= 7:1', onCard90('14532D') >= 7);
-    ok('X90 red vs cream card >= 6:1', onCard90('B91C1C') >= 6);
+    // --- Item 1b: the deep-text discipline, re-derived vs the Warm Sand card ---
+    // (Owner's exact spec hexes; two floors pin the TRUE computed
+    // values — accentText/activeGold 6.97:1 on the card, textFaint
+    // 6.55:1 on the input fill — the colours are NOT adjusted.)
+    ok('X90 textMain vs Warm Sand card >= 7:1', onCard90('211806') >= 7);
+    ok('X90 textDim vs Warm Sand card >= 7:1', onCard90('453A20') >= 7);
+    ok('X90 textFaint (the floor) vs Warm Sand card >= 7:1', onCard90('5C4E2E') >= 7);
+    ok('X90 textFaint vs the input fill >= 6.5:1 (true computed 6.55:1 for the owner spec hex)', onInput90('5C4E2E') >= 6.5);
+    ok('X90 accentText vs Warm Sand card >= 6.9:1 (true computed 6.97:1 for the owner spec hex)', onCard90('92400E') >= 6.9);
+    ok('X90 activeGold vs Warm Sand card >= 6.9:1 (follows accentText)', onCard90('92400E') >= 6.9);
+    ok('X90 green vs Warm Sand card >= 7:1', onCard90('14532D') >= 7);
+    ok('X90 red vs Warm Sand card >= 6:1', onCard90('B91C1C') >= 6);
 
     // --- Item 2: one uniform button face ---
-    ok('X90 the palette carries the uniform button face token (warm tan #D8CFB4)',
-      themeSrc90.includes('Color get buttonBg') && themeSrc90.includes('const Color(0xFFD8CFB4)'));
+    ok('X90 the palette carries the uniform button face token (Warm Sand tan #E3D5B5, owner spec in .91)',
+      themeSrc90.includes('Color get buttonBg') && themeSrc90.includes('const Color(0xFFE3D5B5)'));
     ok('X90 AppTheme exposes buttonBg', themeSrc90.includes('static Color get buttonBg'));
     const tactileSrc90 = read90('lib/widgets/tactile_components.dart');
     ok('X90 every tactile button family rests on buttonBg in light (7 sites: 5 overlay10 + pill + danger)',
@@ -7545,10 +7586,10 @@ async function main() {
       tactileSrc90.includes('gradient = isInteractive ? AppTheme.accentGrad : null;'));
 
     // --- Item 3: the warm glow/shadow root fix ---
-    ok('X90 the palette carries the warm shadow base (deep gold-brown #7A5C14)',
-      themeSrc90.includes('Color get warmShadow') && themeSrc90.includes('const Color(0xFF7A5C14)'));
+    ok('X90 the palette carries the warm shadow base (Warm Sand gold-brown #8A6D1F, owner spec in .91)',
+      themeSrc90.includes('Color get warmShadow') && themeSrc90.includes('const Color(0xFF8A6D1F)'));
     ok('X90 the warm shadow base is a warm hue (R > G > B — gold family, never neutral black)',
-      0x7A > 0x5C && 0x5C > 0x14);
+      0x8A > 0x6D && 0x6D > 0x1F);
     ok('X90 AppTheme exposes warmShadow', themeSrc90.includes('static Color get warmShadow'));
     ok('X90 the section-container light shadow is warm-built (the black-faded glow source, fixed)',
       tactileSrc90.includes('AppTheme.warmShadow.withValues(alpha: _isHovered ? 0.30 : 0.22)'));
@@ -7573,6 +7614,58 @@ async function main() {
       read90('lib/widgets/video_settings_bar.dart').includes('AppTheme.warmShadow.withValues(alpha: 0.38)'));
     ok('X90 hover GLOWS stay gold (the glow colour token is the gold accent)',
       themeSrc90.includes('Color get glowPrimary => accentGold'));
+  }
+
+  // ---------------------------------------------------------------------------
+  // X91 (v2.48.91) — the owner's own "Warm Sand" spec, applied
+  // 1:1. He designed the light theme on the Theme Designer
+  // page and pasted the final spec into chat (2026-11-10):
+  // bgBody #E7DCC8, surface #FFFDF6, panelBottom #F7EFDC,
+  // inputBg #EFE6D2, border #C4B28C, borderSoft #D3C49E,
+  // textMain #211806, textDim #453A20, textFaint #5C4E2E,
+  // accentGold #B45309, accentText #92400E, buttonBg #E3D5B5,
+  // warmShadow #8A6D1F, green #14532D, red #B91C1C. No value
+  // adjusted. Tokens the spec does not name keep their
+  // established relationships (see the X90 header note).
+  // This block is the auditable 1:1 checklist; the X87/X89/X90
+  // pins carry the same values in their historical homes.
+  // ---------------------------------------------------------------------------
+  {
+    const fsx91 = require('fs');
+    const pathx91 = require('path');
+    const read91 = (rel) => fsx91.readFileSync(pathx91.join(__dirname, '..', rel), 'utf8');
+
+    const themeSrc91 = read91('lib/theme/app_theme.dart');
+    const whiteStart91 = themeSrc91.indexOf('static const AppPalette _whiteLight');
+    const white91 = themeSrc91.slice(whiteStart91, themeSrc91.indexOf('\n  );', whiteStart91));
+
+    ok('X91 spec bgBody #E7DCC8 applied 1:1', white91.includes('bgBody: Color(0xFFE7DCC8)'));
+    ok('X91 spec surface #FFFDF6 applied 1:1 (surface + elevated + panelTop)', white91.includes('surface: Color(0xFFFFFDF6)') && white91.includes('surfaceElevated: Color(0xFFFFFDF6)') && white91.includes('panelTop: Color(0xFFFFFDF6)'));
+    ok('X91 spec panelBottom #F7EFDC applied 1:1', white91.includes('panelBottom: Color(0xFFF7EFDC)'));
+    ok('X91 spec inputBg #EFE6D2 applied 1:1', white91.includes('inputBg: Color(0xFFEFE6D2)'));
+    ok('X91 spec border #C4B28C applied 1:1', white91.includes('border: Color(0xFFC4B28C)'));
+    ok('X91 spec borderSoft #D3C49E applied 1:1', white91.includes('borderSoft: Color(0xFFD3C49E)'));
+    ok('X91 spec textMain #211806 applied 1:1', white91.includes('textMain: Color(0xFF211806)'));
+    ok('X91 spec textDim #453A20 applied 1:1', white91.includes('textDim: Color(0xFF453A20)'));
+    ok('X91 spec textFaint #5C4E2E applied 1:1', white91.includes('textFaint: Color(0xFF5C4E2E)'));
+    ok('X91 spec accentGold #B45309 applied 1:1', white91.includes('accentGold: Color(0xFFB45309)'));
+    ok('X91 spec accentText #92400E applied 1:1', white91.includes('accentText: Color(0xFF92400E)'));
+    ok('X91 spec buttonBg #E3D5B5 applied 1:1', themeSrc91.includes('dark ? overlay10 : const Color(0xFFE3D5B5)'));
+    ok('X91 spec warmShadow #8A6D1F applied 1:1', themeSrc91.includes('dark ? const Color(0xFF000000) : const Color(0xFF8A6D1F)'));
+    ok('X91 spec green #14532D applied 1:1', themeSrc91.includes('dark ? const Color(0xFF30D158) : const Color(0xFF14532D)'));
+    ok('X91 spec red #B91C1C applied 1:1', themeSrc91.includes('dark ? const Color(0xFFFF453A) : const Color(0xFFB91C1C)'));
+    // Derived (not in the spec — relationships preserved):
+    ok('X91 derived bg2 #DCCFB3 (bgBody by the .90 delta -11/-13/-21)', white91.includes('bg2: Color(0xFFDCCFB3)'));
+    ok('X91 derived accentAmber #D97706 (one amber step lighter than accentGold)', white91.includes('accentAmber: Color(0xFFD97706)'));
+    ok('X91 derived gradient stops follow the accents (gradStart = accentAmber, gradEnd = accentGold)',
+      white91.includes('gradStart: Color(0xFFD97706)') && white91.includes('gradEnd: Color(0xFFB45309)'));
+    ok('X91 derived followers hold (activeGold = accentText, blue = accentGold, glow = accentGold)',
+      themeSrc91.includes('dark ? const Color(0xFFF5B301) : const Color(0xFF92400E)') &&
+      themeSrc91.includes('dark ? const Color(0xFF64D2FF) : const Color(0xFFB45309)') &&
+      themeSrc91.includes('Color get glowPrimary => accentGold'));
+    ok('X91 derived bevels follow the spec borders (bevelPrimary = border, bevelSecondary = borderSoft)',
+      themeSrc91.includes('Color get bevelPrimary => dark ? const Color(0xFF0A0E17) : border;') &&
+      themeSrc91.includes('Color get bevelSecondary => dark ? const Color(0xFF060910) : borderSoft;'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

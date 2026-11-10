@@ -710,18 +710,22 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // v2.48.90: #92400E measures ~6.9:1 on the warm cream card,
   // so the light amber deepens one more step to #854008
   // (~7.5:1) — the same value as the palette's accentText.
+  // v2.48.91: the owner's "Warm Sand" spec sets accentText to
+  // #92400E, so the light amber returns to #92400E — again the
+  // same value as the palette's accentText (~7.0:1 on the Warm
+  // Sand card #FFFDF6).
   (String, Color) _statusChip(GoogleAccount acc) {
     if (acc.status == AccountStatus.checking) {
-      return ('CHECKING', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008));
+      return ('CHECKING', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
     }
     // v2.29.0: "Need Login" is an amber LOGIN chip, not red FAIL.
     if (acc.status == AccountStatus.loginRequired) {
-      return ('LOGIN', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008));
+      return ('LOGIN', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
     }
     // v2.46.0: credits khatam/kam FAIL nahi hai — apne lafz, apne
     // rang (grey / amber). FAIL sirf asal problem ke liye bacha.
     if (_isNoCredits(acc)) return ('NO CREDITS', AppTheme.textDim);
-    if (_isLowCredits(acc)) return ('LOW CREDITS', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008));
+    if (_isLowCredits(acc)) return ('LOW CREDITS', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
     if (_isLiveAcc(acc)) return ('LIVE', AppTheme.green);
     return ('FAIL', AppTheme.red);
   }
@@ -734,7 +738,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // in flight reads "Checking" from the account state itself.
   (String, Color) _statusWord(GoogleAccount acc) {
     if (acc.status == AccountStatus.checking) {
-      return ('Checking', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008));
+      return ('Checking', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
     }
     if (acc.pendingCheck) {
       return ('Waiting', AppTheme.textFaint);
@@ -747,7 +751,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     // v2.46.0: credits wali haalat apne lafz se — Fail sirf asal
     // problem (cookie/login/error) ke liye.
     if (_isNoCredits(acc)) return ('No Credits', AppTheme.textDim);
-    if (_isLowCredits(acc)) return ('Low Credits', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF854008));
+    if (_isLowCredits(acc)) return ('Low Credits', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
     if (_isLiveAcc(acc)) return ('Live', AppTheme.green);
     return ('Fail', AppTheme.red);
   }

@@ -106,6 +106,7 @@ class _TactileButtonState extends State<TactileButton> {
         // owner's .88 screenshot (Bulk/Agent Prompt, Simple/Details).
         // v2.48.90: the light fill is now the ONE uniform button
         // face (buttonBg, warm tan #D8CFB4) — see AppPalette.
+        // v2.48.91: buttonBg is the owner's Warm Sand #E3D5B5.
         bgColor = widget.isActive
             ? AppTheme.accentGold
             : (_isHovered ? AppTheme.accentGold.withValues(alpha: 0.16) : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg));
@@ -158,7 +159,8 @@ class _TactileButtonState extends State<TactileButton> {
         // v2.48.88: the light fill is the palette inputBg token
         // (#E2E8F0 in the white theme), not a hard-coded slab.
         // v2.48.90: the light fill is the uniform buttonBg token
-        // (warm tan #D8CFB4 in the cream theme).
+        // (warm tan #D8CFB4 in the cream theme; #E3D5B5 in the
+        // owner's Warm Sand spec since v2.48.91).
         bgColor = _isHovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay10 : AppTheme.buttonBg);
         borderColor = _isHovered ? AppTheme.border : AppTheme.borderSoft;
         bevelColor = AppTheme.bevelSecondary;

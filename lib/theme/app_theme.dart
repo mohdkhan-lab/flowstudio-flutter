@@ -112,8 +112,12 @@ class AppPalette {
   // v2.48.90: on the owner's WARM CREAM card (#FFFCF2) #92400E
   // measures only ~6.9:1, so the light value deepens one more
   // step to #854008 (~7.5:1 on the cream card). Dark identical.
+  // v2.48.91: the light value follows accentText to the owner's
+  // own "Warm Sand" spec value #92400E (the .89/.90 relationship
+  // activeGold == accentText on light is preserved; ~7.0:1 on
+  // the Warm Sand card #FFFDF6). Dark identical.
   Color get activeGold =>
-      dark ? const Color(0xFFF5B301) : const Color(0xFF854008);
+      dark ? const Color(0xFFF5B301) : const Color(0xFF92400E);
 
   // Status colours — mac greens/reds, FIXED across all themes.
   // v2.48.89: the LIGHT branches deepen to clearly-readable text
@@ -133,7 +137,10 @@ class AppPalette {
   // the single white theme carries no blue anywhere (the token
   // feeds info/running accents in Progress + Notifications +
   // card hovers). Dark keeps its sky blue, byte-identical.
-  Color get blue => dark ? const Color(0xFF64D2FF) : const Color(0xFFD97706);
+  // v2.48.91: the light value follows accentGold to the Warm
+  // Sand spec's #B45309 (the .88 relationship blue == accentGold
+  // on light is preserved).
+  Color get blue => dark ? const Color(0xFF64D2FF) : const Color(0xFFB45309);
 
   // Subtle inner overlays (white-alpha on dark palettes, black-alpha on
   // light palettes — same values the app has always used per mode).
@@ -156,7 +163,9 @@ class AppPalette {
   // button reads dark-filled on one surface and light on
   // another. Only ever read on light branches — the dark value
   // simply mirrors the overlay fill dark buttons already use.
-  Color get buttonBg => dark ? overlay10 : const Color(0xFFD8CFB4);
+  // v2.48.91: the light face is the owner's "Warm Sand" spec
+  // value #E3D5B5 (his own design, applied 1:1).
+  Color get buttonBg => dark ? overlay10 : const Color(0xFFE3D5B5);
 
   // v2.48.90 (owner: when the UI glows it turns "black faded"):
   // the warm shadow base for light mode — a deep warm
@@ -165,8 +174,10 @@ class AppPalette {
   // black, so glows and shadows read as a soft warm tint on
   // the cream surfaces. Only read on light branches; the dark
   // value is plain black, exactly what dark shadows already use.
+  // v2.48.91: the light base is the owner's "Warm Sand" spec
+  // value #8A6D1F (applied 1:1).
   Color get warmShadow =>
-      dark ? const Color(0xFF000000) : const Color(0xFF7A5C14);
+      dark ? const Color(0xFF000000) : const Color(0xFF8A6D1F);
 
   LinearGradient get accentGrad => LinearGradient(
         colors: [gradStart, gradEnd],
@@ -313,18 +324,40 @@ class AppTheme {
   // textDim #3E3420 (~11.9:1), textFaint #4F422A (~9.5:1 on
   // the card, ~7.6:1 even on input fills — still the floor),
   // accentText #854008 (~7.5:1). Still ONE single light theme.
+  // v2.48.91 (2026-11-10, owner's own design): the owner built
+  // his light theme on the Theme Designer page and pasted his
+  // final spec — "Warm Sand" — applied here EXACTLY 1:1, no
+  // value adjusted: bgBody #E7DCC8, surface #FFFDF6,
+  // panelBottom #F7EFDC, inputBg #EFE6D2, border #C4B28C,
+  // borderSoft #D3C49E (the spec splits the two border roles —
+  // the strong-border discipline is kept via the border role),
+  // textMain #211806, textDim #453A20, textFaint #5C4E2E,
+  // accentGold #B45309, accentText #92400E. Tokens the spec
+  // does not name follow their established relationships:
+  // surfaceElevated = panelTop = surface, bg2 = bgBody shifted
+  // by the .90 bgBody->bg2 delta (-11,-13,-21) = #DCCFB3,
+  // accentAmber = one step lighter on the amber ladder
+  // (#D97706, as .90's #F59E0B sat above its #D97706),
+  // gradStart = accentAmber, gradEnd = accentGold, and the
+  // mode-branched getters follow (activeGold = accentText,
+  // blue = accentGold, glowPrimary = accentGold, bevels =
+  // border/borderSoft, buttonBg #E3D5B5 and warmShadow
+  // #8A6D1F from the spec). Contrast on the Warm Sand card
+  // #FFFDF6 (computed): textMain ~17.2:1, textDim ~11.0:1,
+  // textFaint ~8.0:1, accentText ~7.0:1, green ~9.0:1,
+  // red ~6.4:1. Still ONE single light theme.
   static const AppPalette _whiteLight = AppPalette(
     id: 'white', dark: false,
-    bgBody: Color(0xFFE9DCB8), bg2: Color(0xFFDECFA3),
-    surface: Color(0xFFFFFCF2), surfaceElevated: Color(0xFFFFFCF2),
-    inputBg: Color(0xFFE9E2CC),
-    border: Color(0xFFC9BB96), borderSoft: Color(0xFFC9BB96),
-    accentGold: Color(0xFFD97706), accentAmber: Color(0xFFF59E0B),
-    accentText: Color(0xFF854008),
-    textMain: Color(0xFF1A1408), textDim: Color(0xFF3E3420),
-    textFaint: Color(0xFF4F422A),
-    gradStart: Color(0xFFF59E0B), gradEnd: Color(0xFFD97706),
-    panelTop: Color(0xFFFFFCF2), panelBottom: Color(0xFFFAF2DB),
+    bgBody: Color(0xFFE7DCC8), bg2: Color(0xFFDCCFB3),
+    surface: Color(0xFFFFFDF6), surfaceElevated: Color(0xFFFFFDF6),
+    inputBg: Color(0xFFEFE6D2),
+    border: Color(0xFFC4B28C), borderSoft: Color(0xFFD3C49E),
+    accentGold: Color(0xFFB45309), accentAmber: Color(0xFFD97706),
+    accentText: Color(0xFF92400E),
+    textMain: Color(0xFF211806), textDim: Color(0xFF453A20),
+    textFaint: Color(0xFF5C4E2E),
+    gradStart: Color(0xFFD97706), gradEnd: Color(0xFFB45309),
+    panelTop: Color(0xFFFFFDF6), panelBottom: Color(0xFFF7EFDC),
   );
 
   static const Map<String, AppPalette> _darkPalettes = {

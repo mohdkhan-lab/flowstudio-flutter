@@ -44,6 +44,20 @@ import 'package:google_fonts/google_fonts.dart';
 /// to the gold accent in light mode (owner: no blue in the
 /// white theme); dark keeps its #64D2FF.
 ///
+/// v2.48.92 (owner, 2026-11-12): TWO changes. (1) The default
+/// DARK palette ('gold') is replaced by the owner's own
+/// "Warm Sand" dark spec from the Theme Designer page,
+/// applied 1:1 (see [_goldDark]); the other 12 dark palettes
+/// keep their values and the theme grid keeps all 13.
+/// (2) ARCHITECTURE: the tokens that were MODE-branched
+/// constant getters (buttonBg, warmShadow, green, red, blue,
+/// activeGold, bevelPrimary, bevelSecondary) are per-palette
+/// FIELDS now — the owner reported that buttons/elements
+/// stayed stuck when the template changed; every token now
+/// follows the active template. Non-default palettes carry
+/// their previous effective values, so their rendering is
+/// unchanged.
+///
 /// Every token below is still a getter on [AppTheme], so the 200+
 /// existing call sites keep working unchanged — they now delegate to
 /// the currently applied [AppPalette].
@@ -78,6 +92,22 @@ class AppPalette {
   final Color panelTop;
   final Color panelBottom;
 
+  // v2.48.92: template-following tokens. These used to be
+  // MODE-branched constant GETTERS (one value for every dark
+  // palette, one for light), so switching the colour template
+  // could never move them — the owner's exact complaint
+  // ("buttons/elements stay stuck when the template changes").
+  // They are per-palette FIELDS now: every palette carries its
+  // own values and every token follows the active template.
+  final Color buttonBg;
+  final Color warmShadow;
+  final Color green;
+  final Color red;
+  final Color blue;
+  final Color activeGold;
+  final Color bevelPrimary;
+  final Color bevelSecondary;
+
   const AppPalette({
     required this.id,
     required this.dark,
@@ -98,49 +128,38 @@ class AppPalette {
     required this.gradEnd,
     required this.panelTop,
     required this.panelBottom,
+    required this.buttonBg,
+    required this.warmShadow,
+    required this.green,
+    required this.red,
+    required this.blue,
+    required this.activeGold,
+    required this.bevelPrimary,
+    required this.bevelSecondary,
   });
 
   Color get onAccent => const Color(0xFFFFFFFF);
 
-  // v2.25.0 (parked browser): the gold of the "● ACTIVE" text and the
-  // active account row's border. FIXED across all themes — deeper gold
-  // on light palettes, brighter gold on dark palettes.
-  // v2.48.89 (owner: light-mode text still not crisp): the light
-  // value deepens one full step to amber-800 #92400E (~7.1:1 on
-  // white) — #CF8A04 measured only ~2.9:1 as small text. The dark
-  // value is byte-identical.
-  // v2.48.90: on the owner's WARM CREAM card (#FFFCF2) #92400E
-  // measures only ~6.9:1, so the light value deepens one more
-  // step to #854008 (~7.5:1 on the cream card). Dark identical.
-  // v2.48.91: the light value follows accentText to the owner's
-  // own "Warm Sand" spec value #92400E (the .89/.90 relationship
-  // activeGold == accentText on light is preserved; ~7.0:1 on
-  // the Warm Sand card #FFFDF6). Dark identical.
-  Color get activeGold =>
-      dark ? const Color(0xFFF5B301) : const Color(0xFF92400E);
-
-  // Status colours — mac greens/reds, FIXED across all themes.
-  // v2.48.89: the LIGHT branches deepen to clearly-readable text
-  // values on white (green-800 #166534 ~7.1:1, red-700 #B91C1C
-  // ~6.5:1; the old mac tints #34C759/#FF3B30 measured ~2.2:1 and
-  // ~3.5:1 as the small Live/Fail texts). The tint backgrounds
-  // follow their text colour. Dark branches byte-identical.
-  // v2.48.90: #166534 measures only ~6.9:1 on the cream card, so
-  // the light green deepens to green-900 #14532D (~8.9:1); the
-  // tint background follows. Red holds at #B91C1C (~6.3:1).
-  Color get green => dark ? const Color(0xFF30D158) : const Color(0xFF14532D);
-  Color get greenBg =>
-      dark ? const Color(0x1F30D158) : const Color(0x1F14532D);
-  Color get red => dark ? const Color(0xFFFF453A) : const Color(0xFFB91C1C);
-  Color get redBg => dark ? const Color(0x1FFF453A) : const Color(0x1FB91C1C);
-  // v2.48.88: in light mode this is the GOLD accent, not a blue —
-  // the single white theme carries no blue anywhere (the token
-  // feeds info/running accents in Progress + Notifications +
-  // card hovers). Dark keeps its sky blue, byte-identical.
-  // v2.48.91: the light value follows accentGold to the Warm
-  // Sand spec's #B45309 (the .88 relationship blue == accentGold
-  // on light is preserved).
-  Color get blue => dark ? const Color(0xFF64D2FF) : const Color(0xFFB45309);
+  // v2.48.92 (owner: buttons and elements must change WITH
+  // the template): activeGold, green, red, blue,
+  // bevelPrimary, bevelSecondary, buttonBg and warmShadow
+  // were MODE-branched constant getters until now — one
+  // value shared by every dark palette, one for light — so
+  // a template switch could never move them (in light the
+  // buttons even kept a face decided by the mode alone).
+  // They are per-palette FIELDS now (see the field note on
+  // the class): the 12 non-default dark palettes and the
+  // light palette carry field values equal to their previous
+  // effective getter values, so their rendering is
+  // byte-for-byte unchanged; only the default 'gold' dark
+  // palette takes new values — the owner's Warm Sand dark
+  // spec (see _goldDark). The historical value notes from
+  // .86-.91 live in the X87-X92 test blocks.
+  // Status tint backgrounds stay derived from the palette's
+  // own green/red at the alpha the app has always used
+  // (0x1F) — they follow the template through the fields.
+  Color get greenBg => green.withAlpha(0x1F);
+  Color get redBg => red.withAlpha(0x1F);
 
   // Subtle inner overlays (white-alpha on dark palettes, black-alpha on
   // light palettes — same values the app has always used per mode).
@@ -151,33 +170,9 @@ class AppPalette {
   Color get overlay20 =>
       dark ? const Color(0x20FFFFFF) : const Color(0x1F000000);
 
-  // 3D tactile elevation and bevel shadow tokens (theme-adaptive)
-  Color get bevelPrimary => dark ? const Color(0xFF0A0E17) : border;
-  Color get bevelSecondary => dark ? const Color(0xFF060910) : borderSoft;
+  // 3D tactile highlight tokens (theme-adaptive)
   Color get borderHighlight => accentGold.withValues(alpha: dark ? 0.45 : 0.35);
   Color get glowPrimary => accentGold;
-
-  // v2.48.90 (owner's warm-cream sample — "asa color karo"): the
-  // ONE uniform light-mode button face, a warm tan #D8CFB4.
-  // Every button's light branch rests on this token, so no
-  // button reads dark-filled on one surface and light on
-  // another. Only ever read on light branches — the dark value
-  // simply mirrors the overlay fill dark buttons already use.
-  // v2.48.91: the light face is the owner's "Warm Sand" spec
-  // value #E3D5B5 (his own design, applied 1:1).
-  Color get buttonBg => dark ? overlay10 : const Color(0xFFE3D5B5);
-
-  // v2.48.90 (owner: when the UI glows it turns "black faded"):
-  // the warm shadow base for light mode — a deep warm
-  // gold-brown #7A5C14. Every light-mode shadow is built from
-  // this colour (or from the gold accent itself), never from
-  // black, so glows and shadows read as a soft warm tint on
-  // the cream surfaces. Only read on light branches; the dark
-  // value is plain black, exactly what dark shadows already use.
-  // v2.48.91: the light base is the owner's "Warm Sand" spec
-  // value #8A6D1F (applied 1:1).
-  Color get warmShadow =>
-      dark ? const Color(0xFF000000) : const Color(0xFF8A6D1F);
 
   LinearGradient get accentGrad => LinearGradient(
         colors: [gradStart, gradEnd],
@@ -271,18 +266,44 @@ class AppTheme {
   // (the sample's "dim" is today's textFaint).
   // ------------------------------------------------------------------
 
+  // v2.48.92 (2026-11-12, owner's own design): the owner built
+  // his DARK theme on the Theme Designer page too and pasted
+  // the spec — "Warm Sand" dark — applied here EXACTLY 1:1 to
+  // the default 'gold' palette, replacing its old values:
+  // bgBody #211A10, surface #2C2416, panelBottom #241C10,
+  // inputBg #1C160C, border #6A5A38, borderSoft #50432C,
+  // textMain #FAF1DA, textDim #DCCBA2, textFaint #AF9D74,
+  // accentGold #F0A832, accentText #F5BC55, green #4ADE80,
+  // red #F87171, buttonBg #3A2F1E, warmShadow #000000 (the
+  // green/red/buttonBg/warmShadow values ride in the palette's
+  // token fields below — see the v2.48.92 field note on
+  // AppPalette). Tokens the spec does not name follow the
+  // light palette's relationships: surfaceElevated = panelTop
+  // = surface; bg2 = bgBody stepped down by the SAME
+  // per-channel ratios as the light bgBody->bg2 step
+  // (x0.9524 / x0.9409 / x0.8950) = #1F180E; accentAmber =
+  // accentGold; gradStart = accentGold lightened (25% toward
+  // white) = #F4BE65, gradEnd = accentGold; blue = accentGold;
+  // activeGold = accentText; bevels = border / borderSoft.
+  // Contrast on the dark surface #2C2416 (computed): textMain
+  // 13.6:1, textDim 9.6:1, textFaint 5.8:1 — the owner's
+  // hexes are NOT adjusted to fit any floor.
   static const AppPalette _goldDark = AppPalette(
     id: 'gold', dark: true,
-    bgBody: Color(0xFF080604), bg2: Color(0xFF140F0A),
-    surface: Color(0xFF18120B), surfaceElevated: Color(0xFF231C14),
-    inputBg: Color(0xFF060402),
-    border: Color(0xFFD4AF37), borderSoft: Color(0x3DFBBF24),
-    accentGold: Color(0xFFF59E0B), accentAmber: Color(0xFFFBBF24),
-    accentText: Color(0xFFFEF3C7),
-    textMain: Color(0xFFFEF3C7), textDim: Color(0xFFD4AF37),
-    textFaint: Color(0xFFA3907C),
-    gradStart: Color(0xFFFBBF24), gradEnd: Color(0xFFB45309),
-    panelTop: Color(0xFF231C14), panelBottom: Color(0xFF0E0A06),
+    bgBody: Color(0xFF211A10), bg2: Color(0xFF1F180E),
+    surface: Color(0xFF2C2416), surfaceElevated: Color(0xFF2C2416),
+    inputBg: Color(0xFF1C160C),
+    border: Color(0xFF6A5A38), borderSoft: Color(0xFF50432C),
+    accentGold: Color(0xFFF0A832), accentAmber: Color(0xFFF0A832),
+    accentText: Color(0xFFF5BC55),
+    textMain: Color(0xFFFAF1DA), textDim: Color(0xFFDCCBA2),
+    textFaint: Color(0xFFAF9D74),
+    gradStart: Color(0xFFF4BE65), gradEnd: Color(0xFFF0A832),
+    panelTop: Color(0xFF2C2416), panelBottom: Color(0xFF241C10),
+    buttonBg: Color(0xFF3A2F1E), warmShadow: Color(0xFF000000),
+    green: Color(0xFF4ADE80), red: Color(0xFFF87171),
+    blue: Color(0xFFF0A832), activeGold: Color(0xFFF5BC55),
+    bevelPrimary: Color(0xFF6A5A38), bevelSecondary: Color(0xFF50432C),
   );
 
   static const AppPalette _macosDark = AppPalette(
@@ -297,6 +318,10 @@ class AppTheme {
     textFaint: Color(0xFFA1A1A6),
     gradStart: Color(0xFF3A98FF), gradEnd: Color(0xFF0066D6),
     panelTop: Color(0xFF222734), panelBottom: Color(0xFF141720),
+    buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+    green: Color(0xFF30D158), red: Color(0xFFFF453A),
+    blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+    bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
   );
 
   // v2.48.88: THE one and only light palette — the owner-approved
@@ -358,6 +383,10 @@ class AppTheme {
     textFaint: Color(0xFF5C4E2E),
     gradStart: Color(0xFFD97706), gradEnd: Color(0xFFB45309),
     panelTop: Color(0xFFFFFDF6), panelBottom: Color(0xFFF7EFDC),
+    buttonBg: Color(0xFFE3D5B5), warmShadow: Color(0xFF8A6D1F),
+    green: Color(0xFF14532D), red: Color(0xFFB91C1C),
+    blue: Color(0xFFB45309), activeGold: Color(0xFF92400E),
+    bevelPrimary: Color(0xFFC4B28C), bevelSecondary: Color(0xFFD3C49E),
   );
 
   static const Map<String, AppPalette> _darkPalettes = {
@@ -375,6 +404,10 @@ class AppTheme {
       textFaint: Color(0xFF7189A5),
       gradStart: Color(0xFF1A94FF), gradEnd: Color(0xFF0066D6),
       panelTop: Color(0xFF1E3554), panelBottom: Color(0xFF16283F),
+      buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+      green: Color(0xFF30D158), red: Color(0xFFFF453A),
+      blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+      bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
     ),
     'graphite': AppPalette(
       id: 'graphite', dark: true,
@@ -388,6 +421,10 @@ class AppTheme {
       textFaint: Color(0xFF7C7C81),
       gradStart: Color(0xFF1A94FF), gradEnd: Color(0xFF0066D6),
       panelTop: Color(0xFF2A2A2D), panelBottom: Color(0xFF1E1E20),
+      buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+      green: Color(0xFF30D158), red: Color(0xFFFF453A),
+      blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+      bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
     ),
     'emerald': AppPalette(
       id: 'emerald', dark: true,
@@ -401,6 +438,10 @@ class AppTheme {
       textFaint: Color(0xFF749C86),
       gradStart: Color(0xFF4ADE80), gradEnd: Color(0xFF0E9F5A),
       panelTop: Color(0xFF1C4534), panelBottom: Color(0xFF143327),
+      buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+      green: Color(0xFF30D158), red: Color(0xFFFF453A),
+      blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+      bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
     ),
     'purple': AppPalette(
       id: 'purple', dark: true,
@@ -414,6 +455,10 @@ class AppTheme {
       textFaint: Color(0xFF8C82AB),
       gradStart: Color(0xFFD18CFF), gradEnd: Color(0xFF7D3FE0),
       panelTop: Color(0xFF372B5E), panelBottom: Color(0xFF2A2149),
+      buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+      green: Color(0xFF30D158), red: Color(0xFFFF453A),
+      blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+      bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
     ),
     'slate': AppPalette(
       id: 'slate', dark: true,
@@ -427,6 +472,10 @@ class AppTheme {
       textFaint: Color(0xFF87919E),
       gradStart: Color(0xFF8AD9FF), gradEnd: Color(0xFF0B7AC0),
       panelTop: Color(0xFF3B414C), panelBottom: Color(0xFF2E333C),
+      buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+      green: Color(0xFF30D158), red: Color(0xFFFF453A),
+      blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+      bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
     ),
     'sunset': AppPalette(
       id: 'sunset', dark: true,
@@ -440,6 +489,10 @@ class AppTheme {
       textFaint: Color(0xFFA07C5C),
       gradStart: Color(0xFFFFB25E), gradEnd: Color(0xFFE85D1F),
       panelTop: Color(0xFF4F2E1D), panelBottom: Color(0xFF3D2317),
+      buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+      green: Color(0xFF30D158), red: Color(0xFFFF453A),
+      blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+      bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
     ),
     'teal': AppPalette(
       id: 'teal', dark: true,
@@ -453,6 +506,10 @@ class AppTheme {
       textFaint: Color(0xFF74979B),
       gradStart: Color(0xFF5EEAD4), gradEnd: Color(0xFF0B9484),
       panelTop: Color(0xFF14484F), panelBottom: Color(0xFF0D3A40),
+      buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+      green: Color(0xFF30D158), red: Color(0xFFFF453A),
+      blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+      bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
     ),
     'rose': AppPalette(
       id: 'rose', dark: true,
@@ -466,6 +523,10 @@ class AppTheme {
       textFaint: Color(0xFFA67A89),
       gradStart: Color(0xFFFF8FA8), gradEnd: Color(0xFFDE2A55),
       panelTop: Color(0xFF4C2439), panelBottom: Color(0xFF3B1B2D),
+      buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+      green: Color(0xFF30D158), red: Color(0xFFFF453A),
+      blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+      bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
     ),
     // v2.39.0 (owner-approved samples, fs-design-v2/build_new_themes.py):
     // bgBody = sample bg, surface = sample surf, inputBg/bg2 = sample
@@ -484,6 +545,10 @@ class AppTheme {
       textFaint: Color(0xFF9A858D),
       gradStart: Color(0xFFF4737A), gradEnd: Color(0xFFC22430),
       panelTop: Color(0xFF45363D), panelBottom: Color(0xFF372A2F),
+      buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+      green: Color(0xFF30D158), red: Color(0xFFFF453A),
+      blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+      bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
     ),
     'matte': AppPalette(
       id: 'matte', dark: true,
@@ -497,6 +562,10 @@ class AppTheme {
       textFaint: Color(0xFF868686),
       gradStart: Color(0xFFB9BEC4), gradEnd: Color(0xFF62666C),
       panelTop: Color(0xFF404040), panelBottom: Color(0xFF333333),
+      buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+      green: Color(0xFF30D158), red: Color(0xFFFF453A),
+      blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+      bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
     ),
     'ember': AppPalette(
       id: 'ember', dark: true,
@@ -510,6 +579,10 @@ class AppTheme {
       textFaint: Color(0xFFA08C6E),
       gradStart: Color(0xFFFFAB5E), gradEnd: Color(0xFFD95D16),
       panelTop: Color(0xFF483723), panelBottom: Color(0xFF392B1D),
+      buttonBg: Color(0x10FFFFFF), warmShadow: Color(0xFF000000),
+      green: Color(0xFF30D158), red: Color(0xFFFF453A),
+      blue: Color(0xFF64D2FF), activeGold: Color(0xFFF5B301),
+      bevelPrimary: Color(0xFF0A0E17), bevelSecondary: Color(0xFF060910),
     ),
   };
 

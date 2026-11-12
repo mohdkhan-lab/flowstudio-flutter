@@ -7276,8 +7276,12 @@ async function main() {
     ok('X87 no light palette keeps the washed-out slate-400 faint', !themeSrc86.includes('textFaint: Color(0xFF94A3B8)'));
     ok('X87 the light card shadow is strengthened in the shared card decoration (warm-built since .90)',
       read86('lib/widgets/tactile_components.dart').includes('AppTheme.warmShadow.withValues(alpha: _isHovered ? 0.30 : 0.22)'));
-    ok('X86 the DARK gold palette is untouched by the light rework',
-      themeSrc86.includes('textDim: Color(0xFFD4AF37)') && themeSrc86.includes('borderSoft: Color(0x3DFBBF24)'));
+    // v2.48.92: the DARK GOLD palette itself is replaced by
+    // the owner's Warm Sand dark spec (see the X92 block), so
+    // this pin re-points at the macOS dark palette — untouched
+    // by the light rework AND by the .92 spec alike.
+    ok('X86 a DARK palette is untouched by the light rework (macOS dark; gold dark superseded by the owner spec in .92)',
+      themeSrc86.includes('textDim: Color(0xFFD1D1D6)') && themeSrc86.includes('borderSoft: Color(0xFF252A34)'));
     ok('X86 the By MK caption uses the text-tuned accent', read86('lib/widgets/top_strip.dart').includes('color: AppTheme.accentText'));
   }
 
@@ -7322,8 +7326,12 @@ async function main() {
       settingsSrc88.includes("AppTheme.dark ? AppTheme.themeIds : const ['gold']"));
     ok('X88 the light picker card is labelled with the white theme name',
       settingsSrc88.includes('AppTheme.whiteThemeName'));
-    ok('X88 the light blue token IS the gold accent (dark keeps its sky blue; follows accentGold — Warm Sand #B45309 in .91)',
-      themeSrc88.includes('dark ? const Color(0xFF64D2FF) : const Color(0xFFB45309)'));
+    // v2.48.92: blue is a per-palette FIELD now (see X92) —
+    // the light palette's field IS its accentGold #B45309 and
+    // the non-default dark palettes keep their sky-blue field
+    // (gold dark's field follows its own accentGold, X92).
+    ok('X88 the light blue token IS the gold accent (dark keeps its sky blue; a palette FIELD since .92 — Warm Sand #B45309)',
+      themeSrc88.includes('blue: Color(0xFFB45309)') && themeSrc88.includes('blue: Color(0xFF64D2FF)'));
     ok('X88 a dark family accent survives byte-identical (macos dark blue)',
       themeSrc88.includes('accentGold: Color(0xFF0A84FF)'));
 
@@ -7429,21 +7437,35 @@ async function main() {
     // and red #B91C1C — identical to the .90 values, so those
     // two pins stand untouched; activeGold follows accentText
     // back to the spec's #92400E (the .89 value).
-    ok('X89 light green text is #14532D (dark keeps #30D158)',
-      themeSrc89.includes('dark ? const Color(0xFF30D158) : const Color(0xFF14532D)'));
+    // v2.48.92: green is a per-palette FIELD (see X92) — the
+    // light field is #14532D, the non-default dark palettes
+    // keep #30D158, gold dark takes the spec's #4ADE80.
+    ok('X89 light green text is #14532D (a palette FIELD since .92; non-default dark keeps #30D158)',
+      white89.includes('green: Color(0xFF14532D)') && themeSrc89.includes('green: Color(0xFF30D158)'));
     ok('X89 light green contrast vs white >= 7:1', contrast89('14532D') >= 7);
-    ok('X89 light red text is #B91C1C (dark keeps #FF453A)',
-      themeSrc89.includes('dark ? const Color(0xFFFF453A) : const Color(0xFFB91C1C)'));
+    // v2.48.92: red is a per-palette FIELD (see X92) — the
+    // light field is #B91C1C, the non-default dark palettes
+    // keep #FF453A, gold dark takes the spec's #F87171.
+    ok('X89 light red text is #B91C1C (a palette FIELD since .92; non-default dark keeps #FF453A)',
+      white89.includes('red: Color(0xFFB91C1C)') && themeSrc89.includes('red: Color(0xFFFF453A)'));
     ok('X89 light red contrast vs white >= 6:1', contrast89('B91C1C') >= 6);
-    ok('X89 light activeGold is #92400E (dark keeps #F5B301; follows accentText, Warm Sand in .91)',
-      themeSrc89.includes('dark ? const Color(0xFFF5B301) : const Color(0xFF92400E)'));
+    // v2.48.92: activeGold is a per-palette FIELD (see X92) —
+    // the light field is #92400E (== accentText), the
+    // non-default dark palettes keep #F5B301, gold dark takes
+    // its accentText #F5BC55.
+    ok('X89 light activeGold is #92400E (a palette FIELD since .92; non-default dark keeps #F5B301)',
+      white89.includes('activeGold: Color(0xFF92400E)') && themeSrc89.includes('activeGold: Color(0xFFF5B301)'));
     const sidebarSrc89 = read89('lib/widgets/sidebar_accounts.dart');
-    ok('X89 sidebar status ambers are bright on dark only, #92400E in light (follow accentText, Warm Sand in .91)',
-      count89(sidebarSrc89, 'AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E)') === 5);
+    // v2.48.92: the five status sites read the palette's
+    // activeGold token directly — the frozen dark/light
+    // literal pair is gone, so the words follow the template.
+    ok('X89 sidebar status ambers follow the palette activeGold token (frozen literal pair removed in .92)',
+      count89(sidebarSrc89, ', AppTheme.activeGold)') === 5 &&
+      !sidebarSrc89.includes('AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E)'));
     ok('X89 the Login status word is deep orange #9A3412 in light',
       sidebarSrc89.includes('AppTheme.dark ? const Color(0xFFFF9F0A) : const Color(0xFF9A3412)'));
-    ok('X89 the filter-tab idle accent is ACTIVE gold in light (no bright #F5B301 text)',
-      sidebarSrc89.includes('AppTheme.dark ? const Color(0xFFF5B301) : AppTheme.activeGold'));
+    ok('X89 the filter-tab idle accent is the palette ACTIVE gold token in both modes (frozen #F5B301 branch removed in .92)',
+      sidebarSrc89.includes('isCheckingNow ? (AppTheme.dark ? const Color(0xFF38BDF8) : AppTheme.activeGold) : AppTheme.activeGold'));
     ok('X89 the credits sub-line reads at textDim in light (textFaint on dark)',
       sidebarSrc89.includes('AppTheme.dark ? AppTheme.textFaint : AppTheme.textDim'));
     ok('X89 the dim red sidebar label wears the full red token in light',
@@ -7571,8 +7593,10 @@ async function main() {
     ok('X90 red vs Warm Sand card >= 6:1', onCard90('B91C1C') >= 6);
 
     // --- Item 2: one uniform button face ---
-    ok('X90 the palette carries the uniform button face token (Warm Sand tan #E3D5B5, owner spec in .91)',
-      themeSrc90.includes('Color get buttonBg') && themeSrc90.includes('const Color(0xFFE3D5B5)'));
+    // v2.48.92: buttonBg is a per-palette FIELD (see X92);
+    // the light palette's field is the Warm Sand spec value.
+    ok('X90 the palette carries the uniform button face token (Warm Sand tan #E3D5B5, owner spec in .91; a FIELD since .92)',
+      themeSrc90.includes('Color get buttonBg') && white90.includes('buttonBg: Color(0xFFE3D5B5)'));
     ok('X90 AppTheme exposes buttonBg', themeSrc90.includes('static Color get buttonBg'));
     const tactileSrc90 = read90('lib/widgets/tactile_components.dart');
     ok('X90 every tactile button family rests on buttonBg in light (7 sites: 5 overlay10 + pill + danger)',
@@ -7586,8 +7610,10 @@ async function main() {
       tactileSrc90.includes('gradient = isInteractive ? AppTheme.accentGrad : null;'));
 
     // --- Item 3: the warm glow/shadow root fix ---
-    ok('X90 the palette carries the warm shadow base (Warm Sand gold-brown #8A6D1F, owner spec in .91)',
-      themeSrc90.includes('Color get warmShadow') && themeSrc90.includes('const Color(0xFF8A6D1F)'));
+    // v2.48.92: warmShadow is a per-palette FIELD (see X92);
+    // the light palette's field is the Warm Sand spec value.
+    ok('X90 the palette carries the warm shadow base (Warm Sand gold-brown #8A6D1F, owner spec in .91; a FIELD since .92)',
+      themeSrc90.includes('Color get warmShadow') && white90.includes('warmShadow: Color(0xFF8A6D1F)'));
     ok('X90 the warm shadow base is a warm hue (R > G > B — gold family, never neutral black)',
       0x8A > 0x6D && 0x6D > 0x1F);
     ok('X90 AppTheme exposes warmShadow', themeSrc90.includes('static Color get warmShadow'));
@@ -7650,22 +7676,184 @@ async function main() {
     ok('X91 spec textFaint #5C4E2E applied 1:1', white91.includes('textFaint: Color(0xFF5C4E2E)'));
     ok('X91 spec accentGold #B45309 applied 1:1', white91.includes('accentGold: Color(0xFFB45309)'));
     ok('X91 spec accentText #92400E applied 1:1', white91.includes('accentText: Color(0xFF92400E)'));
-    ok('X91 spec buttonBg #E3D5B5 applied 1:1', themeSrc91.includes('dark ? overlay10 : const Color(0xFFE3D5B5)'));
-    ok('X91 spec warmShadow #8A6D1F applied 1:1', themeSrc91.includes('dark ? const Color(0xFF000000) : const Color(0xFF8A6D1F)'));
-    ok('X91 spec green #14532D applied 1:1', themeSrc91.includes('dark ? const Color(0xFF30D158) : const Color(0xFF14532D)'));
-    ok('X91 spec red #B91C1C applied 1:1', themeSrc91.includes('dark ? const Color(0xFFFF453A) : const Color(0xFFB91C1C)'));
+    // v2.48.92: these four tokens are per-palette FIELDS now
+    // (see X92) — the light palette's fields carry the spec
+    // values; the dark-side values of the old mode-branched
+    // getters ride as the non-default dark palettes' fields.
+    ok('X91 spec buttonBg #E3D5B5 applied 1:1 (light palette FIELD since .92)', white91.includes('buttonBg: Color(0xFFE3D5B5)'));
+    ok('X91 spec warmShadow #8A6D1F applied 1:1 (light palette FIELD since .92)', white91.includes('warmShadow: Color(0xFF8A6D1F)') && themeSrc91.includes('warmShadow: Color(0xFF000000)'));
+    ok('X91 spec green #14532D applied 1:1 (light palette FIELD since .92)', white91.includes('green: Color(0xFF14532D)') && themeSrc91.includes('green: Color(0xFF30D158)'));
+    ok('X91 spec red #B91C1C applied 1:1 (light palette FIELD since .92)', white91.includes('red: Color(0xFFB91C1C)') && themeSrc91.includes('red: Color(0xFFFF453A)'));
     // Derived (not in the spec — relationships preserved):
     ok('X91 derived bg2 #DCCFB3 (bgBody by the .90 delta -11/-13/-21)', white91.includes('bg2: Color(0xFFDCCFB3)'));
     ok('X91 derived accentAmber #D97706 (one amber step lighter than accentGold)', white91.includes('accentAmber: Color(0xFFD97706)'));
     ok('X91 derived gradient stops follow the accents (gradStart = accentAmber, gradEnd = accentGold)',
       white91.includes('gradStart: Color(0xFFD97706)') && white91.includes('gradEnd: Color(0xFFB45309)'));
-    ok('X91 derived followers hold (activeGold = accentText, blue = accentGold, glow = accentGold)',
-      themeSrc91.includes('dark ? const Color(0xFFF5B301) : const Color(0xFF92400E)') &&
-      themeSrc91.includes('dark ? const Color(0xFF64D2FF) : const Color(0xFFB45309)') &&
+    // v2.48.92: the followers are per-palette FIELDS (see
+    // X92) — on the light palette activeGold's field IS
+    // accentText's value and blue's field IS accentGold's.
+    ok('X91 derived followers hold (activeGold = accentText, blue = accentGold, glow = accentGold; FIELDS since .92)',
+      white91.includes('activeGold: Color(0xFF92400E)') &&
+      white91.includes('blue: Color(0xFFB45309)') &&
       themeSrc91.includes('Color get glowPrimary => accentGold'));
-    ok('X91 derived bevels follow the spec borders (bevelPrimary = border, bevelSecondary = borderSoft)',
-      themeSrc91.includes('Color get bevelPrimary => dark ? const Color(0xFF0A0E17) : border;') &&
-      themeSrc91.includes('Color get bevelSecondary => dark ? const Color(0xFF060910) : borderSoft;'));
+    // v2.48.92: the bevels are per-palette FIELDS too — on
+    // the light palette they carry the spec border values;
+    // the non-default dark palettes keep their deep bevels.
+    ok('X91 derived bevels follow the spec borders (light fields = border/borderSoft values; FIELDS since .92)',
+      white91.includes('bevelPrimary: Color(0xFFC4B28C)') && white91.includes('bevelSecondary: Color(0xFFD3C49E)') &&
+      themeSrc91.includes('bevelPrimary: Color(0xFF0A0E17)') && themeSrc91.includes('bevelSecondary: Color(0xFF060910)'));
+  }
+
+  // ---------------------------------------------------------------------------
+  // X92 (v2.48.92) — WARM SAND DARK (owner's own spec, Theme
+  // Designer page, pasted 2026-11-12) + TOKENS FOLLOW THE
+  // TEMPLATE (owner: buttons/elements stayed stuck when the
+  // template changed — in light the buttons kept their saved
+  // look, in dark a template switch moved nothing).
+  // PART 1: the owner's DARK spec replaces the default
+  // 'gold' palette's values 1:1: bgBody #211A10, surface
+  // #2C2416, panelBottom #241C10, inputBg #1C160C, border
+  // #6A5A38, borderSoft #50432C, textMain #FAF1DA, textDim
+  // #DCCBA2, textFaint #AF9D74, accentGold #F0A832,
+  // accentText #F5BC55, green #4ADE80, red #F87171,
+  // buttonBg #3A2F1E, warmShadow #000000. Derived (the spec
+  // does not name them; the light palette's relationships):
+  // surfaceElevated = panelTop = surface, bg2 #1F180E (bgBody
+  // stepped down by the light step's per-channel ratios),
+  // accentAmber = accentGold, gradStart #F4BE65 (accentGold
+  // lightened 25% toward white), gradEnd = accentGold,
+  // blue = accentGold, activeGold = accentText, bevels =
+  // border/borderSoft. The 13 dark palettes and the full
+  // dark theme grid all stay — nothing collapses.
+  // PART 2 (the architecture fix): buttonBg, warmShadow,
+  // green, red, blue, activeGold, bevelPrimary and
+  // bevelSecondary were MODE-branched constant getters (one
+  // value for every dark palette, one for light) — a
+  // template switch could never move them. They are
+  // per-palette FIELDS now. The 12 non-default dark palettes
+  // carry their previous effective values (buttonBg =
+  // overlay10 0x10FFFFFF, warmShadow #000000, green
+  // #30D158, red #FF453A, blue #64D2FF, activeGold #F5B301,
+  // bevels #0A0E17/#060910) and the light palette carries
+  // its .91 values, so ONLY the gold dark palette renders
+  // differently. greenBg/redBg stay derived (the palette's
+  // own green/red at alpha 0x1F). The sidebar's status
+  // ambers + filter-tab idle accent read AppTheme.activeGold
+  // directly now (X89 pins) — the same frozen-literal bug,
+  // fixed the same way.
+  // ---------------------------------------------------------------------------
+  {
+    const fsx92 = require('fs');
+    const pathx92 = require('path');
+    const read92 = (rel) => fsx92.readFileSync(pathx92.join(__dirname, '..', rel), 'utf8');
+    const count92 = (hay, needle) => hay.split(needle).length - 1;
+
+    const themeSrc92 = read92('lib/theme/app_theme.dart');
+    const slice92 = (marker) => {
+      const s = themeSrc92.indexOf(marker);
+      return themeSrc92.slice(s, themeSrc92.indexOf('\n  );', s));
+    };
+    const gold92 = slice92('static const AppPalette _goldDark');
+    const macos92 = slice92('static const AppPalette _macosDark');
+    const white92 = slice92('static const AppPalette _whiteLight');
+
+    // --- Part 1: the owner's dark spec, verbatim on 'gold' ---
+    ok('X92 spec dark bgBody #211A10 applied 1:1', gold92.includes('bgBody: Color(0xFF211A10)'));
+    ok('X92 spec dark surface #2C2416 applied 1:1', gold92.includes('surface: Color(0xFF2C2416)'));
+    ok('X92 spec dark panelBottom #241C10 applied 1:1', gold92.includes('panelBottom: Color(0xFF241C10)'));
+    ok('X92 spec dark inputBg #1C160C applied 1:1', gold92.includes('inputBg: Color(0xFF1C160C)'));
+    ok('X92 spec dark border #6A5A38 applied 1:1', gold92.includes('border: Color(0xFF6A5A38)'));
+    ok('X92 spec dark borderSoft #50432C applied 1:1', gold92.includes('borderSoft: Color(0xFF50432C)'));
+    ok('X92 spec dark textMain #FAF1DA applied 1:1', gold92.includes('textMain: Color(0xFFFAF1DA)'));
+    ok('X92 spec dark textDim #DCCBA2 applied 1:1', gold92.includes('textDim: Color(0xFFDCCBA2)'));
+    ok('X92 spec dark textFaint #AF9D74 applied 1:1', gold92.includes('textFaint: Color(0xFFAF9D74)'));
+    ok('X92 spec dark accentGold #F0A832 applied 1:1', gold92.includes('accentGold: Color(0xFFF0A832)'));
+    ok('X92 spec dark accentText #F5BC55 applied 1:1', gold92.includes('accentText: Color(0xFFF5BC55)'));
+    ok('X92 spec dark green #4ADE80 applied 1:1 (token field)', gold92.includes('green: Color(0xFF4ADE80)'));
+    ok('X92 spec dark red #F87171 applied 1:1 (token field)', gold92.includes('red: Color(0xFFF87171)'));
+    ok('X92 spec dark buttonBg #3A2F1E applied 1:1 (token field)', gold92.includes('buttonBg: Color(0xFF3A2F1E)'));
+    ok('X92 spec dark warmShadow #000000 applied 1:1 (token field)', gold92.includes('warmShadow: Color(0xFF000000)'));
+    // Derived for gold dark (spec-silent tokens):
+    ok('X92 derived dark bg2 #1F180E (bgBody by the light step ratios)', gold92.includes('bg2: Color(0xFF1F180E)'));
+    ok('X92 derived dark surfaceElevated = panelTop = surface #2C2416',
+      gold92.includes('surfaceElevated: Color(0xFF2C2416)') && gold92.includes('panelTop: Color(0xFF2C2416)'));
+    ok('X92 derived dark accentAmber = accentGold #F0A832', gold92.includes('accentAmber: Color(0xFFF0A832)'));
+    ok('X92 derived dark gradient (gradStart #F4BE65 lighter step, gradEnd = accentGold)',
+      gold92.includes('gradStart: Color(0xFFF4BE65)') && gold92.includes('gradEnd: Color(0xFFF0A832)'));
+    ok('X92 derived dark blue = accentGold, activeGold = accentText (the light relationships)',
+      gold92.includes('blue: Color(0xFFF0A832)') && gold92.includes('activeGold: Color(0xFFF5BC55)'));
+    ok('X92 derived dark bevels = border/borderSoft values',
+      gold92.includes('bevelPrimary: Color(0xFF6A5A38)') && gold92.includes('bevelSecondary: Color(0xFF50432C)'));
+    ok('X92 the old gold-dark values are gone (no #080604 canvas, no #D4AF37 textDim)',
+      !themeSrc92.includes('bgBody: Color(0xFF080604)') && !themeSrc92.includes('textDim: Color(0xFFD4AF37)'));
+
+    // --- Part 1b: dark text contrast on the spec surface ---
+    // (Computed WCAG ratios; the owner's hexes are pinned as
+    // they are — textFaint's true 5.76:1 is pinned at >= 5.5,
+    // NOT adjusted up to a round floor.)
+    const lum92 = (hex) => [0, 2, 4]
+      .map((i) => parseInt(hex.substr(i, 2), 16) / 255)
+      .map((v) => (v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4)))
+      .reduce((acc, v, i) => acc + v * [0.2126, 0.7152, 0.0722][i], 0);
+    const ratio92 = (fg, bg) => (Math.max(lum92(fg), lum92(bg)) + 0.05) / (Math.min(lum92(fg), lum92(bg)) + 0.05);
+    ok('X92 dark textMain vs spec surface >= 7:1 (true computed 13.61:1)', ratio92('FAF1DA', '2C2416') >= 7);
+    ok('X92 dark textDim vs spec surface >= 7:1 (true computed 9.56:1)', ratio92('DCCBA2', '2C2416') >= 7);
+    ok('X92 dark textFaint vs spec surface >= 5.5:1 (true computed 5.76:1 — owner hex, NOT adjusted)', ratio92('AF9D74', '2C2416') >= 5.5);
+
+    // --- Part 2: tokens are per-palette FIELDS now ---
+    const TOKENS92 = ['buttonBg', 'warmShadow', 'green', 'red', 'blue', 'activeGold', 'bevelPrimary', 'bevelSecondary'];
+    ok('X92 AppPalette declares all 8 template tokens as FIELDS',
+      TOKENS92.every((t) => themeSrc92.includes(`final Color ${t};`) && themeSrc92.includes(`required this.${t},`)));
+    ok('X92 no mode-branched token getter survives in app_theme',
+      !themeSrc92.includes('dark ? overlay10 : const Color(0xFFE3D5B5)') &&
+      !themeSrc92.includes('dark ? const Color(0xFF64D2FF) :') &&
+      !themeSrc92.includes('dark ? const Color(0xFFF5B301) :') &&
+      !themeSrc92.includes('dark ? const Color(0xFF30D158) :') &&
+      !themeSrc92.includes('dark ? const Color(0xFFFF453A) :') &&
+      !themeSrc92.includes('dark ? const Color(0xFF0A0E17) :') &&
+      !themeSrc92.includes('dark ? const Color(0xFF000000) : const Color(0xFF8A6D1F)'));
+    ok('X92 the tint backgrounds derive from the palette fields (greenBg/redBg at 0x1F)',
+      themeSrc92.includes('Color get greenBg => green.withAlpha(0x1F);') &&
+      themeSrc92.includes('Color get redBg => red.withAlpha(0x1F);'));
+    ok('X92 all 13 dark palettes + the full dark grid stay (nothing collapses)',
+      count92(themeSrc92, 'dark: true') === 13 && count92(themeSrc92, 'dark: false') === 1 &&
+      themeSrc92.includes('return _darkPalettes[id] ?? _goldDark;'));
+
+    // Parse every palette's token fields out of the source —
+    // the regression proof that tokens FOLLOW THE TEMPLATE:
+    // paletteFor(id, true) returns that id's own palette, and
+    // its token fields are that palette's own values.
+    const palettes92 = themeSrc92.split('AppPalette(').slice(1).map((chunk) => {
+      const idm = chunk.match(/id: '(\w+)'/);
+      const grab = (name) => {
+        const m = chunk.match(new RegExp(`${name}: Color\\(0x([0-9A-Fa-f]+)\\)`));
+        return m ? m[1].toUpperCase() : null;
+      };
+      const rec = { id: idm ? idm[1] : '?' };
+      for (const t of TOKENS92) rec[t] = grab(t);
+      return rec;
+    }).filter((p) => p.id !== '?');
+    ok('X92 all 14 palettes carry all 8 token fields',
+      palettes92.length === 14 && palettes92.every((p) => TOKENS92.every((t) => p[t] !== null)));
+    const byId92 = Object.fromEntries(palettes92.map((p) => [p.id, p]));
+    ok('X92 REGRESSION: buttonBg DIFFERS across dark palettes (gold spec face vs macos overlay face)',
+      byId92.gold.buttonBg === 'FF3A2F1E' && byId92.macos.buttonBg === '10FFFFFF' && byId92.gold.buttonBg !== byId92.macos.buttonBg);
+    ok('X92 REGRESSION: green/red/blue/activeGold DIFFER across dark palettes (gold vs macos)',
+      byId92.gold.green !== byId92.macos.green && byId92.gold.red !== byId92.macos.red &&
+      byId92.gold.blue !== byId92.macos.blue && byId92.gold.activeGold !== byId92.macos.activeGold);
+    ok('X92 the 12 non-default dark palettes keep their previous effective token values (overlay button face, mac status colours)',
+      palettes92.filter((p) => p.id !== 'gold' && p.id !== 'white').every((p) =>
+        p.buttonBg === '10FFFFFF' && p.warmShadow === 'FF000000' && p.green === 'FF30D158' &&
+        p.red === 'FFFF453A' && p.blue === 'FF64D2FF' && p.activeGold === 'FFF5B301' &&
+        p.bevelPrimary === 'FF0A0E17' && p.bevelSecondary === 'FF060910'));
+    ok('X92 the light palette token fields equal its .91 effective values (rendering unchanged)',
+      byId92.white.buttonBg === 'FFE3D5B5' && byId92.white.warmShadow === 'FF8A6D1F' &&
+      byId92.white.green === 'FF14532D' && byId92.white.red === 'FFB91C1C' &&
+      byId92.white.blue === 'FFB45309' && byId92.white.activeGold === 'FF92400E' &&
+      byId92.white.bevelPrimary === 'FFC4B28C' && byId92.white.bevelSecondary === 'FFD3C49E');
+    ok('X92 macos dark core values are byte-identical (only token fields were added)',
+      macos92.includes('bgBody: Color(0xFF16191F)') && macos92.includes('accentGold: Color(0xFF0A84FF)') &&
+      macos92.includes('textMain: Color(0xFFFFFFFF)'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

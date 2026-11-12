@@ -157,7 +157,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                 // v2.48.89: in light mode the idle accent is the
                 // deepened ACTIVE gold token too — the fixed bright
                 // #F5B301 measured ~1.9:1 as the tab's count text.
-                accentColor: isCheckingNow ? (AppTheme.dark ? const Color(0xFF38BDF8) : AppTheme.activeGold) : (AppTheme.dark ? const Color(0xFFF5B301) : AppTheme.activeGold),
+                accentColor: isCheckingNow ? (AppTheme.dark ? const Color(0xFF38BDF8) : AppTheme.activeGold) : AppTheme.activeGold,
                 tooltip: isCheckingNow
                     ? '$checkingCount cookies currently verifying'
                     : '$loginRequiredCount expired cookies requiring login',
@@ -714,18 +714,25 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // #92400E, so the light amber returns to #92400E — again the
   // same value as the palette's accentText (~7.0:1 on the Warm
   // Sand card #FFFDF6).
+  // v2.48.92: the status ambers (here, in _statusWord and the
+  // filter-tab idle accent) read the palette's activeGold
+  // FIELD directly instead of a frozen dark/light literal
+  // pair — activeGold is a per-palette token now, so the
+  // status words follow the active template (Warm Sand dark
+  // #F5BC55 on 'gold', the old #F5B301 on the other dark
+  // palettes, #92400E in light — rendering unchanged there).
   (String, Color) _statusChip(GoogleAccount acc) {
     if (acc.status == AccountStatus.checking) {
-      return ('CHECKING', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
+      return ('CHECKING', AppTheme.activeGold);
     }
     // v2.29.0: "Need Login" is an amber LOGIN chip, not red FAIL.
     if (acc.status == AccountStatus.loginRequired) {
-      return ('LOGIN', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
+      return ('LOGIN', AppTheme.activeGold);
     }
     // v2.46.0: credits khatam/kam FAIL nahi hai — apne lafz, apne
     // rang (grey / amber). FAIL sirf asal problem ke liye bacha.
     if (_isNoCredits(acc)) return ('NO CREDITS', AppTheme.textDim);
-    if (_isLowCredits(acc)) return ('LOW CREDITS', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
+    if (_isLowCredits(acc)) return ('LOW CREDITS', AppTheme.activeGold);
     if (_isLiveAcc(acc)) return ('LIVE', AppTheme.green);
     return ('FAIL', AppTheme.red);
   }
@@ -738,7 +745,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
   // in flight reads "Checking" from the account state itself.
   (String, Color) _statusWord(GoogleAccount acc) {
     if (acc.status == AccountStatus.checking) {
-      return ('Checking', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
+      return ('Checking', AppTheme.activeGold);
     }
     if (acc.pendingCheck) {
       return ('Waiting', AppTheme.textFaint);
@@ -751,7 +758,7 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
     // v2.46.0: credits wali haalat apne lafz se — Fail sirf asal
     // problem (cookie/login/error) ke liye.
     if (_isNoCredits(acc)) return ('No Credits', AppTheme.textDim);
-    if (_isLowCredits(acc)) return ('Low Credits', AppTheme.dark ? const Color(0xFFF5B301) : const Color(0xFF92400E));
+    if (_isLowCredits(acc)) return ('Low Credits', AppTheme.activeGold);
     if (_isLiveAcc(acc)) return ('Live', AppTheme.green);
     return ('Fail', AppTheme.red);
   }

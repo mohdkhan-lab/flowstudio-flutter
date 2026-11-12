@@ -7856,6 +7856,46 @@ async function main() {
       macos92.includes('textMain: Color(0xFFFFFFFF)'));
   }
 
+  // ---------------------------------------------------------------------------
+  // X93 (v2.48.93) — SECTION HOVER LINE SOFTENED (owner,
+  // 2026-11-12, on his .92 screenshot of the Accounts
+  // section): the TactileSectionContainer hover border was
+  // borderHighlight (accentGold) and lit up as a bright gold
+  // line floating just above the buttons inside the section,
+  // backed by a hover-only accentGold glow bloom (blur 18).
+  // Owner's chosen fix: "gold chamak khatam, sirf halka gehra
+  // border" — hover border is now the palette's own stronger
+  // border token (AppTheme.border vs the resting
+  // borderSoft), no gold in either mode on any palette, and
+  // the gold glow shadow is GONE from the container. The
+  // main lift shadow (black on dark / warmShadow on light)
+  // and its hover strengthening are unchanged. Buttons keep
+  // their own hover — borderHighlight itself is untouched
+  // (sidebar buttons still use it).
+  // ---------------------------------------------------------------------------
+  {
+    const fsx93 = require('fs');
+    const pathx93 = require('path');
+    const read93 = (rel) => fsx93.readFileSync(pathx93.join(__dirname, '..', rel), 'utf8');
+
+    const tactileSrc93 = read93('lib/widgets/tactile_components.dart');
+    const cStart93 = tactileSrc93.indexOf('class _TactileSectionContainerState');
+    const container93 = tactileSrc93.slice(cStart93);
+    const norm93 = container93.replace(/\s+/g, ' ');
+
+    ok('X93 section hover border is the palette border token (resting borderSoft)',
+      norm93.includes('? AppTheme.border : AppTheme.borderSoft'));
+    ok('X93 NO gold highlight in the section container hover border',
+      !container93.includes('AppTheme.borderHighlight'));
+    ok('X93 the hover-only gold glow bloom is GONE from the section container',
+      !norm93.includes('if (_isHovered) BoxShadow') && !container93.includes('AppTheme.accentGold.withValues'));
+    ok('X93 the main lift shadow + hover strengthening are unchanged (dark black / light warmShadow)',
+      container93.includes('Colors.black.withValues(alpha: _isHovered ? 0.45 : 0.35)') &&
+      container93.includes('AppTheme.warmShadow.withValues(alpha: _isHovered ? 0.30 : 0.22)'));
+    ok('X93 borderHighlight itself is untouched in app_theme (buttons keep their hover)',
+      read93('lib/theme/app_theme.dart').includes('Color get borderHighlight => accentGold.withValues(alpha: dark ? 0.45 : 0.35);'));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

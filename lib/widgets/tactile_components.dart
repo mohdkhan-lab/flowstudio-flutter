@@ -543,8 +543,15 @@ class _TactileSectionContainerState extends State<TactileSectionContainer> {
 
   @override
   Widget build(BuildContext context) {
+    // v2.48.93 (owner, 2026-11-12): the hover border was
+    // borderHighlight (accentGold) — it lit up as a bright gold line
+    // floating just above the buttons inside the section (owner's
+    // screenshot of the Accounts section). Owner's choice: NO gold
+    // shine on hover — the hover border is now the palette's own
+    // stronger border token (AppTheme.border), one step deeper than
+    // the resting borderSoft, in both modes, on every palette.
     final borderColor = _isHovered
-        ? AppTheme.borderHighlight
+        ? AppTheme.border
         : AppTheme.borderSoft;
 
     return MouseRegion(
@@ -585,13 +592,11 @@ class _TactileSectionContainerState extends State<TactileSectionContainer> {
               blurRadius: AppTheme.dark ? (_isHovered ? 16 : 12) : (_isHovered ? 14 : 10),
               offset: AppTheme.dark ? const Offset(0, 4) : const Offset(0, 2.5),
             ),
-            if (_isHovered)
-              BoxShadow(
-                color: AppTheme.accentGold.withValues(alpha: AppTheme.dark ? 0.12 : 0.08),
-                blurRadius: 18,
-                spreadRadius: 0.5,
-                offset: const Offset(0, 2),
-              ),
+            // v2.48.93 (owner, 2026-11-12): the hover-only accentGold
+            // glow bloom (blur 18) is REMOVED — it was the second half
+            // of the "chamak" above the section the owner asked to
+            // soften away. The main lift shadow above (and its hover
+            // strengthening) is unchanged.
           ],
         ),
         child: widget.child,

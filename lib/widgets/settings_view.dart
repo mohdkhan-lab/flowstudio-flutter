@@ -26,6 +26,8 @@ class _SettingsViewState extends State<SettingsView> {
   final TextEditingController _customTagController = TextEditingController();
   final TextEditingController _folderController = TextEditingController();
   final TextEditingController _chromeController = TextEditingController();
+  final TextEditingController _geminiKeyController = TextEditingController();
+  final TextEditingController _agentCapController = TextEditingController();
   final TextEditingController _whatsappController = TextEditingController();
   final TextEditingController _chatController = TextEditingController();
   final TextEditingController _supportController = TextEditingController();
@@ -45,6 +47,10 @@ class _SettingsViewState extends State<SettingsView> {
     final s = context.read<SettingsProvider>().settings;
     _folderController.text = s.outputDirectory;
     _chromeController.text = s.chromePath;
+    // v2.48.95 (AI Brain): the cap field shows the saved value;
+    // the API key field starts EMPTY on purpose — a saved key is
+    // never displayed back in full (its hint says one is saved).
+    _agentCapController.text = s.agentMaxCredits;
     _whatsappController.text = s.whatsAppLink;
     _chatController.text = s.chatLink;
     _supportController.text = s.supportLink;
@@ -56,6 +62,8 @@ class _SettingsViewState extends State<SettingsView> {
     _customTagController.dispose();
     _folderController.dispose();
     _chromeController.dispose();
+    _geminiKeyController.dispose();
+    _agentCapController.dispose();
     _whatsappController.dispose();
     _chatController.dispose();
     _supportController.dispose();
@@ -916,6 +924,141 @@ class _SettingsViewState extends State<SettingsView> {
 
     final mcpPanel = PanelEntrance(index: 5, child: _buildMcpPanel());
 
+    // v2.48.95 (AI Brain): the brain behind Agent Prompt mode —
+    // a free Gemini API key (Google AI Studio), the brain model,
+    // and the per-video credit cap the brain may approve up to.
+    // Compact by design (FIT LAW): one key row, one choices row,
+    // one note. The key field is obscured and never shows a saved
+    // key back; typing a new one + Save replaces it.
+    final aiBrainPanel = PanelEntrance(index: 8, child: _buildPanel(
+            title: '🧠 AI BRAIN',
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Container(
+                        height: 32,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        decoration: BoxDecoration(
+                          color: AppTheme.inputBg,
+                          borderRadius: BorderRadius.circular(6),
+                          border: Border.all(color: AppTheme.borderSoft),
+                        ),
+                        child: TextField(
+                          controller: _geminiKeyController,
+                          obscureText: true,
+                          textAlignVertical: TextAlignVertical.center,
+                          style: TextStyle(fontSize: 11.5, color: AppTheme.textMain),
+                          decoration: InputDecoration(
+                            hintText: s.geminiApiKey.isNotEmpty
+                                ? 'API key saved — type a new one to replace it'
+                                : 'Paste your free Gemini API key (Google AI Studio)',
+                            hintStyle: TextStyle(fontSize: 11, color: AppTheme.textFaint),
+                            border: InputBorder.none,
+                            isDense: true,
+                            contentPadding: EdgeInsets.zero,
+                          ),
+                          onSubmitted: (val) {
+                            if (val.trim().isNotEmpty) {
+                              prov.updateGeminiApiKey(val);
+                              _geminiKeyController.clear();
+                            }
+                          },
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    TactileButton(
+                      type: TactileType.gold,
+                      height: 32,
+                      borderRadius: 6,
+                      bevelDepth: 2.0,
+                      padding: const EdgeInsets.symmetric(horizontal: 14),
+                      onTap: () {
+                        if (_geminiKeyController.text.trim().isNotEmpty) {
+                          prov.updateGeminiApiKey(_geminiKeyController.text);
+                          _geminiKeyController.clear();
+                        }
+                      },
+                      label: 'Save',
+                    ),
+                    if (s.geminiApiKey.isNotEmpty) ...[
+                      const SizedBox(width: 8),
+                      TactileButton(
+                        type: TactileType.secondary,
+                        height: 32,
+                        borderRadius: 6,
+                        bevelDepth: 2.0,
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        onTap: () => prov.updateGeminiApiKey(''),
+                        label: 'Remove',
+                      ),
+                    ],
+                  ],
+                ),
+                const SizedBox(height: 10),
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Expanded(
+                      child: _buildDropdown(
+                        label: 'BRAIN MODEL',
+                        value: s.brainModel,
+                        items: const ['flash-lite', 'flash'],
+                        labels: const {
+                          'flash-lite': 'Gemini Flash-Lite (free, 500/day)',
+                          'flash': 'Gemini Flash (free, 20/day)',
+                        },
+                        onChanged: (v) => prov.updateBrainModel(v!),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text('AGENT MAX CREDITS PER VIDEO', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, color: AppTheme.textFaint)),
+                          const SizedBox(height: 4),
+                          Container(
+                            height: 32,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            decoration: BoxDecoration(
+                              color: AppTheme.inputBg,
+                              borderRadius: BorderRadius.circular(6),
+                              border: Border.all(color: AppTheme.borderSoft),
+                            ),
+                            child: TextField(
+                              controller: _agentCapController,
+                              keyboardType: TextInputType.number,
+                              textAlignVertical: TextAlignVertical.center,
+                              style: TextStyle(fontSize: 11.5, color: AppTheme.textMain),
+                              decoration: InputDecoration(
+                                hintText: 'Empty = run cost · 0 = never approve',
+                                hintStyle: TextStyle(fontSize: 11, color: AppTheme.textFaint),
+                                border: InputBorder.none,
+                                isDense: true,
+                                contentPadding: EdgeInsets.zero,
+                              ),
+                              onChanged: (v) => prov.updateAgentMaxCredits(v),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 8),
+                Text(
+                  'Agent Prompt mode only: the brain chats with Flow\'s own Agent and may approve a generation only up to this cap — and never above the run\'s expected cost. Get a free key at Google AI Studio (aistudio.google.com) → Create API key. The key is stored on this PC only.',
+                  style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+                ),
+              ],
+            ),
+          ),
+    );
+
     // v2.34.0 (Problem 13, Sample A): About is a full-width BAR
     // along the bottom — logo + version on the left, the account /
     // video stats and the social icons on the right — not another
@@ -1201,6 +1344,8 @@ class _SettingsViewState extends State<SettingsView> {
                     updatesPanel,
                     const SizedBox(height: _sectionGap),
                     mcpPanel,
+                    const SizedBox(height: _sectionGap),
+                    aiBrainPanel,
                   ],
                 );
               }
@@ -1216,6 +1361,8 @@ class _SettingsViewState extends State<SettingsView> {
               );
             },
           ),
+          const SizedBox(height: _sectionGap),
+          aiBrainPanel,
           const SizedBox(height: _sectionGap),
           aboutPanel,
           const SizedBox(height: _sectionGap),

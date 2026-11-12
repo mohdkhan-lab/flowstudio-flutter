@@ -1222,13 +1222,31 @@ class GeneratorProvider with ChangeNotifier {
       return;
     }
 
+    // v2.48.95 (AGENT BRAIN — no-key fail-fast): an Agent Prompt
+    // run is driven by the in-app brain (free Gemini API). With
+    // no key saved there is nothing to drive it with, so fail
+    // HERE — before any state flips or the engine is called —
+    // with the exact line the owner needs. The engine repeats
+    // the same guard for its own callers.
+    final agentMode = !_isBulkMode;
+    if (agentMode && settings.settings.geminiApiKey.trim().isEmpty) {
+      activity.addLog(
+        'AI Brain: add your free Gemini API key in Settings',
+        level: LogLevel.error,
+      );
+      return;
+    }
+
     _state = GenerationState.running;
     // v2.48.83 (P1): stamp the run's source onto its
     // cards — 'MCP' for an MCP-started run, null for the
     // owner's own Generate (stamping null also clears a
     // stale mark when the same items are re-run by hand).
+    // v2.48.95: an Agent Prompt run's cards say 'via Agent'
+    // (the panel renders 'via <source>') unless an external
+    // source already claimed this start.
     for (final item in _items) {
-      item.source = runSource;
+      item.source = runSource ?? (agentMode ? 'Agent' : null);
     }
     notifyListeners();
 
@@ -1273,6 +1291,13 @@ class GeneratorProvider with ChangeNotifier {
       // echo of it will be recognised as our own run and
       // NOT adopted as an external one.
       originToken: AutomationBridge.instance.newOwnRunToken(),
+      // v2.48.95 (AGENT MODE): the mode flag + AI Brain fields
+      // ride the run start (the key reaches the engine's pool
+      // memory only — see AutomationBridge.startGeneration).
+      agentMode: agentMode,
+      geminiApiKey: settings.settings.geminiApiKey,
+      brainModel: settings.settings.brainModel,
+      agentMaxCredits: settings.settings.agentMaxCredits,
     );
 
     if (!success) {

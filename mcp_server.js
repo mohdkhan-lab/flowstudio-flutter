@@ -23,7 +23,7 @@ const { usableCreditsTotal, storedCreditsTotal } = require('./engine/usableCredi
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.48.94';
+const SERVER_VERSION = '2.48.95';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -139,6 +139,10 @@ const SETTING_KEYS = [
   'browser_background', 'show_browsers', 'preview_autoplay', 'auto_verify_start',
   'auto_check_updates', 'social_links', 'live_only_accounts', 'history_cleared', 'headless_generation',
   'account_aliases', 'parallel_browsers', 'mcp_enabled',
+  // v2.48.95 (AI Brain): the Agent Prompt brain settings — the
+  // same keys the app reads/writes, so get_settings shows the
+  // whole truth in one place.
+  'gemini_api_key', 'brain_model', 'agent_max_credits',
 ];
 
 // The settings store is string-valued (the bridge String()-coerces on

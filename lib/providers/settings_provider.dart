@@ -200,6 +200,21 @@ class SettingsProvider with ChangeNotifier {
                   ? 'enhanced'
                   : 'original';
         }
+        // v2.48.95 (AI Brain): the Gemini key + brain choices,
+        // restored from the engine settings so Settings -> AI
+        // Brain shows the truth after a restart. An engine that
+        // has never stored them leaves the in-code defaults
+        // ('' key, Flash-Lite, '' cap).
+        if (data['gemini_api_key'] != null) _settings.geminiApiKey = data['gemini_api_key'].toString();
+        if (data['brain_model'] != null) {
+          // Only the two dropdown values may land here — the
+          // Settings dropdown asserts its value is one of its
+          // items, so anything else stored falls back to the
+          // Flash-Lite default instead of breaking the panel.
+          _settings.brainModel =
+              data['brain_model'].toString() == 'flash' ? 'flash' : 'flash-lite';
+        }
+        if (data['agent_max_credits'] != null) _settings.agentMaxCredits = data['agent_max_credits'].toString();
         if (data['preview_autoplay'] != null) _settings.previewAutoplay = data['preview_autoplay'] != '0';
         if (data['auto_verify_start'] != null) _settings.autoVerifyOnStart = data['auto_verify_start'] == '1';
         if (data['auto_check_updates'] != null) _settings.autoCheckUpdates = data['auto_check_updates'] != '0';
@@ -369,6 +384,34 @@ class SettingsProvider with ChangeNotifier {
   void updateNamingPattern(String pattern) {
     _settings.namingPattern = pattern;
     AutomationBridge.instance.saveSetting('default_naming', pattern);
+    notifyListeners();
+  }
+
+  // v2.48.95 (AI Brain): the free Gemini API key. Stored in the
+  // engine settings on this PC like every other setting; the
+  // Settings field never shows it back in full after saving.
+  void updateGeminiApiKey(String key) {
+    _settings.geminiApiKey = key.trim();
+    AutomationBridge.instance.saveSetting('gemini_api_key', _settings.geminiApiKey);
+    notifyListeners();
+  }
+
+  // v2.48.95 (AI Brain): which free Gemini model thinks for
+  // Agent Prompt runs — 'flash-lite' (500 requests/day) or
+  // 'flash' (20 requests/day, smarter).
+  void updateBrainModel(String model) {
+    _settings.brainModel = model == 'flash' ? 'flash' : 'flash-lite';
+    AutomationBridge.instance.saveSetting('brain_model', _settings.brainModel);
+    notifyListeners();
+  }
+
+  // v2.48.95 (AI Brain): the Agent credit cap, as typed: ''
+  // (each run's expected cost), '0' (never auto-approve) or a
+  // number. Digits only — anything else is stored as ''.
+  void updateAgentMaxCredits(String raw) {
+    final digits = raw.trim().replaceAll(RegExp(r'[^0-9]'), '');
+    _settings.agentMaxCredits = digits;
+    AutomationBridge.instance.saveSetting('agent_max_credits', digits);
     notifyListeners();
   }
 

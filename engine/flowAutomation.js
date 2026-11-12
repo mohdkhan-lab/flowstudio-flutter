@@ -39,6 +39,7 @@ const downloadRoute = require('./download-route');
 const downloadVerify = require('./download-verify');
 const downloadZeroClick = require('./download-zero-click');
 const projectRecovery = require('./project-recovery');
+const agentDriver = require('./agentDriver');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
@@ -2883,6 +2884,25 @@ class FlowAutomationEngine {
     } catch (e) {
       return false;
     }
+  }
+
+  // v2.48.95 (AGENT MODE): Agent Prompt runs submit through
+  // Google Flow's OWN built-in Agent instead of the direct
+  // prompt box — engine/agentDriver.js does the driving (Agent
+  // toggle, chat, brain-approved proposals) and returns the same
+  // result vocabulary + submitted-task shape as submitPrompt, so
+  // the pool's render monitor and the download pipeline treat an
+  // Agent task exactly like a direct one. The direct route above
+  // keeps calling ensureAgentModeDisabled — Agent mode is opt-in
+  // per run (settings.agentMode), never a global state.
+  async submitViaAgent(promptText, settings, promptIndex, totalPrompts, agentConfig) {
+    return agentDriver.submitViaAgent(this, {
+      promptText,
+      settings,
+      promptIndex,
+      totalPrompts,
+      agentConfig
+    });
   }
 
   // ATOMIC NATIVE TEXT INSERTION (bypasses keydown triggers for @ mentions / search hijacking)

@@ -172,7 +172,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.94';
+const APP_VERSION = '2.48.95';
 let activeWorkerPool = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
@@ -339,16 +339,31 @@ async function startBridge() {
   // cannot tell them apart, and neither can the Activity history.
   // onRunStart is wired here too: it records the run's composition
   // into lastRunInfo, which the redo route reads.
-  function buildPool({ parallelBrowsers, accountIds, getSettingsHint, runStarted } = {}) {
+  function buildPool({ parallelBrowsers, accountIds, getSettingsHint, runStarted, agentConfig } = {}) {
     // v2.22.0 fix: browser visibility comes from the engine's own
     // 'browser_background' setting — the SAME key the original
     // Electron main.js uses ('1' or unset = background ON, '0' =
     // visible). The WorkerPool "headless" option is the background
     // flag (headed Chrome parked off-screen, never true headless).
     const backgroundSetting = dbService.getSetting('browser_background', '1');
+    // v2.48.95 (AGENT BRAIN): the Agent configuration for this
+    // pool. An explicit run-start value wins; otherwise the
+    // engine's stored AI Brain settings are the truth (this is
+    // also what lets a RESUMED Agent run find its key — resume /
+    // redo routes pass no agent fields). The key is carried on the
+    // pool only — never into the run settings object, which is
+    // persisted into every task's settings_json.
+    const effectiveAgentConfig = (agentConfig && typeof agentConfig === 'object')
+      ? agentConfig
+      : {
+          apiKey: dbService.getSetting('gemini_api_key', ''),
+          brainModel: dbService.getSetting('brain_model', ''),
+          agentMaxCredits: dbService.getSetting('agent_max_credits', '')
+        };
     return new WorkerPool({
       concurrency: parallelBrowsers || 1,
       headless: backgroundSetting !== '0',
+      agentConfig: effectiveAgentConfig,
       // Headless generation (owner's opt-in): TRUE headless Chrome
       // for generation workers — wins over the background/visible
       // choice above inside browserMode.launchPlan. Default OFF;
@@ -560,7 +575,12 @@ async function startBridge() {
           'account_aliases', 'parallel_browsers',
           // v2.31.0: MCP connector on/off (the token itself is only
           // ever served by the /api/mcp/* endpoints below).
-          'mcp_enabled'
+          'mcp_enabled',
+          // v2.48.95 (AI Brain): the Gemini key + brain choices —
+          // read back so Settings -> AI Brain shows the truth. The
+          // key is served ONLY on this loopback bridge, exactly
+          // like every other setting the app owns.
+          'gemini_api_key', 'brain_model', 'agent_max_credits'
         ];
         const settings = {};
         for (const k of keys) {
@@ -1412,6 +1432,23 @@ async function startBridge() {
             tag: typeof config.tag === 'string' ? config.tag : '',
             originToken: typeof config.originToken === 'string' ? config.originToken : '',
             accountIds: Array.isArray(config.accountIds) ? config.accountIds : null
+          },
+          // v2.48.95 (AGENT BRAIN): the run body's Agent fields
+          // win; anything absent falls back to the stored AI Brain
+          // settings inside buildPool. The key itself is passed
+          // ONLY here (pool memory) — it is never written into the
+          // run settings below, so it can never land in a task's
+          // persisted settings_json or a log payload.
+          agentConfig: {
+            apiKey: (typeof config.geminiApiKey === 'string' && config.geminiApiKey.trim())
+              ? config.geminiApiKey.trim()
+              : dbService.getSetting('gemini_api_key', ''),
+            brainModel: (typeof config.brainModel === 'string' && config.brainModel.trim())
+              ? config.brainModel.trim()
+              : dbService.getSetting('brain_model', ''),
+            agentMaxCredits: (config.agentMaxCredits !== undefined && config.agentMaxCredits !== null && config.agentMaxCredits !== '')
+              ? config.agentMaxCredits
+              : dbService.getSetting('agent_max_credits', '')
           }
         });
 
@@ -1519,6 +1556,13 @@ async function startBridge() {
           // liye) lekin settings_json me NAHI bachta —
           // db.createBatchTasks use wahan se hata deta hai.
           skipFirstTaskDownload: config.skipFirstTaskDownload === true,
+          // v2.48.95 (AGENT MODE): a plain boolean — the run was
+          // started with Agent Prompt selected, so the pool
+          // submits through Flow's own Agent (brain-driven).
+          // Persisted in settings_json like the other run
+          // settings, so a resume keeps the mode. The Gemini key
+          // is NOT here — it rides the pool only (see buildPool).
+          agentMode: config.agentMode === true,
         };
 
         // Start asynchronously via runQueue (into the project

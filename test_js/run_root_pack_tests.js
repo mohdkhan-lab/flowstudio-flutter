@@ -7907,6 +7907,265 @@ async function main() {
       read93('lib/theme/app_theme.dart').includes('Color get borderHighlight => accentGold.withValues(alpha: dark ? 0.45 : 0.35);'));
   }
 
+  // ---------------------------------------------------------------------------
+  // X95 (v2.48.95) — AGENT PROMPT MODE: the in-app brain (free
+  // Gemini API) drives Flow's own Agent. The decision layer is
+  // tested with MOCKED Gemini responses + mocked transcripts —
+  // no live API, no live Flow. The cost gate is law: approve at
+  // cap, reject above cap, unparseable quote = never approve,
+  // cap 0 = park, invalid JSON = wait once then fail, 429 =
+  // bounded backoff. Plus the wiring pins: the Agent flag rides
+  // Dart -> bridge -> pool -> engine, Bulk mode is untouched,
+  // the no-key run fails fast with the exact line, and the API
+  // key can never appear in an [AGENT] log line.
+  // ---------------------------------------------------------------------------
+  {
+    const fsx95 = require('fs');
+    const pathx95 = require('path');
+    const read95 = (rel) => fsx95.readFileSync(pathx95.join(__dirname, '..', rel), 'utf8');
+    const brain95 = require('../engine/agentBrain');
+    const driver95 = require('../engine/agentDriver');
+
+    // --- model resolution + quote parsing (pure) ---
+    eq('X95 brain model flash-lite resolves to the free Flash-Lite id', brain95.resolveBrainModel('flash-lite').id, 'gemini-3.5-flash-lite');
+    eq('X95 brain model flash resolves to the free Flash id', brain95.resolveBrainModel('flash').id, 'gemini-3.8-flash');
+    eq('X95 unknown brain model falls back to Flash-Lite', brain95.resolveBrainModel('whatever').id, 'gemini-3.5-flash-lite');
+    eq('X95 raw gemini model id passes through (calibration hatch)', brain95.resolveBrainModel('gemini-9.9-flash-lite').id, 'gemini-9.9-flash-lite');
+    eq('X95 quote: "cost 15 credits" parses', brain95.parseQuotedCost('This will cost 15 credits.'), 15);
+    eq('X95 quote: bare "15 credits" parses', brain95.parseQuotedCost('Generating that is 15 credits, shall I proceed?'), 15);
+    eq('X95 quote: a duration is NOT a price', brain95.parseQuotedCost('I will make a 10 second video at 720p.'), null);
+    eq('X95 quote: an output count is NOT a price', brain95.parseQuotedCost('I can generate 2 outputs for you.'), null);
+    eq('X95 quote: empty text has no quote', brain95.parseQuotedCost(''), null);
+
+    // --- cap resolution + the gate (pure) ---
+    eq('X95 cap unset = expected cost', brain95.resolveAgentCap('', 15).cap, 15);
+    eq('X95 cap null = expected cost', brain95.resolveAgentCap(null, 15).cap, 15);
+    eq('X95 cap 0 = never approve', brain95.resolveAgentCap('0', 15).cap, 0);
+    eq('X95 owner cap above expected is clamped to expected (hard rule)', brain95.resolveAgentCap('20', 15).cap, 15);
+    eq('X95 owner cap below expected binds', brain95.resolveAgentCap('10', 15).cap, 10);
+    eq('X95 unknown expected cost is flagged', brain95.resolveAgentCap('', null).expectedOk, false);
+    ok('X95 gate approves AT the cap', brain95.costGate({ quotedCost: 15, capInfo: brain95.resolveAgentCap('', 15) }).approve);
+    ok('X95 gate approves below the cap', brain95.costGate({ quotedCost: 7, capInfo: brain95.resolveAgentCap('', 15) }).approve);
+    eq('X95 gate rejects above the cap', brain95.costGate({ quotedCost: 16, capInfo: brain95.resolveAgentCap('', 15) }).reason, 'agent-cost-over-cap');
+    eq('X95 gate: unparseable quote never approves', brain95.costGate({ quotedCost: null, capInfo: brain95.resolveAgentCap('', 15) }).reason, 'agent-cost-unverified');
+    eq('X95 gate: unknown expected cost never approves', brain95.costGate({ quotedCost: 5, capInfo: brain95.resolveAgentCap('', null) }).reason, 'agent-cost-unverified');
+    eq('X95 gate: cap 0 parks (never approves)', brain95.costGate({ quotedCost: 5, capInfo: brain95.resolveAgentCap('0', 15) }).reason, 'agent-cap-zero');
+
+    // --- brain JSON contract (pure) ---
+    eq('X95 decision: strict JSON approve parses', (brain95.parseBrainDecision('{"action":"approve","reason":"ok"}') || {}).action, 'approve');
+    eq('X95 decision: reply keeps its message', (brain95.parseBrainDecision('{"action":"reply","message":"9:16 please","reason":"asked"}') || {}).message, '9:16 please');
+    eq('X95 decision: fenced JSON still parses', (brain95.parseBrainDecision('```json\n{"action":"wait","reason":"thinking"}\n```') || {}).action, 'wait');
+    eq('X95 decision: prose is NOT a decision', brain95.parseBrainDecision('Sure, I will approve that!'), null);
+    eq('X95 decision: unknown action is NOT a decision', brain95.parseBrainDecision('{"action":"spend","reason":"x"}'), null);
+    eq('X95 decision: empty is NOT a decision', brain95.parseBrainDecision(''), null);
+
+    // --- request building: settings + instruction are in, key is out ---
+    {
+      const req = brain95.buildBrainRequest({
+        modelSetting: 'flash-lite',
+        userInstruction: 'A lighthouse at dawn, waves crashing.',
+        runSettings: { model: 'Omni Flash', duration: '8s', aspectRatio: '9:16', quality: '720p' },
+        transcript: [{ from: 'user', text: 'A lighthouse at dawn, waves crashing.' }],
+        agentMessage: 'Shall I generate it for 12 credits?',
+        expectedCost: 12,
+        effectiveCap: 12
+      });
+      ok('X95 request URL targets the Flash-Lite generateContent endpoint', req.url.endsWith('/gemini-3.5-flash-lite:generateContent'));
+      const sys = req.body.systemInstruction.parts[0].text;
+      ok('X95 system instruction carries the user instruction', sys.includes('A lighthouse at dawn'));
+      ok('X95 system instruction carries the credit cap', sys.includes('credit cap for approving a generation: 12 credits'));
+      ok('X95 request demands STRICT JSON', sys.includes('STRICT JSON'));
+    }
+
+    // --- sessions over a mocked Gemini ---
+    const SENTINEL_KEY = 'AIza-SENTINEL-KEY-95';
+    const mockFetch = (responses) => {
+      const calls = [];
+      const fn = async (url, opts) => {
+        calls.push({ url, opts });
+        const r = responses[Math.min(calls.length - 1, responses.length - 1)];
+        return {
+          status: r.status,
+          json: async () => (r.text !== undefined
+            ? { candidates: [{ content: { parts: [{ text: r.text }] } }] }
+            : {})
+        };
+      };
+      return { fn, calls };
+    };
+    const geminiText = (obj) => ({ status: 200, text: typeof obj === 'string' ? obj : JSON.stringify(obj) });
+    const baseInput = {
+      userInstruction: 'A lighthouse at dawn, waves crashing.',
+      runSettings: { model: 'Omni Flash', duration: '8s', aspectRatio: '9:16', quality: '720p' },
+      transcript: [],
+      expectedCost: 15
+    };
+
+    { // approve AT the cap
+      const m = mockFetch([geminiText({ action: 'approve', reason: 'matches the settings' })]);
+      const sleeps = [];
+      const s = brain95.createBrainSession({ apiKey: SENTINEL_KEY, modelSetting: 'flash-lite', fetchFn: m.fn, sleepFn: async (ms) => { sleeps.push(ms); }, nowFn: () => 1000000 });
+      const d = await s.decide({ ...baseInput, agentMessage: 'I will generate one 8s video. This will cost 15 credits.', capSetting: '' });
+      eq('X95 session: approve at cap passes the gate', d.action, 'approve');
+      eq('X95 session: quote was read from the agent message', d.quotedCost, 15);
+      eq('X95 session: one brain call was counted', d.brainCalls, 1);
+      eq('X95 session: the key rode ONLY the x-goog-api-key header', m.calls[0].opts.headers['x-goog-api-key'], SENTINEL_KEY);
+      ok('X95 session: the key is NOT in the request body', !String(m.calls[0].opts.body).includes(SENTINEL_KEY));
+    }
+    { // brain says approve, quote ABOVE cap -> reject (asking again is free)
+      const m = mockFetch([geminiText({ action: 'approve', reason: 'looks fine' })]);
+      const s = brain95.createBrainSession({ apiKey: SENTINEL_KEY, modelSetting: 'flash-lite', fetchFn: m.fn, sleepFn: async () => {}, nowFn: () => 1000000 });
+      const d = await s.decide({ ...baseInput, agentMessage: 'This will cost 20 credits.', capSetting: '' });
+      eq('X95 session: over-cap quote is rejected, never approved', d.action, 'reject');
+      eq('X95 session: over-cap reason is the gate reason', d.reason, 'agent-cost-over-cap');
+      ok('X95 session: the rejection tells the Agent the cap', d.message.includes('15'));
+    }
+    { // brain says approve, NO quote in the message -> fail unverified
+      const m = mockFetch([geminiText({ action: 'approve', reason: 'go' })]);
+      const s = brain95.createBrainSession({ apiKey: SENTINEL_KEY, modelSetting: 'flash-lite', fetchFn: m.fn, sleepFn: async () => {}, nowFn: () => 1000000 });
+      const d = await s.decide({ ...baseInput, agentMessage: 'Making it now!', capSetting: '' });
+      eq('X95 session: unquoted approval fails as agent-cost-unverified', d.action, 'fail');
+      eq('X95 session: unverified reason is exact', d.reason, 'agent-cost-unverified');
+    }
+    { // cap 0 -> park, whatever the brain thinks
+      const m = mockFetch([geminiText({ action: 'approve', reason: 'go' })]);
+      const s = brain95.createBrainSession({ apiKey: SENTINEL_KEY, modelSetting: 'flash-lite', fetchFn: m.fn, sleepFn: async () => {}, nowFn: () => 1000000 });
+      const d = await s.decide({ ...baseInput, agentMessage: 'This will cost 15 credits.', capSetting: '0' });
+      eq('X95 session: cap 0 parks the proposal', d.action, 'park');
+      eq('X95 session: park reason is the cap-zero reason', d.reason, 'agent-cap-zero');
+    }
+    { // invalid JSON: wait once, then fail
+      const m = mockFetch([geminiText('I think you should approve it'), geminiText('still not json')]);
+      const s = brain95.createBrainSession({ apiKey: SENTINEL_KEY, modelSetting: 'flash-lite', fetchFn: m.fn, sleepFn: async () => {}, nowFn: () => 1000000 });
+      const d1 = await s.decide({ ...baseInput, agentMessage: 'Hello?', capSetting: '' });
+      eq('X95 session: first invalid JSON waits', d1.action, 'wait');
+      const d2 = await s.decide({ ...baseInput, agentMessage: 'Hello again?', capSetting: '' });
+      eq('X95 session: second invalid JSON fails', d2.action, 'fail');
+      eq('X95 session: invalid-JSON reason is exact', d2.reason, 'brain-invalid-json');
+    }
+    { // 429 backoff: two 429s then a good answer
+      const m = mockFetch([{ status: 429 }, { status: 429 }, geminiText({ action: 'wait', reason: 'thinking' })]);
+      const sleeps = [];
+      const s = brain95.createBrainSession({ apiKey: SENTINEL_KEY, modelSetting: 'flash-lite', fetchFn: m.fn, sleepFn: async (ms) => { sleeps.push(ms); }, nowFn: () => 1000000 });
+      const d = await s.decide({ ...baseInput, agentMessage: 'One moment…', capSetting: '' });
+      eq('X95 session: 429s are survived with backoff', d.action, 'wait');
+      eq('X95 session: the 429 retry counter counts both retries', s.retries429, 2);
+      eq('X95 session: backoff delays are the scheduled ones', JSON.stringify(sleeps), JSON.stringify([2000, 5000]));
+      eq('X95 session: three HTTP calls were made for one decision', m.calls.length, 3);
+    }
+    { // 429 forever: bounded — fail after 1 + MAX retries
+      const m = mockFetch([{ status: 429 }]);
+      const s = brain95.createBrainSession({ apiKey: SENTINEL_KEY, modelSetting: 'flash-lite', fetchFn: m.fn, sleepFn: async () => {}, nowFn: () => 1000000 });
+      const d = await s.decide({ ...baseInput, agentMessage: 'One moment…', capSetting: '' });
+      eq('X95 session: endless 429 fails as brain-rate-limited', d.reason, 'brain-rate-limited');
+      eq('X95 session: 429 retries are bounded at 1 + MAX calls', m.calls.length, 1 + brain95.MAX_429_RETRIES);
+    }
+    { // pacing: a second decision inside the interval waits out the rest
+      const m = mockFetch([geminiText({ action: 'wait', reason: 'a' }), geminiText({ action: 'wait', reason: 'b' })]);
+      const sleeps = [];
+      const s = brain95.createBrainSession({ apiKey: SENTINEL_KEY, modelSetting: 'flash-lite', fetchFn: m.fn, sleepFn: async (ms) => { sleeps.push(ms); }, nowFn: () => 5000000 });
+      await s.decide({ ...baseInput, agentMessage: 'one', capSetting: '' });
+      await s.decide({ ...baseInput, agentMessage: 'two', capSetting: '' });
+      ok('X95 session: free-tier pacing sleeps the Flash-Lite interval', sleeps.includes(6000));
+      eq('X95 session: brain calls accumulate across decisions', s.brainCalls, 2);
+    }
+    { // reply passes through untouched
+      const m = mockFetch([geminiText({ action: 'reply', message: 'Please use the run settings: 9:16, 8s.', reason: 'agent asked for the aspect' })]);
+      const s = brain95.createBrainSession({ apiKey: SENTINEL_KEY, modelSetting: 'flash', fetchFn: m.fn, sleepFn: async () => {}, nowFn: () => 1000000 });
+      const d = await s.decide({ ...baseInput, agentMessage: 'What aspect ratio should I use?', capSetting: '' });
+      eq('X95 session: a brain reply passes through', d.action, 'reply');
+      eq('X95 session: the reply text is the brain text', d.message, 'Please use the run settings: 9:16, 8s.');
+    }
+    { // no key: the session itself refuses to think
+      const s = brain95.createBrainSession({ apiKey: '', modelSetting: 'flash-lite', fetchFn: async () => { throw new Error('must not be called'); }, sleepFn: async () => {}, nowFn: () => 0 });
+      const d = await s.decide({ ...baseInput, agentMessage: 'hi', capSetting: '' });
+      eq('X95 session: no key = fail brain-no-key, zero calls', d.reason, 'brain-no-key');
+    }
+
+    // --- driver pure helpers ---
+    eq('X95 driver fingerprints dedupe case + whitespace', driver95.chatFingerprint('  Hello   WORLD '), driver95.chatFingerprint('hello world'));
+    {
+      const seen = new Set([driver95.chatFingerprint('first')]);
+      const fresh = driver95.unseenTexts(['first', 'second', 'second'], seen);
+      eq('X95 driver unseen-text filter keeps only new texts, once', JSON.stringify(fresh), JSON.stringify(['second']));
+    }
+    ok('X95 driver spots a policy refusal', driver95.looksLikePolicyRefusal('I can\'t help with that — it goes against our content policy.'));
+    ok('X95 driver does not flag a normal reply as refusal', !driver95.looksLikePolicyRefusal('Sure — generating your lighthouse video now.'));
+    {
+      const t = driver95.buildAgentTask({ videoId: 'vid_x', promptText: 'p', promptIndex: 0, lockedTileFingerprint: 'fp1' });
+      eq('X95 driver task is SUBMITTED-shaped', t.status, 'SUBMITTED');
+      eq('X95 driver task capture key is its videoId', t.captureKey, 'vid_x');
+      eq('X95 driver task carries its birth fingerprint', t.lockedTileFingerprint, 'fp1');
+      eq('X95 driver task is marked viaAgent', t.viaAgent, true);
+    }
+    ok('X95 driver selector table leads with the proven agent chip', driver95.AGENT_SELECTORS.toggleChip.includes('agent-mode-chip'));
+    ok('X95 approve labels try Approve before Generate', driver95.APPROVE_LABELS.indexOf('Approve') < driver95.APPROVE_LABELS.indexOf('Generate'));
+
+    // --- the key can never appear in an [AGENT] log line ---
+    {
+      const lines = [
+        driver95.agentLine('toggle-on'),
+        driver95.agentLine('toggle-missing'),
+        driver95.agentLine('sent', { chars: 120 }),
+        driver95.agentLine('message', { text: 'This will cost 15 credits.' }),
+        driver95.agentLine('decision', { action: 'approve', reason: 'within-cap', brainCalls: 3 }),
+        driver95.agentLine('quote', { quoted: 15, cap: 15 }),
+        driver95.agentLine('approved', { quoted: 15 }),
+        driver95.agentLine('rejected', { reason: 'agent-cost-over-cap' }),
+        driver95.agentLine('parked'),
+        driver95.agentLine('reply-sent', { text: 'Use 9:16 please' }),
+        driver95.agentLine('media'),
+        driver95.agentLine('handoff'),
+        driver95.agentLine('waiting', { elapsedSec: 42 })
+      ];
+      ok('X95 every [AGENT] line carries the [AGENT] prefix', lines.every(l => l.startsWith('[AGENT]')));
+      ok('X95 no [AGENT] log line can contain the API key', lines.every(l => !l.includes(SENTINEL_KEY)));
+      const brainSrc = read95('engine/agentBrain.js');
+      const driverSrc = read95('engine/agentDriver.js');
+      ok('X95 brain sends the key only as the x-goog-api-key header', brainSrc.includes("'x-goog-api-key': apiKey"));
+      ok('X95 no log call in brain/driver names the key', !/log\([^)]*apiKey/.test(brainSrc) && !/log\([^)]*apiKey/.test(driverSrc));
+    }
+
+    // --- wiring pins: Dart -> bridge -> pool -> engine ---
+    {
+      const gen = read95('lib/providers/generator_provider.dart');
+      const bridgeDart = read95('lib/services/automation_bridge.dart');
+      const bridgeJs = read95('engine_bridge.js');
+      const pool = read95('engine/workerPool.js');
+      const flow = read95('engine/flowAutomation.js');
+      const NO_KEY_LINE = 'AI Brain: add your free Gemini API key in Settings';
+      ok('X95 Dart fails an Agent run fast with the exact no-key line', gen.includes(`'${NO_KEY_LINE}'`));
+      ok('X95 Dart guard keys on Agent mode (Bulk untouched)', gen.includes('final agentMode = !_isBulkMode;') && gen.includes('agentMode && settings.settings.geminiApiKey.trim().isEmpty'));
+      ok('X95 Agent cards are stamped for the via-Agent mark', gen.includes("agentMode ? 'Agent' : null"));
+      ok('X95 Dart start carries the agent fields to the bridge', gen.includes('agentMode: agentMode,') && gen.includes('geminiApiKey: settings.settings.geminiApiKey,'));
+      ok('X95 bridge body carries agentMode + the brain fields', bridgeDart.includes("'agentMode': agentMode,") && bridgeDart.includes("'geminiApiKey': geminiApiKey,"));
+      ok('X95 engine start turns the body flag into run settings', bridgeJs.includes('agentMode: config.agentMode === true'));
+      ok('X95 engine start builds the pool agentConfig from the run body', bridgeJs.includes('apiKey: (typeof config.geminiApiKey === \'string\''));
+      ok('X95 pool keeps the agentConfig OFF the persisted settings', pool.includes('this.agentConfig = (options.agentConfig'));
+      ok('X95 pool repeats the exact no-key line engine-side', pool.includes(`const msg = '${NO_KEY_LINE}';`));
+      ok('X95 pool submits Agent runs through submitViaAgent', pool.includes('await engine.submitViaAgent(') && pool.includes('settings.agentMode === true'));
+      ok('X95 pool parks cap-0 proposals as needs-attention', pool.includes("submitRes.status === 'AGENT_PARKED'") && pool.includes('setTaskNeedsCheck(nextTask.id, 1)'));
+      ok('X95 engine exposes submitViaAgent as a thin delegate', flow.includes('async submitViaAgent(') && flow.includes("require('./agentDriver')"));
+      ok('X95 Bulk parsing is byte-identical in behaviour (mode split intact)', gen.includes('} else if (!_isBulkMode) {') && gen.includes('parsed = PromptParser.parse(_promptsRawText);'));
+      ok('X95 the direct route still disables Flow Agent mode', flow.includes('await this.ensureAgentModeDisabled();'));
+    }
+
+    // --- Settings pins: model, provider, view ---
+    {
+      const model = read95('lib/models/app_settings.dart');
+      const provider = read95('lib/providers/settings_provider.dart');
+      const view = read95('lib/widgets/settings_view.dart');
+      ok('X95 settings model carries the AI Brain fields', model.includes('String geminiApiKey;') && model.includes('String brainModel;') && model.includes('String agentMaxCredits;'));
+      ok('X95 brain model defaults to Flash-Lite', model.includes("this.brainModel = 'flash-lite',"));
+      ok('X95 provider loads the AI Brain keys from the engine', provider.includes("data['gemini_api_key']") && provider.includes("data['brain_model']") && provider.includes("data['agent_max_credits']"));
+      ok('X95 provider saves the AI Brain keys to the engine', provider.includes("saveSetting('gemini_api_key'") && provider.includes("saveSetting('brain_model'") && provider.includes("saveSetting('agent_max_credits'"));
+      ok('X95 Settings has the AI BRAIN panel', view.includes("title: '🧠 AI BRAIN'"));
+      ok('X95 the key field is obscured', view.includes('obscureText: true'));
+      ok('X95 the dropdown offers both free models with their daily limits', view.includes('Gemini Flash-Lite (free, 500/day)') && view.includes('Gemini Flash (free, 20/day)'));
+      ok('X95 the cap field explains empty + zero', view.includes('Empty = run cost · 0 = never approve'));
+    }
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

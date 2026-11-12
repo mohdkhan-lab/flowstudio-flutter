@@ -16,8 +16,12 @@
 //      chat message,
 //   3. poll the Agent panel's WHOLE visible text (innerText) every
 //      ~3s and work only from marker substrings in that text —
-//      no per-message element hunting (.96 read per-message
-//      elements and stayed blind while a proposal sat on screen):
+//      no per-message element hunting. v2.48.98: the panel is
+//      anchored FROM THE COMPOSER (pageAnchorAgentPanel) — the
+//      .97 field run proved the old first-match selector table
+//      landed on the editor canvas (its whole text was the
+//      28-char placeholder "Start creating or drop media") while
+//      the real session panel sat elsewhere on the page:
 //        PROPOSAL = the text matches /costing\s+(\d+)\s+credits?/i
 //          AND an enabled Permission-options radio group is on the
 //          page. The quoted cost + the model named in the proposal
@@ -90,15 +94,26 @@
 // settle 60s, media wait 300s) — the .95 field run hung silently
 // for 10+ minutes at a proposal; that is impossible here.
 // ============================================================================
-// ⚠️ SELECTOR TABLE — the chat PANEL internals are still first-pass
-// candidates (the radio-group + proposal-text SEMANTICS above are
-// field-verified; the exact DOM hooks get proven on the owner's PC
-// from his copied live logs — now self-evidencing, see above).
-// Every Flow-Agent DOM guess lives in AGENT_SELECTORS below and
-// NOWHERE else, so calibration stays a one-table edit. The Agent
-// toggle row reuses the exact chip shape
-// engine/flowAutomation.js's ensureAgentModeDisabled has proven
-// against the live page since v2.48.x — that part is NOT a guess.
+// ⚠️ SELECTOR TABLE — v2.48.98: the panel is NO LONGER located
+// through the `panel` selector list below. On the live page that
+// list's first match was Flow's editor-canvas container — the
+// .97 field log's "panel text" was exactly "Start creating or
+// drop media" (28 chars) for the entire run, while the Agent
+// session panel (messages + proposal radio group) sat elsewhere
+// and was never inside the polled node. The panel is now
+// anchored from the chat composer — located with the exact
+// finder shape insertNativeText has proven against the live
+// page for months (the visible contenteditable editor named
+// "What do you want to create?") — by walking UP from the
+// composer to the largest ancestor containing NEITHER the
+// project grid NOR the canvas placeholder. The proposal's
+// radio group is likewise located DOCUMENT-WIDE, independent
+// of the panel anchor. AGENT_SELECTORS.panel survives ONLY as
+// a fallback root for the focus/settings helpers and as DOM
+// survey candidates. The Agent toggle row reuses the exact
+// chip shape engine/flowAutomation.js's
+// ensureAgentModeDisabled has proven against the live page
+// since v2.48.x — that part is NOT a guess.
 // ============================================================================
 
 const agentRules = require('./agentRules');
@@ -198,6 +213,11 @@ const SETTLE_POLL_MS = 500;
 const MEDIA_TIMEOUT_MS = 300 * 1000; // approved -> media in the project
 const MEDIA_POLL_MS = 3000;
 const MAX_PANEL_CHANGES = 40; // panel-text change fuse (runaway chat)
+const PANEL_GUARD_MS = 15 * 1000; // panel-not-found fail-fast window
+// Flow's empty-canvas placeholder. It is the ONLY text the .97
+// driver ever "read" as the Agent panel — it is canvas chrome,
+// never panel content, and is hard-excluded as such.
+const CANVAS_PLACEHOLDER_TEXT = 'Start creating or drop media';
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested in test_js — no page, no network)
@@ -222,6 +242,20 @@ function hasProposalText(text) {
 // informational only. It is NEVER a proposal (no "costing"
 // sentence) and no completion message ever follows; the media
 // itself is the only completion signal.
+/**
+ * v2.48.98: the hard guard behind the panel-not-found fail-fast.
+ * A panel text is implausible when it is near-empty (<40 chars)
+ * or consists ONLY of Flow's canvas placeholder — the exact
+ * failure shape of the .96/.97 field runs, where the "panel"
+ * being polled was the editor canvas. Exported for fixtures.
+ */
+function isPanelTextImplausible(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (t.length < 40) return true;
+  const stripped = t.split(CANVAS_PLACEHOLDER_TEXT).join('').replace(/\s+/g, ' ').trim();
+  return stripped.length === 0;
+}
+
 const STARTED_GENERATING_RE = /(i'?ve started generating|i have started generating|started generating|generation has started|now generating)/i;
 function looksLikeGenerationStarted(text) {
   return STARTED_GENERATING_RE.test(String(text || ''));
@@ -289,6 +323,11 @@ function agentLine(kind, data) {
     case 'handoff': return '[AGENT] handoff complete — the render monitor and download pipeline own this task now.';
     case 'waiting': return `[AGENT] still waiting for Flow's Agent… (${d.elapsedSec || 0}s) proposalGroup=${d.group || 'absent'} panel tail: "${agentRules.panelTail(d.tail || '')}"`;
     case 'panel-dump': return `[AGENT] failure (${d.reason || 'agent-failed'}) — last panel text (${String(d.text || '').length} chars): "${truncateForLog(d.text, 800)}"`;
+    case 'anchor': return d.found
+      ? `[AGENT] panel anchored at the Agent composer (ancestor depth ${Number(d.depth) || 0}, panel text ${Number(d.textLength) || 0} chars, composer inside the anchor).`
+      : '[AGENT] panel anchor NOT found at send time — the Agent composer ("What do you want to create?") could not be located; proposal detection falls back to the Permission options group alone.';
+    case 'survey': return `[AGENT] DOM survey: ${(Array.isArray(d.entries) ? d.entries : []).join(' | ')}`;
+    case 'panel-not-found': return `[AGENT] agent-panel-not-found: the anchored panel text stayed implausible (${Number(d.chars) || 0} chars) after sending and no Permission options group appeared — failing fast instead of waiting blind.`;
     default: return `[AGENT] ${kind}`;
   }
 }
@@ -342,25 +381,125 @@ function pageClickAgentToggle(selectors) {
   return true;
 }
 
-// v2.48.97: the panel reading is WHOLE-TEXT — the Agent panel
-// container's full visible text (innerText), whitespace-collapsed.
-// The driver works only from marker substrings in this text; there
-// is deliberately no per-message element hunting any more.
+// v2.48.98: anchor the Agent PANEL from the chat COMPOSER.
+// The .97 field run proved the old first-match selector table
+// landed on the editor canvas: the polled node's whole text
+// was "Start creating or drop media" (28 chars) for the entire
+// run, while the Agent session panel — session title, messages,
+// the proposal radio group and the composer ("What do you want
+// to create?") — sat elsewhere on the page and was NEVER inside
+// the polled node. The composer is the one panel element the
+// driver demonstrably reaches (sending works), and it is found
+// with the exact finder shape insertNativeText has proven
+// against the live page: the visible contenteditable editor
+// NAMED "What do you want to create?" (else the lowest editor
+// on screen). From the composer, walk UP to the panel: the
+// largest ancestor (bounded depth) that contains NEITHER the
+// project grid NOR the canvas placeholder — both live outside
+// the session panel, so the first ancestor swallowing either
+// is one step too high. The anchored node is stashed on
+// document.__fsAgentPanel for the other page helpers; if it
+// detaches, the driver re-anchors. Returns a descriptor (the
+// send-time survey line) plus the panel's current text.
+function pageAnchorAgentPanel(selectors) {
+  const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+  const stash = (el) => { try { document.__fsAgentPanel = el || null; } catch (e) {} };
+  let composer = null;
+  try {
+    const all = Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror, [contenteditable="true"][role="textbox"]'));
+    const ed = all.filter(e => e.isContentEditable || e.getAttribute('contenteditable') === 'true');
+    const pool = ed.length ? ed : all;
+    const vis = pool.filter(e => { const r = e.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (e.checkVisibility ? e.checkVisibility() : true); });
+    const list = vis.length ? vis : pool;
+    if (list.length) {
+      composer = list.find(e => /what do you want to create/i.test(e.getAttribute('aria-label') || e.getAttribute('data-placeholder') || e.getAttribute('placeholder') || '')) ||
+        list.slice().sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
+    }
+  } catch (e) { composer = null; }
+  if (!composer) {
+    stash(null);
+    return { found: false, depth: 0, textLength: 0, containsComposer: false, text: '' };
+  }
+  let panel = composer;
+  let depth = 0;
+  let cur = composer;
+  while (cur.parentElement && depth < 14) {
+    const up = cur.parentElement;
+    if (up === document.body || up === document.documentElement) break;
+    let upText = '';
+    try { upText = norm(up.innerText || ''); } catch (e) { upText = ''; }
+    let hasGrid = false;
+    try { hasGrid = !!up.querySelector('flow-grid-tile-container'); } catch (e) { hasGrid = false; }
+    if (hasGrid || upText.includes('Start creating or drop media')) break;
+    if (upText.length > 20000) break;
+    cur = up;
+    panel = cur;
+    depth++;
+  }
+  stash(panel);
+  const text = norm(panel.innerText || '');
+  return { found: true, depth, textLength: text.length, containsComposer: true, text };
+}
+
+// v2.48.98: read the ANCHORED panel's WHOLE visible text
+// (innerText, whitespace-collapsed). Returns null when there is
+// no live anchor (never anchored, or the node detached) so the
+// driver re-anchors explicitly instead of reading blind. There
+// is deliberately no per-message element hunting.
 function pageReadAgentPanelText(selectors) {
   let panel = null;
-  for (const sel of selectors.panel) {
-    try { panel = document.querySelector(sel); } catch (e) { panel = null; }
-    if (panel) break;
-  }
-  if (!panel) return '';
+  try { panel = document.__fsAgentPanel || null; } catch (e) { panel = null; }
+  if (!panel || !document.contains(panel)) return null;
   return String(panel.innerText || '').replace(/\s+/g, ' ').trim();
+}
+
+// v2.48.98: a one-time DOM survey for the panel-not-found
+// failure — for each candidate container: how it was found,
+// tag/role/aria-label, text length and first 80 chars. A blind
+// panel failure must never happen again: the survey makes the
+// next one self-proving from the log alone.
+function pageSurveyAgentDom(selectors) {
+  const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+  const describe = (via, el) => {
+    if (!el) return null;
+    const text = norm(el.innerText || '');
+    const role = el.getAttribute ? el.getAttribute('role') : null;
+    const aria = el.getAttribute ? el.getAttribute('aria-label') : null;
+    return `${via} <${String(el.tagName || '?').toLowerCase()}${role ? ` role=${role}` : ''}${aria ? ` aria="${aria}"` : ''}> ${text.length} chars "${text.substring(0, 80)}"`;
+  };
+  const entries = [];
+  const seen = new Set();
+  const push = (via, el) => {
+    if (!el || seen.has(el) || entries.length >= 12) return;
+    seen.add(el);
+    const d = describe(via, el);
+    if (d) entries.push(d);
+  };
+  try {
+    const all = Array.from(document.querySelectorAll('div.ProseMirror[contenteditable="true"], [contenteditable="true"][role="textbox"]'));
+    const composer = all.find(e => /what do you want to create/i.test(e.getAttribute('aria-label') || e.getAttribute('data-placeholder') || e.getAttribute('placeholder') || ''));
+    let cur = composer || null;
+    let depth = 0;
+    while (cur && depth < 6) { push(`composer-ancestor depth ${depth}`, cur); cur = cur.parentElement; depth++; }
+  } catch (e) {}
+  for (const sel of (selectors.panel || [])) {
+    try { push(`selector ${sel}`, document.querySelector(sel)); } catch (e) {}
+  }
+  try { push('landmark aside', document.querySelector('aside')); } catch (e) {}
+  try { push('landmark complementary', document.querySelector('[role="complementary"]')); } catch (e) {}
+  try { push('permission group', document.querySelector('[role="radiogroup"]')); } catch (e) {}
+  return entries;
 }
 
 function pageFocusAgentInput(selectors) {
   let panel = null;
-  for (const sel of selectors.panel) {
-    try { panel = document.querySelector(sel); } catch (e) { panel = null; }
-    if (panel) break;
+  try { panel = document.__fsAgentPanel || null; } catch (e) { panel = null; }
+  if (panel && !document.contains(panel)) panel = null;
+  if (!panel) {
+    for (const sel of selectors.panel) {
+      try { panel = document.querySelector(sel); } catch (e) { panel = null; }
+      if (panel) break;
+    }
   }
   if (!panel) return false;
   for (const sel of selectors.input) {
@@ -376,9 +515,13 @@ function pageFocusAgentInput(selectors) {
 
 function pageClickAgentSend(selectors) {
   let panel = null;
-  for (const sel of selectors.panel) {
-    try { panel = document.querySelector(sel); } catch (e) { panel = null; }
-    if (panel) break;
+  try { panel = document.__fsAgentPanel || null; } catch (e) { panel = null; }
+  if (panel && !document.contains(panel)) panel = null;
+  if (!panel) {
+    for (const sel of selectors.panel) {
+      try { panel = document.querySelector(sel); } catch (e) { panel = null; }
+      if (panel) break;
+    }
   }
   const roots = panel ? [panel, document.body] : [document.body];
   for (const root of roots) {
@@ -406,23 +549,35 @@ function pageGridFingerprints() {
 // proposal awaits an answer).
 function pagePermissionState(selectors) {
   const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
-  let panel = null;
-  for (const sel of selectors.panel) {
-    try { panel = document.querySelector(sel); } catch (e) { panel = null; }
-    if (panel) break;
-  }
-  const root = panel || document.body;
-  let promptLocked = false;
-  try {
-    promptLocked = Array.from(root.querySelectorAll('button'))
-      .some(b => norm(b.getAttribute('aria-label') || b.innerText || '').toLowerCase() === 'stop');
-  } catch (e) {}
+  // v2.48.98: the group is located DOCUMENT-WIDE — the decision
+  // UI is ground truth and must be findable even when the panel
+  // anchor is wrong or missing. In .96/.97 this search was
+  // scoped to the mis-anchored "panel" node (the canvas), so
+  // the group read absent for entire runs while a proposal sat
+  // on screen. groupText is the text of the nearest panel-like
+  // ancestor carrying the costing sentence — a proposal source
+  // independent of the panel anchor.
   let group = null;
   for (const sel of selectors.permissionGroup) {
-    try { group = root.querySelector(sel); } catch (e) { group = null; }
+    try { group = document.querySelector(sel); } catch (e) { group = null; }
     if (group) break;
   }
-  if (!group) return { present: false, enabled: false, options: [], promptLocked };
+  if (!group) return { present: false, enabled: false, options: [], promptLocked: false, groupText: '' };
+  let groupText = norm(group.innerText || '');
+  let anc = group.parentElement;
+  let hops = 0;
+  while (anc && hops < 8) {
+    const t = norm(anc.innerText || '');
+    if (/costing\s+\d{1,4}\s*credits?\b/i.test(t)) { groupText = t.substring(0, 1500); break; }
+    anc = anc.parentElement;
+    hops++;
+  }
+  let promptLocked = false;
+  try {
+    const scope = group.parentElement || document.body;
+    promptLocked = Array.from(scope.querySelectorAll('button'))
+      .some(b => norm(b.getAttribute('aria-label') || b.innerText || '').toLowerCase() === 'stop');
+  } catch (e) {}
   const optionEls = [];
   for (const sel of selectors.radioOption) {
     try {
@@ -435,7 +590,7 @@ function pagePermissionState(selectors) {
   const groupDisabled = group.getAttribute('aria-disabled') === 'true' || group.hasAttribute('disabled');
   const anyEnabled = optionEls.some(el => !(el.disabled || el.getAttribute('aria-disabled') === 'true' ||
     (el.querySelector && el.querySelector('input[disabled]'))));
-  return { present: true, enabled: !groupDisabled && anyEnabled, options, promptLocked };
+  return { present: true, enabled: !groupDisabled && anyEnabled, options, promptLocked, groupText };
 }
 
 // Click ONE option of the permission radio group. The label
@@ -444,15 +599,11 @@ function pagePermissionState(selectors) {
 // clicked, null when no option carries it.
 function pageClickPermissionOption(selectors, wanted) {
   const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
-  let panel = null;
-  for (const sel of selectors.panel) {
-    try { panel = document.querySelector(sel); } catch (e) { panel = null; }
-    if (panel) break;
-  }
-  const root = panel || document.body;
+  // v2.48.98: document-wide, like pagePermissionState — the
+  // click must reach the SAME group the state read found.
   let group = null;
   for (const sel of selectors.permissionGroup) {
-    try { group = root.querySelector(sel); } catch (e) { group = null; }
+    try { group = document.querySelector(sel); } catch (e) { group = null; }
     if (group) break;
   }
   if (!group) return null;
@@ -494,9 +645,13 @@ function pageGalleryLabels(selectors) {
 // panel prompt box.
 function pageOpenAgentSettings(selectors) {
   let panel = null;
-  for (const sel of selectors.panel) {
-    try { panel = document.querySelector(sel); } catch (e) { panel = null; }
-    if (panel) break;
+  try { panel = document.__fsAgentPanel || null; } catch (e) { panel = null; }
+  if (panel && !document.contains(panel)) panel = null;
+  if (!panel) {
+    for (const sel of selectors.panel) {
+      try { panel = document.querySelector(sel); } catch (e) { panel = null; }
+      if (panel) break;
+    }
   }
   const roots = panel ? [panel, document.body] : [document.body];
   for (const root of roots) {
@@ -845,6 +1000,17 @@ async function submitViaAgent(engine, args) {
   }
   log('sent', { chars: promptText.length });
 
+  // v2.48.98: anchor the panel read FROM THE COMPOSER and log
+  // the anchor once per run — every field log from now on
+  // self-proves which container the driver is reading. The
+  // panel-not-found guard's clock starts at the send.
+  let anchorInfo = null;
+  try { anchorInfo = await engine.page.evaluate(pageAnchorAgentPanel, AGENT_SELECTORS); } catch (e) { anchorInfo = null; }
+  log('anchor', anchorInfo || { found: false });
+  const sentAt = Date.now();
+  const panelGuardMs = a.panelGuardMs || PANEL_GUARD_MS;
+  let panelGuardFired = false;
+
   // 3. The conversation loop — whole-text polling. The ONLY texts
   // ever sent are the user's instruction and, at most once, its
   // re-send after the settings fix. Any other Agent text (a
@@ -862,9 +1028,13 @@ async function submitViaAgent(engine, args) {
   let generationStarted = false;
 
   // ANY failure from here on logs the full last-seen panel text
-  // with the failure reason first — no run fails blind.
+  // with the failure reason first — no run fails blind. When the
+  // proposal group's own ancestor text carries the proposal it
+  // is the better evidence (it is what the decision read).
+  let lastGroupText = '';
   const failRun = (reason) => {
-    if (lastPanelText) log('panel-dump', { reason, text: lastPanelText }, 'error');
+    const evidence = (lastGroupText && hasProposalText(lastGroupText)) ? lastGroupText : lastPanelText;
+    if (evidence) log('panel-dump', { reason, text: evidence }, 'error');
     return { status: 'AGENT_FAILED', reason };
   };
 
@@ -876,7 +1046,16 @@ async function submitViaAgent(engine, args) {
     let text = lastPanelText;
     try {
       const read = await engine.page.evaluate(pageReadAgentPanelText, AGENT_SELECTORS);
-      if (typeof read === 'string') text = read;
+      if (typeof read === 'string') {
+        text = read;
+      } else {
+        // No live anchor (never set, or the node detached) —
+        // re-anchor once from the composer and take the
+        // anchor's own text. A late-rendering panel is picked
+        // up here on a later poll.
+        const re = await engine.page.evaluate(pageAnchorAgentPanel, AGENT_SELECTORS);
+        if (re && re.found && typeof re.text === 'string') text = re.text;
+      }
     } catch (e) {}
     if (text !== lastPanelText) {
       lastPanelText = text;
@@ -889,9 +1068,11 @@ async function submitViaAgent(engine, args) {
       if (text && looksLikePolicyRefusal(text)) {
         return { status: 'VIOLATION', reason: 'Flow\'s Agent refused this request (content policy).' };
       }
-      if (text && !hasProposalText(text) && !looksLikeGenerationStarted(text)) {
+      if (text && !hasProposalText(text) && !looksLikeGenerationStarted(text) && !isPanelTextImplausible(text)) {
         // A question or any other new Agent text — logged, never
-        // answered. The wait for a proposal continues.
+        // answered. The wait for a proposal continues. (The
+        // implausibility guard is hard: the canvas placeholder
+        // is never reported as an agent message.)
         log('message', { text });
       }
     }
@@ -901,15 +1082,34 @@ async function submitViaAgent(engine, args) {
     // always. Handled once per continuous appearance of the
     // group (a click disables the group; a fresh proposal
     // re-enables it and is handled again).
+    // v2.48.98: the group is polled document-wide on EVERY pass
+    // (it is the decision UI), and its own ancestor text is a
+    // proposal source independent of the panel anchor.
     let perm = null;
-    if (hasProposalText(lastPanelText)) {
-      try { perm = await engine.page.evaluate(pagePermissionState, AGENT_SELECTORS); } catch (e) { perm = null; }
+    try { perm = await engine.page.evaluate(pagePermissionState, AGENT_SELECTORS); } catch (e) { perm = null; }
+    if (perm && typeof perm.groupText === 'string' && perm.groupText) lastGroupText = perm.groupText;
+    const proposalText = hasProposalText(lastGroupText) ? lastGroupText : lastPanelText;
+
+    // v2.48.98 panel-not-found guard — never wait blind again:
+    // if the anchored text is implausible (near-empty, or
+    // nothing but the canvas placeholder) AND no permission
+    // group has appeared within the guard window, log a DOM
+    // survey and fail fast with 'agent-panel-not-found'
+    // instead of burning the whole proposal wait.
+    if (!panelGuardFired && !(perm && perm.present) && Date.now() - sentAt > panelGuardMs && isPanelTextImplausible(lastPanelText)) {
+      panelGuardFired = true;
+      let survey = [];
+      try { survey = await engine.page.evaluate(pageSurveyAgentDom, AGENT_SELECTORS); } catch (e) { survey = []; }
+      if (Array.isArray(survey) && survey.length) log('survey', { entries: survey }, 'warn');
+      log('panel-not-found', { chars: String(lastPanelText || '').length }, 'error');
+      return failRun('agent-panel-not-found: after sending, the text at the anchored panel stayed implausible (near-empty, or only the canvas placeholder) and no Permission options group appeared — the Agent session panel was not located. Nothing was approved and no credits were spent. The DOM survey above shows what the page actually offered.');
     }
-    if (perm && perm.present && perm.enabled) {
+
+    if (perm && perm.present && perm.enabled && hasProposalText(proposalText)) {
       if (!proposalHandled) {
         proposalHandled = true;
-        const quoted = agentRules.parseQuotedCost(lastPanelText);
-        const proposalModel = agentRules.parseProposalModel(lastPanelText);
+        const quoted = agentRules.parseQuotedCost(proposalText);
+        const proposalModel = agentRules.parseProposalModel(proposalText);
         const decision = agentRules.decideOnProposal({
           quotedCost: quoted,
           proposalModel,
@@ -1082,8 +1282,11 @@ module.exports = {
   SETTLE_TIMEOUT_MS,
   MEDIA_TIMEOUT_MS,
   MAX_PANEL_CHANGES,
+  PANEL_GUARD_MS,
+  CANVAS_PLACEHOLDER_TEXT,
   looksLikePolicyRefusal,
   hasProposalText,
+  isPanelTextImplausible,
   looksLikeGenerationStarted,
   desiredAgentSettings,
   truncateForLog,

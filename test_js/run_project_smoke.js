@@ -131,7 +131,7 @@ async function main() {
     if (child.exitCode !== null) {
       refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
     }
-    check('status version is 2.48.97', status && status.version === '2.48.97', JSON.stringify(status));
+    check('status version is 2.48.98', status && status.version === '2.48.98', JSON.stringify(status));
 
     const redoEarly = await req('POST', '/api/generation/redo-missing', {});
     check('redo before any run -> 400', redoEarly.status === 400, JSON.stringify(redoEarly.data));

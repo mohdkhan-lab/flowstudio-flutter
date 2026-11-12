@@ -8129,6 +8129,11 @@ async function main() {
               case 'pageReadAgentPanelText':
                 if (opts.onReadPanel) opts.onReadPanel(state);
                 return state.panelText;
+              case 'pageAnchorAgentPanel':
+                // v2.48.98: the flat harness models a working
+                // composer anchor over its single panel text.
+                return { found: true, depth: 2, textLength: String(state.panelText || '').length, containsComposer: true, text: state.panelText };
+              case 'pageSurveyAgentDom': return [];
               case 'pagePermissionState': return state.permEnabled
                 ? { present: true, enabled: true, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: true }
                 : { present: state.permPresent, enabled: false, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: false };
@@ -8310,6 +8315,297 @@ async function main() {
       const res = await driver97.submitViaAgent(fx.engine, runArgs97({ proposalWaitMs: 150 }));
       eq('X97 fixture timeout: a silent Agent fails the run', res.status, 'AGENT_FAILED');
       ok('X97 fixture timeout: the reason is agent-proposal-timeout', String(res.reason || '').includes('agent-proposal-timeout'));
+    }
+  }
+
+  // =====================================================================
+  // X98 (v2.48.98) — AGENT PANEL ANCHOR: the .97 field run proved
+  // the old first-match panel selector landed on Flow's editor
+  // canvas (the "panel text" was exactly the 28-char canvas
+  // placeholder "Start creating or drop media" for the whole
+  // run, proposalGroup=absent throughout, while the Agent's
+  // proposal sat in the real session panel elsewhere). The fix:
+  // anchor the panel FROM THE COMPOSER (the proven
+  // insertNativeText finder shape — the visible contenteditable
+  // editor named "What do you want to create?"), walk UP to the
+  // largest ancestor containing neither the grid nor the canvas
+  // placeholder, locate the Permission options group
+  // document-wide with its ancestor text as a proposal source,
+  // and fail FAST ('agent-panel-not-found' + a DOM survey) when
+  // the anchored text is implausible — never wait blind again.
+  // The fixtures below run the REAL page functions against a
+  // mini-DOM modelling the real page: canvas placeholder in a
+  // SEPARATE main-area container, the Agent panel elsewhere.
+  // =====================================================================
+  {
+    const driver98 = require('../engine/agentDriver');
+    const fs98 = require('fs');
+    const path98 = require('path');
+    const read98 = (rel) => fs98.readFileSync(path98.join(__dirname, '..', rel), 'utf8');
+    const driverSrc98 = read98('engine/agentDriver.js');
+
+    // --- source pins ---
+    ok('X98 the driver anchors the panel from the composer', driverSrc98.includes('pageAnchorAgentPanel') && driverSrc98.includes('/what do you want to create/i'));
+    ok('X98 the anchored panel is stashed on the document for the other page helpers', driverSrc98.includes('document.__fsAgentPanel'));
+    ok('X98 the panel-not-found guard + survey exist', driverSrc98.includes('agent-panel-not-found') && driverSrc98.includes('pageSurveyAgentDom'));
+    ok('X98 the permission group is read document-wide', driverSrc98.includes('document.querySelector(sel)') && driverSrc98.includes('groupText'));
+    eq('X98 the panel guard window is 15s (never the 180s blind wait)', driver98.PANEL_GUARD_MS, 15000);
+    eq('X98 the canvas placeholder constant is the field-proven string', driver98.CANVAS_PLACEHOLDER_TEXT, 'Start creating or drop media');
+
+    // --- the implausibility guard (pure) ---
+    ok('X98 guard: the bare canvas placeholder is implausible', driver98.isPanelTextImplausible('Start creating or drop media'));
+    ok('X98 guard: empty text is implausible', driver98.isPanelTextImplausible(''));
+    ok('X98 guard: near-empty text is implausible', driver98.isPanelTextImplausible('Untitled session'));
+    ok('X98 guard: a real panel text is plausible', !driver98.isPanelTextImplausible('Untitled session — I\'m going to generate a video of a red ball rolling on green grass, costing 7 credits? Approve Reject'));
+    {
+      const a = driver98.agentLine('anchor', { found: true, depth: 4, textLength: 231, containsComposer: true });
+      ok('X98 the anchor line names the composer + depth', a.includes('panel anchored at the Agent composer') && a.includes('depth 4'));
+      const nf = driver98.agentLine('panel-not-found', { chars: 28 });
+      ok('X98 the panel-not-found line carries the reason', nf.includes('agent-panel-not-found'));
+    }
+
+    // --- mini-DOM: just enough DOM for the REAL page functions ---
+    const splitTop98 = (str, sep) => {
+      const out = []; let cur = ''; let br = 0; let q = false;
+      for (const ch of String(str)) {
+        if (q) { cur += ch; if (ch === '"') q = false; continue; }
+        if (ch === '"') { q = true; cur += ch; continue; }
+        if (ch === '[') br++;
+        if (ch === ']') br--;
+        if (ch === sep && br === 0) { if (cur.trim()) out.push(cur.trim()); cur = ''; continue; }
+        cur += ch;
+      }
+      if (cur.trim()) out.push(cur.trim());
+      return out;
+    };
+    const parseCompound98 = (src) => {
+      const c = { tag: null, classes: [], attrs: [] };
+      let rest = src;
+      const tagM = rest.match(/^(\*|[a-zA-Z][a-zA-Z0-9-]*)/);
+      if (tagM) { c.tag = tagM[1] === '*' ? null : tagM[1].toLowerCase(); rest = rest.slice(tagM[1].length); }
+      while (rest.length) {
+        if (rest[0] === '.') { const m = rest.match(/^\.([a-zA-Z0-9_-]+)/); c.classes.push(m[1]); rest = rest.slice(m[0].length); }
+        else if (rest[0] === '[') {
+          const end = rest.indexOf(']');
+          const body = rest.slice(1, end);
+          const m = body.match(/^([a-zA-Z0-9_-]+)(\*?=)?\s*(?:"([^"]*)")?\s*(i)?$/);
+          c.attrs.push({ name: m[1], op: m[2] || null, value: m[3] !== undefined ? m[3] : null, ci: !!m[4] });
+          rest = rest.slice(end + 1);
+        } else if (rest.startsWith(':checked')) { c.attrs.push({ name: 'checked', op: 'pseudo', value: null, ci: false }); rest = rest.slice(8); }
+        else { rest = rest.slice(1); }
+      }
+      return c;
+    };
+    const matchCompound98 = (el, c) => {
+      if (c.tag && String(el.tagName || '').toLowerCase() !== c.tag) return false;
+      const classes = String(el.className || '').split(/\s+/).filter(Boolean);
+      for (const cl of c.classes) if (!classes.includes(cl)) return false;
+      for (const a of c.attrs) {
+        if (a.op === 'pseudo') { if (!(a.name === 'checked' && el.checked === true)) return false; continue; }
+        if (a.name === 'disabled' && !a.op) { if (!(el.hasAttribute('disabled') || el.disabled === true)) return false; continue; }
+        const v = el.getAttribute(a.name);
+        if (!a.op) { if (v === null) return false; continue; }
+        if (v === null) return false;
+        const hay = a.ci ? v.toLowerCase() : v;
+        const needle = a.ci ? String(a.value).toLowerCase() : String(a.value);
+        if (a.op === '=' && hay !== needle) return false;
+        if (a.op === '*=' && !hay.includes(needle)) return false;
+      }
+      return true;
+    };
+    const descendants98 = (el) => {
+      const out = [];
+      const walk = (n) => { for (const c of n.children) { out.push(c); walk(c); } };
+      walk(el);
+      return out;
+    };
+    const queryAll98 = (rootEl, sel, includeSelf) => {
+      const groups = splitTop98(sel, ',').map(g => splitTop98(g, ' ').map(parseCompound98)).filter(g => g.length);
+      const universe = includeSelf ? [rootEl, ...descendants98(rootEl)] : descendants98(rootEl);
+      const matchesGroup = (el, compounds) => {
+        if (!matchCompound98(el, compounds[compounds.length - 1])) return false;
+        let idx = compounds.length - 2;
+        let n = el.parentElement;
+        const stopAt = rootEl.parentElement;
+        while (idx >= 0 && n && n !== stopAt) {
+          if (matchCompound98(n, compounds[idx])) idx--;
+          n = n.parentElement;
+        }
+        return idx < 0;
+      };
+      return universe.filter(el => groups.some(g => matchesGroup(el, g)));
+    };
+    const makeEl98 = (tag, opts) => {
+      const o = opts || {};
+      const el = {
+        tagName: String(tag || 'div').toUpperCase(),
+        children: [],
+        parentElement: null,
+        className: o.className || '',
+        disabled: !!o.disabled,
+        checked: !!o.checked,
+        _text: o.text || '',
+        _attrs: {},
+        _rect: o.rect || { width: 100, height: 20, top: 0 },
+        _onClick: o.onClick || null,
+        getAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null; },
+        setAttribute(name, v) { this._attrs[name] = String(v); if (name === 'class') this.className = String(v); },
+        hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name); },
+        removeAttribute(name) { delete this._attrs[name]; },
+        appendChild(child) { child.parentElement = this; this.children.push(child); return child; },
+        contains(other) { let n = other; while (n) { if (n === this) return true; n = n.parentElement; } return false; },
+        focus() { this._focused = true; },
+        click() { this._clicks = (this._clicks || 0) + 1; if (this._onClick) this._onClick(this); },
+        getBoundingClientRect() { return { width: this._rect.width, height: this._rect.height, top: this._rect.top, bottom: this._rect.top + this._rect.height, left: 0, right: this._rect.width }; },
+        checkVisibility() { return true; },
+        querySelector(sel2) { return queryAll98(this, sel2, false)[0] || null; },
+        querySelectorAll(sel2) { return queryAll98(this, sel2, false); }
+      };
+      if (o.className) el._attrs.class = o.className;
+      if (o.attrs) for (const k of Object.keys(o.attrs)) el.setAttribute(k, o.attrs[k]);
+      Object.defineProperty(el, 'innerText', { get() { const parts = []; if (this._text) parts.push(this._text); for (const c of this.children) { const t = c.innerText; if (t) parts.push(t); } return parts.join(' '); } });
+      Object.defineProperty(el, 'isContentEditable', { get() { return this.getAttribute('contenteditable') === 'true'; } });
+      return el;
+    };
+    const makeDocument98 = (bodyChildren) => {
+      const html = makeEl98('html');
+      const body = makeEl98('body');
+      html.appendChild(body);
+      (bodyChildren || []).forEach(c => body.appendChild(c));
+      return {
+        documentElement: html,
+        body,
+        __fsAgentPanel: null,
+        querySelector(sel) { return queryAll98(html, sel, true)[0] || null; },
+        querySelectorAll(sel) { return queryAll98(html, sel, true); },
+        contains(el) { return !!el && (el === html || html.contains(el)); }
+      };
+    };
+    const evaluateWithDom98 = (doc, fn, ...args) => {
+      const prevDoc = global.document;
+      const prevWin = global.window;
+      global.document = doc;
+      global.window = { document: doc };
+      try { return fn(...args); } finally {
+        if (prevDoc === undefined) delete global.document; else global.document = prevDoc;
+        if (prevWin === undefined) delete global.window; else global.window = prevWin;
+      }
+    };
+    const makeAgentEngine98 = (doc) => {
+      const logs = [];
+      const typed = [];
+      const engine = {
+        isStopping: false,
+        capturedVideoUrls: [],
+        claimedTileFingerprints: new Set(),
+        currentAccount: { name: 'Mock Account' },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        insertNativeText: async (t) => { typed.push(String(t)); },
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        getRequiredCredits: () => 7,
+        page: {
+          keyboard: { press: async () => {}, type: async (t) => { typed.push(String(t)); } },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) typed.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => evaluateWithDom98(doc, fn, ...rest)
+        }
+      };
+      return { engine, logs, typed };
+    };
+    const runArgs98 = (over) => ({
+      promptText: 'A red ball rolling on green grass, sunny day',
+      settings: { model: 'Omni Flash', aspectRatio: '9:16', duration: '10s', quality: '360p' },
+      promptIndex: 0,
+      totalPrompts: 1,
+      chatPollMs: 5,
+      mediaPollMs: 5,
+      settlePollMs: 5,
+      settleTimeoutMs: 5000,
+      mediaTimeoutMs: 3000,
+      heartbeatMs: 40,
+      ...(over || {})
+    });
+    const PROP_OMNI11_98 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.1 Flash. Would you like me to kick off this 1 video generation, costing 7 credits?';
+
+    { // the decisive fixture: canvas placeholder in a SEPARATE
+      // main-area container, the Agent panel (composer + messages
+      // + proposal radio group) elsewhere — the driver must
+      // anchor to the panel via the composer, never mistake the
+      // canvas text for panel content, and Approve within cost.
+      const clicksA = [];
+      const gridA = makeEl98('div', { className: 'grid' });
+      const groupA = makeEl98('div', { attrs: { role: 'radiogroup', 'aria-label': 'Permission options' } });
+      const mkRadioA = (label, extra) => makeEl98('div', { attrs: { role: 'radio' }, text: label, onClick: () => { clicksA.push(label); if (extra) extra(); } });
+      groupA.appendChild(mkRadioA('Approve', () => {
+        gridA.appendChild(makeEl98('flow-grid-tile-container', { attrs: { 'aria-label': 'A red ball rolling on green grass, sunny day' } }));
+        groupA.setAttribute('aria-disabled', 'true');
+      }));
+      groupA.appendChild(mkRadioA('Always approve in project'));
+      groupA.appendChild(mkRadioA('Reject'));
+      const composerA = makeEl98('div', { className: 'ProseMirror', attrs: { contenteditable: 'true', role: 'textbox', 'data-placeholder': 'What do you want to create?' }, rect: { width: 320, height: 44, top: 700 } });
+      const prosemirrorWrapA = makeEl98('div', { className: 'prosemirror-editor' });
+      prosemirrorWrapA.appendChild(composerA);
+      const composerWrapA = makeEl98('div', { className: 'composer-wrap' });
+      composerWrapA.appendChild(prosemirrorWrapA);
+      composerWrapA.appendChild(makeEl98('button', { attrs: { 'aria-label': 'Send' } }));
+      const messagesA = makeEl98('div', { className: 'messages' });
+      messagesA.appendChild(makeEl98('div', { text: 'A red ball rolling on green grass, sunny day' }));
+      messagesA.appendChild(makeEl98('div', { text: PROP_OMNI11_98 }));
+      const panelInnerA = makeEl98('div', { className: 'panel-inner' });
+      panelInnerA.appendChild(makeEl98('div', { text: 'Untitled session' }));
+      panelInnerA.appendChild(messagesA);
+      panelInnerA.appendChild(groupA);
+      panelInnerA.appendChild(composerWrapA);
+      const asideA = makeEl98('aside', { className: 'session-panel' });
+      asideA.appendChild(panelInnerA);
+      const canvasA = makeEl98('main', { className: 'canvas' });
+      canvasA.appendChild(makeEl98('div', { text: 'Start creating or drop media' }));
+      canvasA.appendChild(gridA);
+      const appA = makeEl98('div', { className: 'app' });
+      appA.appendChild(makeEl98('button', { className: 'agent-mode-chip checked', text: 'Agent' }));
+      appA.appendChild(canvasA);
+      appA.appendChild(asideA);
+      const fx = makeAgentEngine98(makeDocument98([appA]));
+      const res = await driver98.submitViaAgent(fx.engine, runArgs98({}));
+      eq('X98 fixture panel: the run hands off a SUBMITTED task', res.status, 'SUBMITTED');
+      eq('X98 fixture panel: exactly the Approve radio was clicked', JSON.stringify(clicksA), JSON.stringify(['Approve']));
+      eq('X98 fixture panel: the task binds the new tile fingerprint', res.lockedTileFingerprint, 'a red ball rolling on green grass sunny day');
+      ok('X98 fixture panel: the anchor line proves the composer anchor', fx.logs.some(l => l.includes('panel anchored at the Agent composer')));
+      ok('X98 fixture panel: the proposal was read (quote + model logged)', fx.logs.some(l => l.includes('generation proposal') && l.includes('quoted 7 credits') && l.includes('Omni 1.1 Flash')));
+      ok('X98 fixture panel: the canvas text was NEVER reported as an agent message', !fx.logs.some(l => l.includes('agent message: "Start creating or drop media"')));
+      ok('X98 fixture panel: the canvas text was NEVER a heartbeat panel tail', !fx.logs.some(l => l.includes('panel tail: "Start creating or drop media"')));
+      eq('X98 fixture panel: only the user instruction was ever typed', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day']));
+    }
+    { // no panel anywhere (canvas only — its wrapper even carries
+      // the legacy selector trap class): the run must fail FAST
+      // with 'agent-panel-not-found' + a DOM survey, far under
+      // the 180s proposal timeout, spending nothing.
+      const canvasB = makeEl98('div', { className: 'agent-panel-canvas' });
+      canvasB.appendChild(makeEl98('div', { text: 'Start creating or drop media' }));
+      const docB = makeDocument98([
+        makeEl98('aside', { text: 'Projects' }),
+        makeEl98('button', { className: 'agent-mode-chip checked', text: 'Agent' }),
+        canvasB
+      ]);
+      const fx = makeAgentEngine98(docB);
+      const startedB = Date.now();
+      const res = await driver98.submitViaAgent(fx.engine, runArgs98({ panelGuardMs: 150 }));
+      const elapsedB = Date.now() - startedB;
+      eq('X98 fixture no-panel: the run fails', res.status, 'AGENT_FAILED');
+      ok('X98 fixture no-panel: the reason is agent-panel-not-found', String(res.reason || '').includes('agent-panel-not-found'));
+      ok('X98 fixture no-panel: it did NOT burn the proposal timeout', !String(res.reason || '').includes('agent-proposal-timeout') && elapsedB < 10000);
+      ok('X98 fixture no-panel: the anchor miss was logged at send time', fx.logs.some(l => l.includes('panel anchor NOT found')));
+      ok('X98 fixture no-panel: the DOM survey was logged and shows the canvas trap', fx.logs.some(l => l.includes('DOM survey') && l.includes('Start creating or drop media')));
+      ok('X98 fixture no-panel: the panel-not-found line was logged', fx.logs.some(l => l.includes('agent-panel-not-found')));
+      ok('X98 fixture no-panel: nothing was ever reported as an agent message', !fx.logs.some(l => l.includes('agent message:')));
+      eq('X98 fixture no-panel: only the user instruction was ever typed', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day']));
     }
   }
 

@@ -2889,19 +2889,19 @@ class FlowAutomationEngine {
   // v2.48.95 (AGENT MODE): Agent Prompt runs submit through
   // Google Flow's OWN built-in Agent instead of the direct
   // prompt box — engine/agentDriver.js does the driving (Agent
-  // toggle, chat, brain-approved proposals) and returns the same
+  // toggle, chat, rule-checked proposals — v2.48.97: fixed rules
+  // only, no external decision service) and returns the same
   // result vocabulary + submitted-task shape as submitPrompt, so
   // the pool's render monitor and the download pipeline treat an
   // Agent task exactly like a direct one. The direct route above
   // keeps calling ensureAgentModeDisabled — Agent mode is opt-in
   // per run (settings.agentMode), never a global state.
-  async submitViaAgent(promptText, settings, promptIndex, totalPrompts, agentConfig) {
+  async submitViaAgent(promptText, settings, promptIndex, totalPrompts) {
     return agentDriver.submitViaAgent(this, {
       promptText,
       settings,
       promptIndex,
-      totalPrompts,
-      agentConfig
+      totalPrompts
     });
   }
 

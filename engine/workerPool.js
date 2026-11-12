@@ -96,16 +96,6 @@ class WorkerPool {
     this.allowedAccountIds = Array.isArray(options.allowedAccountIds)
       ? new Set(options.allowedAccountIds.map(String))
       : null;
-    // v2.48.95 (AGENT BRAIN): the run's Agent configuration —
-    // { apiKey, brainModel, agentMaxCredits } — handed in by the
-    // bridge at run start (app's run body wins, engine settings are
-    // the fallback). It is NEVER merged into the run `settings`
-    // object: settings are persisted into every task's
-    // settings_json, and the API key must never be persisted or
-    // logged. Null for every pre-.95 caller.
-    this.agentConfig = (options.agentConfig && typeof options.agentConfig === 'object')
-      ? options.agentConfig
-      : null;
     this.onLog = options.onLog || (() => {});
     this.onProgress = options.onProgress || (() => {});
     this.onWorkerUpdate = options.onWorkerUpdate || (() => {});
@@ -1172,30 +1162,6 @@ class WorkerPool {
       const requiredCredits = (settings.type === 'Image')
         ? 0
         : FlowAutomationEngine.prototype.getRequiredCredits(settings);
-
-      // v2.48.95 (AGENT BRAIN — no-key fail-fast): an Agent Prompt
-      // run without a Gemini key can do nothing at all — the brain
-      // IS the run. Fail HERE, before any account is opened, with
-      // the exact owner-facing line, and fail every task with it so
-      // the cards settle instead of spinning. (The app guards the
-      // same case before it starts a run; this is the engine-side
-      // truth for every other caller.)
-      if (settings.agentMode === true && !(this.agentConfig && this.agentConfig.apiKey)) {
-        const msg = 'AI Brain: add your free Gemini API key in Settings';
-        this.log(msg, 'error');
-        try {
-          recordActivity({
-            category: 'generation', level: 'error', message: msg,
-            detail: 'Agent Prompt run stopped before it started: no Gemini API key is set. Add the free key in Settings -> AI Brain, then press Generate again. Nothing was submitted and no credits were spent.'
-          });
-        } catch (e) {}
-        for (const t of pendingTasks) {
-          try { dbService.failTask(t.id, msg); } catch (e) {}
-          this.onTaskUpdate({ taskId: t.id, promptIndex: t.prompt_index, promptText: t.prompt_text, tag: t.prompt_tag || '', status: 'failed', reason: msg });
-        }
-        this.onProgress({ status: `Error: ${msg}` });
-        return;
-      }
 
       const all = getAccounts();
       let pool = all.filter(a => a.status !== 'Need Login');
@@ -2414,18 +2380,18 @@ class WorkerPool {
                 }
 
                 // v2.48.95 (AGENT MODE): an Agent Prompt run
-                // submits through Flow's own Agent (brain-driven
-                // chat) instead of the direct prompt box. The
-                // result vocabulary is the same, so every branch
-                // below — and the whole download pipeline behind
-                // SUBMITTED — works unchanged.
+                // submits through Flow's own Agent (rule-driven
+                // chat since v2.48.97 — fixed rules only, no
+                // external calls) instead of the direct prompt
+                // box. The result vocabulary is the same, so
+                // every branch below — and the whole download
+                // pipeline behind SUBMITTED — works unchanged.
                 const submitRes = (settings.agentMode === true)
                   ? await engine.submitViaAgent(
                       nextTask.prompt_text,
                       settings,
                       currentIdx,
-                      pendingTasks.length,
-                      this.agentConfig || {}
+                      pendingTasks.length
                     )
                   : await engine.submitPrompt(
                       nextTask.prompt_text,
@@ -2511,9 +2477,9 @@ class WorkerPool {
                 }
 
                 if (submitRes.status === 'AGENT_PARKED') {
-                  // v2.48.95 (AGENT MODE — cap 0): the Agent has a
-                  // proposal waiting and the owner's cap says
-                  // NEVER auto-approve. The card parks as
+                  // v2.48.97 (AGENT MODE — over cost): the Agent's
+                  // proposal cost more than this run allows, even
+                  // after the one settings-fix retry. The card parks as
                   // needs-attention (pending + needs_check), the
                   // same visible parking the download stage uses —
                   // nothing was generated, nothing was charged,
@@ -2527,11 +2493,11 @@ class WorkerPool {
                     stage: 'agent',
                     taskId: nextTask.id,
                     promptIndex: currentIdx,
-                    reason: submitRes.reason || 'Agent proposal waiting — credit cap is 0',
-                    detail: `Prompt #${currentIdx + 1}: Flow's Agent is ready to generate, but Settings -> AI Brain has the Agent credit cap at 0 (never auto-approve), so FlowStudio did not approve anything and no credits were spent. Approve the proposal in Flow itself, or set a cap above 0 and run again.`,
-                    message: `Agent proposal parked: Prompt #${currentIdx + 1} — credit cap is 0, nothing approved`
+                    reason: submitRes.reason || 'Agent proposal over cost',
+                    detail: `Prompt #${currentIdx + 1}: Flow's Agent proposed a generation above this run's expected cost, so FlowStudio rejected it (free) and did not approve anything — no credits were spent. Run the prompt in Flow yourself, or adjust the run's model/settings and run again.`,
+                    message: `Agent proposal parked: Prompt #${currentIdx + 1} — over cost, nothing approved`
                   });
-                  this.onTaskUpdate({ taskId: nextTask.id, promptIndex: currentIdx, promptText: nextTask.prompt_text, tag: nextTask.prompt_tag || '', status: 'pending', reason: submitRes.reason || 'Agent proposal waiting — credit cap is 0 (never auto-approve)' });
+                  this.onTaskUpdate({ taskId: nextTask.id, promptIndex: currentIdx, promptText: nextTask.prompt_text, tag: nextTask.prompt_tag || '', status: 'pending', reason: submitRes.reason || 'Agent proposal over cost (agent-over-cost)' });
                   noteTaskSettled(nextTask.id, 'moved');
                   continue;
                 }
@@ -2539,7 +2505,7 @@ class WorkerPool {
                 if (submitRes.status === 'AGENT_FAILED') {
                   // v2.48.95 (AGENT MODE): the Agent conversation
                   // itself failed (cost gate, timeout, UI not
-                  // found, brain error). Like VIOLATION this is
+                  // found, rule failure). Like VIOLATION this is
                   // NOT failed over: no generation was approved,
                   // so no credits were spent, and re-firing the
                   // same conversation at another account would

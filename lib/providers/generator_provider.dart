@@ -1222,20 +1222,11 @@ class GeneratorProvider with ChangeNotifier {
       return;
     }
 
-    // v2.48.95 (AGENT BRAIN — no-key fail-fast): an Agent Prompt
-    // run is driven by the in-app brain (free Gemini API). With
-    // no key saved there is nothing to drive it with, so fail
-    // HERE — before any state flips or the engine is called —
-    // with the exact line the owner needs. The engine repeats
-    // the same guard for its own callers.
+    // v2.48.97: Agent Prompt runs are rule-driven (fixed rules in
+    // the engine — no API key, no external service), so there is
+    // no key guard here any more: an Agent run starts exactly
+    // like a Bulk run.
     final agentMode = !_isBulkMode;
-    if (agentMode && settings.settings.geminiApiKey.trim().isEmpty) {
-      activity.addLog(
-        'AI Brain: add your free Gemini API key in Settings',
-        level: LogLevel.error,
-      );
-      return;
-    }
 
     _state = GenerationState.running;
     // v2.48.83 (P1): stamp the run's source onto its
@@ -1291,13 +1282,10 @@ class GeneratorProvider with ChangeNotifier {
       // echo of it will be recognised as our own run and
       // NOT adopted as an external one.
       originToken: AutomationBridge.instance.newOwnRunToken(),
-      // v2.48.95 (AGENT MODE): the mode flag + AI Brain fields
-      // ride the run start (the key reaches the engine's pool
-      // memory only — see AutomationBridge.startGeneration).
+      // v2.48.95 (AGENT MODE): only the mode flag rides the run
+      // start — v2.48.97 removed the API-driven decider, so
+      // there are no key/cap fields to send any more.
       agentMode: agentMode,
-      geminiApiKey: settings.settings.geminiApiKey,
-      brainModel: settings.settings.brainModel,
-      agentMaxCredits: settings.settings.agentMaxCredits,
     );
 
     if (!success) {

@@ -1,55 +1,82 @@
 'use strict';
 
 // ---------------------------------------------------------------------------
-// v2.48.95 (AGENT DRIVER): drives Google Flow's OWN built-in Agent
-// (the "Agent" toggle inside Flow's prompt box + its chat panel)
-// for Agent Prompt mode runs. The in-app brain (engine/agentBrain.js,
-// free Gemini API) reads the Agent's chat replies and decides each
-// step; this module is only the hands + eyes:
+// AGENT DRIVER: drives Google Flow's OWN built-in Agent (the
+// "Agent" toggle inside Flow's prompt box + its chat panel) for
+// Agent Prompt mode runs. v2.48.97: the driver is RULE-BASED ONLY
+// — the external decision service the .95/.96 driver consulted is
+// removed entirely (owner's order, 2026-11-12: "the replies from
+// the Agent's side are mostly all alike anyway"). Every decision
+// comes from engine/agentRules.js — fixed numbers and text
+// patterns. This module makes NO external calls and holds NO keys:
 //
-//   1. snapshot the project's existing tiles (same proof the direct
-//      route takes — audit fix #6),
-//   2. turn Flow's Agent ON, align the project's Agent settings,
-//      and send the user's whole text as ONE chat message,
-//   3. poll the chat panel; every new Agent message goes to the
-//      brain; the brain's reply is typed back, its approval is
-//      re-checked against the local cost gate before any click,
-//   4. when the Agent's media lands in the project grid, build the
-//      SAME submitted-task object submitPrompt returns and hand off
-//      — from that moment the existing render monitor + download
-//      pipeline own the task, byte for byte. A download-stage
-//      failure NEVER comes back here (sacred rule): nothing in this
-//      module can resubmit or re-ask the Agent.
+//   1. snapshot the project's existing tiles (same proof the
+//      direct route takes — audit fix #6),
+//   2. turn Flow's Agent ON and send the user's whole text as ONE
+//      chat message,
+//   3. poll the Agent panel's WHOLE visible text (innerText) every
+//      ~3s and work only from marker substrings in that text —
+//      no per-message element hunting (.96 read per-message
+//      elements and stayed blind while a proposal sat on screen):
+//        PROPOSAL = the text matches /costing\s+(\d+)\s+credits?/i
+//          AND an enabled Permission-options radio group is on the
+//          page. The quoted cost + the model named in the proposal
+//          feed the rule decision (agentRules.decideOnProposal):
+//          approve only when quote <= the run's expected cost.
+//        STARTED = the text contains "I've started generating" /
+//          "I have started generating" -> media watch.
+//        QUESTION / OTHER = any other new Agent text: NEVER
+//          improvise a reply — the only texts this driver ever
+//          sends are the user's instruction and its one re-send
+//          after a settings fix. Keep waiting for a proposal.
+//   4. ONE model-fix retry: when a proposal is rejected because
+//      its model is pricier than the run's model, open the Agent
+//      settings from the panel (now open, box unlocked after the
+//      Reject), set the Video model to the run's mapped model,
+//      aspect to the run's when 16:9/9:16, outputs x1, Confirm =
+//      Always, Save — then re-send the instruction ONCE. A second
+//      over-cost proposal -> Reject + park the card with reason
+//      'agent-over-cost'. If the settings surface cannot be
+//      operated, log 'agent-settings-unaligned' and park without
+//      the retry.
+//   5. when the Agent's media lands in the project grid, build
+//      the SAME submitted-task object submitPrompt returns and
+//      hand off — from that moment the existing render monitor +
+//      download pipeline own the task, byte for byte. A
+//      download-stage failure NEVER comes back here (sacred
+//      rule): nothing in this module can resubmit or re-ask the
+//      Agent beyond the single settings-fix re-send above.
+//
+// SELF-EVIDENCING LOGS (the .96 run failed blind — its log showed
+// only 'still waiting' while the proposal sat on screen): every
+// [AGENT] heartbeat carries the panel text TAIL (last ~200 chars)
+// + a proposalGroup=present/absent flag, and ANY agent failure
+// logs the full last-seen panel text (up to ~800 chars) with the
+// failure reason.
 //
 // ============================================================================
-// v2.48.96 (FIELD CALIBRATION, 2026-11-12 — supersedes the .95
-// guesses below with what the live Flow Agent panel actually does,
-// verified firsthand in a real browser session):
+// FIELD CALIBRATION (2026-11-12, verified firsthand in a real
+// browser session — the semantics the rules above are built on):
 //
 //   - A generation proposal is two text paragraphs ending with
 //     "Would you like me to kick off this 1 video generation,
 //     costing N credits?" plus a RADIO GROUP (accessibility label
 //     "Permission options") with three stacked radio options:
 //     Approve / Always approve in project / Reject. They are NOT
-//     buttons (.95 searched for buttons, found none, and — worse —
-//     its internal "park" left the page untouched). After a choice
-//     the group disables.
+//     buttons. After a choice the group disables.
 //   - While a proposal awaits an answer the panel prompt box is
 //     LOCKED (the send button becomes "Stop"; Enter does nothing).
 //     A run can therefore never "just park" internally — it MUST
-//     click one of the three options to settle the page. Cap-0 /
-//     over-cap / fail paths now click REJECT (free) and only then
-//     settle the card as parked / failed.
+//     click one of the three options to settle the page. Park /
+//     fail paths click REJECT (free) first, then settle the card.
 //   - Reject is free, frees the box, and the Agent's cancellation
 //     reply wording VARIES — never match on it.
-//   - Agent replies take ~10–30s; a "Thinking" indicator (animated
-//     dots) shows while it works. Partial text under Thinking is
-//     never read as final.
-//   - NO completion message is ever posted. After approval the
-//     Agent posts "I've started generating…" and the finished
-//     media appears ONLY as a new grid tile + in the panel's
-//     "Media options gallery" (~60s). Completion detection is
-//     tile/gallery-based, never message-based.
+//   - Agent replies take ~10–30s. NO completion message is ever
+//     posted: after an approval the Agent posts "I've started
+//     generating…" and the finished media appears ONLY as a new
+//     grid tile + in the panel's "Media options gallery" (~60s).
+//     Completion detection is tile/gallery-based, never
+//     message-based.
 //   - Agent settings are PER-PROJECT and need an explicit Save
 //     (sliders icon in the panel prompt box -> "Agent settings"):
 //     "Confirm before generating" Always (default) / Never; Video
@@ -57,23 +84,24 @@
 //     (Omni 1.2 Flash default; Omni 1.1 Flash; Veo 3.1 - Lite /
 //     - Fast / - Quality). There is NO duration control — the
 //     Agent chooses duration itself. Quotes at x1: Omni 1.2 = 12,
-//     Veo Lite = 10, Omni 1.1 = 7 (see agentBrain.AGENT_MODEL_QUOTES).
+//     Veo Lite = 10, Omni 1.1 = 7 (agentRules.AGENT_MODEL_QUOTES).
 //
 // Every step has a HARD timeout (proposal wait 180s, post-click
 // settle 60s, media wait 300s) — the .95 field run hung silently
-// for 10+ minutes at a proposal; that is now impossible.
+// for 10+ minutes at a proposal; that is impossible here.
 // ============================================================================
 // ⚠️ SELECTOR TABLE — the chat PANEL internals are still first-pass
 // candidates (the radio-group + proposal-text SEMANTICS above are
 // field-verified; the exact DOM hooks get proven on the owner's PC
-// from his copied live logs). Every Flow-Agent DOM guess lives in
-// AGENT_SELECTORS below and NOWHERE else, so calibration stays a
-// one-table edit. The Agent toggle row reuses the exact chip shape
+// from his copied live logs — now self-evidencing, see above).
+// Every Flow-Agent DOM guess lives in AGENT_SELECTORS below and
+// NOWHERE else, so calibration stays a one-table edit. The Agent
+// toggle row reuses the exact chip shape
 // engine/flowAutomation.js's ensureAgentModeDisabled has proven
 // against the live page since v2.48.x — that part is NOT a guess.
 // ============================================================================
 
-const agentBrain = require('./agentBrain');
+const agentRules = require('./agentRules');
 const tileIdentity = require('./tileIdentity');
 
 function sleep(ms) {
@@ -94,13 +122,6 @@ const AGENT_SELECTORS = {
     'div[class*="agentPanel" i]',
     '[role="complementary"]'
   ],
-  // Message bubbles inside the panel.
-  message: [
-    '[data-testid*="message" i]',
-    'div[class*="message" i]',
-    'div[class*="bubble" i]',
-    'li'
-  ],
   // Chat input inside the panel (the prompt box itself is the
   // fallback — with Agent ON, Flow's prompt box IS the chat input).
   input: [
@@ -114,7 +135,7 @@ const AGENT_SELECTORS = {
     'button[data-testid*="send" i]',
     'button[class*="send" i]'
   ],
-  // v2.48.96: the proposal's permission RADIO GROUP (field-verified
+  // The proposal's permission RADIO GROUP (field-verified
   // semantics: role=radiogroup, accessibility label "Permission
   // options"; the options are radios, never buttons).
   permissionGroup: [
@@ -127,14 +148,8 @@ const AGENT_SELECTORS = {
     'label',
     'input[type="radio"]'
   ],
-  // v2.48.96: the "Thinking" indicator shown while the Agent works.
-  thinking: [
-    '[data-testid*="thinking" i]',
-    '[class*="thinking" i]',
-    '[aria-label*="thinking" i]'
-  ],
-  // v2.48.96: the panel's "Media options gallery" — finished media
-  // shows up here as well as in the project grid.
+  // The panel's "Media options gallery" — finished media shows
+  // up here as well as in the project grid.
   gallery: [
     '[aria-label*="Media options" i]',
     '[data-testid*="media-options" i]',
@@ -142,8 +157,8 @@ const AGENT_SELECTORS = {
     'div[class*="media-gallery" i]',
     'div[class*="mediaGallery" i]'
   ],
-  // v2.48.96: the Agent settings surface (sliders icon in the panel
-  // prompt box -> "Agent settings" dialog; per-project, Save needed).
+  // The Agent settings surface (sliders icon in the panel prompt
+  // box -> "Agent settings" dialog; per-project, Save needed).
   settingsButton: [
     'button[aria-label*="agent settings" i]',
     'button[data-testid*="agent-settings" i]',
@@ -160,118 +175,71 @@ const AGENT_SELECTORS = {
   settingsSaveText: 'Save'
 };
 
-// v2.48.96: the proposal's radio options — field-verified labels.
-// Matching is EXACT (after whitespace/case normalisation): the
-// driver approves ONLY via 'Approve', never via 'Always approve
-// in project'.
+// The proposal's radio options — field-verified labels. Matching
+// is EXACT (after whitespace/case normalisation): the driver
+// approves ONLY via 'Approve', never via 'Always approve in
+// project'.
 const PERMISSION_LABELS = {
   approve: 'Approve',
   alwaysApprove: 'Always approve in project',
   reject: 'Reject'
 };
 
-// Legacy .95 label lists — kept for compatibility pins only. The
-// .96 driver clicks the permission RADIOS above, never buttons.
-const APPROVE_LABELS = ['Approve', 'Confirm', 'Generate', 'Create', 'Yes, generate', 'Looks good', 'Proceed'];
-const REJECT_LABELS = ['Reject', 'Cancel', 'Discard', 'No, redo', 'Redo'];
-
 // The model labels Flow's Agent settings dropdown can show.
-const KNOWN_AGENT_MODELS = Object.keys(agentBrain.AGENT_MODEL_QUOTES);
+const KNOWN_AGENT_MODELS = Object.keys(agentRules.AGENT_MODEL_QUOTES);
 
-// Driver budgets (ms) — v2.48.96 hard timeouts. EVERY wait in the
-// conversation is bounded by one of these; a stuck step fails with
-// a specific reason instead of hanging the run.
-const CHAT_POLL_MS = 2500;
-const PROPOSAL_WAIT_MS = 180 * 1000; // one round of waiting for the Agent
+// Driver budgets (ms) — hard timeouts. EVERY wait in the
+// conversation is bounded by one of these; a stuck step fails
+// with a specific reason instead of hanging the run.
+const CHAT_POLL_MS = 3000; // whole-text panel poll cadence
+const PROPOSAL_WAIT_MS = 180 * 1000; // waiting for the Agent's next step
 const SETTLE_TIMEOUT_MS = 60 * 1000; // post-click settle of a proposal
 const SETTLE_POLL_MS = 500;
-const THINKING_SETTLE_MS = 1000; // quiet beat after Thinking clears
 const MEDIA_TIMEOUT_MS = 300 * 1000; // approved -> media in the project
 const MEDIA_POLL_MS = 3000;
-const MAX_PROPOSALS = 2; // a second over-cap proposal fails the run
-const MAX_BRAIN_REPLIES = 12; // conversation length fuse
-const MAX_AGENT_MESSAGES = 20; // processed-message fuse (wait loops)
+const MAX_PANEL_CHANGES = 40; // panel-text change fuse (runaway chat)
 
 // ---------------------------------------------------------------------------
 // Pure helpers (unit-tested in test_js — no page, no network)
 // ---------------------------------------------------------------------------
-
-/** Stable fingerprint of one chat text (dedupe across polls). */
-function chatFingerprint(text) {
-  return String(text || '').toLowerCase().replace(/\s+/g, ' ').trim().substring(0, 300);
-}
-
-/** The texts in `texts` whose fingerprints are not in `seen` yet. */
-function unseenTexts(texts, seen) {
-  const fresh = [];
-  for (const t of Array.isArray(texts) ? texts : []) {
-    const fp = chatFingerprint(t);
-    if (!fp || seen.has(fp)) continue;
-    seen.add(fp);
-    fresh.push(t);
-  }
-  return fresh;
-}
 
 const POLICY_REFUSAL_RE = /(can(not|'t) help with that|against (our|the) (content )?polic|content policy|safety (policy|guidelines)|not able to generate (this|that))/i;
 function looksLikePolicyRefusal(text) {
   return POLICY_REFUSAL_RE.test(String(text || ''));
 }
 
-// v2.48.96: a generation proposal is recognised by its field-
-// verified closing sentence — "…costing N credits?" — in a new
-// Agent message. The driver ALSO requires an enabled Permission
-// options radio group on the page before treating a message as a
-// live proposal (the group is what gets clicked).
+// A generation proposal is recognised by its field-verified
+// closing sentence — "…costing N credits?" — in the panel text.
+// The driver ALSO requires an enabled Permission options radio
+// group on the page before treating the text as a LIVE proposal
+// (the group is what gets clicked).
 const PROPOSAL_TEXT_RE = /costing\s+\d{1,4}\s*credits?\b/i;
 function hasProposalText(text) {
   return PROPOSAL_TEXT_RE.test(String(text || ''));
 }
 
-// v2.48.96: after an approval the Agent posts "I've started
-// generating…" — informational only. It is NEVER a proposal (no
-// "costing" sentence) and no completion message ever follows; the
-// media itself is the only completion signal.
+// After an approval the Agent posts "I've started generating…" —
+// informational only. It is NEVER a proposal (no "costing"
+// sentence) and no completion message ever follows; the media
+// itself is the only completion signal.
 const STARTED_GENERATING_RE = /(i'?ve started generating|i have started generating|started generating|generation has started|now generating)/i;
 function looksLikeGenerationStarted(text) {
   return STARTED_GENERATING_RE.test(String(text || ''));
 }
 
 /**
- * v2.48.96: turn a brain decision + the local gate verdict on a
- * LIVE proposal into the one page action the driver may take.
- * A pending proposal LOCKS the panel prompt box, so 'wait' /
- * 'reply' cannot be honoured as-is — they are converted through
- * the gate (approve when the gate approves, otherwise reject and
- * then speak). Every outcome clicks a radio option; nothing here
- * ever leaves a proposal pending.
- *   act 'approve' — click Approve, then wait for media.
- *   act 'park'    — click Reject; settle the card parked (cap 0).
- *   act 'retry'   — click Reject; re-ask (asking again is free).
- *   act 'fail'    — click Reject to settle the page; fail the run.
- */
-function resolveProposalAction(decision, gate) {
-  const d = decision || {};
-  const g = gate || {};
-  if (d.action === 'fail') return { act: 'fail', reason: d.reason || 'agent-failed' };
-  if (d.action === 'park' || g.reason === 'agent-cap-zero') return { act: 'park', reason: 'agent-cap-zero' };
-  if (g.approve) return { act: 'approve', reason: g.reason || 'within-cap' };
-  if (g.reason === 'agent-cost-unverified') return { act: 'fail', reason: 'agent-cost-unverified' };
-  return { act: 'retry', reason: g.reason || d.reason || 'agent-cost-over-cap' };
-}
-
-/**
- * v2.48.96: the Agent-settings values a run wants in its project
- * before the conversation starts. Confirm is ALWAYS 'Always'
- * (Never is never set — an unproposed generation could not be
- * cost-gated). The model maps through agentBrain's table; an
- * unmapped model or a non-16:9/9:16 aspect leaves the project's
- * own default in place (null here) and the driver logs the skip.
- * Outputs are always x1.
+ * The Agent-settings values a run wants in its project: Confirm
+ * is ALWAYS 'Always' (Never is never set — an unproposed
+ * generation could not be cost-checked). The model maps through
+ * agentRules' table; an unmapped model or a non-16:9/9:16 aspect
+ * leaves the project's own default in place (null here) and the
+ * driver logs the skip. Outputs are always x1. Used by the
+ * model-fix retry — the settings are aligned only when a pricier
+ * proposal model forces the issue.
  */
 function desiredAgentSettings(settings) {
   const s = settings || {};
-  const mapped = agentBrain.mapAgentModel(s.model || 'Omni Flash');
+  const mapped = agentRules.mapAgentModel(s.model || 'Omni Flash');
   const aspect = (s.aspectRatio === '16:9' || s.aspectRatio === '9:16') ? s.aspectRatio : null;
   return {
     confirm: 'Always',
@@ -282,42 +250,45 @@ function desiredAgentSettings(settings) {
   };
 }
 
-/** One-line, length-capped rendering of a chat text for the log. */
+/** One-line, length-capped rendering of a text for the log. */
 function truncateForLog(text, max = 200) {
   const s = String(text || '').replace(/\s+/g, ' ').trim();
   return s.length > max ? `${s.substring(0, max)}…` : s;
 }
 
 /**
- * Every [AGENT] engine-log line is built HERE, from event data only.
- * The Gemini API key is never an input to this function — it cannot
- * appear in a log line (pinned by a fixture test).
+ * Every [AGENT] engine-log line is built HERE, from event data
+ * only. The lines carry evidence, never secrets: the waiting
+ * heartbeat includes the panel text tail + the permission-group
+ * flag, and a failure includes the last-seen panel text (up to
+ * ~800 chars) — no run may ever fail blind.
  */
 function agentLine(kind, data) {
   const d = data || {};
   switch (kind) {
     case 'toggle-on': return '[AGENT] Flow Agent mode is ON — the run will chat with Flow\'s Agent.';
     case 'toggle-missing': return '[AGENT] Flow\'s "Agent" toggle was not found in the prompt box.';
-    case 'sent': return `[AGENT] sent the user's instruction to Flow's Agent (${Number(d.chars) || 0} characters).`;
+    case 'sent': return d.retry
+      ? `[AGENT] re-sent the user's instruction to Flow's Agent (${Number(d.chars) || 0} characters) — the one settings-fix retry.`
+      : `[AGENT] sent the user's instruction to Flow's Agent (${Number(d.chars) || 0} characters).`;
     case 'message': return `[AGENT] agent message: "${truncateForLog(d.text)}"`;
-    case 'decision': return `[AGENT] brain decision: ${d.action || '?'}${d.reason ? ` — ${d.reason}` : ''} (brain calls so far: ${Number(d.brainCalls) || 0})`;
-    case 'quote': return `[AGENT] quoted cost: ${d.quoted} credits (cap ${d.cap} credits)`;
-    case 'proposal': return `[AGENT] generation proposal from Flow's Agent — quoted ${d.quoted} credits (cap ${d.cap} credits).`;
+    case 'proposal': return `[AGENT] generation proposal from Flow's Agent — model ${d.model || 'not named'}, quoted ${d.quoted} credits (this run's expected cost: ${d.expected} credits) → ${d.act || '?'}.`;
     case 'option-clicked': return `[AGENT] clicked "${d.label}" in the proposal's Permission options.`;
     case 'option-missing': return `[AGENT] the proposal option "${d.label}" was not found in the Permission options group — nothing was clicked.`;
     case 'settled': return '[AGENT] the proposal settled — the Agent panel is free again.';
     case 'settle-timeout': return '[AGENT] the proposal did not settle within 60s of the click.';
     case 'approved': return `[AGENT] proposal approved at ${d.quoted} credits — generation started by Flow's Agent.`;
-    case 'rejected': return `[AGENT] proposal rejected (${d.reason || 'over cap'}) — asking the Agent again is free.`;
-    case 'parked': return '[AGENT] a proposal is waiting, but the credit cap is 0 (never auto-approve) — the card is parked as needs-attention.';
-    case 'reply-sent': return `[AGENT] brain reply sent to the Agent: "${truncateForLog(d.text, 120)}"`;
+    case 'rejected': return `[AGENT] proposal rejected (${d.reason || 'over cost'}) — rejecting costs nothing.`;
+    case 'retry': return `[AGENT] the proposal's model is pricier than this run's model — aligning the Agent settings to the run's model (${d.model || '?'}) and asking once more.`;
+    case 'parked': return '[AGENT] the proposal costs more than this run allows — the card is parked as needs-attention (nothing approved, no credits spent).';
     case 'generation-started': return '[AGENT] Flow\'s Agent started generating without a proposal (its Confirm setting was off) — waiting for the media itself.';
     case 'settings-aligned': return `[AGENT] Flow Agent settings aligned for this project and saved (Confirm before generating = Always${d.detail ? `; ${d.detail}` : ''}).`;
-    case 'settings-unaligned': return `[AGENT] Flow Agent settings could not be aligned (${d.detail || 'the settings surface could not be operated'}) — continuing; the credit gate still guards every approval.`;
+    case 'settings-unaligned': return `[AGENT] Flow Agent settings could not be aligned (${d.detail || 'the settings surface could not be operated'}) — agent-settings-unaligned.`;
     case 'settings-skip': return `[AGENT] Agent settings note: ${d.detail || ''}`;
     case 'media': return '[AGENT] media detected in the project — handing off to the download pipeline.';
     case 'handoff': return '[AGENT] handoff complete — the render monitor and download pipeline own this task now.';
-    case 'waiting': return `[AGENT] still waiting for Flow's Agent… (${d.elapsedSec || 0}s)`;
+    case 'waiting': return `[AGENT] still waiting for Flow's Agent… (${d.elapsedSec || 0}s) proposalGroup=${d.group || 'absent'} panel tail: "${agentRules.panelTail(d.tail || '')}"`;
+    case 'panel-dump': return `[AGENT] failure (${d.reason || 'agent-failed'}) — last panel text (${String(d.text || '').length} chars): "${truncateForLog(d.text, 800)}"`;
     default: return `[AGENT] ${kind}`;
   }
 }
@@ -371,21 +342,18 @@ function pageClickAgentToggle(selectors) {
   return true;
 }
 
-function pageReadAgentMessages(selectors) {
+// v2.48.97: the panel reading is WHOLE-TEXT — the Agent panel
+// container's full visible text (innerText), whitespace-collapsed.
+// The driver works only from marker substrings in this text; there
+// is deliberately no per-message element hunting any more.
+function pageReadAgentPanelText(selectors) {
   let panel = null;
   for (const sel of selectors.panel) {
     try { panel = document.querySelector(sel); } catch (e) { panel = null; }
     if (panel) break;
   }
-  const root = panel || document.body;
-  let nodes = [];
-  for (const sel of selectors.message) {
-    try { nodes = Array.from(root.querySelectorAll(sel)); } catch (e) { nodes = []; }
-    if (nodes.length) break;
-  }
-  return nodes
-    .map(n => (n.innerText || '').replace(/\s+/g, ' ').trim())
-    .filter(t => t.length >= 2);
+  if (!panel) return '';
+  return String(panel.innerText || '').replace(/\s+/g, ' ').trim();
 }
 
 function pageFocusAgentInput(selectors) {
@@ -432,27 +400,10 @@ function pageGridFingerprints() {
     .filter(Boolean);
 }
 
-// v2.48.96: is the Agent still thinking? While the indicator is
-// present the current panel text is PARTIAL — the driver waits
-// and never feeds it to the brain.
-function pageAgentThinking(selectors) {
-  let panel = null;
-  for (const sel of selectors.panel) {
-    try { panel = document.querySelector(sel); } catch (e) { panel = null; }
-    if (panel) break;
-  }
-  const root = panel || document.body;
-  for (const sel of selectors.thinking) {
-    try { if (root.querySelector(sel)) return true; } catch (e) {}
-  }
-  const leaves = Array.from(root.querySelectorAll('span, div, p'));
-  return leaves.some(el => el.children.length === 0 && /^thinking[.…]*$/i.test((el.innerText || '').trim()));
-}
-
-// v2.48.96: the proposal's permission radio group — presence,
-// whether it is still answerable, its option labels, and whether
-// the panel prompt box is locked (its send button reads "Stop"
-// while a proposal awaits an answer).
+// The proposal's permission radio group — presence, whether it
+// is still answerable, its option labels, and whether the panel
+// prompt box is locked (its send button reads "Stop" while a
+// proposal awaits an answer).
 function pagePermissionState(selectors) {
   const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
   let panel = null;
@@ -487,10 +438,10 @@ function pagePermissionState(selectors) {
   return { present: true, enabled: !groupDisabled && anyEnabled, options, promptLocked };
 }
 
-// v2.48.96: click ONE option of the permission radio group. The
-// label match is EXACT after normalisation — 'Approve' can never
-// land on 'Always approve in project'. Returns the wanted label
-// when clicked, null when no option carries it.
+// Click ONE option of the permission radio group. The label
+// match is EXACT after normalisation — 'Approve' can never land
+// on 'Always approve in project'. Returns the wanted label when
+// clicked, null when no option carries it.
 function pageClickPermissionOption(selectors, wanted) {
   const norm = s => String(s || '').replace(/\s+/g, ' ').trim().toLowerCase();
   let panel = null;
@@ -522,9 +473,9 @@ function pageClickPermissionOption(selectors, wanted) {
   return null;
 }
 
-// v2.48.96: the panel's "Media options gallery" item labels,
-// normalised exactly like grid tile fingerprints (tileIdentity),
-// so a gallery sighting compares directly with tile fingerprints.
+// The panel's "Media options gallery" item labels, normalised
+// exactly like grid tile fingerprints (tileIdentity), so a
+// gallery sighting compares directly with tile fingerprints.
 function pageGalleryLabels(selectors) {
   let gallery = null;
   for (const sel of selectors.gallery) {
@@ -539,8 +490,8 @@ function pageGalleryLabels(selectors) {
     .filter(Boolean);
 }
 
-// v2.48.96: open the Agent settings surface via the sliders icon
-// in the panel prompt box.
+// Open the Agent settings surface via the sliders icon in the
+// panel prompt box.
 function pageOpenAgentSettings(selectors) {
   let panel = null;
   for (const sel of selectors.panel) {
@@ -568,8 +519,8 @@ function pageAgentSettingsPresent(selectors) {
   return false;
 }
 
-// v2.48.96: read the Agent settings surface — which Confirm radio
-// is checked, the model dropdown's current label, the checked
+// Read the Agent settings surface — which Confirm radio is
+// checked, the model dropdown's current label, the checked
 // aspect and the checked outputs. Anything unreadable is null.
 function pageReadAgentSettings(selectors, modelLabels) {
   let root = null;
@@ -606,11 +557,11 @@ function pageReadAgentSettings(selectors, modelLabels) {
   return { present: true, confirm, model, aspect, outputs };
 }
 
-// v2.48.96: click the element carrying EXACTLY this text inside
-// the Agent settings surface (radios, dropdown options, aspect
-// and output choices all render as text-bearing controls). Falls
-// back to the whole document — dropdown options often render in
-// a portal outside the dialog.
+// Click the element carrying EXACTLY this text inside the Agent
+// settings surface (radios, dropdown options, aspect and output
+// choices all render as text-bearing controls). Falls back to
+// the whole document — dropdown options often render in a portal
+// outside the dialog.
 function pageClickSettingsText(selectors, text) {
   const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
   let root = null;
@@ -630,8 +581,8 @@ function pageClickSettingsText(selectors, text) {
   return false;
 }
 
-// v2.48.96: the settings surface's Save button (settings are
-// per-project and apply only after an explicit Save).
+// The settings surface's Save button (settings are per-project
+// and apply only after an explicit Save).
 function pageSaveAgentSettings(selectors) {
   const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
   let root = null;
@@ -656,14 +607,15 @@ function pageSaveAgentSettings(selectors) {
 // ---------------------------------------------------------------------------
 
 /**
- * v2.48.96: align the project's per-project Agent settings BEFORE
- * the conversation starts — Confirm before generating = Always
- * (Never is never set), the run's model mapped into the Agent's
- * own labels, the run's aspect when 16:9/9:16, outputs x1 — then
- * Save and verify by reopening. Best-effort BY DESIGN: when the
- * surface cannot be operated the run CONTINUES with an
- * 'agent-settings-unaligned' log line; the credit gate still
- * guards every approval. Returns true only when the reopened
+ * Align the project's per-project Agent settings — Confirm
+ * before generating = Always (Never is never set), the run's
+ * model mapped into the Agent's own labels, the run's aspect
+ * when 16:9/9:16, outputs x1 — then Save and verify by
+ * reopening. Runs on the model-fix retry path, with the panel
+ * open and its prompt box unlocked after a Reject. Best-effort
+ * BY DESIGN: when the surface cannot be operated the caller
+ * continues WITHOUT the retry, behind an 'agent-settings-
+ * unaligned' log line. Returns true only when the reopened
  * settings show the aligned values.
  */
 async function alignAgentSettings(engine, settings, log) {
@@ -743,9 +695,9 @@ async function alignAgentSettings(engine, settings, log) {
 }
 
 /**
- * v2.48.96: after a permission-option click, wait (bounded) for
- * the proposal to settle: the radio group gone or disabled, or
- * the panel prompt box unlocked. Returns false on timeout — the
+ * After a permission-option click, wait (bounded) for the
+ * proposal to settle: the radio group gone or disabled, or the
+ * panel prompt box unlocked. Returns false on timeout — the
  * caller fails with 'agent-settle-timeout' instead of hanging.
  */
 async function waitForProposalSettle(engine, args) {
@@ -765,9 +717,9 @@ async function waitForProposalSettle(engine, args) {
  * Submit ONE prompt through Flow's Agent. Mirrors submitPrompt's
  * contract with the pool: returns { status: 'STOPPED' |
  * 'EXHAUSTED' | 'LOW_CREDITS' | 'VIOLATION' | 'AGENT_PARKED' |
- * 'AGENT_FAILED' } or a SUBMITTED task object. `args.agentConfig`
- * is { apiKey, brainModel, agentMaxCredits } from the run start —
- * the key is used ONLY as the Gemini header inside agentBrain.
+ * 'AGENT_FAILED' } or a SUBMITTED task object. Rule-based only —
+ * no keys, no external calls; every decision is
+ * agentRules.decideOnProposal over the live panel text.
  */
 async function submitViaAgent(engine, args) {
   const a = args || {};
@@ -775,7 +727,6 @@ async function submitViaAgent(engine, args) {
   const settings = a.settings || {};
   const promptIndex = a.promptIndex || 0;
   const totalPrompts = a.totalPrompts || 1;
-  const cfg = a.agentConfig || {};
   const log = (kind, data, type) => {
     try { engine.log(agentLine(kind, data), type || 'info'); } catch (e) {}
   };
@@ -783,11 +734,6 @@ async function submitViaAgent(engine, args) {
   if (engine.isStopping) return { status: 'STOPPED' };
   if (!promptText) {
     return { status: 'AGENT_FAILED', reason: 'The prompt text was EMPTY when it reached the engine — there was nothing to send to Flow\'s Agent.' };
-  }
-  if (!cfg.apiKey) {
-    // The pool guards this before any worker starts; this is the
-    // last line of defence, with the same owner-facing words.
-    return { status: 'AGENT_FAILED', reason: 'AI Brain: add your free Gemini API key in Settings' };
   }
 
   const videoId = `vid_${Date.now()}_${promptIndex + 1}`;
@@ -851,12 +797,22 @@ async function submitViaAgent(engine, args) {
   }
   log('toggle-on');
 
-  // 2. Align the project's Agent settings (per-project, saved) —
-  // best-effort; a failure logs and the run continues behind the
-  // credit gate.
-  await alignAgentSettings(engine, settings, log);
+  // The run's own expected cost, from its chosen model/duration/
+  // quality via the engine's existing rate helper. When the
+  // helper cannot price the run, fall back to the Agent's flat
+  // quote for the run's mapped model; when neither can, the
+  // expected cost stays unknown and no proposal may approve.
+  let runExpected = null;
+  try {
+    if (typeof engine.getRequiredCredits === 'function') {
+      const v = Number(engine.getRequiredCredits(settings));
+      if (Number.isFinite(v) && v > 0) runExpected = v;
+    }
+  } catch (e) {}
+  if (runExpected === null) runExpected = agentRules.agentExpectedCost(settings);
+  const runModelLabel = (agentRules.mapAgentModel(settings.model || 'Omni Flash') || {}).flowLabel || null;
 
-  // 3. Send the user's whole text as ONE chat message.
+  // 2. Send the user's whole text as ONE chat message.
   const sendChat = async (text) => {
     const clean = String(text || '').replace(/[\r\n]+/g, ' ').trim();
     if (!clean) return false;
@@ -889,90 +845,152 @@ async function submitViaAgent(engine, args) {
   }
   log('sent', { chars: promptText.length });
 
-  // 4. The conversation loop. The user's own sent texts are marked
-  // seen up-front so the poll never mistakes them for Agent replies.
-  // v2.48.96: the gate's expected cost is the Agent's OWN flat
-  // quote for the mapped model (agentBrain.agentExpectedCost) —
-  // the Agent picks duration itself, so the direct route's
-  // duration/resolution math never applies here.
-  const expectedCost = agentBrain.agentExpectedCost(settings);
-  const capInfo = agentBrain.resolveAgentCap(cfg.agentMaxCredits, expectedCost);
-  const brainOpts = {
-    apiKey: cfg.apiKey,
-    modelSetting: cfg.brainModel,
-    log: (line) => { try { engine.log(line, 'info'); } catch (e) {} }
-  };
-  if (a.brainFetchFn) brainOpts.fetchFn = a.brainFetchFn;
-  if (a.brainSleepFn) brainOpts.sleepFn = a.brainSleepFn;
-  if (a.brainNowFn) brainOpts.nowFn = a.brainNowFn;
-  const brain = agentBrain.createBrainSession(brainOpts);
-  const transcript = [{ from: 'user', text: promptText }];
-  const seen = new Set([chatFingerprint(promptText)]);
-  let proposals = 0;
-  let replies = 0;
-  let messagesSeen = 0;
-  let approved = false;
-  let generationStarted = false;
+  // 3. The conversation loop — whole-text polling. The ONLY texts
+  // ever sent are the user's instruction and, at most once, its
+  // re-send after the settings fix. Any other Agent text (a
+  // question, a status note) is logged and waited through: the
+  // driver never improvises a reply.
   const proposalWaitMs = a.proposalWaitMs || PROPOSAL_WAIT_MS;
-  let roundDeadline = Date.now() + proposalWaitMs;
+  let lastPanelText = '';
+  let lastProgressAt = Date.now();
   let roundStart = Date.now();
   let lastWaitNote = Date.now();
-  let wasThinking = false;
+  let panelChanges = 0;
+  let proposalHandled = false;
+  let retried = false;
+  let approved = false;
+  let generationStarted = false;
+
+  // ANY failure from here on logs the full last-seen panel text
+  // with the failure reason first — no run fails blind.
+  const failRun = (reason) => {
+    if (lastPanelText) log('panel-dump', { reason, text: lastPanelText }, 'error');
+    return { status: 'AGENT_FAILED', reason };
+  };
 
   while (!approved && !generationStarted) {
     if (engine.isStopping) return { status: 'STOPPED' };
-    if (Date.now() > roundDeadline) {
-      return { status: 'AGENT_FAILED', reason: 'agent-proposal-timeout: Flow\'s Agent did not answer with a next step in time. No credits were approved.' };
+    if (Date.now() - lastProgressAt > proposalWaitMs) {
+      return failRun('agent-proposal-timeout: Flow\'s Agent did not reach a generation proposal in time. No credits were approved.');
     }
-    // Thinking discipline: while the indicator is present the
-    // panel text is partial — wait, and read only after it clears
-    // (plus a short settle beat).
-    let thinking = false;
-    try { thinking = await engine.page.evaluate(pageAgentThinking, AGENT_SELECTORS); } catch (e) {}
-    if (thinking) {
-      wasThinking = true;
-      await sleep(a.chatPollMs || CHAT_POLL_MS);
-      continue;
-    }
-    if (wasThinking) {
-      wasThinking = false;
-      await sleep(a.thinkingSettleMs || THINKING_SETTLE_MS);
-    }
-    let texts = [];
-    try { texts = await engine.page.evaluate(pageReadAgentMessages, AGENT_SELECTORS); } catch (e) { texts = []; }
-    const fresh = unseenTexts(texts, seen);
-    if (!fresh.length) {
-      if (Date.now() - lastWaitNote >= 30000) {
-        lastWaitNote = Date.now();
-        log('waiting', { elapsedSec: Math.round((Date.now() - roundStart) / 1000) });
-      }
-      await sleep(a.chatPollMs || CHAT_POLL_MS);
-      continue;
-    }
-    for (const text of fresh) {
-      if (engine.isStopping) return { status: 'STOPPED' };
-      if (approved || generationStarted) break;
-      messagesSeen++;
-      roundDeadline = Date.now() + proposalWaitMs;
+    let text = lastPanelText;
+    try {
+      const read = await engine.page.evaluate(pageReadAgentPanelText, AGENT_SELECTORS);
+      if (typeof read === 'string') text = read;
+    } catch (e) {}
+    if (text !== lastPanelText) {
+      lastPanelText = text;
+      lastProgressAt = Date.now();
       roundStart = Date.now();
-      transcript.push({ from: 'agent', text });
-      log('message', { text });
-      if (looksLikePolicyRefusal(text)) {
+      panelChanges++;
+      if (panelChanges > (a.maxPanelChanges || MAX_PANEL_CHANGES)) {
+        return failRun('agent-chat-too-long: the conversation with Flow\'s Agent kept changing without reaching a generation.');
+      }
+      if (text && looksLikePolicyRefusal(text)) {
         return { status: 'VIOLATION', reason: 'Flow\'s Agent refused this request (content policy).' };
       }
-      if (messagesSeen > MAX_AGENT_MESSAGES) {
-        return { status: 'AGENT_FAILED', reason: 'agent-chat-too-long: the conversation with Flow\'s Agent did not reach a generation.' };
+      if (text && !hasProposalText(text) && !looksLikeGenerationStarted(text)) {
+        // A question or any other new Agent text — logged, never
+        // answered. The wait for a proposal continues.
+        log('message', { text });
       }
+    }
 
-      // Is a LIVE proposal on the page? The proposal text plus an
-      // enabled Permission options radio group — both, always.
-      let perm = null;
-      if (hasProposalText(text)) {
-        try { perm = await engine.page.evaluate(pagePermissionState, AGENT_SELECTORS); } catch (e) { perm = null; }
+    // A LIVE proposal = the costing sentence in the text AND an
+    // enabled Permission options radio group on the page. Both,
+    // always. Handled once per continuous appearance of the
+    // group (a click disables the group; a fresh proposal
+    // re-enables it and is handled again).
+    let perm = null;
+    if (hasProposalText(lastPanelText)) {
+      try { perm = await engine.page.evaluate(pagePermissionState, AGENT_SELECTORS); } catch (e) { perm = null; }
+    }
+    if (perm && perm.present && perm.enabled) {
+      if (!proposalHandled) {
+        proposalHandled = true;
+        const quoted = agentRules.parseQuotedCost(lastPanelText);
+        const proposalModel = agentRules.parseProposalModel(lastPanelText);
+        const decision = agentRules.decideOnProposal({
+          quotedCost: quoted,
+          proposalModel,
+          runModelLabel,
+          runExpectedCost: runExpected,
+          retried
+        });
+        log('proposal', { model: proposalModel, quoted, expected: runExpected, act: decision.act });
+
+        if (decision.act === 'approve') {
+          const clicked = await engine.page.evaluate(pageClickPermissionOption, AGENT_SELECTORS, PERMISSION_LABELS.approve);
+          if (!clicked) {
+            log('option-missing', { label: PERMISSION_LABELS.approve }, 'error');
+            return failRun('agent-ui-not-found: the proposal\'s "Approve" radio option was not found (selector calibration needed). Nothing was approved.');
+          }
+          log('option-clicked', { label: PERMISSION_LABELS.approve });
+          const settled = await waitForProposalSettle(engine, a);
+          if (!settled) {
+            log('settle-timeout', null, 'error');
+            return failRun('agent-settle-timeout: the proposal did not settle within 60s of the Approve click.');
+          }
+          log('settled');
+          log('approved', { quoted }, 'success');
+          approved = true;
+          break;
+        }
+
+        // Every other outcome clicks REJECT first — a pending
+        // proposal locks the panel, so nothing (park, retry,
+        // fail) may leave the page unsettled. Reject is free.
+        const clickedReject = await engine.page.evaluate(pageClickPermissionOption, AGENT_SELECTORS, PERMISSION_LABELS.reject);
+        if (clickedReject) {
+          log('option-clicked', { label: PERMISSION_LABELS.reject });
+          const settled = await waitForProposalSettle(engine, a);
+          if (!settled) {
+            log('settle-timeout', null, 'error');
+            return failRun('agent-settle-timeout: the proposal did not settle within 60s of the Reject click.');
+          }
+          log('settled');
+        } else {
+          log('option-missing', { label: PERMISSION_LABELS.reject }, 'warn');
+        }
+
+        if (decision.act === 'retry-settings') {
+          // The panel is open and the box is unlocked now — the
+          // one chance to align the Agent settings to the run's
+          // model, then re-send the instruction ONCE.
+          log('retry', { model: runModelLabel }, 'warn');
+          const aligned = await alignAgentSettings(engine, settings, log);
+          if (aligned) {
+            retried = true;
+            const resent = await sendChat(promptText);
+            if (!resent) {
+              return failRun('agent-ui-not-found: the instruction could not be re-sent after the Agent settings were aligned.');
+            }
+            log('sent', { chars: promptText.length, retry: true });
+            lastProgressAt = Date.now();
+            roundStart = Date.now();
+            // The Reject disabled the old group; the answer to
+            // the re-sent instruction is a NEW proposal and must
+            // be handled when its group appears.
+            proposalHandled = false;
+            continue;
+          }
+          // The settings surface could not be operated — the
+          // 'agent-settings-unaligned' line is already logged;
+          // continue WITHOUT the retry: Reject + park.
+          log('parked', null, 'warn');
+          return { status: 'AGENT_PARKED', reason: `agent-over-cost: Flow's Agent proposed ${quoted} credits (model ${proposalModel || 'unknown'}), above this run's expected cost of ${runExpected} credits, and the Agent settings could not be aligned to the run's model — the proposal was rejected (free) and nothing was approved, so no credits were spent.` };
+        }
+        if (decision.act === 'park') {
+          log('parked', null, 'warn');
+          return { status: 'AGENT_PARKED', reason: `agent-over-cost: Flow's Agent proposed ${quoted} credits (model ${proposalModel || 'unknown'}), above this run's expected cost of ${runExpected} credits — the proposal was rejected (free) and nothing was approved, so no credits were spent. Run this prompt in Flow yourself, or adjust the run's model/settings and run again.` };
+        }
+        // decision.act === 'fail' — the quote or the expected
+        // cost could not be verified; the page is settled.
+        return failRun(decision.reason || 'agent-failed');
       }
-      const isProposal = !!(perm && perm.present && perm.enabled);
-
-      if (!isProposal && looksLikeGenerationStarted(text)) {
+    } else {
+      proposalHandled = false;
+      if (lastPanelText && looksLikeGenerationStarted(lastPanelText)) {
         // The Agent is already generating (its Confirm setting
         // was off). No proposal will come and no completion
         // message ever follows — the media is the only signal.
@@ -980,122 +998,23 @@ async function submitViaAgent(engine, args) {
         generationStarted = true;
         break;
       }
-
-      const decision = await brain.decide({
-        userInstruction: promptText,
-        runSettings: settings,
-        transcript: transcript.slice(0, -1),
-        agentMessage: text,
-        expectedCost,
-        capSetting: cfg.agentMaxCredits
-      });
-      log('decision', { action: decision.action, reason: decision.reason, brainCalls: decision.brainCalls },
-        decision.action === 'fail' ? 'error' : 'info');
-
-      if (isProposal) {
-        // The gate runs HERE, at the click, on top of the brain
-        // session's own gate — no code path approves on the
-        // model's word alone.
-        const gate = agentBrain.costGate({ quotedCost: decision.quotedCost, capInfo });
-        const res = resolveProposalAction(decision, gate);
-        log('proposal', { quoted: decision.quotedCost, cap: capInfo.cap });
-
-        if (res.act === 'approve') {
-          const clicked = await engine.page.evaluate(pageClickPermissionOption, AGENT_SELECTORS, PERMISSION_LABELS.approve);
-          if (!clicked) {
-            log('option-missing', { label: PERMISSION_LABELS.approve }, 'error');
-            return { status: 'AGENT_FAILED', reason: 'agent-ui-not-found: the proposal\'s "Approve" radio option was not found (selector calibration needed). Nothing was approved.' };
-          }
-          log('option-clicked', { label: PERMISSION_LABELS.approve });
-          const settled = await waitForProposalSettle(engine, a);
-          if (!settled) {
-            log('settle-timeout', null, 'error');
-            return { status: 'AGENT_FAILED', reason: 'agent-settle-timeout: the proposal did not settle within 60s of the Approve click.' };
-          }
-          log('settled');
-          log('approved', { quoted: decision.quotedCost }, 'success');
-          approved = true;
-          break;
-        }
-
-        // Every other outcome clicks REJECT first — a pending
-        // proposal locks the panel, so nothing (park, retry,
-        // fail) may leave the page unsettled.
-        const clickedReject = await engine.page.evaluate(pageClickPermissionOption, AGENT_SELECTORS, PERMISSION_LABELS.reject);
-        if (clickedReject) {
-          log('option-clicked', { label: PERMISSION_LABELS.reject });
-          const settled = await waitForProposalSettle(engine, a);
-          if (!settled) {
-            log('settle-timeout', null, 'error');
-            return { status: 'AGENT_FAILED', reason: 'agent-settle-timeout: the proposal did not settle within 60s of the Reject click.' };
-          }
-          log('settled');
-        } else {
-          log('option-missing', { label: PERMISSION_LABELS.reject }, 'warn');
-        }
-
-        if (res.act === 'park') {
-          log('parked', null, 'warn');
-          return { status: 'AGENT_PARKED', reason: 'Agent proposal was declined (credit cap is 0 — never auto-approve). Raise the cap in Settings → AI Brain to let the brain approve, or run this prompt in Flow yourself.' };
-        }
-        if (res.act === 'fail') {
-          return { status: 'AGENT_FAILED', reason: res.reason || 'agent-failed' };
-        }
-        // res.act === 'retry' — rejecting cost nothing; re-ask.
-        proposals++;
-        log('quote', { quoted: decision.quotedCost, cap: capInfo.cap });
-        log('rejected', { reason: res.reason }, 'warn');
-        if (proposals >= (a.maxProposals || MAX_PROPOSALS)) {
-          return { status: 'AGENT_FAILED', reason: `agent-cost-over-cap: Flow's Agent kept proposing above the cap of ${capInfo.cap} credits.` };
-        }
-        if (decision.message) {
-          await sendChat(decision.message);
-          transcript.push({ from: 'user', text: decision.message });
-          seen.add(chatFingerprint(decision.message));
-          log('reply-sent', { text: decision.message });
-          roundDeadline = Date.now() + proposalWaitMs;
-          roundStart = Date.now();
-        }
-        continue;
-      }
-
-      // No live proposal on the page — plain conversation.
-      if (decision.action === 'fail') {
-        return { status: 'AGENT_FAILED', reason: decision.reason || 'agent-failed' };
-      }
-      if (decision.action === 'park') {
-        // A quote was read but no permission group is on the page
-        // (nothing is locked, nothing to click) — the cap-0 park
-        // keeps its .95 meaning.
-        log('parked', null, 'warn');
-        return { status: 'AGENT_PARKED', reason: 'Agent proposal is waiting, but the credit cap is 0 (never auto-approve) — approve it in Flow, or raise the cap in Settings → AI Brain.' };
-      }
-      if (decision.action === 'approve') {
-        // Nothing on the page can be approved (no permission
-        // group) — never click blind. The real proposal, or a
-        // started-generating note, is what we wait for.
-        continue;
-      }
-      if (decision.action === 'reply' || (decision.action === 'reject' && decision.message)) {
-        replies++;
-        if (replies > (a.maxBrainReplies || MAX_BRAIN_REPLIES)) {
-          return { status: 'AGENT_FAILED', reason: 'agent-chat-too-long: the conversation with Flow\'s Agent did not reach a generation.' };
-        }
-        if (decision.message) {
-          await sendChat(decision.message);
-          transcript.push({ from: 'user', text: decision.message });
-          seen.add(chatFingerprint(decision.message));
-          log('reply-sent', { text: decision.message });
-          roundDeadline = Date.now() + proposalWaitMs;
-          roundStart = Date.now();
-        }
-        continue;
-      }
-      // 'wait' (or a message-less reject) — keep polling.
     }
+
+    if (Date.now() - lastWaitNote >= (a.heartbeatMs || 30000)) {
+      lastWaitNote = Date.now();
+      if (!perm) {
+        try { perm = await engine.page.evaluate(pagePermissionState, AGENT_SELECTORS); } catch (e) { perm = null; }
+      }
+      log('waiting', {
+        elapsedSec: Math.round((Date.now() - roundStart) / 1000),
+        tail: lastPanelText,
+        group: (perm && perm.present) ? 'present' : 'absent'
+      });
+    }
+    await sleep(a.chatPollMs || CHAT_POLL_MS);
   }
 
-  // 5. Media detection: a NEW grid tile fingerprint (not
+  // 4. Media detection: a NEW grid tile fingerprint (not
   // pre-existing, not claimed by a sibling task) or a NEW item in
   // the panel's Media options gallery is this run's media. No
   // completion message is ever posted — the media itself is the
@@ -1129,7 +1048,7 @@ async function submitViaAgent(engine, args) {
     if (!lockedTileFingerprint) await sleep(a.mediaPollMs || MEDIA_POLL_MS);
   }
   if (!lockedTileFingerprint) {
-    return { status: 'AGENT_FAILED', reason: 'agent-media-missing: the Agent reported generation, but no new tile appeared in the project. The media may still be in Flow — check the project before re-running (do NOT resubmit blindly).' };
+    return failRun('agent-media-missing: the Agent reported generation, but no new tile appeared in the project. The media may still be in Flow — check the project before re-running (do NOT resubmit blindly).');
   }
   if (engine.claimedTileFingerprints) engine.claimedTileFingerprints.add(lockedTileFingerprint);
   log('media', null, 'success');
@@ -1159,18 +1078,13 @@ async function submitViaAgent(engine, args) {
 module.exports = {
   AGENT_SELECTORS,
   PERMISSION_LABELS,
-  APPROVE_LABELS,
-  REJECT_LABELS,
   PROPOSAL_WAIT_MS,
   SETTLE_TIMEOUT_MS,
   MEDIA_TIMEOUT_MS,
-  MAX_PROPOSALS,
-  chatFingerprint,
-  unseenTexts,
+  MAX_PANEL_CHANGES,
   looksLikePolicyRefusal,
   hasProposalText,
   looksLikeGenerationStarted,
-  resolveProposalAction,
   desiredAgentSettings,
   truncateForLog,
   agentLine,

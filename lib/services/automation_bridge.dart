@@ -14,7 +14,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '2.48.96';
+  static const String appVersion = '2.48.97';
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();
@@ -985,15 +985,10 @@ class AutomationBridge {
     // the bridge echoes it in 'run-started' so the app
     // can tell its own run apart from an external one.
     String? originToken,
-    // v2.48.95 (AGENT MODE): Agent Prompt runs carry the mode
-    // flag + the AI Brain fields. The key rides ONLY this run
-    // body into the engine's pool memory — the bridge never
-    // persists it into the run settings (settings_json) and
-    // never logs the body.
+    // v2.48.95 (AGENT MODE): Agent Prompt runs carry only the
+    // mode flag (v2.48.97: the API-driven decider is gone, so
+    // there are no key/cap fields left to carry).
     bool agentMode = false,
-    String geminiApiKey = '',
-    String brainModel = '',
-    String agentMaxCredits = '',
   }) async {
     try {
       final res = await http.post(
@@ -1015,9 +1010,6 @@ class AutomationBridge {
           'skipFirstTaskDownload': skipFirstTaskDownload,
           if (originToken != null) 'originToken': originToken,
           'agentMode': agentMode,
-          if (agentMode) 'geminiApiKey': geminiApiKey,
-          if (agentMode) 'brainModel': brainModel,
-          if (agentMode) 'agentMaxCredits': agentMaxCredits,
         }),
       );
       return res.statusCode == 200;

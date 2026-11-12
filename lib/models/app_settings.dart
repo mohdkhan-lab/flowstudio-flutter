@@ -17,16 +17,6 @@ class AppSettings {
   bool previewAutoplay;
   bool autoVerifyOnStart;
   bool autoCheckUpdates;
-  // v2.48.95 (AI Brain): the free Gemini API key + brain choices
-  // behind Agent Prompt mode. The key is stored with the app's
-  // other settings on this PC (engine settings store) and is only
-  // ever sent to the local engine with a run — never displayed
-  // back in full after saving. agentMaxCredits is the raw text of
-  // the cap field: '' = each run's expected cost, '0' = never
-  // auto-approve, 'N' = approve at most N credits per video.
-  String geminiApiKey;
-  String brainModel; // 'flash-lite' (default) or 'flash'
-  String agentMaxCredits;
   String currentVersion;
   String whatsAppLink;
   String chatLink;
@@ -51,10 +41,7 @@ class AppSettings {
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.geminiApiKey = '',
-    this.brainModel = 'flash-lite',
-    this.agentMaxCredits = '',
-    this.currentVersion = 'v2.48.96',
+    this.currentVersion = 'v2.48.97',
     // v2.34.0 (Problem 12): no placeholder social links ship any
     // more — an unconfigured service shows NO icon (top strip /
     // About) instead of an icon that opens a dead page. The owner
@@ -84,9 +71,6 @@ class AppSettings {
     bool? previewAutoplay,
     bool? autoVerifyOnStart,
     bool? autoCheckUpdates,
-    String? geminiApiKey,
-    String? brainModel,
-    String? agentMaxCredits,
     String? currentVersion,
     String? whatsAppLink,
     String? chatLink,
@@ -111,9 +95,6 @@ class AppSettings {
       previewAutoplay: previewAutoplay ?? this.previewAutoplay,
       autoVerifyOnStart: autoVerifyOnStart ?? this.autoVerifyOnStart,
       autoCheckUpdates: autoCheckUpdates ?? this.autoCheckUpdates,
-      geminiApiKey: geminiApiKey ?? this.geminiApiKey,
-      brainModel: brainModel ?? this.brainModel,
-      agentMaxCredits: agentMaxCredits ?? this.agentMaxCredits,
       currentVersion: currentVersion ?? this.currentVersion,
       whatsAppLink: whatsAppLink ?? this.whatsAppLink,
       chatLink: chatLink ?? this.chatLink,

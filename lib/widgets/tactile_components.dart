@@ -512,8 +512,9 @@ class _TactileChipState extends State<TactileChip> {
 }
 
 /// A luxury 3D interactive section container for major app panels.
-/// Features subtle specular edge illumination on hover,
-/// smooth 180ms cubic transition, and depth-tuned box shadows.
+/// Borderless since v2.48.94 (owner): panels separate by gradient
+/// surface + soft shadow only. Smooth 180ms cubic transition, and
+/// depth-tuned box shadows that deepen slightly on hover.
 class TactileSectionContainer extends StatefulWidget {
   final Widget child;
   final EdgeInsetsGeometry padding;
@@ -543,16 +544,15 @@ class _TactileSectionContainerState extends State<TactileSectionContainer> {
 
   @override
   Widget build(BuildContext context) {
-    // v2.48.93 (owner, 2026-11-12): the hover border was
-    // borderHighlight (accentGold) — it lit up as a bright gold line
-    // floating just above the buttons inside the section (owner's
-    // screenshot of the Accounts section). Owner's choice: NO gold
-    // shine on hover — the hover border is now the palette's own
-    // stronger border token (AppTheme.border), one step deeper than
-    // the resting borderSoft, in both modes, on every palette.
-    final borderColor = _isHovered
-        ? AppTheme.border
-        : AppTheme.borderSoft;
+    // v2.48.94 (owner, 2026-11-12): NO BORDER AT ALL on sections.
+    // Even after .93 softened the hover line, the resting frame
+    // border still sat as an outline directly above the section's
+    // first button ("+ Add Cookies"). Owner's choice verbatim:
+    // "Saare sections ka border bilkul hata do — sirf gradient +
+    // naram shadow, koi line nahi." Sections now separate by the
+    // panelGrad surface + the soft lift shadow only, like large
+    // professional platforms. _isHovered stays: the lift shadow
+    // still deepens slightly on hover (a shadow is not a line).
 
     return MouseRegion(
       onEnter: (_) => setState(() => _isHovered = true),
@@ -568,10 +568,7 @@ class _TactileSectionContainerState extends State<TactileSectionContainer> {
         decoration: BoxDecoration(
           gradient: AppTheme.panelGrad,
           borderRadius: BorderRadius.circular(widget.borderRadius),
-          border: Border.all(
-            color: borderColor,
-            width: 1.0,
-          ),
+          // v2.48.94: no border here — see the build() note above.
           boxShadow: [
             // v2.48.87 Item 4 (owner-approved LIGHT DESIGN 3 'Gehra frame'):
             // light cards sit on a DEEP slate canvas, so the resting shadow

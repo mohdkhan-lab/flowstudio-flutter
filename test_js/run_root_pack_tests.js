@@ -7864,14 +7864,23 @@ async function main() {
   // line floating just above the buttons inside the section,
   // backed by a hover-only accentGold glow bloom (blur 18).
   // Owner's chosen fix: "gold chamak khatam, sirf halka gehra
-  // border" — hover border is now the palette's own stronger
-  // border token (AppTheme.border vs the resting
-  // borderSoft), no gold in either mode on any palette, and
-  // the gold glow shadow is GONE from the container. The
+  // border" — hover border became the palette's own stronger
+  // border token, and the gold glow shadow was removed. The
   // main lift shadow (black on dark / warmShadow on light)
-  // and its hover strengthening are unchanged. Buttons keep
+  // and its hover strengthening were unchanged. Buttons keep
   // their own hover — borderHighlight itself is untouched
   // (sidebar buttons still use it).
+  //
+  // v2.48.94 UPDATE (owner, 2026-11-12, dated note): .93 was
+  // not enough — the RESTING frame border still sat as an
+  // outline directly above the section's first button
+  // ("+ Add Cookies") and the owner ordered NOTHING above
+  // the button: "Saare sections ka border bilkul hata do —
+  // sirf gradient + naram shadow, koi line nahi." The first
+  // pin below therefore no longer asserts a hover border
+  // token; it asserts NO border in the container at all.
+  // The gradient + soft lift shadow (with hover
+  // strengthening) are what remain.
   // ---------------------------------------------------------------------------
   {
     const fsx93 = require('fs');
@@ -7883,12 +7892,14 @@ async function main() {
     const container93 = tactileSrc93.slice(cStart93);
     const norm93 = container93.replace(/\s+/g, ' ');
 
-    ok('X93 section hover border is the palette border token (resting borderSoft)',
-      norm93.includes('? AppTheme.border : AppTheme.borderSoft'));
-    ok('X93 NO gold highlight in the section container hover border',
+    ok('X93 section container has NO border at all (v2.48.94: border removed at rest AND on hover)',
+      !container93.includes('Border.all(') && !norm93.includes('border: Border'));
+    ok('X93 NO gold highlight in the section container',
       !container93.includes('AppTheme.borderHighlight'));
     ok('X93 the hover-only gold glow bloom is GONE from the section container',
       !norm93.includes('if (_isHovered) BoxShadow') && !container93.includes('AppTheme.accentGold.withValues'));
+    ok('X93 the panel gradient + soft lift shadow REMAIN (sections separate by surface + shadow only)',
+      norm93.includes('gradient: AppTheme.panelGrad') && container93.includes('BoxShadow('));
     ok('X93 the main lift shadow + hover strengthening are unchanged (dark black / light warmShadow)',
       container93.includes('Colors.black.withValues(alpha: _isHovered ? 0.45 : 0.35)') &&
       container93.includes('AppTheme.warmShadow.withValues(alpha: _isHovered ? 0.30 : 0.22)'));

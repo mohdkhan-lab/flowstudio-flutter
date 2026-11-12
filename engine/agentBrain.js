@@ -19,8 +19,10 @@
 //   - A generation proposal is approved ONLY when its quoted credit
 //     cost parses AND is <= the effective cap.
 //   - The effective cap is the owner's "Agent max credits per video"
-//     when set, but NEVER above the run's expected cost (the app's
-//     known rates for the chosen model/duration/outputs).
+//     when set, but NEVER above the run's expected cost (for Agent
+//     runs: the field-calibrated flat quote for the mapped model —
+//     AGENT_MODEL_QUOTES below — since the Agent picks duration
+//     itself and ignores the direct route's rates).
 //   - Cap setting empty = the run's expected cost. Cap 0 = never
 //     auto-approve (the driver parks the card as needs-attention).
 //   - No parseable quote, or an unknown expected cost = NO approve,
@@ -42,6 +44,62 @@ const BRAIN_MODELS = {
 const DEFAULT_BRAIN_MODEL_KEY = 'flash-lite';
 
 const BRAIN_ACTIONS = ['reply', 'approve', 'reject', 'wait', 'fail'];
+
+// ---------------------------------------------------------------------------
+// v2.48.96 (AGENT QUOTES — field-calibrated 2026-11-12): Flow's
+// Agent has NO duration control — it picks the duration itself —
+// and quotes a flat per-video price for the model IT will use,
+// observed live at x1 outputs: Omni 1.2 Flash = 12, Veo 3.1 -
+// Lite = 10, Omni 1.1 Flash = 7. Veo Fast / Quality follow the
+// app's known flat Veo rates (20 / 100). The cost gate's
+// expected cost for an AGENT run comes from this table — never
+// from the direct route's duration/resolution math
+// (getRequiredCredits), which the Agent does not follow.
+// ---------------------------------------------------------------------------
+
+/** Flow Agent model label (its settings dropdown) -> flat quote at x1. */
+const AGENT_MODEL_QUOTES = {
+  'Omni 1.1 Flash': 7,
+  'Omni 1.2 Flash': 12,
+  'Veo 3.1 - Lite': 10,
+  'Veo 3.1 - Fast': 20,
+  'Veo 3.1 - Quality': 100
+};
+
+/** The app's model names (Settings dropdown) -> Flow Agent labels. */
+const AGENT_MODEL_MAP = {
+  'Omni Flash': 'Omni 1.1 Flash',
+  'Omni 1.2 Flash': 'Omni 1.2 Flash',
+  'Veo 3.1 Lite': 'Veo 3.1 - Lite',
+  'Veo 3.1 Fast': 'Veo 3.1 - Fast',
+  'Veo 3.1 Quality': 'Veo 3.1 - Quality'
+};
+
+/**
+ * Map a run's app model to the Flow Agent's own label + flat
+ * quote. Returns null for a model with no Agent mapping (the
+ * driver then leaves the project's Agent model default alone
+ * and the gate treats the expected cost as unknown).
+ */
+function mapAgentModel(appModel) {
+  const flowLabel = AGENT_MODEL_MAP[String(appModel || '').trim()];
+  if (!flowLabel) return null;
+  return { flowLabel, quote: AGENT_MODEL_QUOTES[flowLabel] };
+}
+
+/**
+ * The gate's expected cost for an Agent run: the mapped model's
+ * flat quote. Outputs are x1 — the driver aligns the project's
+ * Agent settings to x1 before the conversation starts, and the
+ * app locks its own outputs to x1 as well. Null when the model
+ * has no Agent mapping (nothing may approve on an unknown cost).
+ */
+function agentExpectedCost(settings) {
+  const s = settings || {};
+  const mapped = mapAgentModel(s.model || 'Omni Flash');
+  if (!mapped) return null;
+  return mapped.quote;
+}
 
 // 429 backoff schedule (ms): at most MAX_429_RETRIES retries, then
 // the brain reports 'brain-rate-limited' instead of hammering a
@@ -174,6 +232,10 @@ function parseQuotedCost(text) {
   const s = String(text || '');
   if (!s) return null;
   const patterns = [
+    // v2.48.96: the field-verified proposal wording comes FIRST —
+    // "Would you like me to kick off this 1 video generation,
+    // costing 12 credits?" (live calibration, 2026-11-12).
+    /costing\s+(\d{1,4})\s*credits?\b/i,
     /(?:total\s+)?cost[^0-9]{0,24}?(\d{1,4})\s*(?:credits?|cr\b)/i,
     /(\d{1,4})\s*credits?\b/i,
     /(?:cost|charge|price)[^0-9]{0,12}?(\d{1,4})\b/i
@@ -384,6 +446,10 @@ module.exports = {
   BRAIN_MODELS,
   DEFAULT_BRAIN_MODEL_KEY,
   BRAIN_ACTIONS,
+  AGENT_MODEL_QUOTES,
+  AGENT_MODEL_MAP,
+  mapAgentModel,
+  agentExpectedCost,
   MAX_429_RETRIES,
   BACKOFF_429_MS,
   resolveBrainModel,

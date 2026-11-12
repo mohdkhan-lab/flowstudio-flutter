@@ -8166,6 +8166,310 @@ async function main() {
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // X96 (v2.48.96) — AGENT DRIVER FIELD CALIBRATION: the .95 run
+  // reached Flow Agent's proposal and then HUNG, because a real
+  // proposal is NOT buttons — it is the "costing N credits?"
+  // sentence plus a Permission options RADIO GROUP, and while it
+  // waits the panel prompt box is LOCKED, so a run must click a
+  // radio option to settle the page. These pins cover: proposal
+  // detection on the verbatim field wordings (all three models),
+  // radio-label exactness (Approve is never Always approve),
+  // the Reject-settle paths (cap 0 parks, over-cap retries then
+  // fails), per-step hard timeouts, the per-project Agent
+  // settings alignment mapping (model/aspect/Confirm/Save), the
+  // started-generating note is NOT a proposal, and completion
+  // requires a tile. All DOM interaction runs behind mocked
+  // panel fixtures (a fake engine whose page.evaluate dispatches
+  // on the page function's name) — no live Flow, no live Gemini.
+  // ---------------------------------------------------------------------------
+  {
+    const fsx96 = require('fs');
+    const pathx96 = require('path');
+    const read96 = (rel) => fsx96.readFileSync(pathx96.join(__dirname, '..', rel), 'utf8');
+    const brain96 = require('../engine/agentBrain');
+    const driver96 = require('../engine/agentDriver');
+    const driverSrc96 = read96('engine/agentDriver.js');
+
+    // --- the verbatim field wordings (live calibration 2026-11-12) ---
+    const PROP_OMNI12 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.2 Flash. Would you like me to kick off this 1 video generation, costing 12 credits?';
+    const PROP_VEO_LITE = 'Using your default model Veo 3.1 - Lite, I\'ll generate 1 video of a red ball rolling on green grass. Would you like me to kick off this 1 video generation, costing 10 credits?';
+    const PROP_OMNI11 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.1 Flash. Would you like me to kick off this 1 video generation, costing 7 credits?';
+    ok('X96 proposal text: Omni 1.2 wording is a proposal', driver96.hasProposalText(PROP_OMNI12));
+    ok('X96 proposal text: Veo Lite wording is a proposal', driver96.hasProposalText(PROP_VEO_LITE));
+    ok('X96 proposal text: Omni 1.1 wording is a proposal', driver96.hasProposalText(PROP_OMNI11));
+    eq('X96 quote: Omni 1.2 proposal parses 12', brain96.parseQuotedCost(PROP_OMNI12), 12);
+    eq('X96 quote: Veo Lite proposal parses 10', brain96.parseQuotedCost(PROP_VEO_LITE), 10);
+    eq('X96 quote: Omni 1.1 proposal parses 7', brain96.parseQuotedCost(PROP_OMNI11), 7);
+    ok('X96 the started-generating note is NOT a proposal', !driver96.hasProposalText('I\'ve started generating your video.'));
+    ok('X96 the started-generating note IS recognised as generation started', driver96.looksLikeGenerationStarted('I\'ve started generating your video.'));
+    ok('X96 "going to generate" (the proposal opener) is NOT generation started', !driver96.looksLikeGenerationStarted(PROP_OMNI12));
+
+    // --- radio labels: exact, and Approve is never Always approve ---
+    eq('X96 permission approve label is exactly "Approve"', driver96.PERMISSION_LABELS.approve, 'Approve');
+    eq('X96 permission reject label is exactly "Reject"', driver96.PERMISSION_LABELS.reject, 'Reject');
+    eq('X96 permission always-approve label is its own label', driver96.PERMISSION_LABELS.alwaysApprove, 'Always approve in project');
+    ok('X96 the radio click matches labels by exact equality', driverSrc96.includes('label === norm(wanted)'));
+    ok('X96 the radio group is found by its Permission options label', driverSrc96.includes('[aria-label="Permission options"]'));
+    ok('X96 approval clicks go through the permission radio, never a button list', driverSrc96.includes('pageClickPermissionOption, AGENT_SELECTORS, PERMISSION_LABELS.approve'));
+
+    // --- the proposal action matrix (pure) ---
+    eq('X96 action: brain approve + gate approve = approve', driver96.resolveProposalAction({ action: 'approve' }, { approve: true, reason: 'within-cap' }).act, 'approve');
+    eq('X96 action: cap 0 = park (after a Reject click)', driver96.resolveProposalAction({ action: 'approve' }, { approve: false, reason: 'agent-cap-zero' }).act, 'park');
+    eq('X96 action: brain park = park', driver96.resolveProposalAction({ action: 'park' }, { approve: false, reason: 'agent-cap-zero' }).act, 'park');
+    eq('X96 action: over cap = retry', driver96.resolveProposalAction({ action: 'reject' }, { approve: false, reason: 'agent-cost-over-cap' }).act, 'retry');
+    eq('X96 action: unverified quote = fail with its reason', driver96.resolveProposalAction({ action: 'approve' }, { approve: false, reason: 'agent-cost-unverified' }).reason, 'agent-cost-unverified');
+    eq('X96 action: brain fail keeps the brain reason', driver96.resolveProposalAction({ action: 'fail', reason: 'brain-invalid-json' }, { approve: false }).reason, 'brain-invalid-json');
+    eq('X96 action: a brain "wait" on a live proposal converts through the gate (never left pending)', driver96.resolveProposalAction({ action: 'wait' }, { approve: true }).act, 'approve');
+    eq('X96 action: a brain "reply" over cap converts to retry', driver96.resolveProposalAction({ action: 'reply' }, { approve: false, reason: 'agent-cost-over-cap' }).act, 'retry');
+
+    // --- Agent quote table + model mapping (the gate's expected cost) ---
+    eq('X96 map: app "Omni Flash" is the Agent\'s Omni 1.1 Flash', brain96.mapAgentModel('Omni Flash').flowLabel, 'Omni 1.1 Flash');
+    eq('X96 quote: Omni 1.1 Flash is 7', brain96.mapAgentModel('Omni Flash').quote, 7);
+    eq('X96 quote: Omni 1.2 Flash is 12', brain96.mapAgentModel('Omni 1.2 Flash').quote, 12);
+    eq('X96 map: app "Veo 3.1 Lite" is the Agent\'s "Veo 3.1 - Lite"', brain96.mapAgentModel('Veo 3.1 Lite').flowLabel, 'Veo 3.1 - Lite');
+    eq('X96 quote: Veo 3.1 - Lite is 10', brain96.mapAgentModel('Veo 3.1 Lite').quote, 10);
+    eq('X96 quote: Veo 3.1 - Fast is 20', brain96.mapAgentModel('Veo 3.1 Fast').quote, 20);
+    eq('X96 quote: Veo 3.1 - Quality is 100', brain96.mapAgentModel('Veo 3.1 Quality').quote, 100);
+    eq('X96 map: an unknown model has no Agent mapping', brain96.mapAgentModel('Bogus Model'), null);
+    eq('X96 expected cost: Omni 1.2 run expects 12', brain96.agentExpectedCost({ model: 'Omni 1.2 Flash' }), 12);
+    eq('X96 expected cost: an unmapped model is unknown (nothing approves)', brain96.agentExpectedCost({ model: 'Bogus Model' }), null);
+    eq('X96 expected cost: no model falls back to the app default (Omni 1.1, 7)', brain96.agentExpectedCost({}), 7);
+    ok('X96 the driver takes its expected cost from the Agent quote table', driverSrc96.includes('agentBrain.agentExpectedCost(settings)'));
+    ok('X96 the driver never prices an Agent run with the direct-route math', !driverSrc96.includes('getRequiredCredits'));
+
+    // --- desired Agent settings (pure mapping) ---
+    {
+      const d = driver96.desiredAgentSettings({ model: 'Omni Flash', aspectRatio: '9:16' });
+      eq('X96 settings: Confirm is always Always (Never is never set)', d.confirm, 'Always');
+      eq('X96 settings: model maps to the Agent label', d.modelLabel, 'Omni 1.1 Flash');
+      eq('X96 settings: a 9:16 aspect carries over', d.aspect, '9:16');
+      eq('X96 settings: outputs are always x1', d.outputs, 'x1');
+      const d2 = driver96.desiredAgentSettings({ model: 'Bogus Model', aspectRatio: '1:1' });
+      eq('X96 settings: an unmapped model leaves the project default (null)', d2.modelLabel, null);
+      eq('X96 settings: a non-16:9/9:16 aspect leaves the project default (null)', d2.aspect, null);
+    }
+
+    // --- hard timeouts exist at the brief's caps ---
+    eq('X96 timeout: proposal wait is capped at 180s', driver96.PROPOSAL_WAIT_MS, 180000);
+    eq('X96 timeout: post-click settle is capped at 60s', driver96.SETTLE_TIMEOUT_MS, 60000);
+    eq('X96 timeout: media wait is capped at 300s', driver96.MEDIA_TIMEOUT_MS, 300000);
+    ok('X96 timeout: the proposal timeout has its own failure reason', driverSrc96.includes('agent-proposal-timeout'));
+    ok('X96 timeout: the settle timeout has its own failure reason', driverSrc96.includes('agent-settle-timeout'));
+
+    // --- the new [AGENT] lines render + cannot carry the key ---
+    {
+      const lines = [
+        driver96.agentLine('proposal', { quoted: 12, cap: 7 }),
+        driver96.agentLine('option-clicked', { label: 'Reject' }),
+        driver96.agentLine('option-missing', { label: 'Approve' }),
+        driver96.agentLine('settled'),
+        driver96.agentLine('settle-timeout'),
+        driver96.agentLine('generation-started'),
+        driver96.agentLine('settings-aligned', { detail: 'model Omni 1.1 Flash' }),
+        driver96.agentLine('settings-unaligned', { detail: 'surface not found' }),
+        driver96.agentLine('settings-skip', { detail: 'model unmapped' })
+      ];
+      ok('X96 every new [AGENT] line carries the [AGENT] prefix', lines.every(l => l.startsWith('[AGENT]')));
+      ok('X96 no new [AGENT] log line can contain the API key', lines.every(l => !l.includes('<redacted>')));
+    }
+
+    // --- mocked panel fixtures: a fake engine whose page.evaluate
+    // dispatches on the page function's name ---
+    const brainFetch96 = (obj) => async () => ({
+      status: 200,
+      json: async () => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] } }] })
+    });
+    const makeAgentEngine96 = (o) => {
+      const opts = o || {};
+      const logs = [];
+      const clicks = [];
+      const settingsClicks = [];
+      const state = {
+        messages: (opts.messages || []).slice(),
+        permEnabled: !!opts.permEnabled,
+        settingsOpenable: opts.settingsOpenable !== false,
+        settingsState: opts.settingsState || { present: true, confirm: 'Always', model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1' },
+        gridFps: (opts.gridFps || []).slice(),
+        savedClicks: 0
+      };
+      const engine = {
+        isStopping: false,
+        capturedVideoUrls: [],
+        claimedTileFingerprints: new Set(),
+        currentAccount: { name: 'Mock Account' },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        insertNativeText: async () => {},
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        page: {
+          keyboard: { press: async () => {}, type: async () => {} },
+          target: () => ({ createCDPSession: async () => ({ send: async () => {} }) }),
+          evaluate: async (fn, ...rest) => {
+            const name = fn && fn.name ? fn.name : '';
+            switch (name) {
+              case 'pageFindAgentToggle': return { found: true, on: true };
+              case 'pageClickAgentToggle': return true;
+              case 'pageReadAgentMessages':
+                if (opts.onReadMessages) opts.onReadMessages(state);
+                return state.messages.slice();
+              case 'pageAgentThinking': return false;
+              case 'pagePermissionState': return (state.permEnabled || opts.permStuck)
+                ? { present: true, enabled: true, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: true }
+                : { present: true, enabled: false, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: false };
+              case 'pageClickPermissionOption':
+                clicks.push(rest[1]);
+                if (!opts.permStuck) state.permEnabled = false; // a choice disables the group
+                if (opts.onPermissionClick) opts.onPermissionClick(rest[1], state);
+                return rest[1];
+              case 'pageFocusAgentInput': return true;
+              case 'pageClickAgentSend': return true;
+              case 'pageGridFingerprints': return state.gridFps.slice();
+              case 'pageGalleryLabels': return (opts.galleryLabels || []).slice();
+              case 'pageOpenAgentSettings': return state.settingsOpenable;
+              case 'pageAgentSettingsPresent': return state.settingsOpenable;
+              case 'pageReadAgentSettings': return { ...state.settingsState };
+              case 'pageClickSettingsText':
+                settingsClicks.push(rest[1]);
+                if (opts.onSettingsClick) opts.onSettingsClick(rest[1], state);
+                return true;
+              case 'pageSaveAgentSettings': state.savedClicks++; return true;
+              default: return { count: 0, labels: [] }; // the tile-snapshot closure
+            }
+          }
+        }
+      };
+      return { engine, logs, clicks, settingsClicks, state };
+    };
+    const runArgs96 = (over) => ({
+      promptText: 'A red ball rolling on green grass, sunny day',
+      settings: { model: 'Omni Flash', aspectRatio: '9:16', duration: '4s', quality: '360p' },
+      promptIndex: 0,
+      totalPrompts: 1,
+      agentConfig: { apiKey: 'TESTKEY96', brainModel: 'flash-lite', agentMaxCredits: '' },
+      chatPollMs: 5,
+      mediaPollMs: 5,
+      settlePollMs: 5,
+      settleTimeoutMs: 5000,
+      thinkingSettleMs: 1,
+      mediaTimeoutMs: 2000,
+      brainFetchFn: brainFetch96({ action: 'approve', reason: 'matches the settings' }),
+      brainSleepFn: async () => {},
+      brainNowFn: () => 1000000,
+      ...(over || {})
+    });
+
+    { // cap 0: the proposal is REJECT-clicked (page settles), then the card parks
+      const fx = makeAgentEngine96({ messages: [PROP_OMNI12], permEnabled: true });
+      const res = await driver96.submitViaAgent(fx.engine, runArgs96({
+        agentConfig: { apiKey: 'TESTKEY96', brainModel: 'flash-lite', agentMaxCredits: '0' }
+      }));
+      eq('X96 fixture cap-0: the run parks as AGENT_PARKED', res.status, 'AGENT_PARKED');
+      eq('X96 fixture cap-0: the page was settled with a Reject click (never left locked)', JSON.stringify(fx.clicks), JSON.stringify(['Reject']));
+      ok('X96 fixture cap-0: the proposal was logged with its quote', fx.logs.some(l => l.includes('generation proposal') && l.includes('12 credits')));
+      ok('X96 fixture cap-0: the settle was confirmed in the log', fx.logs.some(l => l.includes('proposal settled')));
+    }
+    { // within cap: Approve is clicked and a new tile completes the handoff
+      const fx = makeAgentEngine96({
+        messages: [PROP_OMNI11],
+        permEnabled: true,
+        onPermissionClick: (label, state) => {
+          if (label === 'Approve') state.gridFps = ['a red ball rolling on green grass on a sunny day'];
+        }
+      });
+      const res = await driver96.submitViaAgent(fx.engine, runArgs96({}));
+      eq('X96 fixture approve: the run hands off a SUBMITTED task', res.status, 'SUBMITTED');
+      eq('X96 fixture approve: exactly the Approve radio was clicked', JSON.stringify(fx.clicks), JSON.stringify(['Approve']));
+      eq('X96 fixture approve: the task binds the new tile fingerprint', res.lockedTileFingerprint, 'a red ball rolling on green grass on a sunny day');
+      eq('X96 fixture approve: the task is marked viaAgent', res.viaAgent, true);
+    }
+    { // over cap twice: Reject + re-ask (free), Reject again, then fail
+      const PROP_OMNI12_B = 'Here is a fresh proposal for the same red ball video, still with the Omni 1.2 Flash model. Would you like me to kick off this 1 video generation, costing 12 credits?';
+      const fx = makeAgentEngine96({
+        messages: [PROP_OMNI12],
+        permEnabled: true,
+        onPermissionClick: (label, state) => {
+          // Stage the re-asked proposal — it must only APPEAR on
+          // the next panel read (the first proposal's group has
+          // to read as settled in between, like the real panel).
+          if (label === 'Reject' && state.messages.length === 1) state.stageSecond = true;
+        },
+        onReadMessages: (state) => {
+          if (state.stageSecond) {
+            state.stageSecond = false;
+            state.messages = [PROP_OMNI12, PROP_OMNI12_B];
+            state.permEnabled = true;
+          }
+        }
+      });
+      const res = await driver96.submitViaAgent(fx.engine, runArgs96({}));
+      eq('X96 fixture over-cap: the run fails after the second over-cap proposal', res.status, 'AGENT_FAILED');
+      ok('X96 fixture over-cap: the failure reason is agent-cost-over-cap', String(res.reason || '').includes('agent-cost-over-cap'));
+      eq('X96 fixture over-cap: both proposals were settled with Reject clicks', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Reject']));
+    }
+    { // stuck group: the post-click settle timeout fires (no hang)
+      const fx = makeAgentEngine96({ messages: [PROP_OMNI11], permEnabled: true, permStuck: true });
+      const res = await driver96.submitViaAgent(fx.engine, runArgs96({ settleTimeoutMs: 300 }));
+      eq('X96 fixture settle-timeout: an unsettling proposal fails the run', res.status, 'AGENT_FAILED');
+      ok('X96 fixture settle-timeout: the reason is agent-settle-timeout', String(res.reason || '').includes('agent-settle-timeout'));
+      eq('X96 fixture settle-timeout: the Approve click itself did happen', JSON.stringify(fx.clicks), JSON.stringify(['Approve']));
+    }
+    { // silence: the proposal wait fires its hard timeout (no hang)
+      const fx = makeAgentEngine96({ messages: [] });
+      const res = await driver96.submitViaAgent(fx.engine, runArgs96({ proposalWaitMs: 150 }));
+      eq('X96 fixture timeout: a silent Agent fails the run', res.status, 'AGENT_FAILED');
+      ok('X96 fixture timeout: the reason is agent-proposal-timeout', String(res.reason || '').includes('agent-proposal-timeout'));
+    }
+    { // settings already aligned: Save + reopen-verify logs aligned
+      const fx = makeAgentEngine96({ messages: [] });
+      const res = await driver96.submitViaAgent(fx.engine, runArgs96({ proposalWaitMs: 150 }));
+      ok('X96 fixture settings: an aligned project logs settings-aligned', fx.logs.some(l => l.includes('settings aligned')));
+      eq('X96 fixture settings: Save was clicked exactly once', fx.state.savedClicks, 1);
+      eq('X96 fixture settings: the run continued past alignment (timeout, not a settings stop)', res.status, 'AGENT_FAILED');
+    }
+    { // settings need changing: the driver sets each field, then saves
+      const fx = makeAgentEngine96({
+        messages: [],
+        settingsState: { present: true, confirm: 'Never', model: 'Omni 1.2 Flash', aspect: '16:9', outputs: 'x2' },
+        onSettingsClick: (text, state) => {
+          if (text === 'Always') state.settingsState.confirm = 'Always';
+          if (text === 'Omni 1.1 Flash') state.settingsState.model = 'Omni 1.1 Flash';
+          if (text === '9:16') state.settingsState.aspect = '9:16';
+          if (text === 'x1') state.settingsState.outputs = 'x1';
+        }
+      });
+      await driver96.submitViaAgent(fx.engine, runArgs96({ proposalWaitMs: 150 }));
+      ok('X96 fixture settings: Confirm was set to Always', fx.settingsClicks.includes('Always'));
+      ok('X96 fixture settings: the model was switched to the mapped label', fx.settingsClicks.includes('Omni 1.1 Flash'));
+      ok('X96 fixture settings: the aspect was switched to the run aspect', fx.settingsClicks.includes('9:16'));
+      ok('X96 fixture settings: outputs were set to x1', fx.settingsClicks.includes('x1'));
+      ok('X96 fixture settings: the verified result logs settings-aligned', fx.logs.some(l => l.includes('settings aligned')));
+    }
+    { // settings surface missing: log unaligned and CONTINUE the run
+      const fx = makeAgentEngine96({ messages: [], settingsOpenable: false });
+      const res = await driver96.submitViaAgent(fx.engine, runArgs96({ proposalWaitMs: 150 }));
+      ok('X96 fixture settings: an unusable surface logs settings-unaligned', fx.logs.some(l => l.includes('could not be aligned')));
+      ok('X96 fixture settings: the run continued (ended on the proposal timeout, not a settings stop)', String(res.reason || '').includes('agent-proposal-timeout'));
+    }
+    { // started-generating (Confirm was off): no proposal, completion still requires the tile
+      const fx = makeAgentEngine96({
+        messages: ['I\'ve started generating your video — it will appear in your project shortly.'],
+        gridFps: ['a red ball rolling on green grass on a sunny day']
+      });
+      const res = await driver96.submitViaAgent(fx.engine, runArgs96({}));
+      eq('X96 fixture started: the run completes via the tile, not a message', res.status, 'SUBMITTED');
+      eq('X96 fixture started: no permission option was ever clicked', JSON.stringify(fx.clicks), JSON.stringify([]));
+      ok('X96 fixture started: the started-generating path was logged', fx.logs.some(l => l.includes('started generating without a proposal')));
+    }
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

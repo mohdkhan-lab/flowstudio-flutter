@@ -12134,6 +12134,28 @@ async function main() {
       ok('X107 dart: the header chips the cookies buttons mirror are untouched', promptsSrc107.includes("'+ Add Tag'") && promptsSrc107.includes('TactileType.gold'));
       ok('X107 dart: the account cards and the bottom NAV button keep their own widgets (not cookies controls)', sidebarSrc107.includes('class _HoverableAccountCard extends StatefulWidget') && sidebarSrc107.includes('class _HoverBottomSettingsBtn extends StatefulWidget'));
     }
+
+    // (8) The UI zoom root structure (Dart source pins).
+    // v2.48.104 shipped the zoom with NO root-pack pins on the
+    // builder (checked 2026-11-14: no zoom/uiScale/Transform pin
+    // existed anywhere in the pack), so there were no old pins to
+    // update in place for .105 — this subsection is NEW in
+    // v2.48.105 and pins the FIXED structure: the .104 builder put
+    // the divided-size SizedBox under the window constraints,
+    // which clamped w/h back to the window size (layout at real
+    // window size, paint-only scaling — the corner-box bug the
+    // owner screenshotted at 70%). The .105 builder escapes the
+    // clamp with an OverflowBox carrying the divided size, the
+    // Transform INSIDE it, and the 100% pass-through intact.
+    {
+      const mainSrc107 = fs107.readFileSync(path107.join(__dirname, '..', 'lib', 'main.dart'), 'utf8');
+      const zb107 = mainSrc107.slice(mainSrc107.indexOf('builder: (context, child)'), mainSrc107.indexOf('home: const MainStudioScreen()'));
+      ok('X107 dart zoom: the builder still divides the window size by the scale', zb107.includes('constraints.maxWidth / scale') && zb107.includes('constraints.maxHeight / scale'));
+      ok('X107 dart zoom: the 100% pass-through is intact', zb107.includes('if (scale == 1.0) return child;'));
+      ok('X107 dart zoom: an OverflowBox carries the divided size (min == max == w/h)', zb107.includes('child: OverflowBox(') && zb107.includes('minWidth: w,') && zb107.includes('maxWidth: w,') && zb107.includes('minHeight: h,') && zb107.includes('maxHeight: h,'));
+      ok('X107 dart zoom: the Transform sits INSIDE the OverflowBox and the SizedBox inside the Transform', zb107.indexOf('child: OverflowBox(') > -1 && zb107.indexOf('child: OverflowBox(') < zb107.indexOf('child: Transform.scale(') && zb107.indexOf('child: Transform.scale(') < zb107.indexOf('SizedBox(width: w, height: h, child: child)'));
+      ok('X107 dart zoom: the MediaQuery still reports the divided size', zb107.includes('.copyWith(size: Size(w, h))'));
+    }
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

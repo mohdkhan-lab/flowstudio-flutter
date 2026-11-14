@@ -79,6 +79,22 @@ class FlowStudioApp extends StatelessWidget {
             // MediaQuery-driven widgets agree with the layout
             // they see. At 100% the child passes through
             // untouched — the tuned 1024×768 fit is unchanged.
+            // v2.48.105: ZOOM FIX — the .104 structure put the
+            // divided-size SizedBox under the Align's normal
+            // window constraints, so w/h were CLAMPED back to
+            // the window size: the layout still built at the
+            // real window size and Transform.scale only shrank
+            // the PAINT (owner's live proof at 70%: the whole
+            // app became a small box in the top-left corner,
+            // the rest of the window empty black; above 100%
+            // the paint cropped instead of reflowing). An
+            // OverflowBox now sits between the Align and the
+            // Transform: it hands the divided size (w×h) to its
+            // child regardless of the window constraint while
+            // sizing itself to the window, so the layout
+            // genuinely happens at w×h and the scaled paint
+            // fills the window exactly — full-bleed at every
+            // zoom level, browser-style.
             builder: (context, child) {
               final scale = settingsProv.settings.uiScale;
               if (child == null) return const SizedBox.shrink();
@@ -92,10 +108,18 @@ class FlowStudioApp extends StatelessWidget {
                         .copyWith(size: Size(w, h)),
                     child: Align(
                       alignment: Alignment.topLeft,
-                      child: Transform.scale(
-                        scale: scale,
+                      child: OverflowBox(
                         alignment: Alignment.topLeft,
-                        child: SizedBox(width: w, height: h, child: child),
+                        minWidth: w,
+                        maxWidth: w,
+                        minHeight: h,
+                        maxHeight: h,
+                        child: Transform.scale(
+                          scale: scale,
+                          alignment: Alignment.topLeft,
+                          child:
+                              SizedBox(width: w, height: h, child: child),
+                        ),
                       ),
                     ),
                   );

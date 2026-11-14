@@ -7348,14 +7348,27 @@ async function main() {
     // v2.48.89: the '+ Add Cookies' pill and the inactive filter
     // tabs join the same pattern (count 2 -> 4).
     // v2.48.90: the light side is buttonBg (uniform warm tan).
-    ok('X88 sidebar bottom buttons + add-cookies pill + filter tabs take their light fill from buttonBg (uniform in .90)',
-      count88(sidebarSrc88, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg') === 4);
+    // v2.48.104 SUPERSEDES the .88 count of 4: the cookies pill +
+    // filter tabs no longer carry their own fills — the owner's
+    // final-version order moved them onto the Prompts-header
+    // TactileChip system, so their fills come from the shared
+    // components. Only the sidebar BOTTOM NAV button (not a
+    // cookies control) still rests on the pattern directly.
+    ok('X88 sidebar bottom buttons + add-cookies pill + filter tabs take their light fill from buttonBg (uniform in .90) [count superseded in .104 — cookies buttons moved to the shared chip system]',
+      count88(sidebarSrc88, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg') === 1 &&
+      sidebarSrc88.includes('TactileType.gold') && sidebarSrc88.includes('TactileChip('));
     ok('X88 the checking filter accent is sky blue on dark only, ACTIVE gold in light',
       sidebarSrc88.includes('AppTheme.dark ? const Color(0xFF38BDF8) : AppTheme.activeGold'));
     ok('X88 the checkbox edge is white70 on dark only, the border token in light',
       sidebarSrc88.includes('AppTheme.dark ? Colors.white70 : AppTheme.border'));
-    ok('X88 filter buttons never put white text on a pale tint in light',
-      sidebarSrc88.includes('AppTheme.dark ? Colors.white : activeTint'));
+    // v2.48.104: the filter tabs are TactileChips — the active
+    // label wears the tint colour itself in BOTH modes (the
+    // header-pill treatment), so white-on-pale-tint cannot
+    // occur; the old dark-mode white branch went with the
+    // bespoke widget.
+    ok('X88 filter buttons never put white text on a pale tint in light [chip restyle in .104]',
+      sidebarSrc88.includes('color: isActive ? activeTint : AppTheme.textDim') &&
+      !sidebarSrc88.includes('AppTheme.dark ? Colors.white : activeTint'));
     ok('X88 avatar discs have a white-theme slate/gold palette',
       sidebarSrc88.includes('_cardPaletteLight') && sidebarSrc88.includes('AppTheme.dark ? _cardPalette : _cardPaletteLight'));
     const notifSrc88 = read88('lib/widgets/notification_center.dart');
@@ -7468,8 +7481,13 @@ async function main() {
       sidebarSrc89.includes('isCheckingNow ? (AppTheme.dark ? const Color(0xFF38BDF8) : AppTheme.activeGold) : AppTheme.activeGold'));
     ok('X89 the credits sub-line reads at textDim in light (textFaint on dark)',
       sidebarSrc89.includes('AppTheme.dark ? AppTheme.textFaint : AppTheme.textDim'));
-    ok('X89 the dim red sidebar label wears the full red token in light',
-      sidebarSrc89.includes('AppTheme.dark ? const Color(0x80F87171) : AppTheme.red'));
+    // v2.48.104 SUPERSEDES: the bespoke half-alpha dark red
+    // literal is gone with the old grid button — the
+    // destructive cookies action now wears the header "Clear"
+    // treatment (full red token; textFaint when dimmed).
+    ok('X89 the dim red sidebar label wears the full red token in light [Clear-style restyle in .104]',
+      sidebarSrc89.includes('color: isDim ? AppTheme.textFaint : AppTheme.red') &&
+      !sidebarSrc89.includes('0x80F87171'));
     const tactileSrc89 = read89('lib/widgets/tactile_components.dart');
     ok('X89 disabled tactile labels never drop below textFaint in light',
       count89(tactileSrc89, 'AppTheme.dark ? AppTheme.textDim.withValues(alpha: 0.55) : AppTheme.textFaint') === 3 &&
@@ -7481,8 +7499,9 @@ async function main() {
       tactileSrc89.includes('AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg'));
     ok('X89 the gold tactile type rests on buttonBg in light (+ Add Tag)',
       count89(tactileSrc89, 'AppTheme.dark ? AppTheme.overlay10 : AppTheme.buttonBg') === 5);
-    ok('X89 add-cookies pill + filter tabs rest on buttonBg in light',
-      count89(sidebarSrc89, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg') === 4);
+    ok('X89 add-cookies pill + filter tabs rest on buttonBg in light [count superseded in .104 — shared chip system]',
+      count89(sidebarSrc89, 'AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg') === 1 &&
+      sidebarSrc89.includes('TactileChip('));
   }
 
   // ---------------------------------------------------------------------------
@@ -7604,8 +7623,14 @@ async function main() {
     ok('X90 the danger type rests on buttonBg (its black-alpha overlay10 fill is gone)',
       tactileSrc90.includes('bgColor = _isHovered ? AppTheme.surfaceElevated : AppTheme.buttonBg;'));
     const sidebarSrc90 = read90('lib/widgets/sidebar_accounts.dart');
-    ok('X90 every sidebar button rests on buttonBg in light (5 sites: pill, tabs, grid, settings, round +)',
-      count90(sidebarSrc90, 'AppTheme.buttonBg') === 5);
+    // v2.48.104 SUPERSEDES the 5-site count: the four cookies
+    // buttons (pill, tabs, grid, round +) moved onto the shared
+    // header chip system — their uniform face now comes from
+    // the Tactile components themselves; only the bottom NAV
+    // settings button still names buttonBg in this file.
+    ok('X90 every sidebar button rests on buttonBg in light (5 sites: pill, tabs, grid, settings, round +) [superseded in .104 — cookies buttons on the shared chip system]',
+      count90(sidebarSrc90, 'AppTheme.buttonBg') === 1 &&
+      sidebarSrc90.includes('TactileType.gold') && sidebarSrc90.includes('TactileType.icon') && sidebarSrc90.includes('TactileType.secondary'));
     ok('X90 Generate stays the gold primary (accent gradient untouched)',
       tactileSrc90.includes('gradient = isInteractive ? AppTheme.accentGrad : null;'));
 
@@ -7932,6 +7957,7 @@ async function main() {
     const read97 = (rel) => fsx97.readFileSync(pathx97.join(__dirname, '..', rel), 'utf8');
     const rules97 = require('../engine/agentRules');
     const driver97 = require('../engine/agentDriver');
+    const doctor97 = require('../engine/agentDoctor');
     const driverSrc97 = read97('engine/agentDriver.js');
     const rulesSrc97 = read97('engine/agentRules.js');
 
@@ -7970,9 +7996,25 @@ async function main() {
     // --- wiring that must SURVIVE the removal ---
     ok('X97 Dart guard is gone but Agent cards are still stamped via Agent', LIVE97['lib/providers/generator_provider.dart'].includes("agentMode ? 'Agent' : null"));
     ok('X97 Dart still carries the bare agentMode flag to the bridge', LIVE97['lib/providers/generator_provider.dart'].includes('agentMode: agentMode,') && LIVE97['lib/services/automation_bridge.dart'].includes("'agentMode': agentMode,"));
-    ok('X97 engine start still turns the body flag into run settings', LIVE97['engine_bridge.js'].includes('agentMode: config.agentMode === true'));
+    // v2.48.99 (X102) SUPERSEDES the literal pin that stood here
+    // ('agentMode: config.agentMode === true'): the run settings
+    // now carry the RESOLVED mode — initialised FROM the body flag,
+    // so an app/UI start's flag still becomes the run setting
+    // exactly as X97 guaranteed; only an MCP-originated start may
+    // resolve it differently (per-call > override, see X102).
+    ok('X97 engine start still turns the body flag into run settings', LIVE97['engine_bridge.js'].includes('let resolvedRunAgentMode = config.agentMode === true;') && LIVE97['engine_bridge.js'].includes('agentMode: resolvedRunAgentMode,'));
     ok('X97 pool still submits Agent runs through submitViaAgent', LIVE97['engine/workerPool.js'].includes('await engine.submitViaAgent(') && LIVE97['engine/workerPool.js'].includes('settings.agentMode === true'));
-    ok('X97 pool still parks AGENT_PARKED as needs-attention', LIVE97['engine/workerPool.js'].includes("submitRes.status === 'AGENT_PARKED'") && LIVE97['engine/workerPool.js'].includes('setTaskNeedsCheck(nextTask.id, 1)'));
+    // pack 3 REVERSAL (item 8): an AGENT_PARKED card no longer
+    // parks as needs-attention (pending + needs_check) — nothing
+    // was approved, so no video exists for the check-only Resume
+    // to find, and the record fed the false run-end note "videos
+    // had been generated but their download is still remaining".
+    // The pool now FAILS the card with the park reason (the
+    // AGENT_FAILED discipline; the claim stays unreleased). The
+    // old pin's setTaskNeedsCheck call must be GONE from the
+    // AGENT_PARKED branch (it survives elsewhere for genuine
+    // download parks).
+    ok('X97 pool ends AGENT_PARKED as a failure with the park reason (pack 3 item 8)', LIVE97['engine/workerPool.js'].includes("submitRes.status === 'AGENT_PARKED'") && LIVE97['engine/workerPool.js'].includes("dbService.failTask(nextTask.id, submitRes.reason || 'Agent proposal over cost')"));
     ok('X97 Bulk parsing is byte-identical in behaviour (mode split intact)', LIVE97['lib/providers/generator_provider.dart'].includes('} else if (!_isBulkMode) {'));
     ok('X97 the direct route still disables Flow Agent mode', read97('engine/flowAutomation.js').includes('await this.ensureAgentModeDisabled();'));
 
@@ -8184,6 +8226,10 @@ async function main() {
       settleTimeoutMs: 5000,
       mediaTimeoutMs: 2000,
       heartbeatMs: 40,
+      // pack 3: keep the send-time anchor retry budget tiny in
+      // fixtures (the retry itself is pinned in X101) so the
+      // never-anchor fixtures stay fast.
+      anchorRetryMs: 300,
       ...(over || {})
     });
     const TILE_FP = 'a red ball rolling on green grass on a sunny day';
@@ -8202,7 +8248,7 @@ async function main() {
       ok('X97 fixture approve: Always approve was never clicked', !fx.clicks.includes('Always approve in project'));
       eq('X97 fixture approve: the task binds the new tile fingerprint', res.lockedTileFingerprint, TILE_FP);
       eq('X97 fixture approve: the task is marked viaAgent', res.viaAgent, true);
-      eq('X97 fixture approve: only the user instruction was ever typed', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day']));
+      eq('X97 fixture approve: only the pinned instruction was ever typed', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)']));
       ok('X97 fixture approve: the proposal was logged with its quote + model', fx.logs.some(l => l.includes('generation proposal') && l.includes('quoted 7 credits') && l.includes('Omni 1.1 Flash')));
     }
     { // no rate helper on the engine: the rules table prices the run (Omni 1.1 = 7)
@@ -8242,7 +8288,7 @@ async function main() {
       ok('X97 fixture retry: the Agent settings were switched to the run model', fx.settingsClicks.includes('Omni 1.1 Flash'));
       ok('X97 fixture retry: the alignment was verified + logged', fx.logs.some(l => l.includes('settings aligned')));
       eq('X97 fixture retry: the instruction was sent exactly twice (original + one retry)', fx.state.sends, 2);
-      eq('X97 fixture retry: nothing but the user instruction was ever typed', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day', 'A red ball rolling on green grass, sunny day']));
+      eq('X97 fixture retry: nothing but the pinned instruction was ever typed', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)', 'A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)']));
     }
     { // (d) still over cost after the retry: Reject + park agent-over-cost; the retry fired exactly once
       const PROP_OMNI12_B = 'Here is a fresh proposal for the same red ball video, still with the Omni 1.2 Flash model. Would you like me to kick off this 1 video generation, costing 12 credits?';
@@ -8267,18 +8313,40 @@ async function main() {
       eq('X97 fixture retry-park: the settings fix fired exactly once', fx.settingsClicks.filter(t => t === 'Omni 1.1 Flash').length, 1);
       eq('X97 fixture retry-park: the instruction was sent exactly twice (no third ask)', fx.state.sends, 2);
     }
-    { // settings surface unusable on the retry: log agent-settings-unaligned, park WITHOUT re-sending
+    { // pack 3 REVERSAL of the .98/.99 pin below-history: the
+      // settings surface cannot be FOUND at all -> the driver
+      // no longer parks immediately. It re-sends the instruction
+      // ONCE with the run's model named in the text (item 5,
+      // 'retry-named-model'); the fresh proposal goes through
+      // the SAME quote rules — here it comes back within cost
+      // and is Approved. (The old pin — park with one Reject
+      // and one send — is superseded by pack 3 item 5; the
+      // mismatch case took the same fallback from v2.48.101
+      // Fix C on, pinned in X104.) The unaligned line still
+      // logs, and the Doctor's detail carries the survey outcome.
       const fx = makeAgentEngine97({
         panelText: PROP_OMNI12,
         permEnabled: true,
-        settingsOpenable: false
+        settingsOpenable: false,
+        onSend: (state) => {
+          if (state.sends === 2) {
+            state.panelText = PROP_OMNI11;
+            state.permEnabled = true;
+          }
+        },
+        onPermissionClick: (label, state) => {
+          if (label === 'Approve') state.gridFps = [TILE_FP];
+        }
       });
-      const res = await driver97.submitViaAgent(fx.engine, runArgs97({}));
-      eq('X97 fixture unaligned: the run parks instead of retrying blind', res.status, 'AGENT_PARKED');
-      ok('X97 fixture unaligned: the park reason is agent-over-cost', String(res.reason || '').startsWith('agent-over-cost'));
+      const res = await driver97.submitViaAgent(fx.engine, runArgs97({ settingsOpenWaitMs: 5, settingsSurfaceWaitMs: 20 }));
+      eq('X97 fixture unaligned: the named-model fallback re-send completes the run', res.status, 'SUBMITTED');
       ok('X97 fixture unaligned: the agent-settings-unaligned line was logged', fx.logs.some(l => l.includes('agent-settings-unaligned')));
-      eq('X97 fixture unaligned: the proposal was settled with one Reject click', JSON.stringify(fx.clicks), JSON.stringify(['Reject']));
-      eq('X97 fixture unaligned: the instruction was sent exactly once (no retry)', fx.state.sends, 1);
+      ok('X97 fixture unaligned: the retry-named-model line was logged', fx.logs.some(l => l.includes('retry-named-model')));
+      eq('X97 fixture unaligned: Reject settled the first proposal, Approve took the re-quote', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Approve']));
+      eq('X97 fixture unaligned: the instruction was sent exactly twice (original + named re-send)', fx.state.sends, 2);
+      eq('X97 fixture unaligned: the re-send is the same pinned instruction', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)', 'A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)']));
+      const recUnaligned97 = doctor97.getLastAgentRun();
+      ok('X97 fixture unaligned: the Doctor detail carries the settings-survey outcome', !!recUnaligned97 && typeof recUnaligned97.detail === 'string' && recUnaligned97.detail.includes('settings survey'));
     }
     { // (e)+(f) a question text: never answered, waited through; the timeout failure dumps the panel
       const QUESTION = 'Quick question before I start: should the ball be red or blue?';
@@ -8286,7 +8354,7 @@ async function main() {
       const res = await driver97.submitViaAgent(fx.engine, runArgs97({ proposalWaitMs: 300 }));
       eq('X97 fixture question: an unanswered Agent times out the proposal wait', res.status, 'AGENT_FAILED');
       ok('X97 fixture question: the reason is agent-proposal-timeout', String(res.reason || '').includes('agent-proposal-timeout'));
-      eq('X97 fixture question: no reply was ever typed (instruction only)', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day']));
+      eq('X97 fixture question: no reply was ever typed (pinned instruction only)', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)']));
       eq('X97 fixture question: no radio option was ever clicked', JSON.stringify(fx.clicks), JSON.stringify([]));
       ok('X97 fixture question: the question text was logged as an agent message', fx.logs.some(l => l.includes('should the ball be red or blue')));
       ok('X97 fixture question: a heartbeat carried the panel tail + group flag', fx.logs.some(l => l.includes('still waiting') && l.includes('panel tail:') && l.includes('proposalGroup=absent') && l.includes('red or blue')));
@@ -8530,6 +8598,9 @@ async function main() {
       settleTimeoutMs: 5000,
       mediaTimeoutMs: 3000,
       heartbeatMs: 40,
+      // pack 3: tiny send-time anchor retry budget in fixtures
+      // (the retry itself is pinned in X101).
+      anchorRetryMs: 300,
       ...(over || {})
     });
     const PROP_OMNI11_98 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.1 Flash. Would you like me to kick off this 1 video generation, costing 7 credits?';
@@ -8581,7 +8652,7 @@ async function main() {
       ok('X98 fixture panel: the proposal was read (quote + model logged)', fx.logs.some(l => l.includes('generation proposal') && l.includes('quoted 7 credits') && l.includes('Omni 1.1 Flash')));
       ok('X98 fixture panel: the canvas text was NEVER reported as an agent message', !fx.logs.some(l => l.includes('agent message: "Start creating or drop media"')));
       ok('X98 fixture panel: the canvas text was NEVER a heartbeat panel tail', !fx.logs.some(l => l.includes('panel tail: "Start creating or drop media"')));
-      eq('X98 fixture panel: only the user instruction was ever typed', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day']));
+      eq('X98 fixture panel: only the pinned instruction was ever typed', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)']));
     }
     { // no panel anywhere (canvas only — its wrapper even carries
       // the legacy selector trap class): the run must fail FAST
@@ -8605,7 +8676,3463 @@ async function main() {
       ok('X98 fixture no-panel: the DOM survey was logged and shows the canvas trap', fx.logs.some(l => l.includes('DOM survey') && l.includes('Start creating or drop media')));
       ok('X98 fixture no-panel: the panel-not-found line was logged', fx.logs.some(l => l.includes('agent-panel-not-found')));
       ok('X98 fixture no-panel: nothing was ever reported as an agent message', !fx.logs.some(l => l.includes('agent message:')));
-      eq('X98 fixture no-panel: only the user instruction was ever typed', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day']));
+      eq('X98 fixture no-panel: only the pinned instruction was ever typed', JSON.stringify(fx.typed), JSON.stringify(['A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)']));
+    }
+  }
+
+
+  // =====================================================================
+  // X99 (v2.48.99) — AGENT PROPOSAL MODEL READ + UNNAMED-MODEL
+  // RETRY: the .98 field run (AGENTTEST4-1112, 2026-11-12 17:35)
+  // proved detection -> quote parse -> Reject -> settle -> park
+  // all work live with zero credits spent, with two gaps left:
+  // (1) the proposal's MODEL read as "not named" — it sat in the
+  // proposal's first sentence, outside the radio group's
+  // 8-hop/1500-char ancestor text window, so decideOnProposal
+  // could not take the retry branch; (2) that run's quote was
+  // 30 with NO model named — no x1 flat quote is 30 (Agent
+  // quotes vary with the duration/resolution it picks) — and an
+  // unnamed over-cost proposal parked at once. The fixes: the
+  // group-text window is 14 hops / ~4000 chars keeping the
+  // WIDEST costing-bearing ancestor text, parseProposalModel
+  // falls back to a known-label scan over the whole block, the
+  // driver also tries the anchored panel text for the model
+  // (the proposal log line names the source), an unnamed-model
+  // over-cost proposal takes 'retry-settings' with the distinct
+  // reason 'agent-model-unnamed-over-cost' + its own log line,
+  // and alignAgentSettings makes ONE logged re-anchor attempt
+  // before opening the settings (the composer anchor had missed
+  // at send time in that run, when the panel was not yet fully
+  // rendered).
+  // =====================================================================
+  {
+    const rules99 = require('../engine/agentRules');
+    const driver99 = require('../engine/agentDriver');
+    const fs99 = require('fs');
+    const path99 = require('path');
+    const read99 = (rel) => fs99.readFileSync(path99.join(__dirname, '..', rel), 'utf8');
+    const driverSrc99 = read99('engine/agentDriver.js');
+    const rulesSrc99 = read99('engine/agentRules.js');
+
+    // --- source pins ---
+    ok('X99 the group text window widened (14 hops, ~4000 chars)', driverSrc99.includes('hops < 14') && driverSrc99.includes('substring(0, 4000)'));
+    ok('X99 the known-label scan fallback exists in the rules', rulesSrc99.includes('scanKnownModelLabel'));
+    ok('X99 the unnamed-model retry branch exists in the rules', rulesSrc99.includes('agent-model-unnamed-over-cost'));
+    ok('X99 the driver logs the unnamed-model retry line', driverSrc99.includes("log('retry-unnamed'"));
+    ok('X99 the settings alignment re-anchors first (logged)', driverSrc99.includes("log('reanchor'"));
+    ok('X99 the proposal parse names its model source', driverSrc99.includes('modelSource'));
+
+    // --- (a) the model read over a wider proposal block ---
+    const FILLER99 = 'The preview area shows your project clips, recent activity and the session so far, and everything is right where you left it. ';
+    const PROP_PADDED99 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.2 Flash. ' + FILLER99.repeat(18) + 'Would you like me to kick off this 1 video generation, costing 12 credits?';
+    ok('X99 padded block: the fixture really is beyond the old 1500-char window', PROP_PADDED99.length > 1500 && PROP_PADDED99.length <= 4000);
+    eq('X99 padded block: the model is still read (first sentence)', rules99.parseProposalModel(PROP_PADDED99), 'Omni 1.2 Flash');
+    eq('X99 padded block: the quote still parses from the far end', rules99.parseQuotedCost(PROP_PADDED99), 12);
+    eq('X99 model scan: a bare canonical label anywhere is found', rules99.parseProposalModel('For this one I will use the studio preset, which currently points at Veo 3.1 - Quality, unless you say otherwise.'), 'Veo 3.1 - Quality');
+    eq('X99 model scan: matching is case-insensitive', rules99.scanKnownModelLabel('rendered with omni 1.2 flash today'), 'Omni 1.2 Flash');
+    eq('X99 model scan: no known label names none', rules99.scanKnownModelLabel('a perfectly ordinary sentence'), null);
+    eq('X99 model parse: a block with no model at all names none', rules99.parseProposalModel('Would you like me to kick off this 1 video generation, costing 30 credits?'), null);
+
+    // --- (b) the decision: unnamed-model over-cost takes the retry ---
+    eq('X99 decision: unnamed model, quote 30 over a 7 run = settings retry', rules99.decideOnProposal({ quotedCost: 30, proposalModel: null, runModelLabel: 'Omni 1.1 Flash', runExpectedCost: 7, retried: false }).act, 'retry-settings');
+    eq('X99 decision: the unnamed retry reason is distinct', rules99.decideOnProposal({ quotedCost: 30, proposalModel: null, runModelLabel: 'Omni 1.1 Flash', runExpectedCost: 7, retried: false }).reason, 'agent-model-unnamed-over-cost');
+    eq('X99 decision: unnamed model over-cost AFTER the retry = park', rules99.decideOnProposal({ quotedCost: 30, proposalModel: null, runModelLabel: 'Omni 1.1 Flash', runExpectedCost: 7, retried: true }).act, 'park');
+    eq('X99 decision: unnamed model within cost still approves', rules99.decideOnProposal({ quotedCost: 5, proposalModel: null, runModelLabel: 'Omni 1.1 Flash', runExpectedCost: 7, retried: false }).act, 'approve');
+    // --- (c) the named-model matrix is intact ---
+    eq('X99 decision: named pricier model = settings retry (unchanged)', rules99.decideOnProposal({ quotedCost: 12, proposalModel: 'Omni 1.2 Flash', runModelLabel: 'Omni 1.1 Flash', runExpectedCost: 7, retried: false }).act, 'retry-settings');
+    eq('X99 decision: named pricier model reason unchanged', rules99.decideOnProposal({ quotedCost: 12, proposalModel: 'Omni 1.2 Flash', runModelLabel: 'Omni 1.1 Flash', runExpectedCost: 7, retried: false }).reason, 'agent-model-over-cost');
+    eq('X99 decision: named same-model over-cost parks at once (unchanged)', rules99.decideOnProposal({ quotedCost: 12, proposalModel: 'Omni 1.2 Flash', runModelLabel: 'Omni 1.2 Flash', runExpectedCost: 4, retried: false }).act, 'park');
+    // --- (d) named model + quote within cost approves (unchanged) ---
+    eq('X99 decision: named model within cost approves (unchanged)', rules99.decideOnProposal({ quotedCost: 7, proposalModel: 'Omni 1.1 Flash', runModelLabel: 'Omni 1.1 Flash', runExpectedCost: 7, retried: false }).act, 'approve');
+
+    // --- the new log lines ---
+    {
+      const un = driver99.agentLine('retry-unnamed', { quoted: 30, expected: 7 });
+      ok('X99 the unnamed retry line says the model could not be read + both numbers', un.includes('model could not be read') && un.includes('(30)') && un.includes('(7)'));
+      const pr = driver99.agentLine('proposal', { model: 'Omni 1.2 Flash', modelSource: 'proposal text', quoted: 12, expected: 7, act: 'retry-settings' });
+      ok('X99 the proposal line names the model + its parse source', pr.includes('Omni 1.2 Flash') && pr.includes('(from proposal text)'));
+      const prNo = driver99.agentLine('proposal', { model: null, quoted: 30, expected: 7, act: 'retry-settings' });
+      ok('X99 the proposal line still reads "not named" when no model was read', prNo.includes('model not named'));
+      const ra = driver99.agentLine('reanchor', { found: true, depth: 5, textLength: 900 });
+      ok('X99 the re-anchor line reports depth + text size', ra.includes('re-anchored') && ra.includes('depth 5'));
+      const ra2 = driver99.agentLine('reanchor', { found: false });
+      ok('X99 the re-anchor miss line is explicit', ra2.includes('did not find the Agent composer'));
+    }
+
+    // --- flat mocked-panel fixtures (the X97 harness shape, plus
+    // a groupText channel and an anchor-call counter — the two
+    // things the .99 paths read) ---
+    const makeAgentEngine99 = (o) => {
+      const opts = o || {};
+      const logs = [];
+      const clicks = [];
+      const settingsClicks = [];
+      const typed = [];
+      const state = {
+        panelText: opts.panelText || '',
+        groupText: opts.groupText || '',
+        permEnabled: !!opts.permEnabled,
+        permPresent: opts.permPresent !== undefined ? opts.permPresent : !!opts.permEnabled,
+        settingsOpenable: opts.settingsOpenable !== false,
+        settingsState: opts.settingsState || { present: true, confirm: 'Always', model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1' },
+        gridFps: (opts.gridFps || []).slice(),
+        savedClicks: 0,
+        sends: 0,
+        anchorCalls: 0
+      };
+      const engine = {
+        isStopping: false,
+        capturedVideoUrls: [],
+        claimedTileFingerprints: new Set(),
+        currentAccount: { name: 'Mock Account' },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        insertNativeText: async (t) => { typed.push(String(t)); },
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        page: {
+          keyboard: { press: async () => {}, type: async (t) => { typed.push(String(t)); } },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) typed.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => {
+            const name = fn && fn.name ? fn.name : '';
+            switch (name) {
+              case 'pageFindAgentToggle': return { found: true, on: true };
+              case 'pageClickAgentToggle': return true;
+              case 'pageReadAgentPanelText': return state.panelText;
+              case 'pageAnchorAgentPanel':
+                state.anchorCalls++;
+                return { found: true, depth: 2, textLength: String(state.panelText || '').length, containsComposer: true, text: state.panelText };
+              case 'pageSurveyAgentDom': return [];
+              case 'pagePermissionState': return state.permEnabled
+                ? { present: true, enabled: true, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: true, groupText: state.groupText }
+                : { present: state.permPresent, enabled: false, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: false, groupText: state.groupText };
+              case 'pageClickPermissionOption':
+                clicks.push(rest[1]);
+                state.permEnabled = false; // a choice disables the group
+                if (opts.onPermissionClick) opts.onPermissionClick(rest[1], state);
+                return rest[1];
+              case 'pageFocusAgentInput': return true;
+              case 'pageClickAgentSend':
+                state.sends++;
+                if (opts.onSend) opts.onSend(state);
+                return true;
+              case 'pageGridFingerprints': return state.gridFps.slice();
+              case 'pageGalleryLabels': return [];
+              case 'pageOpenAgentSettings': return state.settingsOpenable;
+              case 'pageAgentSettingsPresent': return state.settingsOpenable;
+              case 'pageReadAgentSettings': return { ...state.settingsState };
+              case 'pageClickSettingsText':
+                settingsClicks.push(rest[1]);
+                if (opts.onSettingsClick) opts.onSettingsClick(rest[1], state);
+                return true;
+              case 'pageSaveAgentSettings':
+                state.savedClicks++;
+                return true;
+              default: return { count: 0, labels: [] }; // the tile-snapshot closure
+            }
+          }
+        }
+      };
+      engine.getRequiredCredits = () => (opts.runExpected !== undefined ? opts.runExpected : 7);
+      return { engine, logs, clicks, settingsClicks, typed, state };
+    };
+    const runArgs99 = (over) => ({
+      promptText: 'A red ball rolling on green grass, sunny day',
+      settings: { model: 'Omni Flash', aspectRatio: '9:16', duration: '10s', quality: '360p' },
+      promptIndex: 0,
+      totalPrompts: 1,
+      chatPollMs: 5,
+      mediaPollMs: 5,
+      settlePollMs: 5,
+      settleTimeoutMs: 5000,
+      mediaTimeoutMs: 2000,
+      heartbeatMs: 40,
+      // pack 3: tiny send-time anchor retry budget in fixtures
+      // (the retry itself is pinned in X101).
+      anchorRetryMs: 300,
+      ...(over || {})
+    });
+    const TILE_FP99 = 'a red ball rolling on green grass on a sunny day';
+    const PROP_OMNI11_99 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.1 Flash. Would you like me to kick off this 1 video generation, costing 7 credits?';
+    const PROP_UNNAMED30_99 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day. Would you like me to kick off this 1 video generation, costing 30 credits?';
+    const PROP_COST_ONLY12_99 = 'Would you like me to kick off this 1 video generation, costing 12 credits?';
+    const PROP_COST_ONLY7_99 = 'Would you like me to kick off this 1 video generation, costing 7 credits?';
+
+    { // (b) the .98 field shape: quote 30, NO model named ->
+      // Reject -> re-anchor + settings aligned -> ONE re-send ->
+      // still unnamed 30 -> Reject + park agent-over-cost.
+      const fx = makeAgentEngine99({
+        panelText: PROP_UNNAMED30_99,
+        permEnabled: true,
+        settingsState: { present: true, confirm: 'Always', model: 'Omni 1.2 Flash', aspect: '9:16', outputs: 'x1' },
+        onSettingsClick: (text, state) => {
+          if (text === 'Omni 1.1 Flash') state.settingsState.model = 'Omni 1.1 Flash';
+        },
+        onSend: (state) => {
+          if (state.sends === 2) {
+            state.panelText = PROP_UNNAMED30_99;
+            state.permEnabled = true;
+          }
+        }
+      });
+      const res = await driver99.submitViaAgent(fx.engine, runArgs99({}));
+      eq('X99 fixture unnamed: a second unnamed over-cost proposal parks the card', res.status, 'AGENT_PARKED');
+      ok('X99 fixture unnamed: the park reason is agent-over-cost', String(res.reason || '').startsWith('agent-over-cost'));
+      eq('X99 fixture unnamed: both proposals were settled with Reject clicks', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Reject']));
+      eq('X99 fixture unnamed: the instruction was sent exactly twice (original + one retry)', fx.state.sends, 2);
+      ok('X99 fixture unnamed: the first proposal took the retry branch', fx.logs.some(l => l.includes('generation proposal') && l.includes('model not named') && l.includes('quoted 30 credits') && l.includes('→ retry-settings')));
+      ok('X99 fixture unnamed: the unnamed-model retry line was logged', fx.logs.some(l => l.includes('model could not be read') && l.includes('(30)')));
+      ok('X99 fixture unnamed: the settings were aligned to the run model', fx.settingsClicks.includes('Omni 1.1 Flash') && fx.logs.some(l => l.includes('settings aligned')));
+      ok('X99 fixture unnamed: the re-anchor ran before the settings alignment (logged)', fx.logs.some(l => l.includes('re-anchored')));
+      ok('X99 fixture unnamed: the anchor was attempted at send AND before settings', fx.state.anchorCalls >= 2);
+    }
+    { // (a) the model lives ONLY in the (wide) group text: the
+      // panel text carries the costing paragraph alone -> the
+      // decision must still see Omni 1.2 Flash (source: proposal
+      // text), take the named retry, then approve the re-quote.
+      const fx = makeAgentEngine99({
+        panelText: PROP_COST_ONLY12_99,
+        groupText: PROP_PADDED99,
+        permEnabled: true,
+        settingsState: { present: true, confirm: 'Always', model: 'Omni 1.2 Flash', aspect: '9:16', outputs: 'x1' },
+        onSettingsClick: (text, state) => {
+          if (text === 'Omni 1.1 Flash') state.settingsState.model = 'Omni 1.1 Flash';
+        },
+        onSend: (state) => {
+          if (state.sends === 2) {
+            state.panelText = PROP_OMNI11_99;
+            state.groupText = PROP_OMNI11_99;
+            state.permEnabled = true;
+          }
+        },
+        onPermissionClick: (label, state) => {
+          if (label === 'Approve') state.gridFps = [TILE_FP99];
+        }
+      });
+      const res = await driver99.submitViaAgent(fx.engine, runArgs99({}));
+      eq('X99 fixture group-model: the run completes after the settings fix', res.status, 'SUBMITTED');
+      eq('X99 fixture group-model: Reject first, then Approve', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Approve']));
+      ok('X99 fixture group-model: the model came from the proposal (group) text', fx.logs.some(l => l.includes('generation proposal') && l.includes('Omni 1.2 Flash') && l.includes('(from proposal text)')));
+      ok('X99 fixture group-model: the named-model retry line was used (not the unnamed one)', fx.logs.some(l => l.includes("proposal's model is pricier")) && !fx.logs.some(l => l.includes('model could not be read')));
+    }
+    { // (a) the model lives ONLY in the anchored panel text:
+      // the group text carries the costing sentence alone -> the
+      // driver falls back to the panel text (source: panel text)
+      // and approves within cost.
+      const fx = makeAgentEngine99({
+        panelText: PROP_OMNI11_99,
+        groupText: PROP_COST_ONLY7_99,
+        permEnabled: true,
+        onPermissionClick: (label, state) => {
+          if (label === 'Approve') state.gridFps = [TILE_FP99];
+        }
+      });
+      const res = await driver99.submitViaAgent(fx.engine, runArgs99({}));
+      eq('X99 fixture panel-model: the run hands off a SUBMITTED task', res.status, 'SUBMITTED');
+      eq('X99 fixture panel-model: exactly the Approve radio was clicked', JSON.stringify(fx.clicks), JSON.stringify(['Approve']));
+      ok('X99 fixture panel-model: the model came from the panel text', fx.logs.some(l => l.includes('generation proposal') && l.includes('Omni 1.1 Flash') && l.includes('(from panel text)')));
+    }
+
+    // --- mini-DOM fixture: the REAL page functions against a
+    // modelled Flow page. The proposal's model sentence sits in
+    // the messages area, OUTSIDE the small costing-only ancestor
+    // the old 8-hop/1500-char walk stopped at; there is NO
+    // composer anywhere (the anchor cannot save the read), so
+    // the model can reach the decision ONLY through the widened
+    // group text. The settings surface cannot be opened — pack 3
+    // therefore takes the named-MODEL fallback (item 5): the
+    // instruction is re-sent once with the model named in the
+    // text, the same static proposal is re-read, and the run
+    // parks behind 'agent-over-cost-named-retry' (the
+    // 'agent-settings-unaligned' line still logs, and the
+    // settings survey is captured) — with the model NAMED in
+    // both the proposal line and the park reason. ---
+    const splitTop99 = (str, sep) => {
+      const out = []; let cur = ''; let br = 0; let q = false;
+      for (const ch of String(str)) {
+        if (q) { cur += ch; if (ch === '"') q = false; continue; }
+        if (ch === '"') { q = true; cur += ch; continue; }
+        if (ch === '[') br++;
+        if (ch === ']') br--;
+        if (ch === sep && br === 0) { if (cur.trim()) out.push(cur.trim()); cur = ''; continue; }
+        cur += ch;
+      }
+      if (cur.trim()) out.push(cur.trim());
+      return out;
+    };
+    const parseCompound99 = (src) => {
+      const c = { tag: null, classes: [], attrs: [] };
+      let rest = src;
+      const tagM = rest.match(/^(\*|[a-zA-Z][a-zA-Z0-9-]*)/);
+      if (tagM) { c.tag = tagM[1] === '*' ? null : tagM[1].toLowerCase(); rest = rest.slice(tagM[1].length); }
+      while (rest.length) {
+        if (rest[0] === '.') { const m = rest.match(/^\.([a-zA-Z0-9_-]+)/); c.classes.push(m[1]); rest = rest.slice(m[0].length); }
+        else if (rest[0] === '[') {
+          const end = rest.indexOf(']');
+          const body = rest.slice(1, end);
+          const m = body.match(/^([a-zA-Z0-9_-]+)(\*?=)?\s*(?:"([^"]*)")?\s*(i)?$/);
+          c.attrs.push({ name: m[1], op: m[2] || null, value: m[3] !== undefined ? m[3] : null, ci: !!m[4] });
+          rest = rest.slice(end + 1);
+        } else if (rest.startsWith(':checked')) { c.attrs.push({ name: 'checked', op: 'pseudo', value: null, ci: false }); rest = rest.slice(8); }
+        else { rest = rest.slice(1); }
+      }
+      return c;
+    };
+    const matchCompound99 = (el, c) => {
+      if (c.tag && String(el.tagName || '').toLowerCase() !== c.tag) return false;
+      const classes = String(el.className || '').split(/\s+/).filter(Boolean);
+      for (const cl of c.classes) if (!classes.includes(cl)) return false;
+      for (const a of c.attrs) {
+        if (a.op === 'pseudo') { if (!(a.name === 'checked' && el.checked === true)) return false; continue; }
+        if (a.name === 'disabled' && !a.op) { if (!(el.hasAttribute('disabled') || el.disabled === true)) return false; continue; }
+        const v = el.getAttribute(a.name);
+        if (!a.op) { if (v === null) return false; continue; }
+        if (v === null) return false;
+        const hay = a.ci ? v.toLowerCase() : v;
+        const needle = a.ci ? String(a.value).toLowerCase() : String(a.value);
+        if (a.op === '=' && hay !== needle) return false;
+        if (a.op === '*=' && !hay.includes(needle)) return false;
+      }
+      return true;
+    };
+    const descendants99 = (el) => {
+      const out = [];
+      const walk = (n) => { for (const c of n.children) { out.push(c); walk(c); } };
+      walk(el);
+      return out;
+    };
+    const queryAll99 = (rootEl, sel, includeSelf) => {
+      const groups = splitTop99(sel, ',').map(g => splitTop99(g, ' ').map(parseCompound99)).filter(g => g.length);
+      const universe = includeSelf ? [rootEl, ...descendants99(rootEl)] : descendants99(rootEl);
+      const matchesGroup = (el, compounds) => {
+        if (!matchCompound99(el, compounds[compounds.length - 1])) return false;
+        let idx = compounds.length - 2;
+        let n = el.parentElement;
+        const stopAt = rootEl.parentElement;
+        while (idx >= 0 && n && n !== stopAt) {
+          if (matchCompound99(n, compounds[idx])) idx--;
+          n = n.parentElement;
+        }
+        return idx < 0;
+      };
+      return universe.filter(el => groups.some(g => matchesGroup(el, g)));
+    };
+    const makeEl99 = (tag, opts) => {
+      const o = opts || {};
+      const el = {
+        tagName: String(tag || 'div').toUpperCase(),
+        children: [],
+        parentElement: null,
+        className: o.className || '',
+        disabled: !!o.disabled,
+        checked: !!o.checked,
+        _text: o.text || '',
+        _attrs: {},
+        _rect: o.rect || { width: 100, height: 20, top: 0 },
+        _onClick: o.onClick || null,
+        getAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null; },
+        setAttribute(name, v) { this._attrs[name] = String(v); if (name === 'class') this.className = String(v); },
+        hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name); },
+        removeAttribute(name) { delete this._attrs[name]; },
+        appendChild(child) { child.parentElement = this; this.children.push(child); return child; },
+        contains(other) { let n = other; while (n) { if (n === this) return true; n = n.parentElement; } return false; },
+        focus() { this._focused = true; },
+        click() { this._clicks = (this._clicks || 0) + 1; if (this._onClick) this._onClick(this); },
+        getBoundingClientRect() { return { width: this._rect.width, height: this._rect.height, top: this._rect.top, bottom: this._rect.top + this._rect.height, left: 0, right: this._rect.width }; },
+        checkVisibility() { return true; },
+        querySelector(sel2) { return queryAll99(this, sel2, false)[0] || null; },
+        querySelectorAll(sel2) { return queryAll99(this, sel2, false); }
+      };
+      if (o.className) el._attrs.class = o.className;
+      if (o.attrs) for (const k of Object.keys(o.attrs)) el.setAttribute(k, o.attrs[k]);
+      Object.defineProperty(el, 'innerText', { get() { const parts = []; if (this._text) parts.push(this._text); for (const c of this.children) { const t = c.innerText; if (t) parts.push(t); } return parts.join(' '); } });
+      Object.defineProperty(el, 'isContentEditable', { get() { return this.getAttribute('contenteditable') === 'true'; } });
+      return el;
+    };
+    const makeDocument99 = (bodyChildren) => {
+      const html = makeEl99('html');
+      const body = makeEl99('body');
+      html.appendChild(body);
+      (bodyChildren || []).forEach(c => body.appendChild(c));
+      return {
+        documentElement: html,
+        body,
+        __fsAgentPanel: null,
+        querySelector(sel) { return queryAll99(html, sel, true)[0] || null; },
+        querySelectorAll(sel) { return queryAll99(html, sel, true); },
+        contains(el) { return !!el && (el === html || html.contains(el)); }
+      };
+    };
+    const evaluateWithDom99 = (doc, fn, ...args) => {
+      const prevDoc = global.document;
+      const prevWin = global.window;
+      global.document = doc;
+      global.window = { document: doc };
+      try { return fn(...args); } finally {
+        if (prevDoc === undefined) delete global.document; else global.document = prevDoc;
+        if (prevWin === undefined) delete global.window; else global.window = prevWin;
+      }
+    };
+    { // the decisive DOM fixture for the widened group text
+      const clicksD = [];
+      const groupD = makeEl99('div', { attrs: { role: 'radiogroup', 'aria-label': 'Permission options' } });
+      const mkRadioD = (label) => makeEl99('div', { attrs: { role: 'radio' }, text: label, onClick: () => { clicksD.push(label); } });
+      groupD.appendChild(mkRadioD('Approve'));
+      groupD.appendChild(mkRadioD('Always approve in project'));
+      groupD.appendChild(mkRadioD('Reject'));
+      const proposalWrapD = makeEl99('div', { className: 'proposal-wrap' });
+      proposalWrapD.appendChild(makeEl99('div', { text: 'Would you like me to kick off this 1 video generation, costing 12 credits?' }));
+      proposalWrapD.appendChild(groupD);
+      const messagesD = makeEl99('div', { className: 'messages' });
+      messagesD.appendChild(makeEl99('div', { text: 'A red ball rolling on green grass, sunny day' }));
+      messagesD.appendChild(makeEl99('div', { text: 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.2 Flash.' }));
+      messagesD.appendChild(makeEl99('div', { text: FILLER99.repeat(16) }));
+      messagesD.appendChild(proposalWrapD);
+      const asideD = makeEl99('aside', { className: 'agent-session' });
+      asideD.appendChild(makeEl99('div', { text: 'Untitled session' }));
+      asideD.appendChild(messagesD);
+      asideD.appendChild(makeEl99('textarea', {}));
+      asideD.appendChild(makeEl99('button', { attrs: { 'aria-label': 'Send' } }));
+      const gridD = makeEl99('div', { className: 'grid' });
+      const canvasD = makeEl99('main', { className: 'canvas' });
+      canvasD.appendChild(makeEl99('div', { text: 'Start creating or drop media' }));
+      canvasD.appendChild(gridD);
+      const appD = makeEl99('div', { className: 'app' });
+      appD.appendChild(makeEl99('button', { className: 'agent-mode-chip checked', text: 'Agent' }));
+      appD.appendChild(canvasD);
+      appD.appendChild(asideD);
+      const docD = makeDocument99([appD]);
+      const logsD = [];
+      const typedD = [];
+      const engineD = {
+        isStopping: false,
+        capturedVideoUrls: [],
+        claimedTileFingerprints: new Set(),
+        currentAccount: { name: 'Mock Account' },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        log: (line) => { logsD.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        insertNativeText: async (t) => { typedD.push(String(t)); },
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        getRequiredCredits: () => 7,
+        page: {
+          keyboard: { press: async () => {}, type: async (t) => { typedD.push(String(t)); } },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) typedD.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => evaluateWithDom99(docD, fn, ...rest)
+        }
+      };
+      const res = await driver99.submitViaAgent(engineD, runArgs99({ panelGuardMs: 200 }));
+      eq('X99 fixture DOM: the run parks (settings surface unreachable in this DOM)', res.status, 'AGENT_PARKED');
+      ok('X99 fixture DOM: the model was read through the WIDENED group text (proposal line)', logsD.some(l => l.includes('generation proposal') && l.includes('model Omni 1.2 Flash (from proposal text)') && l.includes('quoted 12 credits') && l.includes('→ retry-settings')));
+      ok('X99 fixture DOM: the park reason names the model the widened text carried', String(res.reason || '').includes('model Omni 1.2 Flash'));
+      ok('X99 fixture DOM: the pack-3 named-retry park reason is used (item 9)', String(res.reason || '').startsWith('agent-over-cost-named-retry'));
+      ok('X99 fixture DOM: the unnamed-model line was NOT used (the model WAS read)', !logsD.some(l => l.includes('model could not be read')));
+      ok('X99 fixture DOM: the named-model fallback fired (retry-named-model logged)', logsD.some(l => l.includes('retry-named-model')));
+      ok('X99 fixture DOM: the settings survey was captured and logged', logsD.some(l => l.includes('settings survey:')));
+      eq('X99 fixture DOM: both proposals were settled with Reject clicks (pack 3 named re-send)', JSON.stringify(clicksD), JSON.stringify(['Reject', 'Reject']));
+      ok('X99 fixture DOM: the composer anchor missed (no composer in this DOM) and the run still read the proposal', logsD.some(l => l.includes('panel anchor NOT found')));
+      ok('X99 fixture DOM: the re-anchor attempt before settings was logged', logsD.some(l => l.includes('did not find the Agent composer')));
+      eq('X99 fixture DOM: the pinned instruction, then its named-model re-send, were typed', JSON.stringify(typedD), JSON.stringify(['A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)', 'A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)']));
+    }
+  }
+
+
+  // =====================================================================
+  // X100 (replace-pack, no release) — AGENT DOCTOR: the .99 field
+  // test (AGENTTEST6, 2026-11-12 18:00) showed the OLD .98 driver
+  // behaviour behind the replaced fix-99 files — from outside
+  // there was NO way to tell which files the running engine had
+  // actually loaded, nor the last agent run's exact outcome,
+  // without the owner copying logs. The Doctor closes that:
+  // (a) engine/agentDoctor.js fingerprints the agent modules Node
+  // resolved from the engine's own folder (absolute path + byte
+  // size + md5-short), computed once as the startup snapshot;
+  // (b) the bridge logs ONE [DOCTOR] startup line with both
+  // fingerprints and serves the same payload at GET
+  // /api/agent-doctor; (c) the MCP tool flowstudio_agent_doctor
+  // proxies it; (d) the driver's submitViaAgent wrapper records
+  // EVERY exit (submitted / parked / failed / violation /
+  // stopped / throw) into the Doctor's last-run slot — status,
+  // ~300-char reason, and the last proposal decided on.
+  // =====================================================================
+  {
+    const fs100 = require('fs');
+    const os100 = require('os');
+    const path100 = require('path');
+    const doctor100 = require('../engine/agentDoctor');
+    const driver100 = require('../engine/agentDriver');
+    const read100 = (rel) => fs100.readFileSync(path100.join(__dirname, '..', rel), 'utf8');
+    const bridgeSrc100 = read100('engine_bridge.js');
+    const mcpSrc100 = read100('mcp_server.js');
+    const driverSrc100 = read100('engine/agentDriver.js');
+
+    // --- source pins: the seam is wired end to end ---
+    ok('X100 the bridge requires the doctor module', bridgeSrc100.includes("require('./engine/agentDoctor')"));
+    ok('X100 the bridge serves the doctor endpoint', bridgeSrc100.includes("'/api/agent-doctor'") && bridgeSrc100.includes('agentDoctor.doctorPayload(APP_VERSION)'));
+    ok('X100 the bridge logs the doctor line at startup', bridgeSrc100.includes('agentDoctor.doctorStartupLine(agentDoctor.loadedAgentFiles())'));
+    ok('X100 the MCP doctor tool proxies the doctor endpoint', mcpSrc100.includes("name: 'flowstudio_agent_doctor'") && mcpSrc100.includes("bridgeCall('GET', '/api/agent-doctor')"));
+    ok('X100 the driver records run outcomes into the doctor slot', driverSrc100.includes("require('./agentDoctor')") && driverSrc100.includes('agentDoctor.recordAgentRun('));
+
+    // --- fingerprint: known md5 vector over a temp file ---
+    const tmpVec100 = path100.join(os100.tmpdir(), `fs-doctor-vec-${process.pid}.txt`);
+    fs100.writeFileSync(tmpVec100, 'abc'); // md5('abc') = 900150983cd24fb0... -> short 900150983c
+    const fpVec100 = doctor100.fingerprintFile(tmpVec100);
+    eq('X100 fingerprint: the temp file path is echoed', fpVec100.path, tmpVec100);
+    eq('X100 fingerprint: byte size of the known vector', fpVec100.size, 3);
+    eq('X100 fingerprint: md5-short of the known vector', fpVec100.md5, '900150983c');
+    try { fs100.unlinkSync(tmpVec100); } catch (e) {}
+
+    // --- fingerprint: missing file = 'unreadable', never throws ---
+    let fpMissing100 = null;
+    let threw100 = false;
+    try { fpMissing100 = doctor100.fingerprintFile(path100.join(os100.tmpdir(), `fs-doctor-missing-${process.pid}.js`)); } catch (e) { threw100 = true; }
+    ok('X100 fingerprint: a missing file does not throw', !threw100);
+    eq('X100 fingerprint: a missing file size reads unreadable', fpMissing100 && fpMissing100.size, 'unreadable');
+    eq('X100 fingerprint: a missing file md5 reads unreadable', fpMissing100 && fpMissing100.md5, 'unreadable');
+    const fpBogus100 = doctor100.fingerprintLoadedModule('./no-such-module-xyz');
+    eq('X100 fingerprint: an unresolvable module reads unreadable', fpBogus100.md5, 'unreadable');
+
+    // --- the loaded snapshot matches the real files on disk ---
+    doctor100.resetLoadedFilesCache();
+    const loaded100 = doctor100.loadedAgentFiles();
+    const driverPath100 = path100.join(__dirname, '..', 'engine', 'agentDriver.js');
+    const rulesPath100 = path100.join(__dirname, '..', 'engine', 'agentRules.js');
+    eq('X100 loaded files: the driver path is the engine agentDriver.js', loaded100.driver.path, driverPath100);
+    eq('X100 loaded files: the rules path is the engine agentRules.js', loaded100.rules.path, rulesPath100);
+    eq('X100 loaded files: the driver size matches the disk file', loaded100.driver.size, fs100.statSync(driverPath100).size);
+    eq('X100 loaded files: the rules size matches the disk file', loaded100.rules.size, fs100.statSync(rulesPath100).size);
+    eq('X100 loaded files: the driver md5 matches a fresh fingerprint', loaded100.driver.md5, doctor100.fingerprintFile(driverPath100).md5);
+    eq('X100 loaded files: the snapshot is cached (same object twice)', doctor100.loadedAgentFiles(), loaded100);
+
+    // --- the startup line: exact format ---
+    const line100 = doctor100.doctorStartupLine({
+      driver: { path: 'C:\\Apps\\FlowStudio Lite\\engine\\agentDriver.js', size: 64938, md5: 'aaaaaaaaaa' },
+      rules: { path: 'C:\\Apps\\FlowStudio Lite\\engine\\agentRules.js', size: 11163, md5: 'bbbbbbbbbb' }
+    });
+    eq('X100 startup line: exact format', line100,
+      '[DOCTOR] agent driver loaded from C:\\Apps\\FlowStudio Lite\\engine\\agentDriver.js (size 64938, md5 aaaaaaaaaa) · rules loaded from C:\\Apps\\FlowStudio Lite\\engine\\agentRules.js (size 11163, md5 bbbbbbbbbb)');
+    const realLine100 = doctor100.doctorStartupLine(loaded100);
+    ok('X100 startup line: the real line carries both loaded fingerprints',
+      realLine100.startsWith('[DOCTOR] agent driver loaded from ') && realLine100.includes(' · rules loaded from ') &&
+      realLine100.includes(`(size ${loaded100.driver.size}, md5 ${loaded100.driver.md5})`) &&
+      realLine100.includes(`(size ${loaded100.rules.size}, md5 ${loaded100.rules.md5})`));
+
+    // --- the doctor payload shape ---
+    doctor100.resetLastAgentRun();
+    const payload100 = doctor100.doctorPayload('2.48.98');
+    eq('X100 payload: ok', payload100.ok, true);
+    eq('X100 payload: the app version passes through', payload100.appVersion, '2.48.98');
+    eq('X100 payload: driver fingerprint shape', JSON.stringify(Object.keys(payload100.driver).sort()), JSON.stringify(['md5', 'path', 'size']));
+    eq('X100 payload: rules fingerprint shape', JSON.stringify(Object.keys(payload100.rules).sort()), JSON.stringify(['md5', 'path', 'size']));
+    eq('X100 payload: no run recorded yet reads null', payload100.lastAgentRun, null);
+
+    // --- recordAgentRun: trim, defaults, never throws ---
+    doctor100.recordAgentRun({ status: 'AGENT_PARKED', reason: 'x'.repeat(400), lastProposal: { quoted: 30, model: null, act: 'retry-settings' } });
+    const rec100 = doctor100.getLastAgentRun();
+    eq('X100 record: the reason is trimmed to 300 chars', rec100.reason.length, 300);
+    eq('X100 record: the proposal is kept verbatim', JSON.stringify(rec100.lastProposal), JSON.stringify({ quoted: 30, model: null, act: 'retry-settings' }));
+    ok('X100 record: a timestamp is stamped', typeof rec100.at === 'string' && rec100.at.includes('T'));
+    let recordThrew100 = false;
+    try { doctor100.recordAgentRun(null); doctor100.recordAgentRun({}); } catch (e) { recordThrew100 = true; }
+    ok('X100 record: garbage input never throws', !recordThrew100);
+    doctor100.resetLastAgentRun();
+    eq('X100 record: reset clears the slot', doctor100.getLastAgentRun(), null);
+
+    // --- flat mocked-panel fixtures: the slot follows the run ---
+    const makeAgentEngine100 = (o) => {
+      const opts = o || {};
+      const logs = [];
+      const clicks = [];
+      const settingsClicks = [];
+      const state = {
+        panelText: opts.panelText || '',
+        groupText: opts.groupText || '',
+        permEnabled: !!opts.permEnabled,
+        permPresent: opts.permPresent !== undefined ? opts.permPresent : !!opts.permEnabled,
+        settingsState: opts.settingsState || { present: true, confirm: 'Always', model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1' },
+        gridFps: [],
+        sends: 0
+      };
+      const engine = {
+        isStopping: false,
+        capturedVideoUrls: [],
+        claimedTileFingerprints: new Set(),
+        currentAccount: { name: 'Mock Account' },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        insertNativeText: async () => {},
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        page: {
+          keyboard: { press: async () => {}, type: async () => {} },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) typed.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => {
+            const name = fn && fn.name ? fn.name : '';
+            switch (name) {
+              case 'pageFindAgentToggle': return { found: true, on: true };
+              case 'pageClickAgentToggle': return true;
+              case 'pageReadAgentPanelText': return state.panelText;
+              case 'pageAnchorAgentPanel': return { found: true, depth: 2, textLength: String(state.panelText || '').length, containsComposer: true, text: state.panelText };
+              case 'pageSurveyAgentDom': return [];
+              case 'pagePermissionState': return state.permEnabled
+                ? { present: true, enabled: true, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: true, groupText: state.groupText }
+                : { present: state.permPresent, enabled: false, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: false, groupText: state.groupText };
+              case 'pageClickPermissionOption':
+                clicks.push(rest[1]);
+                state.permEnabled = false;
+                if (opts.onPermissionClick) opts.onPermissionClick(rest[1], state);
+                return rest[1];
+              case 'pageFocusAgentInput': return true;
+              case 'pageClickAgentSend':
+                state.sends++;
+                if (opts.onSend) opts.onSend(state);
+                return true;
+              case 'pageGridFingerprints': return state.gridFps.slice();
+              case 'pageGalleryLabels': return [];
+              case 'pageOpenAgentSettings': return true;
+              case 'pageAgentSettingsPresent': return true;
+              case 'pageReadAgentSettings': return { ...state.settingsState };
+              case 'pageClickSettingsText':
+                settingsClicks.push(rest[1]);
+                if (opts.onSettingsClick) opts.onSettingsClick(rest[1], state);
+                return true;
+              case 'pageSaveAgentSettings': return true;
+              default: return { count: 0, labels: [] };
+            }
+          }
+        }
+      };
+      engine.getRequiredCredits = () => 7;
+      return { engine, logs, clicks, state };
+    };
+    const runArgs100 = (over) => ({
+      promptText: 'A red ball rolling on green grass, sunny day',
+      settings: { model: 'Omni Flash', aspectRatio: '9:16', duration: '10s', quality: '360p' },
+      promptIndex: 0,
+      totalPrompts: 1,
+      chatPollMs: 5,
+      mediaPollMs: 5,
+      settlePollMs: 5,
+      settleTimeoutMs: 5000,
+      mediaTimeoutMs: 2000,
+      heartbeatMs: 40,
+      // pack 3: tiny send-time anchor retry budget in fixtures
+      // (the retry itself is pinned in X101).
+      anchorRetryMs: 300,
+      ...(over || {})
+    });
+    const TILE_FP100 = 'a red ball rolling on green grass on a sunny day';
+    const PROP_OMNI11_100 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.1 Flash. Would you like me to kick off this 1 video generation, costing 7 credits?';
+    const PROP_UNNAMED30_100 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day. Would you like me to kick off this 1 video generation, costing 30 credits?';
+
+    { // approve handoff -> the slot records SUBMITTED + the proposal
+      doctor100.resetLastAgentRun();
+      const fx = makeAgentEngine100({
+        panelText: PROP_OMNI11_100,
+        permEnabled: true,
+        onPermissionClick: (label, state) => { if (label === 'Approve') state.gridFps = [TILE_FP100]; }
+      });
+      const res = await driver100.submitViaAgent(fx.engine, runArgs100({}));
+      eq('X100 fixture approve: the run hands off SUBMITTED (sanity)', res.status, 'SUBMITTED');
+      const slot = doctor100.getLastAgentRun();
+      ok('X100 fixture approve: the doctor slot was written', !!slot);
+      eq('X100 fixture approve: the slot status is SUBMITTED', slot && slot.status, 'SUBMITTED');
+      eq('X100 fixture approve: the slot reason is empty', slot && slot.reason, '');
+      eq('X100 fixture approve: the slot proposal is the approved one', JSON.stringify(slot && slot.lastProposal), JSON.stringify({ quoted: 7, model: 'Omni 1.1 Flash', act: 'approve' }));
+    }
+    { // unnamed 30 -> retry -> unnamed 30 again -> park; the slot
+      // holds the LAST decision (the second proposal's park)
+      doctor100.resetLastAgentRun();
+      const fx = makeAgentEngine100({
+        panelText: PROP_UNNAMED30_100,
+        permEnabled: true,
+        settingsState: { present: true, confirm: 'Always', model: 'Omni 1.2 Flash', aspect: '9:16', outputs: 'x1' },
+        onSettingsClick: (text, state) => { if (text === 'Omni 1.1 Flash') state.settingsState.model = 'Omni 1.1 Flash'; },
+        onSend: (state) => { if (state.sends === 2) { state.panelText = PROP_UNNAMED30_100; state.permEnabled = true; } }
+      });
+      const res = await driver100.submitViaAgent(fx.engine, runArgs100({}));
+      eq('X100 fixture park: the run parks (sanity)', res.status, 'AGENT_PARKED');
+      const slot = doctor100.getLastAgentRun();
+      eq('X100 fixture park: the slot status is AGENT_PARKED', slot && slot.status, 'AGENT_PARKED');
+      ok('X100 fixture park: the slot reason is the park reason', !!slot && slot.reason.startsWith('agent-over-cost'));
+      eq('X100 fixture park: the slot proposal is the LAST one decided', JSON.stringify(slot && slot.lastProposal), JSON.stringify({ quoted: 30, model: null, act: 'park' }));
+    }
+    { // no panel at all -> the guard fails the run fast; the slot
+      // records the failure with no proposal
+      doctor100.resetLastAgentRun();
+      const fx = makeAgentEngine100({ panelText: '', permPresent: false });
+      const res = await driver100.submitViaAgent(fx.engine, runArgs100({ panelGuardMs: 60 }));
+      eq('X100 fixture fail: the run fails (sanity)', res.status, 'AGENT_FAILED');
+      const slot = doctor100.getLastAgentRun();
+      eq('X100 fixture fail: the slot status is AGENT_FAILED', slot && slot.status, 'AGENT_FAILED');
+      ok('X100 fixture fail: the slot reason names the exact failure', !!slot && slot.reason.startsWith('agent-panel-not-found'));
+      eq('X100 fixture fail: the slot proposal stays null', slot && slot.lastProposal, null);
+    }
+    doctor100.resetLastAgentRun();
+  }
+
+  // =====================================================================
+  // X101 (replace-pack 3, no release) — SETTINGS SURFACE HUNT +
+  // NAMED-MODEL FALLBACK + DOCTOR EXTENSION + NO FALSE
+  // "GENERATED" BOOKKEEPING. AGENTTEST7 (2026-11-13) proved the
+  // whole chain — Agent mode ON, instruction sent, proposal
+  // detected via the Permission group, the model name parsed
+  // ("Omni 1.2 Flash (from proposal text)"), quoted 12 vs
+  // expected 7 -> retry-settings, Reject clicked, settled, the
+  // panel re-anchored — EXCEPT the last step: "Flow Agent
+  // settings could not be aligned (the Agent settings surface
+  // was not found)", card parked, 0 credits spent. Pack 3:
+  // (1) the settings opener is multi-strategy — (a) the panel's
+  // own settings control, (b) a settings-ish icon button in the
+  // composer's toolbar row, (c) the row's LAST icon-only button;
+  // (2) the surface is detected by its TEXT ANCHORS ("Agent
+  // settings" + "Confirm before generating" / "Video generation
+  // default"), not legacy selectors alone; (3) a surface that
+  // never appears produces a DOM survey of the panel/composer
+  // region — logged, and stored in the Doctor's last-run detail;
+  // (4) when the surface IS operated, ALL values are set in one
+  // pass, Saved, re-read and verified one by one — a mismatch
+  // names its field [v2.48.101 SUPERSESSION: a mismatch no
+  // longer parks on the spot — Fix C sends it to the named
+  // fallback like every alignment failure; pinned in X104];
+  // (5) when the settings alignment fails [pack 3: ONLY when
+  // the surface was never found; v2.48.101 Fix C: on ANY
+  // alignment failure], the instruction is re-sent ONCE
+  // with the run's model named in the text ('retry-named-model')
+  // through the SAME quote rules, with its own park reason
+  // 'agent-over-cost-named-retry'; (6) the send-time composer
+  // anchor is retried for up to ~10s; (7) the Doctor fingerprints
+  // EVERY replaceable file (engine_bridge.js, mcp_server.js,
+  // engine/agentDoctor.js beside driver/rules) and lastAgentRun
+  // carries a detail field; (8) an AGENT_PARKED card ends FAILED
+  // in the pool — no pending/needs_check record, and the run-end
+  // "videos had been generated" note counts only genuine
+  // download-pending rows; (10) either re-send resets the
+  // panel-not-found guard + proposal window; (11) the alignment
+  // logs its heartbeat line before the attempt.
+  // =====================================================================
+  {
+    const fs101 = require('fs');
+    const path101 = require('path');
+    const doctor101 = require('../engine/agentDoctor');
+    const driver101 = require('../engine/agentDriver');
+    const pool101 = require('../engine/workerPool');
+    const read101 = (rel) => fs101.readFileSync(path101.join(__dirname, '..', rel), 'utf8');
+    const driverSrc101 = read101('engine/agentDriver.js');
+    const poolSrc101 = read101('engine/workerPool.js');
+    const mcpSrc101 = read101('mcp_server.js');
+
+    // --- source pins ---
+    ok('X101 driver hunts the surface with the composer opener strategies', driverSrc101.includes('pageClickComposerSettingsIcon') && driverSrc101.includes('pageClickComposerToolbarLastIcon'));
+    ok('X101 driver detects the surface by its text anchors', driverSrc101.includes('pageAgentSettingsSurface') && driverSrc101.includes("t.includes('Agent settings')") && driverSrc101.includes("t.includes('Confirm before generating')") && driverSrc101.includes("t.includes('Video generation default')"));
+    ok('X101 driver surveys the settings region on failure', driverSrc101.includes('pageSurveySettingsRegion') && driverSrc101.includes("case 'settings-survey'"));
+    ok('X101 driver logs the alignment heartbeat before the attempt', driverSrc101.includes("case 'aligning'") && driverSrc101.includes('[AGENT] aligning Agent settings…'));
+    ok('X101 driver verifies each settings value with its own line', driverSrc101.includes("case 'settings-value'") && driverSrc101.includes('MISMATCH'));
+    ok('X101 driver carries the named-model fallback + its own park reason', driverSrc101.includes('namedRetryInstruction') && driverSrc101.includes('retry-named-model') && driverSrc101.includes('agent-over-cost-named-retry:'));
+    // v2.48.101 (Fix C) SUPERSEDES the pack-3 pin that sat here
+    // ('the named fallback is gated on the surface-not-found
+    // outcome only'): AGENTTEST9's surface WAS found, yet the
+    // run parked — the fallback now follows ANY alignment
+    // failure. The new gate is pinned in X104.
+    ok('X101 the named fallback is no longer gated on the not-found outcome (v2.48.101)', !driverSrc101.includes("alignRes.outcome === 'not-found'"));
+    ok('X101 driver retries the send-time anchor', driverSrc101.includes('anchorRetryMs') && driverSrc101.includes('ANCHOR_RETRY_MS'));
+    ok('X101 either re-send resets the panel guard clock', driverSrc101.includes('panelGuardFired = false'));
+    ok('X101 the MCP doctor text names the extended fingerprint set + the detail field', mcpSrc101.includes('engine_bridge.js and mcp_server.js') && mcpSrc101.includes('detail field'));
+    const parkSlice101 = (() => {
+      const i = poolSrc101.indexOf("submitRes.status === 'AGENT_PARKED'");
+      const j = i >= 0 ? poolSrc101.indexOf('submitRes.status ===', i + 10) : -1;
+      return i >= 0 ? poolSrc101.slice(i, j > i ? j : i + 3000) : '';
+    })();
+    ok('X101 pool: the AGENT_PARKED branch is found for the item-8 pins', parkSlice101.length > 0);
+    ok('X101 pool: an agent park FAILS the card with the park reason', parkSlice101.includes('dbService.failTask('));
+    ok('X101 pool: an agent park no longer marks the card needs_check', !parkSlice101.includes('setTaskNeedsCheck'));
+    ok('X101 pool: an agent park no longer returns the card to pending', !parkSlice101.includes("updateTaskProgress(nextTask.id, 'pending')"));
+    ok('X101 pool: the run-end note counts rows through WorkerPool.isDownloadPendingRow', poolSrc101.includes('WorkerPool.isDownloadPendingRow(row)') && poolSrc101.includes('had been generated but their download is still remaining'));
+
+    // --- named-model fallback text (pure) ---
+    eq('X101 named retry: the 9:16 suffix pins model + resolution + duration + vertical + exactly 1 video [v2.48.102: full pins, defaults 360p/6s]', driver101.namedRetryInstruction('A red ball rolling', { model: 'Omni Flash', aspectRatio: '9:16' }), 'A red ball rolling (Use Omni 1.1 Flash, 360p resolution, 6 seconds, vertical 9:16, exactly 1 video.)');
+    eq('X101 named retry: the 16:9 suffix reads horizontal [v2.48.102: full pins]', driver101.namedRetryInstruction('A red ball rolling', { model: 'Omni Flash', aspectRatio: '16:9' }), 'A red ball rolling (Use Omni 1.1 Flash, 360p resolution, 6 seconds, horizontal 16:9, exactly 1 video.)');
+    eq('X101 named retry: an unmapped model yields null (no fallback possible)', driver101.namedRetryInstruction('A red ball rolling', { model: 'Bogus Model', aspectRatio: '9:16' }), null);
+    eq('X101 named retry: an empty instruction yields null', driver101.namedRetryInstruction('  ', { model: 'Omni Flash', aspectRatio: '9:16' }), null);
+    eq('X101 named retry: a non-standard aspect omits the aspect phrase [v2.48.102: full pins]', driver101.namedRetryInstruction('A red ball rolling', { model: 'Omni Flash', aspectRatio: '1:1' }), 'A red ball rolling (Use Omni 1.1 Flash, 360p resolution, 6 seconds, exactly 1 video.)');
+
+    // --- agent lines + constants (pure) ---
+    ok('X101 line: the aligning heartbeat', driver101.agentLine('aligning', {}).includes('aligning Agent settings'));
+    ok('X101 line: settings-opened names the strategy', driver101.agentLine('settings-opened', { via: 'composer settings icon' }).includes('composer settings icon'));
+    ok('X101 line: the settings survey joins its entries', driver101.agentLine('settings-survey', { entries: ['<button aria="Send">', '<button text="Agent">'] }).includes('settings survey:') && driver101.agentLine('settings-survey', { entries: ['<button aria="Send">'] }).includes('aria="Send"'));
+    ok('X101 line: a verified settings value', driver101.agentLine('settings-value', { field: 'model', want: 'Omni 1.1 Flash', got: 'Omni 1.1 Flash', ok: true }).includes('verified'));
+    ok('X101 line: a settings mismatch names wanted vs read', (() => { const l = driver101.agentLine('settings-value', { field: 'model', want: 'Omni 1.1 Flash', got: 'Omni 1.2 Flash', ok: false }); return l.includes('MISMATCH') && l.includes('Omni 1.1 Flash') && l.includes('Omni 1.2 Flash'); })());
+    ok('X101 line: retry-named names the model', driver101.agentLine('retry-named', { model: 'Omni 1.1 Flash' }).includes('retry-named-model') && driver101.agentLine('retry-named', { model: 'Omni 1.1 Flash' }).includes('Omni 1.1 Flash'));
+    eq('X101 constant: the send-time anchor retry budget is 10s', driver101.ANCHOR_RETRY_MS, 10000);
+    eq('X101 constant: the opener settle beat is 1.5s', driver101.SETTINGS_OPEN_WAIT_MS, 1500);
+    eq('X101 constant: the surface poll budget per strategy is 8s', driver101.SETTINGS_SURFACE_WAIT_MS, 8000);
+
+    // --- item 8 predicate (pure) ---
+    const WP101 = pool101.WorkerPool;
+    eq('X101 download-pending: pending + needs_check counts (a genuine download park)', WP101.isDownloadPendingRow({ status: 'pending', needs_check: 1 }), true);
+    eq('X101 download-pending: a failed row never counts (the pack-3 agent-park shape)', WP101.isDownloadPendingRow({ status: 'failed', needs_check: 0 }), false);
+    eq('X101 download-pending: pending without the check flag does not count', WP101.isDownloadPendingRow({ status: 'pending', needs_check: 0 }), false);
+    eq('X101 download-pending: a failed needs_check row does not count', WP101.isDownloadPendingRow({ status: 'failed', needs_check: 1 }), false);
+    eq('X101 download-pending: a null row does not count', WP101.isDownloadPendingRow(null), false);
+
+    // --- doctor extension (item 7) ---
+    doctor101.resetLoadedFilesCache();
+    doctor101.resetLastAgentRun();
+    const loaded101 = doctor101.loadedAgentFiles();
+    const engineDir101 = path101.join(__dirname, '..', 'engine');
+    const rootDir101 = path101.join(__dirname, '..');
+    eq('X101 doctor: the agentDoctor fingerprint path is the engine agentDoctor.js', loaded101.agentDoctor.path, path101.join(engineDir101, 'agentDoctor.js'));
+    eq('X101 doctor: the engineBridge fingerprint path is the app-root engine_bridge.js', loaded101.engineBridge.path, path101.join(rootDir101, 'engine_bridge.js'));
+    eq('X101 doctor: the mcpServer fingerprint path is the app-root mcp_server.js', loaded101.mcpServer.path, path101.join(rootDir101, 'mcp_server.js'));
+    eq('X101 doctor: the engineBridge size matches the disk file', loaded101.engineBridge.size, fs101.statSync(path101.join(rootDir101, 'engine_bridge.js')).size);
+    eq('X101 doctor: the mcpServer md5 matches a fresh fingerprint', loaded101.mcpServer.md5, doctor101.fingerprintFile(path101.join(rootDir101, 'mcp_server.js')).md5);
+    eq('X101 doctor: the agentDoctor size matches the disk file', loaded101.agentDoctor.size, fs101.statSync(path101.join(engineDir101, 'agentDoctor.js')).size);
+    const payload101 = doctor101.doctorPayload('2.48.98');
+    // v2.48.99 (X102) SUPERSEDES the key list below: the payload
+    // also carries agentModeOverride (the MCP agent-mode switch).
+    // v2.48.104: the payload gains lastSettingsFirst (the
+    // settings-first record) — the key set grows by exactly one.
+    eq('X101 doctor: the payload carries the extended fingerprint set', JSON.stringify(Object.keys(payload101).sort()), JSON.stringify(['agentDoctor', 'agentModeOverride', 'appVersion', 'driver', 'engineBridge', 'lastAgentRun', 'lastSettingsFirst', 'mcpServer', 'ok', 'rules']));
+    doctor101.recordAgentRun({ status: 'AGENT_PARKED', reason: 'r', detail: 'd'.repeat(600) });
+    eq('X101 doctor: the last-run detail is trimmed to 500 chars', doctor101.getLastAgentRun().detail.length, 500);
+    doctor101.recordAgentRun({ status: 'AGENT_PARKED', reason: 'r' });
+    eq('X101 doctor: a run without detail records null', doctor101.getLastAgentRun().detail, null);
+    doctor101.resetLastAgentRun();
+    // --- flat mocked-panel fixtures (the X99 harness shape, plus
+    // the pack-3 surface channels: three opener strategies with a
+    // call-order record, the text-anchor surface read, and the
+    // region survey) ---
+    const PROP_OMNI12_101 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.2 Flash. Would you like me to kick off this 1 video generation, costing 12 credits?';
+    const PROP_OMNI11_101 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.1 Flash. Would you like me to kick off this 1 video generation, costing 7 credits?';
+    const TILE_FP101 = 'a red ball rolling on green grass on a sunny day';
+    const NAMED101 = 'A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)';
+    const makeAgentEngine101 = (o) => {
+      const opts = o || {};
+      const logs = [];
+      const clicks = [];
+      const settingsClicks = [];
+      const typed = [];
+      const state = {
+        panelText: opts.panelText || '',
+        groupText: opts.groupText || '',
+        permEnabled: !!opts.permEnabled,
+        permPresent: opts.permPresent !== undefined ? opts.permPresent : !!opts.permEnabled,
+        settingsState: opts.settingsState || { present: true, confirm: 'Always', model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1' },
+        gridFps: (opts.gridFps || []).slice(),
+        savedClicks: 0,
+        sends: 0,
+        anchorCalls: 0,
+        surfaceOpen: false,
+        openCalls: []
+      };
+      const engine = {
+        isStopping: false,
+        capturedVideoUrls: [],
+        claimedTileFingerprints: new Set(),
+        currentAccount: { name: 'Mock Account' },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        insertNativeText: async (t) => { typed.push(String(t)); },
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        page: {
+          keyboard: { press: async () => {}, type: async (t) => { typed.push(String(t)); } },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) typed.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => {
+            const name = fn && fn.name ? fn.name : '';
+            switch (name) {
+              case 'pageFindAgentToggle': return { found: true, on: true };
+              case 'pageClickAgentToggle': return true;
+              case 'pageReadAgentPanelText':
+                if (opts.onPanelRead) opts.onPanelRead(state);
+                return state.panelText;
+              case 'pageAnchorAgentPanel': {
+                state.anchorCalls++;
+                if (Array.isArray(opts.anchorPlan)) {
+                  const idx = Math.min(state.anchorCalls - 1, opts.anchorPlan.length - 1);
+                  if (!opts.anchorPlan[idx]) return { found: false, depth: 0, textLength: 0, containsComposer: false, text: '' };
+                }
+                return { found: true, depth: 2, textLength: String(state.panelText || '').length, containsComposer: true, text: state.panelText };
+              }
+              case 'pageSurveyAgentDom': return [];
+              case 'pagePermissionState': {
+                if (opts.permissionState) return opts.permissionState(state);
+                return state.permEnabled
+                  ? { present: true, enabled: true, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: true, groupText: state.groupText }
+                  : { present: state.permPresent, enabled: false, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: false, groupText: state.groupText };
+              }
+              case 'pageClickPermissionOption':
+                clicks.push(rest[1]);
+                state.permEnabled = false; // a choice disables the group
+                if (opts.onPermissionClick) opts.onPermissionClick(rest[1], state);
+                return rest[1];
+              case 'pageFocusAgentInput': return true;
+              case 'pageClickAgentSend':
+                state.sends++;
+                if (opts.onSend) opts.onSend(state);
+                return true;
+              case 'pageGridFingerprints': return state.gridFps.slice();
+              case 'pageGalleryLabels': return [];
+              case 'pageOpenAgentSettings':
+                state.openCalls.push('a');
+                if (opts.aOpens) { state.surfaceOpen = true; return true; }
+                return false;
+              case 'pageClickComposerSettingsIcon':
+                state.openCalls.push('b');
+                if (opts.bOpens) { state.surfaceOpen = true; return true; }
+                return false;
+              case 'pageClickComposerToolbarLastIcon':
+                state.openCalls.push('c');
+                if (opts.cOpens) { state.surfaceOpen = true; return true; }
+                return false;
+              case 'pageAgentSettingsSurface':
+                return state.surfaceOpen
+                  ? { present: true, via: 'text', confirm: true, videoDefault: true }
+                  : { present: false, via: null, confirm: false, videoDefault: false };
+              case 'pageAgentSettingsPresent': return state.surfaceOpen;
+              case 'pageSurveySettingsRegion': return (opts.surveyEntries || []).slice();
+              case 'pageReadAgentSettings': return { ...state.settingsState, present: state.surfaceOpen || state.settingsState.present };
+              case 'pageClickSettingsText':
+                settingsClicks.push(rest[1]);
+                if (opts.onSettingsClick) opts.onSettingsClick(rest[1], state);
+                return true;
+              case 'pageSaveAgentSettings':
+                state.savedClicks++;
+                return true;
+              default: return { count: 0, labels: [] }; // the tile-snapshot closure
+            }
+          }
+        }
+      };
+      engine.getRequiredCredits = () => (opts.runExpected !== undefined ? opts.runExpected : 7);
+      return { engine, logs, clicks, settingsClicks, typed, state };
+    };
+    const runArgs101 = (over) => ({
+      promptText: 'A red ball rolling on green grass, sunny day',
+      settings: { model: 'Omni Flash', aspectRatio: '9:16', duration: '10s', quality: '360p' },
+      promptIndex: 0,
+      totalPrompts: 1,
+      chatPollMs: 5,
+      mediaPollMs: 5,
+      settlePollMs: 5,
+      settleTimeoutMs: 5000,
+      mediaTimeoutMs: 2000,
+      heartbeatMs: 40,
+      anchorRetryMs: 300,
+      settingsOpenWaitMs: 5,
+      settingsSurfaceWaitMs: 30,
+      ...(over || {})
+    });
+    const retryHooks101 = {
+      onSend: (state) => {
+        if (state.sends === 2) {
+          state.panelText = PROP_OMNI11_101;
+          state.permEnabled = true;
+        }
+      },
+      onPermissionClick: (label, state) => {
+        if (label === 'Approve') state.gridFps = [TILE_FP101];
+      },
+      onSettingsClick: (text, state) => {
+        if (text === 'Omni 1.1 Flash') state.settingsState.model = 'Omni 1.1 Flash';
+      }
+    };
+
+    { // (1) opener strategy order: (a) misses, (b) opens — (c)
+      // is never tried, the surface-found line names (b), and
+      // the aligned re-send completes the run
+      const fx = makeAgentEngine101({
+        panelText: PROP_OMNI12_101,
+        permEnabled: true,
+        settingsState: { present: true, confirm: 'Always', model: 'Omni 1.2 Flash', aspect: '9:16', outputs: 'x1' },
+        aOpens: false,
+        bOpens: true,
+        cOpens: true,
+        ...retryHooks101
+      });
+      const res = await driver101.submitViaAgent(fx.engine, runArgs101({}));
+      eq('X101 fixture strategy-order: the run completes after the (b)-opened alignment', res.status, 'SUBMITTED');
+      eq('X101 fixture strategy-order: the openers were tried in order a then b (c never reached)', JSON.stringify(fx.state.openCalls), JSON.stringify(['a', 'b']));
+      ok('X101 fixture strategy-order: the surface-found line names the composer-icon strategy', fx.logs.some(l => l.includes('Agent settings surface found (via composer settings icon)')));
+      ok('X101 fixture strategy-order: the aligning heartbeat precedes the outcome', fx.logs.some(l => l.includes('aligning Agent settings')));
+      eq('X101 fixture strategy-order: Reject then Approve', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Approve']));
+    }
+    { // (2) the surface IS operated but the model value does not
+      // take: verify names the field — and since v2.48.101
+      // (Fix C) the mismatch takes the named-model fallback
+      // like every alignment failure (pack 3 parked here with
+      // no re-send; AGENTTEST9 proved that gate wrong). The
+      // fallback's fresh proposal is Approved, and the Doctor
+      // detail still names the mismatched field.
+      doctor101.resetLastAgentRun();
+      const fx = makeAgentEngine101({
+        panelText: PROP_OMNI12_101,
+        permEnabled: true,
+        settingsState: { present: true, confirm: 'Always', model: 'Omni 1.2 Flash', aspect: '9:16', outputs: 'x1' },
+        aOpens: true,
+        onSettingsClick: () => {}, // clicks land, the value never changes
+        onSend: retryHooks101.onSend,
+        onPermissionClick: retryHooks101.onPermissionClick
+      });
+      const res = await driver101.submitViaAgent(fx.engine, runArgs101({}));
+      eq('X101 fixture mismatch: the named fallback completes the run after the mismatch', res.status, 'SUBMITTED');
+      eq('X101 fixture mismatch: the fallback re-send happened (2 sends)', fx.state.sends, 2);
+      eq('X101 fixture mismatch: both sends are the pinned instruction (the named fallback is the same text)', JSON.stringify(fx.typed), JSON.stringify([NAMED101, NAMED101]));
+      ok('X101 fixture mismatch: the verify line names the model MISMATCH', fx.logs.some(l => l.includes("settings value model: wanted 'Omni 1.1 Flash' but reads 'Omni 1.2 Flash' — MISMATCH")));
+      ok('X101 fixture mismatch: the retry-named-model line was logged', fx.logs.some(l => l.includes('retry-named-model')));
+      const slot2 = doctor101.getLastAgentRun();
+      ok('X101 fixture mismatch: the Doctor detail names the mismatched field', !!slot2 && typeof slot2.detail === 'string' && slot2.detail.includes("'model'"));
+    }
+    { // (3) no opener finds the surface: the survey is logged +
+    // stored, and the named-model fallback re-send completes
+      doctor101.resetLastAgentRun();
+      const fx = makeAgentEngine101({
+        panelText: PROP_OMNI12_101,
+        permEnabled: true,
+        settingsState: { present: true, confirm: 'Always', model: 'Omni 1.2 Flash', aspect: '9:16', outputs: 'x1' },
+        aOpens: false,
+        bOpens: false,
+        cOpens: false,
+        surveyEntries: ['<button aria="Send" @0,0 100x20>', '<button text="Agent" @0,0 100x20>'],
+        ...retryHooks101
+      });
+      const res = await driver101.submitViaAgent(fx.engine, runArgs101({}));
+      eq('X101 fixture named-fallback: the run completes on the named re-send', res.status, 'SUBMITTED');
+      eq('X101 fixture named-fallback: the re-send is the pinned instruction naming the run model', JSON.stringify(fx.typed), JSON.stringify([NAMED101, NAMED101]));
+      ok('X101 fixture named-fallback: the settings survey was logged', fx.logs.some(l => l.includes('settings survey:') && l.includes('aria="Send"')));
+      ok('X101 fixture named-fallback: retry-named-model was logged', fx.logs.some(l => l.includes('retry-named-model')));
+      const slot3 = doctor101.getLastAgentRun();
+      eq('X101 fixture named-fallback: the Doctor detail is the survey text', slot3 && slot3.detail, '<button aria="Send" @0,0 100x20> | <button text="Agent" @0,0 100x20>');
+    }
+    { // (4) the named fallback's own proposal is STILL over
+      // cost: it parks behind its distinct reason (item 9)
+      const fx = makeAgentEngine101({
+        panelText: PROP_OMNI12_101,
+        permEnabled: true,
+        settingsState: { present: true, confirm: 'Always', model: 'Omni 1.2 Flash', aspect: '9:16', outputs: 'x1' },
+        aOpens: false,
+        bOpens: false,
+        cOpens: false,
+        onSend: (state) => {
+          if (state.sends === 2) {
+            state.panelText = PROP_OMNI12_101;
+            state.permEnabled = true;
+          }
+        }
+      });
+      const res = await driver101.submitViaAgent(fx.engine, runArgs101({}));
+      eq('X101 fixture named-park: the run parks after the named re-send', res.status, 'AGENT_PARKED');
+      ok('X101 fixture named-park: the reason is the named-retry park reason', String(res.reason || '').startsWith('agent-over-cost-named-retry'));
+      eq('X101 fixture named-park: both proposals were settled with Reject clicks', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Reject']));
+      eq('X101 fixture named-park: exactly two sends (original + named)', fx.state.sends, 2);
+      eq('X101 fixture named-park: the pinned text was both sends', JSON.stringify(fx.typed), JSON.stringify([NAMED101, NAMED101]));
+    }
+    { // (5) send-time anchor retry: the composer anchor misses
+      // twice, then lands — the run proceeds on the landed anchor
+      const fx = makeAgentEngine101({
+        panelText: PROP_OMNI11_101,
+        permEnabled: true,
+        anchorPlan: [false, false, true],
+        onPermissionClick: retryHooks101.onPermissionClick
+      });
+      const res = await driver101.submitViaAgent(fx.engine, runArgs101({ anchorRetryMs: 2000, anchorRetryPollMs: 10 }));
+      eq('X101 fixture anchor-retry: the run completes once the anchor lands', res.status, 'SUBMITTED');
+      ok('X101 fixture anchor-retry: the anchor was retried (at least 3 attempts)', fx.state.anchorCalls >= 3);
+      ok('X101 fixture anchor-retry: the logged anchor outcome is the landed one', fx.logs.some(l => l.includes('panel anchor found') || l.includes('anchored at the Agent composer')));
+    }
+    { // (6) retry reset (item 10): after the aligned re-send the
+      // panel text stays implausible and the group stays absent
+      // for ~200ms — longer than the 300ms guard would allow
+      // measured from the FIRST send (the alignment itself took
+      // longer than that), so only the sentAt reset lets the
+      // second proposal land. Without the reset this run fails
+      // with agent-panel-not-found on the first post-resend poll.
+      const fx = makeAgentEngine101({
+        panelText: '',
+        permEnabled: false,
+        settingsState: { present: true, confirm: 'Always', model: 'Omni 1.2 Flash', aspect: '9:16', outputs: 'x1' },
+        aOpens: true,
+        onSettingsClick: retryHooks101.onSettingsClick,
+        permissionState: (state) => {
+          if (!state.phase2) {
+            // Before the Reject the group is live; after it, it
+            // reads disabled (settled) — the settle wait keys on it.
+            return { present: true, enabled: !state.group1Settled, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: !state.group1Settled, groupText: PROP_OMNI12_101 };
+          }
+          if (state.phase2Settled) {
+            return { present: true, enabled: false, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: false, groupText: PROP_OMNI11_101 };
+          }
+          state.postReads = (state.postReads || 0) + 1;
+          if (state.postReads < 8) {
+            return { present: false, enabled: false, options: [], promptLocked: false, groupText: '' };
+          }
+          return { present: true, enabled: true, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: true, groupText: PROP_OMNI11_101 };
+        },
+        onSend: (state) => { if (state.sends === 2) state.phase2 = true; },
+        onPermissionClick: (label, state) => {
+          if (label === 'Reject' && !state.phase2) state.group1Settled = true;
+          if (label === 'Approve') { state.phase2Settled = true; state.gridFps = [TILE_FP101]; }
+        }
+      });
+      const res = await driver101.submitViaAgent(fx.engine, runArgs101({ chatPollMs: 25, panelGuardMs: 300 }));
+      eq('X101 fixture guard-reset: the second proposal lands inside its own fresh guard window', res.status, 'SUBMITTED');
+      ok('X101 fixture guard-reset: the panel-not-found guard never fired', !fx.logs.some(l => l.includes('agent-panel-not-found')));
+      eq('X101 fixture guard-reset: Reject then Approve', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Approve']));
+    }
+    // --- mini-DOM fixtures: the REAL page functions against a
+    // modelled Flow page (the X99 model machinery, cloned). The
+    // modelled Agent panel carries a ProseMirror composer, a
+    // messages area with the proposal + Permission group, and a
+    // settings surface that matches NO legacy selector — it can
+    // be found ONLY by its text anchors, and opened ONLY by the
+    // composer-toolbar strategies. The surface's values live in
+    // a store; Save closes it, reopening rebuilds it from the
+    // store (the per-project persistence the field surface has).
+    const splitTop101 = (str, sep) => {
+      const out = []; let cur = ''; let br = 0; let q = false;
+      for (const ch of String(str)) {
+        if (q) { cur += ch; if (ch === '"') q = false; continue; }
+        if (ch === '"') { q = true; cur += ch; continue; }
+        if (ch === '[') br++;
+        if (ch === ']') br--;
+        if (ch === sep && br === 0) { if (cur.trim()) out.push(cur.trim()); cur = ''; continue; }
+        cur += ch;
+      }
+      if (cur.trim()) out.push(cur.trim());
+      return out;
+    };
+    const parseCompound101 = (src) => {
+      const c = { tag: null, classes: [], attrs: [] };
+      let rest = src;
+      const tagM = rest.match(/^(\*|[a-zA-Z][a-zA-Z0-9-]*)/);
+      if (tagM) { c.tag = tagM[1] === '*' ? null : tagM[1].toLowerCase(); rest = rest.slice(tagM[1].length); }
+      while (rest.length) {
+        if (rest[0] === '.') { const m = rest.match(/^\.([a-zA-Z0-9_-]+)/); c.classes.push(m[1]); rest = rest.slice(m[0].length); }
+        else if (rest[0] === '[') {
+          const end = rest.indexOf(']');
+          const body = rest.slice(1, end);
+          const m = body.match(/^([a-zA-Z0-9_-]+)(\*?=)?\s*(?:"([^"]*)")?\s*(i)?$/);
+          c.attrs.push({ name: m[1], op: m[2] || null, value: m[3] !== undefined ? m[3] : null, ci: !!m[4] });
+          rest = rest.slice(end + 1);
+        } else if (rest.startsWith(':checked')) { c.attrs.push({ name: 'checked', op: 'pseudo', value: null, ci: false }); rest = rest.slice(8); }
+        else { rest = rest.slice(1); }
+      }
+      return c;
+    };
+    const matchCompound101 = (el, c) => {
+      if (c.tag && String(el.tagName || '').toLowerCase() !== c.tag) return false;
+      const classes = String(el.className || '').split(/\s+/).filter(Boolean);
+      for (const cl of c.classes) if (!classes.includes(cl)) return false;
+      for (const a of c.attrs) {
+        if (a.op === 'pseudo') { if (!(a.name === 'checked' && el.checked === true)) return false; continue; }
+        if (a.name === 'disabled' && !a.op) { if (!(el.hasAttribute('disabled') || el.disabled === true)) return false; continue; }
+        const v = el.getAttribute(a.name);
+        if (!a.op) { if (v === null) return false; continue; }
+        if (v === null) return false;
+        const hay = a.ci ? v.toLowerCase() : v;
+        const needle = a.ci ? String(a.value).toLowerCase() : String(a.value);
+        if (a.op === '=' && hay !== needle) return false;
+        if (a.op === '*=' && !hay.includes(needle)) return false;
+      }
+      return true;
+    };
+    const descendants101 = (el) => {
+      const out = [];
+      const walk = (n) => { for (const c of n.children) { out.push(c); walk(c); } };
+      walk(el);
+      return out;
+    };
+    const queryAll101 = (rootEl, sel, includeSelf) => {
+      const groups = splitTop101(sel, ',').map(g => splitTop101(g, ' ').map(parseCompound101)).filter(g => g.length);
+      const universe = includeSelf ? [rootEl, ...descendants101(rootEl)] : descendants101(rootEl);
+      const matchesGroup = (el, compounds) => {
+        if (!matchCompound101(el, compounds[compounds.length - 1])) return false;
+        let idx = compounds.length - 2;
+        let n = el.parentElement;
+        const stopAt = rootEl.parentElement;
+        while (idx >= 0 && n && n !== stopAt) {
+          if (matchCompound101(n, compounds[idx])) idx--;
+          n = n.parentElement;
+        }
+        return idx < 0;
+      };
+      return universe.filter(el => groups.some(g => matchesGroup(el, g)));
+    };
+    const makeEl101 = (tag, opts) => {
+      const o = opts || {};
+      const el = {
+        tagName: String(tag || 'div').toUpperCase(),
+        children: [],
+        parentElement: null,
+        className: o.className || '',
+        disabled: !!o.disabled,
+        checked: !!o.checked,
+        _text: o.text || '',
+        _attrs: {},
+        _rect: o.rect || { width: 100, height: 20, top: 0 },
+        _onClick: o.onClick || null,
+        getAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null; },
+        setAttribute(name, v) { this._attrs[name] = String(v); if (name === 'class') this.className = String(v); },
+        hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name); },
+        removeAttribute(name) { delete this._attrs[name]; },
+        appendChild(child) { child.parentElement = this; this.children.push(child); return child; },
+        removeChild(child) { const i = this.children.indexOf(child); if (i >= 0) this.children.splice(i, 1); child.parentElement = null; return child; },
+        contains(other) { let n = other; while (n) { if (n === this) return true; n = n.parentElement; } return false; },
+        focus() { this._focused = true; },
+        click() { this._clicks = (this._clicks || 0) + 1; if (this._onClick) this._onClick(this); },
+        getBoundingClientRect() { return { width: this._rect.width, height: this._rect.height, top: this._rect.top, bottom: this._rect.top + this._rect.height, left: 0, right: this._rect.width }; },
+        checkVisibility() { return true; },
+        querySelector(sel2) { return queryAll101(this, sel2, false)[0] || null; },
+        querySelectorAll(sel2) { return queryAll101(this, sel2, false); }
+      };
+      if (o.className) el._attrs.class = o.className;
+      if (o.attrs) for (const k of Object.keys(o.attrs)) el.setAttribute(k, o.attrs[k]);
+      Object.defineProperty(el, 'innerText', { get() { const parts = []; if (this._text) parts.push(this._text); for (const c of this.children) { const t = c.innerText; if (t) parts.push(t); } return parts.join(' '); } });
+      Object.defineProperty(el, 'isContentEditable', { get() { return this.getAttribute('contenteditable') === 'true'; } });
+      return el;
+    };
+    const makeDocument101 = (bodyChildren) => {
+      const html = makeEl101('html');
+      const body = makeEl101('body');
+      html.appendChild(body);
+      (bodyChildren || []).forEach(c => body.appendChild(c));
+      return {
+        documentElement: html,
+        body,
+        __fsAgentPanel: null,
+        querySelector(sel) { return queryAll101(html, sel, true)[0] || null; },
+        querySelectorAll(sel) { return queryAll101(html, sel, true); },
+        contains(el) { return !!el && (el === html || html.contains(el)); }
+      };
+    };
+    const evaluateWithDom101 = (doc, fn, ...args) => {
+      const prevDoc = global.document;
+      const prevWin = global.window;
+      global.document = doc;
+      global.window = { document: doc };
+      try { return fn(...args); } finally {
+        if (prevDoc === undefined) delete global.document; else global.document = prevDoc;
+        if (prevWin === undefined) delete global.window; else global.window = prevWin;
+      }
+    };
+    const FILLER101 = 'The quick brown fox jumps over the lazy dog near the river bank. ';
+    // Build one modelled Agent page. toolbar: 'adjust' puts an
+    // aria-labelled "Adjust" button in the composer row (only
+    // strategy (b) can want it); 'icons' puts two icon-only svg
+    // buttons there (only strategy (c), LAST one, opens).
+    const buildAgentDom101 = (toolbar) => {
+      const store = { confirm: 'Never', model: 'Omni 1.2 Flash', aspect: '9:16', outputs: 'x1' };
+      const clicks = [];
+      const typed = [];
+      const logs = [];
+      const iconClicks = [];
+      let sends = 0;
+      const grid = makeEl101('div', { className: 'flow-grid' });
+      const canvas = makeEl101('main', { className: 'canvas' });
+      canvas.appendChild(makeEl101('div', { text: 'Start creating or drop media' }));
+      canvas.appendChild(grid);
+      const messages = makeEl101('div', { className: 'messages' });
+      const aside = makeEl101('aside', { className: 'agent-session' });
+      const buildProposal = (modelLine, costingLine) => {
+        const wrap = makeEl101('div', { className: 'proposal-wrap' });
+        wrap.appendChild(makeEl101('div', { text: modelLine }));
+        wrap.appendChild(makeEl101('div', { text: costingLine }));
+        const group = makeEl101('div', { attrs: { role: 'radiogroup', 'aria-label': 'Permission options' } });
+        for (const label of ['Approve', 'Always approve in project', 'Reject']) {
+          group.appendChild(makeEl101('div', {
+            attrs: { role: 'radio' },
+            text: label,
+            onClick: () => {
+              clicks.push(label);
+              if (label === 'Approve') {
+                grid.appendChild(makeEl101('flow-grid-tile-container', { attrs: { 'aria-label': 'A red ball rolling on green grass, sunny day' } }));
+              }
+              if (wrap.parentElement) wrap.parentElement.removeChild(wrap);
+            }
+          }));
+        }
+        wrap.appendChild(group);
+        return wrap;
+      };
+      messages.appendChild(makeEl101('div', { text: 'A red ball rolling on green grass, sunny day' }));
+      messages.appendChild(makeEl101('div', { text: FILLER101.repeat(10) }));
+      messages.appendChild(buildProposal(
+        'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.2 Flash.',
+        'Would you like me to kick off this 1 video generation, costing 12 credits?'
+      ));
+      aside.appendChild(makeEl101('div', { text: 'Untitled session' }));
+      aside.appendChild(messages);
+      // --- the settings surface (no legacy selector matches) ---
+      let surfaceEl = null;
+      const openSettings = () => {
+        if (surfaceEl && aside.contains(surfaceEl)) return;
+        const refs = {};
+        const mark = (el, on) => { el.className = on ? 'choice checked' : 'choice'; el.setAttribute('aria-checked', on ? 'true' : 'false'); };
+        const refresh = () => {
+          mark(refs.confirmAlways, store.confirm === 'Always');
+          mark(refs.confirmNever, store.confirm === 'Never');
+          mark(refs.aspect169, store.aspect === '16:9');
+          mark(refs.aspect916, store.aspect === '9:16');
+          for (const k of ['x1', 'x2', 'x3', 'x4']) mark(refs['out_' + k], store.outputs === k);
+          refs.modelBtn._text = store.model;
+        };
+        const surface = makeEl101('div', { className: 'fs-pop' });
+        surface.appendChild(makeEl101('div', { text: 'Agent settings' }));
+        surface.appendChild(makeEl101('div', { text: 'Confirm before generating' }));
+        refs.confirmAlways = makeEl101('button', { attrs: { role: 'radio' }, text: 'Always', onClick: () => { store.confirm = 'Always'; refresh(); } });
+        refs.confirmNever = makeEl101('button', { attrs: { role: 'radio' }, text: 'Never', onClick: () => { store.confirm = 'Never'; refresh(); } });
+        surface.appendChild(refs.confirmAlways);
+        surface.appendChild(refs.confirmNever);
+        surface.appendChild(makeEl101('div', { text: 'Video generation default' }));
+        refs.modelBtn = makeEl101('button', {
+          className: 'model-dd',
+          text: store.model,
+          onClick: () => {
+            if (refs.optionsOpen) return;
+            refs.optionsOpen = true;
+            for (const label of ['Omni 1.2 Flash', 'Omni 1.1 Flash']) {
+              const opt = makeEl101('button', {
+                attrs: { role: 'option' },
+                text: label,
+                onClick: () => {
+                  store.model = label;
+                  for (const o2 of refs.optionEls || []) if (o2.parentElement) o2.parentElement.removeChild(o2);
+                  refs.optionEls = [];
+                  refs.optionsOpen = false;
+                  refresh();
+                }
+              });
+              (refs.optionEls = refs.optionEls || []).push(opt);
+              surface.appendChild(opt);
+            }
+          }
+        });
+        surface.appendChild(refs.modelBtn);
+        refs.aspect169 = makeEl101('button', { attrs: { role: 'radio' }, text: '16:9', onClick: () => { store.aspect = '16:9'; refresh(); } });
+        refs.aspect916 = makeEl101('button', { attrs: { role: 'radio' }, text: '9:16', onClick: () => { store.aspect = '9:16'; refresh(); } });
+        surface.appendChild(refs.aspect169);
+        surface.appendChild(refs.aspect916);
+        for (const k of ['x1', 'x2', 'x3', 'x4']) {
+          refs['out_' + k] = makeEl101('button', { attrs: { role: 'radio' }, text: k, onClick: () => { store.outputs = k; refresh(); } });
+          surface.appendChild(refs['out_' + k]);
+        }
+        surface.appendChild(makeEl101('button', {
+          text: 'Save',
+          onClick: () => { if (surface.parentElement) surface.parentElement.removeChild(surface); surfaceEl = null; }
+        }));
+        refresh();
+        surfaceEl = surface;
+        aside.appendChild(surface);
+      };
+      // --- composer row ---
+      const composerRow = makeEl101('div', { className: 'composer-row' });
+      composerRow.appendChild(makeEl101('div', {
+        className: 'ProseMirror',
+        attrs: { contenteditable: 'true', 'aria-label': 'What do you want to create?' },
+        rect: { width: 300, height: 24, top: 600 }
+      }));
+      if (toolbar === 'adjust') {
+        composerRow.appendChild(makeEl101('button', { attrs: { 'aria-label': 'Adjust' }, onClick: () => { openSettings(); } }));
+      } else {
+        const mkIcon = (name) => {
+          const b = makeEl101('button', { onClick: () => { iconClicks.push(name); if (name === 'last') openSettings(); } });
+          b.appendChild(makeEl101('svg', {}));
+          return b;
+        };
+        composerRow.appendChild(mkIcon('first'));
+        composerRow.appendChild(mkIcon('last'));
+      }
+      composerRow.appendChild(makeEl101('button', {
+        attrs: { 'aria-label': 'Send' },
+        onClick: () => {
+          sends++;
+          if (sends === 2) {
+            messages.appendChild(buildProposal(
+              'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.1 Flash.',
+              'Would you like me to kick off this 1 video generation, costing 7 credits?'
+            ));
+          }
+        }
+      }));
+      aside.appendChild(composerRow);
+      const app = makeEl101('div', { className: 'app' });
+      app.appendChild(makeEl101('button', { className: 'agent-mode-chip checked', text: 'Agent' }));
+      app.appendChild(canvas);
+      app.appendChild(aside);
+      const doc = makeDocument101([app]);
+      const engine = {
+        isStopping: false,
+        capturedVideoUrls: [],
+        claimedTileFingerprints: new Set(),
+        currentAccount: { name: 'Mock Account' },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        insertNativeText: async (t) => { typed.push(String(t)); },
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        getRequiredCredits: () => 7,
+        page: {
+          keyboard: { press: async () => {}, type: async (t) => { typed.push(String(t)); } },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) typed.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => evaluateWithDom101(doc, fn, ...rest)
+        }
+      };
+      return { doc, engine, logs, typed, clicks, iconClicks, store };
+    };
+
+    { // (7) strategy (b) end to end: the "Adjust" icon in the
+      // composer row opens the anchor-detected surface; align
+      // sets Confirm + model, Saves, reopens, verifies — and
+      // the re-sent instruction is Approved
+      const dom = buildAgentDom101('adjust');
+      const res = await driver101.submitViaAgent(dom.engine, runArgs101({}));
+      eq('X101 fixture DOM strategy-b: the run completes through the real page functions', res.status, 'SUBMITTED');
+      ok('X101 fixture DOM strategy-b: the surface was found via the composer settings icon', dom.logs.some(l => l.includes('Agent settings surface found (via composer settings icon)')));
+      ok('X101 fixture DOM strategy-b: every value verified, model line included', dom.logs.some(l => l.includes("settings value model: 'Omni 1.1 Flash' — verified")) && dom.logs.some(l => l.includes("settings value confirm: 'Always' — verified")));
+      ok('X101 fixture DOM strategy-b: the settings-aligned line closed the alignment', dom.logs.some(l => l.includes('settings aligned')));
+      eq('X101 fixture DOM strategy-b: Reject then Approve', JSON.stringify(dom.clicks), JSON.stringify(['Reject', 'Approve']));
+      eq('X101 fixture DOM strategy-b: the pinned instruction was sent twice (original + aligned re-send)', JSON.stringify(dom.typed), JSON.stringify(['A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)', 'A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)']));
+      eq('X101 fixture DOM strategy-b: the surface store kept the aligned values', JSON.stringify({ confirm: dom.store.confirm, model: dom.store.model }), JSON.stringify({ confirm: 'Always', model: 'Omni 1.1 Flash' }));
+    }
+    { // (8) strategy (c): two icon-only buttons sit in the
+      // composer row — only the LAST one is the settings icon.
+      // Plus direct pins: the surface finder reports not-present
+      // before opening, and the region survey describes the
+      // icon-only buttons' shape (tag + box, no aria/text).
+      const dom = buildAgentDom101('icons');
+      const surfaceBefore = evaluateWithDom101(dom.doc, driver101.pageAgentSettingsSurface, driver101.AGENT_SELECTORS);
+      eq('X101 fixture DOM strategy-c: the surface finder reports not-present before any opener', surfaceBefore.present, false);
+      const survey = evaluateWithDom101(dom.doc, driver101.pageSurveySettingsRegion, driver101.AGENT_SELECTORS);
+      ok('X101 fixture DOM strategy-c: the survey lists the composer-row clickables', Array.isArray(survey) && survey.some(e => e.includes('aria="Send"')));
+      eq('X101 fixture DOM strategy-c: the survey shows both icon-only buttons bare (no aria, no text)', Array.isArray(survey) ? survey.filter(e => e.startsWith('<button') && !e.includes('aria=') && !e.includes('text=')).length : -1, 2);
+      const res = await driver101.submitViaAgent(dom.engine, runArgs101({}));
+      eq('X101 fixture DOM strategy-c: the run completes through the last-icon opener', res.status, 'SUBMITTED');
+      // v2.48.104 SUPERSEDES the .101 count of 2: SETTINGS FIRST
+      // now aligns BEFORE the send (open + post-Save verify
+      // reopen = the original 2 clicks), and the unchanged
+      // Reject-retry path then re-verifies the settings — one
+      // more open click (its verify finds the surface via the
+      // stash, so no fourth). The first icon is still never
+      // clicked, and the values were already aligned by then.
+      eq('X101 fixture DOM strategy-c: the LAST icon-only button was clicked (settings-first open + verify reopen + the retry re-open) [v2.48.104]', JSON.stringify(dom.iconClicks), JSON.stringify(['last', 'last', 'last']));
+      ok('X101 fixture DOM strategy-c: the first icon-only button was never clicked', !dom.iconClicks.includes('first'));
+      ok('X101 fixture DOM strategy-c: the surface-found line names the toolbar strategy', dom.logs.some(l => l.includes('Agent settings surface found (via composer toolbar icon (last))')));
+      eq('X101 fixture DOM strategy-c: Reject then Approve', JSON.stringify(dom.clicks), JSON.stringify(['Reject', 'Approve']));
+    }
+    doctor101.resetLastAgentRun();
+  }
+
+  // =====================================================================
+  // X102 (v2.48.99, local package) — MCP AGENT-MODE SWITCH: the
+  // owner runs the app from chat and must never have to walk to
+  // the PC to flip the app's Agent Prompt toggle for a chat run.
+  // (a) new MCP tool flowstudio_set_agent_mode {enabled} stores an
+  // engine-level override (in memory, in engine/agentDoctor beside
+  // the doctor state it must be reported with; null = follow the
+  // app); (b) both generate tools accept a per-call agentMode;
+  // (c) the bridge enforces the precedence — per-call parameter >
+  // stored override > UI toggle — at the REAL decision point: the
+  // settings object built in POST /api/generation/start, whose
+  // agentMode the worker pool reads when it chooses submitViaAgent
+  // over submitPrompt. The direct route is marked (mcpOrigin) by
+  // the MCP server itself; the in-app route resolves its mode in
+  // /api/generation/start-ui and rides a one-shot stash (prompt
+  // count + tag match, 3-minute freshness) into the app's
+  // follow-up start, because the compiled app sends that start
+  // with its own toggle value. A manual run matches neither path
+  // and keeps the toggle's word — the override never touches it.
+  // (d) the doctor payload reports agentModeOverride.
+  // =====================================================================
+  {
+    const fs102 = require('fs');
+    const path102 = require('path');
+    const doctor102 = require('../engine/agentDoctor');
+    const read102 = (rel) => fs102.readFileSync(path102.join(__dirname, '..', rel), 'utf8');
+    const bridgeSrc102 = read102('engine_bridge.js');
+    const mcpSrc102 = read102('mcp_server.js');
+    const poolSrc102 = read102('engine/workerPool.js');
+
+    // --- source pins: MCP surface ---
+    ok('X102 the MCP server defines the set-agent-mode tool', mcpSrc102.includes("name: 'flowstudio_set_agent_mode'"));
+    ok('X102 the set-agent-mode tool posts to the bridge switch endpoint', mcpSrc102.includes("bridgeCall('POST', '/api/mcp/agent-mode'"));
+    ok('X102 the direct generate tool marks its starts as MCP-originated', mcpSrc102.includes('mcpOrigin: true'));
+    ok('X102 the direct generate tool forwards a per-call agentMode', mcpSrc102.includes('if (typeof args.agentMode === \'boolean\') body.agentMode = args.agentMode;'));
+    ok('X102 the in-app generate tool forwards a per-call agentMode', (mcpSrc102.match(/body\.agentMode = args\.agentMode/g) || []).length >= 2);
+    ok('X102 the doctor tool text names the override field', mcpSrc102.includes('agentModeOverride'));
+
+    // --- source pins: bridge wiring at the real decision point ---
+    ok('X102 the bridge serves the agent-mode switch endpoint', bridgeSrc102.includes("'/api/mcp/agent-mode'") && bridgeSrc102.includes('agentDoctor.setAgentModeOverride('));
+    ok('X102 start-ui resolves the run mode (param over override)', bridgeSrc102.includes('const uiAgentMode = agentDoctor.resolveAgentMode({'));
+    ok('X102 start-ui stashes a decided mode for the follow-up start', bridgeSrc102.includes('pendingMcpUiAgentMode = { agentMode: uiRunAgentMode, count: prompts.length, tag, at: Date.now() }'));
+    ok('X102 the start handler honours the MCP-origin precedence', bridgeSrc102.includes('if (config.mcpOrigin === true)') && bridgeSrc102.includes('override: agentDoctor.getAgentModeOverride(),'));
+    ok('X102 the start handler consumes the in-app stash on a match', bridgeSrc102.includes("agentModeSource = 'mcp-stash'") && bridgeSrc102.includes('stash.count === formattedPrompts.length'));
+    ok('X102 the run settings carry the RESOLVED mode, not the raw toggle', bridgeSrc102.includes('agentMode: resolvedRunAgentMode,'));
+    ok('X102 the stash expires (3-minute TTL)', bridgeSrc102.includes('const MCP_UI_AGENT_MODE_TTL_MS = 180000;'));
+    ok('X102 the pool still decides Agent vs direct on settings.agentMode', poolSrc102.includes('(settings.agentMode === true)') && poolSrc102.includes('engine.submitViaAgent(') && poolSrc102.includes('engine.submitPrompt('));
+
+    // --- functional: the override slot ---
+    doctor102.resetAgentModeOverride();
+    eq('X102 the override defaults to null (follow the app)', doctor102.getAgentModeOverride(), null);
+    eq('X102 set true stores true', doctor102.setAgentModeOverride(true), true);
+    eq('X102 the getter reads the stored true', doctor102.getAgentModeOverride(), true);
+    eq('X102 set false stores false', doctor102.setAgentModeOverride(false), false);
+    eq('X102 a non-boolean clears back to null', doctor102.setAgentModeOverride('yes'), null);
+    doctor102.setAgentModeOverride(true);
+    eq('X102 the doctor payload reports the override', doctor102.doctorPayload('2.48.99').agentModeOverride, true);
+    doctor102.resetAgentModeOverride();
+    eq('X102 the reset seam clears the override', doctor102.doctorPayload('2.48.99').agentModeOverride, null);
+
+    // --- functional: the precedence rule (param > override > ui) ---
+    eq('X102 precedence: a per-call true beats a stored false and a UI false', JSON.stringify(doctor102.resolveAgentMode({ param: true, override: false, ui: false })), JSON.stringify({ agentMode: true, source: 'param' }));
+    eq('X102 precedence: a per-call false beats a stored true', JSON.stringify(doctor102.resolveAgentMode({ param: false, override: true, ui: true })), JSON.stringify({ agentMode: false, source: 'param' }));
+    eq('X102 precedence: the stored override beats the UI value', JSON.stringify(doctor102.resolveAgentMode({ override: true, ui: false })), JSON.stringify({ agentMode: true, source: 'override' }));
+    eq('X102 precedence: a stored false beats a UI true', JSON.stringify(doctor102.resolveAgentMode({ override: false, ui: true })), JSON.stringify({ agentMode: false, source: 'override' }));
+    eq('X102 precedence: no param and no override falls to the UI value', JSON.stringify(doctor102.resolveAgentMode({ ui: true })), JSON.stringify({ agentMode: true, source: 'ui' }));
+    eq('X102 precedence: empty input resolves to the direct route as a UI decision', JSON.stringify(doctor102.resolveAgentMode({})), JSON.stringify({ agentMode: false, source: 'ui' }));
+    eq('X102 precedence: a null override does not vote', JSON.stringify(doctor102.resolveAgentMode({ override: null, ui: true })), JSON.stringify({ agentMode: true, source: 'ui' }));
+  }
+
+  // =====================================================================
+  // X103 (v2.48.100, local package) — FRESH-PROPOSAL FIX (Fix A) +
+  // 'TUNE' SETTINGS OPENER (Fix B), from AGENTTEST8 (2026-11-13, the
+  // .99 live run). What that run proved: the MCP agent-mode switch
+  // worked (the run went out as an Agent run untouched by the owner);
+  // proposal #1 (Omni 1.2 Flash, 12 credits vs expected 7) was read,
+  // Rejected, settled; the settings surface was STILL not found; the
+  // named-model fallback re-send WORKED — the Agent answered with a
+  // fresh proposal at exactly 7 credits (Omni 1.1 Flash), Permission
+  // group present (heartbeats: 'proposalGroup=present', panel tail
+  // carrying the 7-credit sentence) — and the driver waited 163s
+  // into agent-proposal-timeout without ever acting on it (0
+  // credits spent). THE MECHANISM (two stacked first-match traps):
+  // (1) pagePermissionState located the group with
+  // document.querySelector — the FIRST match in the document: the
+  // SETTLED proposal's group, which stays in the panel DOM
+  // (disabled) ABOVE the fresh one, so `enabled` read false for the
+  // entire wait; pageClickPermissionOption had the same flaw. (2)
+  // The text parsers matched the FIRST 'costing N credits'
+  // sentence — the stale 12-credit one — in the accumulated panel
+  // text, and the boolean handled-flag had no way to tell a fresh
+  // proposal from the handled one. Fix A: all groups are read and
+  // the LIVE group is the last ENABLED one (state + click paths);
+  // proposals are parsed by agentRules.latestProposal (the LAST
+  // costing sentence + its own block's model) and identified by a
+  // TEXT SIGNATURE, acted on one-shot per continuous appearance
+  // (shouldActOnProposal: never-handled -> act; handled + no gap
+  // -> skip; handled + gap -> act, a new appearance); the
+  // heartbeat states WHY a present group is not being acted on.
+  // Fix B: the composer row's icons are Material ligature TEXT
+  // ('add' ingredients · 'article_spark' instructions · 'tune'
+  // settings · send/stop — AGENTTEST8's settings survey + the
+  // owner's screen recording, FLOW-MAP.md Step 3): the settings
+  // opener is the 'tune' button, invisible to every earlier
+  // strategy (no settings-ish aria-label for (b), innerText
+  // disqualifies it from icon-only (c), no class hook for the
+  // table). New opener strategy (a2) pageClickComposerTuneIcon,
+  // and the aligner scrolls the surface to the below-the-fold
+  // 'Video generation default' section before reading/setting it
+  // (pageScrollAgentSettingsToVideo).
+  // =====================================================================
+  {
+    const fs103 = require('fs');
+    const path103 = require('path');
+    const rules103 = require('../engine/agentRules');
+    const driver103 = require('../engine/agentDriver');
+    const doctor103 = require('../engine/agentDoctor');
+    const read103 = (rel) => fs103.readFileSync(path103.join(__dirname, '..', rel), 'utf8');
+    const driverSrc103 = read103('engine/agentDriver.js');
+    const rulesSrc103 = read103('engine/agentRules.js');
+
+    // --- source pins ---
+    ok('X103 pagePermissionState reads ALL groups (not the first match)', driverSrc103.includes('document.querySelectorAll(sel)') && driverSrc103.includes('enabledCount'));
+    ok('X103 the driver parses proposals by latestProposal + signature set', driverSrc103.includes('agentRules.latestProposal(') && driverSrc103.includes('handledSignatures'));
+    ok('X103 the heartbeat explains a non-acted group', driverSrc103.includes('signature already handled:') && driverSrc103.includes('no costing sentence yet') && driverSrc103.includes('settled/disabled'));
+    ok('X103 rules define latestProposal with a text signature', rulesSrc103.includes('function latestProposal') && rulesSrc103.includes('signature:'));
+    ok('X103 the tune opener strategy is wired into the aligner', driverSrc103.includes('pageClickComposerTuneIcon') && driverSrc103.includes("'composer tune icon'"));
+    ok('X103 the aligner scrolls to the video section', driverSrc103.includes('pageScrollAgentSettingsToVideo') && driverSrc103.includes('Video generation default'));
+
+    // --- the AGENTTEST8 transcript shapes (verbatim-shaped) ---
+    const PROP12_103 = 'I\'ll generate a 10-second video of a red ball rolling on green grass on a sunny day using your default video model, Omni 1.2 Flash. Would you like me to kick off this 1 video generation, costing 12 credits?';
+    const PROP7_103 = 'I\'ll generate 1 video of a red ball rolling on green grass on a sunny day in vertical 9:16 format using Omni 1.1 Flash. Would you like me to kick off this 1 video generation, costing 7 credits?';
+    const OPTLINE_103 = 'check Approve check Always approve in project close Reject';
+    const CANCEL_103 = 'I\'ve cancelled that generation. Are there any changes you\'d like to make to the prompt or settings before trying again?';
+    const BUBBLE_103 = 'A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)';
+    const TRANSCRIPT103 = ['A red ball rolling on green grass, sunny day', PROP12_103, OPTLINE_103, CANCEL_103, BUBBLE_103, PROP7_103, OPTLINE_103, 'What do you want to create? add article_spark tune stop'].join('\n');
+    const TRANSCRIPT103B = ['A red ball rolling on green grass, sunny day', PROP12_103, OPTLINE_103, CANCEL_103, BUBBLE_103, PROP12_103, OPTLINE_103, 'What do you want to create? add article_spark tune stop'].join('\n');
+
+    // --- Fix A: the latest-proposal parser over the transcript ---
+    const latestT = rules103.latestProposal(TRANSCRIPT103);
+    eq('X103 parser: the AGENTTEST8 transcript yields the FRESH quote (7, not the stale 12)', latestT && latestT.quoted, 7);
+    eq('X103 parser: the fresh proposal model is Omni 1.1 Flash', latestT && latestT.model, 'Omni 1.1 Flash');
+    const latestStale = rules103.latestProposal(PROP12_103);
+    eq('X103 parser: a stale-only panel yields the stale quote', latestStale && latestStale.quoted, 12);
+    eq('X103 parser: a stale-only panel yields the stale model', latestStale && latestStale.model, 'Omni 1.2 Flash');
+    ok('X103 parser: the fresh and stale signatures differ (identity is the signature, not the DOM node)', !!latestT && !!latestStale && latestT.signature !== latestStale.signature);
+    eq('X103 parser: a text with no costing sentence yields null', rules103.latestProposal('Here is a plan for your video. Shall I proceed?'), null);
+    eq('X103 parser: the old first-match parser still reads the stale quote on the same transcript (the trap)', rules103.parseQuotedCost(TRANSCRIPT103), 12);
+    eq('X103 decider: the fresh 7-credit proposal approves at the run expected cost', rules103.decideOnProposal({ quotedCost: latestT.quoted, proposalModel: latestT.model, runModelLabel: 'Omni 1.1 Flash', runExpectedCost: 7, retried: true }).act, 'approve');
+    eq('X103 decider: the stale 12-credit proposal with the retry spent parks', rules103.decideOnProposal({ quotedCost: latestStale.quoted, proposalModel: latestStale.model, runModelLabel: 'Omni 1.1 Flash', runExpectedCost: 7, retried: true }).act, 'park');
+
+    // --- Fix A: the one-shot gate matrix ---
+    const handled103 = new Set([latestStale.signature]);
+    eq('X103 gate: a never-handled signature acts', driver103.shouldActOnProposal(latestT.signature, handled103, false), true);
+    eq('X103 gate: a handled signature with no gap does NOT act again (same-appearance re-render)', driver103.shouldActOnProposal(latestStale.signature, handled103, false), false);
+    eq('X103 gate: a handled signature after a gap acts (a genuinely new appearance)', driver103.shouldActOnProposal(latestStale.signature, handled103, true), true);
+    eq('X103 gate: no signature never acts', driver103.shouldActOnProposal(null, handled103, true), false);
+    eq('X103 gate: the handled set may be a plain array', driver103.shouldActOnProposal('a|1|s', ['a|1|s'], false), false);
+    ok('X103 line: the waiting heartbeat carries the why when one is given', driver103.agentLine('waiting', { elapsedSec: 42, group: 'present', why: 'group present, signature already handled: 7/Omni 1.1 Flash', tail: 'x' }).includes('signature already handled: 7/Omni 1.1 Flash'));
+    ok('X103 line: without a why the waiting line keeps its old shape', driver103.agentLine('waiting', { elapsedSec: 3, group: 'absent', tail: '' }).includes('proposalGroup=absent panel tail:'));
+
+    // --- mocked-panel driver fixtures (dispatcher by page-fn
+    // name, X101 harness shape) ---
+    const TILE103 = 'a red ball rolling on green grass sunny day';
+    const NAMED103 = 'A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)';
+    const makeEngine103 = (opts) => {
+      const o = opts || {};
+      const logs = []; const clicks = []; const typed = [];
+      const state = {
+        panelText: o.panelText || '',
+        groupText: o.groupText !== undefined ? o.groupText : (o.panelText || ''),
+        permEnabled: !!o.permEnabled,
+        gridFps: [],
+        sends: 0
+      };
+      const engine = {
+        isStopping: false,
+        capturedVideoUrls: [],
+        claimedTileFingerprints: new Set(),
+        currentAccount: { name: 'Mock Account' },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        insertNativeText: async (t) => { typed.push(String(t)); },
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        getRequiredCredits: () => 7,
+        page: {
+          keyboard: { press: async () => {}, type: async (t) => { typed.push(String(t)); } },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) typed.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => {
+            const name = fn && fn.name ? fn.name : '';
+            switch (name) {
+              case 'pageFindAgentToggle': return { found: true, on: true };
+              case 'pageClickAgentToggle': return true;
+              case 'pageReadAgentPanelText': return state.panelText;
+              case 'pageAnchorAgentPanel': return { found: true, depth: 2, textLength: String(state.panelText).length, containsComposer: true, text: state.panelText };
+              case 'pageSurveyAgentDom': return [];
+              case 'pagePermissionState':
+                return state.permEnabled
+                  ? { present: true, enabled: true, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: true, groupText: state.groupText, groupCount: 1, enabledCount: 1 }
+                  : { present: true, enabled: false, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: false, groupText: state.groupText, groupCount: 1, enabledCount: 0 };
+              case 'pageClickPermissionOption':
+                clicks.push(rest[1]);
+                state.permEnabled = false;
+                if (o.onPermissionClick) o.onPermissionClick(rest[1], state);
+                return rest[1];
+              case 'pageFocusAgentInput': return true;
+              case 'pageClickAgentSend':
+                state.sends++;
+                if (o.onSend) o.onSend(state);
+                return true;
+              case 'pageGridFingerprints': return state.gridFps.slice();
+              case 'pageGalleryLabels': return [];
+              case 'pageOpenAgentSettings': return false;
+              case 'pageClickComposerTuneIcon': return false;
+              case 'pageClickComposerSettingsIcon': return false;
+              case 'pageClickComposerToolbarLastIcon': return false;
+              case 'pageAgentSettingsSurface': return { present: false, via: null, confirm: false, videoDefault: false };
+              case 'pageAgentSettingsPresent': return false;
+              case 'pageSurveySettingsRegion': return ['<button aria="Send" @0,0 100x20>'];
+              case 'pageScrollAgentSettingsToVideo': return { found: false, scrolled: false };
+              default: return { count: 0, labels: [] };
+            }
+          }
+        }
+      };
+      return { engine, logs, clicks, typed, state };
+    };
+    const runArgs103 = (over) => ({
+      promptText: 'A red ball rolling on green grass, sunny day',
+      settings: { model: 'Omni Flash', aspectRatio: '9:16', duration: '10s', quality: '360p' },
+      promptIndex: 0,
+      totalPrompts: 1,
+      chatPollMs: 5,
+      mediaPollMs: 5,
+      settlePollMs: 5,
+      settleTimeoutMs: 5000,
+      mediaTimeoutMs: 2000,
+      proposalWaitMs: 20000,
+      heartbeatMs: 40,
+      anchorRetryMs: 300,
+      settingsOpenWaitMs: 5,
+      settingsSurfaceWaitMs: 30,
+      ...(over || {})
+    });
+
+    { // (A) THE AGENTTEST8 REPLAY: proposal #1 (12) -> Reject ->
+      // settings not found -> named re-send -> the panel becomes
+      // the ACCUMULATED transcript (stale proposal + cancellation
+      // + fresh 7-credit proposal). The driver must decide on the
+      // LAST costing sentence and Approve. (The pre-fix driver
+      // parked or timed out on exactly this shape.)
+      doctor103.resetLastAgentRun();
+      const fx = makeEngine103({
+        panelText: PROP12_103,
+        permEnabled: true,
+        onSend: (state) => {
+          if (state.sends === 2) {
+            state.panelText = TRANSCRIPT103;
+            state.groupText = TRANSCRIPT103;
+            state.permEnabled = true;
+          }
+        },
+        onPermissionClick: (label, state) => { if (label === 'Approve') state.gridFps = [TILE103]; }
+      });
+      const res = await driver103.submitViaAgent(fx.engine, runArgs103({}));
+      eq('X103 fixture replay: the run completes (the fresh proposal is approved)', res.status, 'SUBMITTED');
+      eq('X103 fixture replay: Reject for the stale-priced proposal, Approve for the fresh one', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Approve']));
+      eq('X103 fixture replay: both sends are the pinned instruction (the named fallback is the same text)', JSON.stringify(fx.typed), JSON.stringify([NAMED103, NAMED103]));
+      ok('X103 fixture replay: the proposal line read the FRESH quote (7 credits)', fx.logs.some(l => l.includes('generation proposal from Flow') && l.includes('quoted 7 credits')));
+      ok('X103 fixture replay: the proposal line read the FRESH model (Omni 1.1 Flash)', fx.logs.some(l => l.includes('generation proposal from Flow') && l.includes('Omni 1.1 Flash')));
+      ok('X103 fixture replay: no proposal-timeout was hit', !fx.logs.some(l => l.includes('agent-proposal-timeout')));
+    }
+    { // (B) the named re-send is answered by ANOTHER 12-credit
+      // proposal appended under the same transcript: the latest
+      // signature is decided again (the re-send ended the first
+      // appearance) and the run parks behind the named-retry
+      // reason — never a second settings attempt, never an
+      // approval.
+      doctor103.resetLastAgentRun();
+      const fx = makeEngine103({
+        panelText: PROP12_103,
+        permEnabled: true,
+        onSend: (state) => {
+          if (state.sends === 2) {
+            state.panelText = TRANSCRIPT103B;
+            state.groupText = TRANSCRIPT103B;
+            state.permEnabled = true;
+          }
+        }
+      });
+      const res = await driver103.submitViaAgent(fx.engine, runArgs103({}));
+      eq('X103 fixture re-proposal: the run parks after the re-proposed 12 credits', res.status, 'AGENT_PARKED');
+      ok('X103 fixture re-proposal: the park reason is the named-retry one', String(res.reason || '').startsWith('agent-over-cost-named-retry'));
+      eq('X103 fixture re-proposal: both proposals were settled with Reject', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Reject']));
+      eq('X103 fixture re-proposal: exactly two sends (original + named)', fx.state.sends, 2);
+    }
+
+    // --- mini-DOM fixtures: the REAL page functions against a
+    // modelled panel (X101 machinery, cloned) ---
+    const splitTop103 = (str, sep) => {
+      const out = []; let cur = ''; let br = 0; let q = false;
+      for (const ch of String(str)) {
+        if (q) { cur += ch; if (ch === '"') q = false; continue; }
+        if (ch === '"') { q = true; cur += ch; continue; }
+        if (ch === '[') br++;
+        if (ch === ']') br--;
+        if (ch === sep && br === 0) { if (cur.trim()) out.push(cur.trim()); cur = ''; continue; }
+        cur += ch;
+      }
+      if (cur.trim()) out.push(cur.trim());
+      return out;
+    };
+    const parseCompound103 = (src) => {
+      const c = { tag: null, classes: [], attrs: [] };
+      let rest = src;
+      const tagM = rest.match(/^(\*|[a-zA-Z][a-zA-Z0-9-]*)/);
+      if (tagM) { c.tag = tagM[1] === '*' ? null : tagM[1].toLowerCase(); rest = rest.slice(tagM[1].length); }
+      while (rest.length) {
+        if (rest[0] === '.') { const m = rest.match(/^\.([a-zA-Z0-9_-]+)/); c.classes.push(m[1]); rest = rest.slice(m[0].length); }
+        else if (rest[0] === '[') {
+          const end = rest.indexOf(']');
+          const body = rest.slice(1, end);
+          const m = body.match(/^([a-zA-Z0-9_-]+)(\*?=)?\s*(?:"([^"]*)")?\s*(i)?$/);
+          c.attrs.push({ name: m[1], op: m[2] || null, value: m[3] !== undefined ? m[3] : null, ci: !!m[4] });
+          rest = rest.slice(end + 1);
+        } else if (rest.startsWith(':checked')) { c.attrs.push({ name: 'checked', op: 'pseudo', value: null, ci: false }); rest = rest.slice(8); }
+        else { rest = rest.slice(1); }
+      }
+      return c;
+    };
+    const matchCompound103 = (el, c) => {
+      if (c.tag && String(el.tagName || '').toLowerCase() !== c.tag) return false;
+      const classes = String(el.className || '').split(/\s+/).filter(Boolean);
+      for (const cl of c.classes) if (!classes.includes(cl)) return false;
+      for (const a of c.attrs) {
+        if (a.op === 'pseudo') { if (!(a.name === 'checked' && el.checked === true)) return false; continue; }
+        if (a.name === 'disabled' && !a.op) { if (!(el.hasAttribute('disabled') || el.disabled === true)) return false; continue; }
+        const v = el.getAttribute(a.name);
+        if (!a.op) { if (v === null) return false; continue; }
+        if (v === null) return false;
+        const hay = a.ci ? v.toLowerCase() : v;
+        const needle = a.ci ? String(a.value).toLowerCase() : String(a.value);
+        if (a.op === '=' && hay !== needle) return false;
+        if (a.op === '*=' && !hay.includes(needle)) return false;
+      }
+      return true;
+    };
+    const descendants103 = (el) => {
+      const out = [];
+      const walk = (n) => { for (const c of n.children) { out.push(c); walk(c); } };
+      walk(el);
+      return out;
+    };
+    const queryAll103 = (rootEl, sel, includeSelf) => {
+      const groups = splitTop103(sel, ',').map(g => splitTop103(g, ' ').map(parseCompound103)).filter(g => g.length);
+      const universe = includeSelf ? [rootEl, ...descendants103(rootEl)] : descendants103(rootEl);
+      const matchesGroup = (el, compounds) => {
+        if (!matchCompound103(el, compounds[compounds.length - 1])) return false;
+        let idx = compounds.length - 2;
+        let n = el.parentElement;
+        const stopAt = rootEl.parentElement;
+        while (idx >= 0 && n && n !== stopAt) {
+          if (matchCompound103(n, compounds[idx])) idx--;
+          n = n.parentElement;
+        }
+        return idx < 0;
+      };
+      return universe.filter(el => groups.some(g => matchesGroup(el, g)));
+    };
+    const makeEl103 = (tag, opts) => {
+      const o = opts || {};
+      const el = {
+        tagName: String(tag || 'div').toUpperCase(),
+        children: [],
+        parentElement: null,
+        className: o.className || '',
+        disabled: !!o.disabled,
+        checked: !!o.checked,
+        scrollHeight: o.scrollHeight || 0,
+        clientHeight: o.clientHeight || 0,
+        scrollTop: 0,
+        _text: o.text || '',
+        _attrs: {},
+        _rect: o.rect || { width: 100, height: 20, top: 0 },
+        _onClick: o.onClick || null,
+        _scrolledIntoView: false,
+        getAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null; },
+        setAttribute(name, v) { this._attrs[name] = String(v); if (name === 'class') this.className = String(v); },
+        hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name); },
+        removeAttribute(name) { delete this._attrs[name]; },
+        appendChild(child) { child.parentElement = this; this.children.push(child); return child; },
+        removeChild(child) { const i = this.children.indexOf(child); if (i >= 0) this.children.splice(i, 1); child.parentElement = null; return child; },
+        contains(other) { let n = other; while (n) { if (n === this) return true; n = n.parentElement; } return false; },
+        focus() { this._focused = true; },
+        click() { this._clicks = (this._clicks || 0) + 1; if (this._onClick) this._onClick(this); },
+        scrollIntoView() { this._scrolledIntoView = true; },
+        getBoundingClientRect() { return { width: this._rect.width, height: this._rect.height, top: this._rect.top, bottom: this._rect.top + this._rect.height, left: 0, right: this._rect.width }; },
+        checkVisibility() { return true; },
+        querySelector(sel2) { return queryAll103(this, sel2, false)[0] || null; },
+        querySelectorAll(sel2) { return queryAll103(this, sel2, false); }
+      };
+      if (o.className) el._attrs.class = o.className;
+      if (o.attrs) for (const k of Object.keys(o.attrs)) el.setAttribute(k, o.attrs[k]);
+      Object.defineProperty(el, 'innerText', { get() { const parts = []; if (this._text) parts.push(this._text); for (const c of this.children) { const t = c.innerText; if (t) parts.push(t); } return parts.join(' '); } });
+      Object.defineProperty(el, 'isContentEditable', { get() { return this.getAttribute('contenteditable') === 'true'; } });
+      return el;
+    };
+    const makeDocument103 = (bodyChildren) => {
+      const html = makeEl103('html');
+      const body = makeEl103('body');
+      html.appendChild(body);
+      (bodyChildren || []).forEach(c => body.appendChild(c));
+      return {
+        documentElement: html,
+        body,
+        __fsAgentPanel: null,
+        __fsAgentSettings: null,
+        querySelector(sel) { return queryAll103(html, sel, true)[0] || null; },
+        querySelectorAll(sel) { return queryAll103(html, sel, true); },
+        contains(el) { return !!el && (el === html || html.contains(el)); }
+      };
+    };
+    const evaluateWithDom103 = (doc, fn, ...args) => {
+      const prevDoc = global.document;
+      const prevWin = global.window;
+      global.document = doc;
+      global.window = { document: doc };
+      try { return fn(...args); } finally {
+        if (prevDoc === undefined) delete global.document; else global.document = prevDoc;
+        if (prevWin === undefined) delete global.window; else global.window = prevWin;
+      }
+    };
+    const buildProposalDom103 = (clicks103, withFresh) => {
+      const messages = makeEl103('div', { className: 'messages' });
+      const mkGroup = (tagId, disabled) => {
+        const group = makeEl103('div', { attrs: disabled ? { role: 'radiogroup', 'aria-label': 'Permission options', 'aria-disabled': 'true' } : { role: 'radiogroup', 'aria-label': 'Permission options' } });
+        for (const label of ['Approve', 'Always approve in project', 'Reject']) {
+          group.appendChild(makeEl103('div', {
+            attrs: disabled ? { role: 'radio', 'aria-disabled': 'true' } : { role: 'radio' },
+            disabled,
+            text: label,
+            onClick: () => { clicks103.push(`${tagId}:${label}`); }
+          }));
+        }
+        return group;
+      };
+      const staleWrap = makeEl103('div', { className: 'proposal-wrap' });
+      staleWrap.appendChild(makeEl103('div', { text: PROP12_103 }));
+      staleWrap.appendChild(mkGroup('stale', true));
+      messages.appendChild(staleWrap);
+      messages.appendChild(makeEl103('div', { text: CANCEL_103 }));
+      if (withFresh) {
+        const freshWrap = makeEl103('div', { className: 'proposal-wrap' });
+        freshWrap.appendChild(makeEl103('div', { text: PROP7_103 }));
+        freshWrap.appendChild(mkGroup('fresh', false));
+        messages.appendChild(freshWrap);
+      }
+      const aside = makeEl103('aside', { className: 'agent-session' });
+      aside.appendChild(messages);
+      return makeDocument103([aside]);
+    };
+
+    { // (C) two groups on one page — the settled one above, the
+      // fresh one below: the state read must report the FRESH
+      // group as the live one, and the click must land in it
+      const clicks103 = [];
+      const doc = buildProposalDom103(clicks103, true);
+      const st = evaluateWithDom103(doc, driver103.pagePermissionState, driver103.AGENT_SELECTORS);
+      eq('X103 DOM two-groups: both groups are counted', st.groupCount, 2);
+      eq('X103 DOM two-groups: exactly one group is enabled', st.enabledCount, 1);
+      eq('X103 DOM two-groups: the reported state is the ENABLED (fresh) group', st.enabled, true);
+      ok('X103 DOM two-groups: the group text carries the fresh costing sentence', String(st.groupText).includes('costing 7 credits'));
+      const clicked = evaluateWithDom103(doc, driver103.pageClickPermissionOption, driver103.AGENT_SELECTORS, 'Approve');
+      eq('X103 DOM two-groups: the click reports the Approve label', clicked, 'Approve');
+      eq('X103 DOM two-groups: the click landed in the FRESH group only', JSON.stringify(clicks103), JSON.stringify(['fresh:Approve']));
+    }
+    { // (D) stale group only: present but NOT answerable — the
+      // exact state AGENTTEST8 waited behind
+      const clicks103 = [];
+      const doc = buildProposalDom103(clicks103, false);
+      const st = evaluateWithDom103(doc, driver103.pagePermissionState, driver103.AGENT_SELECTORS);
+      eq('X103 DOM stale-only: the group still reads present', st.present, true);
+      eq('X103 DOM stale-only: the group reads NOT enabled (nothing may be decided on it)', st.enabled, false);
+      eq('X103 DOM stale-only: no group is enabled', st.enabledCount, 0);
+    }
+    { // (E) Fix B: the 'tune' ligature button in the docked
+      // panel's composer row opens the settings
+      let tuneClicked = false;
+      const aside = makeEl103('aside', { className: 'agent-session' });
+      const row = makeEl103('div', { className: 'composer-row' });
+      row.appendChild(makeEl103('div', { className: 'ProseMirror', attrs: { contenteditable: 'true', 'aria-label': 'What do you want to create?' }, rect: { width: 300, height: 24, top: 600 } }));
+      row.appendChild(makeEl103('button', { text: 'add' }));
+      row.appendChild(makeEl103('button', { text: 'article_spark' }));
+      row.appendChild(makeEl103('button', { text: 'tune', onClick: () => { tuneClicked = true; } }));
+      row.appendChild(makeEl103('button', { text: 'stop' }));
+      aside.appendChild(row);
+      const doc = makeDocument103([aside]);
+      doc.__fsAgentPanel = aside;
+      const hit = evaluateWithDom103(doc, driver103.pageClickComposerTuneIcon, driver103.AGENT_SELECTORS);
+      eq('X103 DOM tune: the strategy finds the tune button in the panel composer row', hit, true);
+      eq('X103 DOM tune: the tune button was the one clicked', tuneClicked, true);
+    }
+    { // (F) Fix B: the same row on the CENTRE composer (no
+      // docked panel yet) — and a row with no tune button misses
+      let tuneClicked = false;
+      const centre = makeEl103('div', { className: 'centre-composer' });
+      const row = makeEl103('div', { className: 'composer-row' });
+      row.appendChild(makeEl103('div', { className: 'ProseMirror', attrs: { contenteditable: 'true', 'aria-label': 'What do you want to create?' }, rect: { width: 300, height: 24, top: 600 } }));
+      row.appendChild(makeEl103('button', { text: 'add' }));
+      row.appendChild(makeEl103('button', { text: 'tune', onClick: () => { tuneClicked = true; } }));
+      centre.appendChild(row);
+      const doc = makeDocument103([centre]);
+      const hit = evaluateWithDom103(doc, driver103.pageClickComposerTuneIcon, driver103.AGENT_SELECTORS);
+      eq('X103 DOM tune: the strategy finds the tune button on the centre composer', hit, true);
+      eq('X103 DOM tune: the centre tune button was clicked', tuneClicked, true);
+      const row2 = makeEl103('div', { className: 'composer-row' });
+      row2.appendChild(makeEl103('div', { className: 'ProseMirror', attrs: { contenteditable: 'true', 'aria-label': 'What do you want to create?' }, rect: { width: 300, height: 24, top: 600 } }));
+      row2.appendChild(makeEl103('button', { text: 'add' }));
+      const doc2 = makeDocument103([row2]);
+      eq('X103 DOM tune: a composer row without a tune button misses cleanly', evaluateWithDom103(doc2, driver103.pageClickComposerTuneIcon, driver103.AGENT_SELECTORS), false);
+    }
+    { // (G) Fix B: the scroll brings the below-the-fold video
+      // section into view
+      const surface = makeEl103('div', { className: 'fs-pop' });
+      surface.appendChild(makeEl103('div', { text: 'Agent settings' }));
+      surface.appendChild(makeEl103('div', { text: 'Confirm before generating' }));
+      const scroller = makeEl103('div', { className: 'scroll-area', scrollHeight: 900, clientHeight: 300 });
+      const videoHead = makeEl103('div', { text: 'Video generation default' });
+      scroller.appendChild(videoHead);
+      surface.appendChild(scroller);
+      const doc = makeDocument103([surface]);
+      doc.__fsAgentSettings = surface;
+      const r = evaluateWithDom103(doc, driver103.pageScrollAgentSettingsToVideo, driver103.AGENT_SELECTORS);
+      eq('X103 DOM scroll: the video section is found on the surface', r.found, true);
+      eq('X103 DOM scroll: the surface was scrolled', r.scrolled, true);
+      eq('X103 DOM scroll: the section heading was scrolled into view', videoHead._scrolledIntoView, true);
+      eq('X103 DOM scroll: the scrollable ancestor was wound to its end', scroller.scrollTop, 900);
+      const bare = makeEl103('div', { className: 'fs-pop' });
+      bare.appendChild(makeEl103('div', { text: 'Agent settings' }));
+      const doc2 = makeDocument103([bare]);
+      doc2.__fsAgentSettings = bare;
+      eq('X103 DOM scroll: a surface without the section reports not-found', evaluateWithDom103(doc2, driver103.pageScrollAgentSettingsToVideo, driver103.AGENT_SELECTORS).found, false);
+    }
+    doctor103.resetLastAgentRun();
+  }
+
+  // =====================================================================
+  // X104 (v2.48.101, local package) — FALLBACK ON ANY ALIGNMENT
+  // FAILURE (Fix C) + SETTINGS FIELD READERS (Fix D), from the
+  // AGENTTEST9 live run (.100, 2026-11-13): proposal #1 quoted
+  // 30 (Omni 1.2 Flash) over the run's expected 7 -> Reject ->
+  // "Agent settings surface found (via composer tune icon)" ->
+  // every verify read 'unreadable' (confirm/model/aspect/
+  // outputs) -> 'agent-settings-unaligned' (field 'confirm')
+  // -> PARKED, because the named-model fallback was gated on
+  // the surface-not-found outcome only. Fix C: ANY alignment
+  // failure (not-found, mismatch, unreadable, save failure)
+  // proceeds to the ONE named-model re-send; a fallback
+  // proposal still over cost parks behind
+  // 'agent-over-cost-named-retry' with no second fallback; an
+  // aligned run takes no fallback (pinned in X101). Fix D:
+  // pageReadAgentSettings is rebuilt for the real surface
+  // (FLOW-MAP.md Step 3) — option text and checked state on
+  // separate nodes, state via aria-checked/aria-pressed/
+  // aria-selected/input.checked/host.selected/classes, the
+  // model dropdown's suffix-polluted display text, shadow-root
+  // controls, section scoping — the aligner scrolls both
+  // sections before each read pass, and an 'unreadable' verify
+  // captures a settings-SURFACE survey into the Doctor detail.
+  // =====================================================================
+  {
+    const fs104 = require('fs');
+    const path104 = require('path');
+    const doctor104 = require('../engine/agentDoctor');
+    const driver104 = require('../engine/agentDriver');
+    const rules104 = require('../engine/agentRules');
+    const read104 = (rel) => fs104.readFileSync(path104.join(__dirname, '..', rel), 'utf8');
+    const driverSrc104 = read104('engine/agentDriver.js');
+
+    // --- source pins ---
+    ok('X104 Fix C: the named fallback follows any alignment failure (no outcome gate left)', driverSrc104.includes('if (!namedRetryUsed)') && !driverSrc104.includes("alignRes.outcome === 'not-found'"));
+    ok('X104 Fix C: the retry-named line carries the alignment outcome', driverSrc104.includes('the Agent settings alignment failed (') && driverSrc104.includes('settings outcome:'));
+    ok('X104 Fix D: the reader walks shadow roots', driverSrc104.includes('shadowRoot'));
+    ok('X104 Fix D: the reader honours aria-pressed / aria-selected state', driverSrc104.includes("getAttribute('aria-pressed')") && driverSrc104.includes("getAttribute('aria-selected')"));
+    ok('X104 Fix D: the reader strips the model dropdown suffixes', driverSrc104.includes('expand_more') && driverSrc104.includes('leaving\\s+dec\\s+\\d+'));
+    ok('X104 Fix D: the reader scopes aspect/outputs to the video section', driverSrc104.includes("sectionScope('Video generation default'"));
+    ok('X104 Fix D: the aligner scrolls both sections before a read pass', driverSrc104.includes('scrollBothSections') && driverSrc104.includes('pageScrollAgentSettingsToSection'));
+    ok('X104 Fix D: an unreadable verify captures the settings-surface survey', driverSrc104.includes('pageSurveySettingsSurface') && driverSrc104.includes('settings surface survey:'));
+    ok('X104 the new page functions are exported for fixtures', typeof driver104.pageReadAgentSettings === 'function' && typeof driver104.pageSurveySettingsSurface === 'function' && typeof driver104.pageScrollAgentSettingsToSection === 'function');
+
+    // --- mocked-panel driver fixtures (the X101 harness shape,
+    // extended with the .100/.101 page functions) ---
+    const PROP_OMNI12_30_104 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.2 Flash. Would you like me to kick off this 1 video generation, costing 30 credits?';
+    const PROP_OMNI12_104 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.2 Flash. Would you like me to kick off this 1 video generation, costing 12 credits?';
+    const PROP_OMNI11_104 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.1 Flash. Would you like me to kick off this 1 video generation, costing 7 credits?';
+    const TILE_FP104 = 'a red ball rolling on green grass on a sunny day';
+    const NAMED104 = 'A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)';
+    const SURVEY104 = ['<button text="Always" @900,200 120x32>', '<button text="Omni 1.1 Flash expand_more" @900,420 200x40>'];
+    const makeAgentEngine104 = (o) => {
+      const opts = o || {};
+      const logs = [];
+      const clicks = [];
+      const settingsClicks = [];
+      const typed = [];
+      const state = {
+        panelText: opts.panelText || '',
+        groupText: opts.groupText || '',
+        permEnabled: !!opts.permEnabled,
+        permPresent: opts.permPresent !== undefined ? opts.permPresent : !!opts.permEnabled,
+        settingsState: opts.settingsState || { present: true, confirm: 'Always', model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1' },
+        gridFps: (opts.gridFps || []).slice(),
+        savedClicks: 0,
+        sends: 0,
+        anchorCalls: 0,
+        surfaceOpen: false,
+        openCalls: []
+      };
+      const engine = {
+        isStopping: false,
+        capturedVideoUrls: [],
+        claimedTileFingerprints: new Set(),
+        currentAccount: { name: 'Mock Account' },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        insertNativeText: async (t) => { typed.push(String(t)); },
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        page: {
+          keyboard: { press: async () => {}, type: async (t) => { typed.push(String(t)); } },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) typed.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => {
+            const name = fn && fn.name ? fn.name : '';
+            switch (name) {
+              case 'pageFindAgentToggle': return { found: true, on: true };
+              case 'pageClickAgentToggle': return true;
+              case 'pageReadAgentPanelText': return state.panelText;
+              case 'pageAnchorAgentPanel':
+                state.anchorCalls++;
+                return { found: true, depth: 2, textLength: String(state.panelText || '').length, containsComposer: true, text: state.panelText };
+              case 'pageSurveyAgentDom': return [];
+              case 'pagePermissionState':
+                return state.permEnabled
+                  ? { present: true, enabled: true, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: true, groupText: state.groupText }
+                  : { present: state.permPresent, enabled: false, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: false, groupText: state.groupText };
+              case 'pageClickPermissionOption':
+                clicks.push(rest[1]);
+                state.permEnabled = false;
+                if (opts.onPermissionClick) opts.onPermissionClick(rest[1], state);
+                return rest[1];
+              case 'pageFocusAgentInput': return true;
+              case 'pageClickAgentSend':
+                state.sends++;
+                if (opts.onSend) opts.onSend(state);
+                return true;
+              case 'pageGridFingerprints': return state.gridFps.slice();
+              case 'pageGalleryLabels': return [];
+              case 'pageOpenAgentSettings':
+                state.openCalls.push('a');
+                if (opts.aOpens) { state.surfaceOpen = true; return true; }
+                return false;
+              case 'pageClickComposerTuneIcon':
+                state.openCalls.push('a2');
+                if (opts.tuneOpens) { state.surfaceOpen = true; return true; }
+                return false;
+              case 'pageClickComposerSettingsIcon':
+                state.openCalls.push('b');
+                if (opts.bOpens) { state.surfaceOpen = true; return true; }
+                return false;
+              case 'pageClickComposerToolbarLastIcon':
+                state.openCalls.push('c');
+                if (opts.cOpens) { state.surfaceOpen = true; return true; }
+                return false;
+              case 'pageAgentSettingsSurface':
+                return state.surfaceOpen
+                  ? { present: true, via: 'text', confirm: true, videoDefault: true }
+                  : { present: false, via: null, confirm: false, videoDefault: false };
+              case 'pageAgentSettingsPresent': return state.surfaceOpen;
+              case 'pageSurveySettingsRegion': return (opts.surveyEntries || []).slice();
+              case 'pageSurveySettingsSurface': return (opts.surfaceSurveyEntries || []).slice();
+              case 'pageScrollAgentSettingsToVideo': return { found: true, scrolled: true };
+              case 'pageScrollAgentSettingsToSection': return { found: true, scrolled: true };
+              case 'pageReadAgentSettings': return { ...state.settingsState, present: state.surfaceOpen || state.settingsState.present };
+              case 'pageClickSettingsText':
+                settingsClicks.push(rest[1]);
+                if (opts.onSettingsClick) opts.onSettingsClick(rest[1], state);
+                return true;
+              case 'pageSaveAgentSettings':
+                state.savedClicks++;
+                return true;
+              default: return { count: 0, labels: [] };
+            }
+          }
+        }
+      };
+      engine.getRequiredCredits = () => (opts.runExpected !== undefined ? opts.runExpected : 7);
+      return { engine, logs, clicks, settingsClicks, typed, state };
+    };
+    const runArgs104 = (over) => ({
+      promptText: 'A red ball rolling on green grass, sunny day',
+      settings: { model: 'Omni Flash', aspectRatio: '9:16', duration: '10s', quality: '360p' },
+      promptIndex: 0,
+      totalPrompts: 1,
+      chatPollMs: 5,
+      mediaPollMs: 5,
+      settlePollMs: 5,
+      settleTimeoutMs: 5000,
+      mediaTimeoutMs: 2000,
+      heartbeatMs: 40,
+      anchorRetryMs: 300,
+      settingsOpenWaitMs: 5,
+      settingsSurfaceWaitMs: 30,
+      ...(over || {})
+    });
+
+    { // (A) AGENTTEST9 replayed: the surface IS found and
+      // operated, but every verify read is 'unreadable' -> the
+      // named-model fallback fires -> the fresh 7-credit
+      // proposal is Approved (Fix A) and the run completes.
+      // The unreadable verify also captures the settings-
+      // surface survey into the log + the Doctor detail.
+      doctor104.resetLastAgentRun();
+      const fx = makeAgentEngine104({
+        panelText: PROP_OMNI12_30_104,
+        permEnabled: true,
+        settingsState: { present: true, confirm: null, model: null, aspect: null, outputs: null },
+        aOpens: true,
+        surfaceSurveyEntries: SURVEY104,
+        onSend: (state) => {
+          if (state.sends === 2) {
+            state.panelText = PROP_OMNI11_104;
+            state.permEnabled = true;
+          }
+        },
+        onPermissionClick: (label, state) => {
+          if (label === 'Approve') state.gridFps = [TILE_FP104];
+        }
+      });
+      const res = await driver104.submitViaAgent(fx.engine, runArgs104({}));
+      eq('X104 fixture unreadable: the run completes through the named fallback', res.status, 'SUBMITTED');
+      eq('X104 fixture unreadable: exactly two sends (original + named fallback)', fx.state.sends, 2);
+      eq('X104 fixture unreadable: both sends are the pinned instruction naming the run model', JSON.stringify(fx.typed), JSON.stringify([NAMED104, NAMED104]));
+      eq('X104 fixture unreadable: Reject then Approve', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Approve']));
+      ok('X104 fixture unreadable: the verify named the confirm MISMATCH as unreadable', fx.logs.some(l => l.includes("settings value confirm: wanted 'Always' but reads 'unreadable' — MISMATCH")));
+      ok('X104 fixture unreadable: the retry-named line names the mismatch outcome', fx.logs.some(l => l.includes('retry-named-model') && l.includes('settings outcome: mismatch')));
+      ok('X104 fixture unreadable: the settings-surface survey was logged', fx.logs.some(l => l.includes('settings survey:') && l.includes('Omni 1.1 Flash expand_more')));
+      const slotA = doctor104.getLastAgentRun();
+      ok('X104 fixture unreadable: the Doctor detail carries the surface survey', !!slotA && typeof slotA.detail === 'string' && slotA.detail.includes('settings surface survey:') && slotA.detail.includes("'confirm'"));
+    }
+    { // (B) the surface is found, a value reads back WRONG
+      // (mismatch, not unreadable) -> the fallback still fires
+      // -> its fresh proposal is STILL over cost -> the run
+      // parks behind the named-retry reason, with NO second
+      // fallback (exactly two sends, two Rejects)
+      doctor104.resetLastAgentRun();
+      const fx = makeAgentEngine104({
+        panelText: PROP_OMNI12_104,
+        permEnabled: true,
+        settingsState: { present: true, confirm: 'Always', model: 'Omni 1.2 Flash', aspect: '9:16', outputs: 'x1' },
+        aOpens: true,
+        onSettingsClick: () => {}, // clicks land, the value never changes
+        onSend: (state) => {
+          if (state.sends === 2) {
+            state.panelText = PROP_OMNI12_104;
+            state.permEnabled = true;
+          }
+        }
+      });
+      const res = await driver104.submitViaAgent(fx.engine, runArgs104({}));
+      eq('X104 fixture mismatch-park: the run parks after the fallback', res.status, 'AGENT_PARKED');
+      ok('X104 fixture mismatch-park: the reason is the named-retry park reason', String(res.reason || '').startsWith('agent-over-cost-named-retry'));
+      ok('X104 fixture mismatch-park: the reason says the settings could not be aligned', String(res.reason || '').includes('the Agent settings could not be aligned to the run\'s model'));
+      eq('X104 fixture mismatch-park: exactly two sends (no second fallback)', fx.state.sends, 2);
+      eq('X104 fixture mismatch-park: both proposals were settled with Reject', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Reject']));
+      ok('X104 fixture mismatch-park: the fallback fired after the mismatch', fx.logs.some(l => l.includes('retry-named-model') && l.includes('settings outcome: mismatch')));
+    }
+
+    // --- reader fixtures: the REAL pageReadAgentSettings
+    // against a FLOW-MAP-shaped surface (Step 3): option text
+    // on label spans BESIDE the radio controls, a description
+    // line per Confirm row, decoy image defaults (aspect 16:9,
+    // count x2) above the video defaults, the model dropdown
+    // text polluted with the icon ligature, and the three
+    // state hooks split across fields (aria-checked /
+    // aria-pressed / host .selected) ---
+    const makeEl104 = (tag, o) => {
+      const opts = o || {};
+      const el = {
+        tagName: String(tag || 'div').toUpperCase(),
+        children: [],
+        parentElement: null,
+        className: opts.className || '',
+        _text: opts.text || '',
+        _attrs: {},
+        shadowRoot: null,
+        getAttribute(n) { return Object.prototype.hasOwnProperty.call(this._attrs, n) ? this._attrs[n] : null; },
+        setAttribute(n, v) { this._attrs[n] = String(v); },
+        hasAttribute(n) { return Object.prototype.hasOwnProperty.call(this._attrs, n); },
+        appendChild(c) { c.parentElement = this; this.children.push(c); return c; },
+        querySelectorAll(sel2) {
+          const tags = String(sel2 || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean);
+          const out = [];
+          const walk = (n) => { for (const c of n.children) { if (tags.includes(String(c.tagName || '').toLowerCase())) out.push(c); walk(c); } };
+          walk(this);
+          return out;
+        },
+        getBoundingClientRect() { return { width: 120, height: 32, top: 100, left: 900, right: 1020, bottom: 132 }; }
+      };
+      if (opts.attrs) for (const k of Object.keys(opts.attrs)) el.setAttribute(k, opts.attrs[k]);
+      if (opts.checked !== undefined) el.checked = opts.checked;
+      if (opts.selected !== undefined) el.selected = opts.selected;
+      if (opts.onScrollIntoView) el.scrollIntoView = function () { this._scrolledIntoView = true; };
+      if (opts.scrollHeight !== undefined) { el.scrollHeight = opts.scrollHeight; el.clientHeight = opts.clientHeight || 0; el.scrollTop = 0; }
+      Object.defineProperty(el, 'innerText', { get() { const parts = []; if (this._text) parts.push(this._text); for (const c of this.children) { const t = c.innerText; if (t) parts.push(t); } return parts.join(' '); } });
+      return el;
+    };
+    const withDoc104 = (doc, fn, ...args) => {
+      const prev = global.document;
+      global.document = doc;
+      try { return fn(...args); } finally {
+        if (prev === undefined) delete global.document; else global.document = prev;
+      }
+    };
+    const makeDoc104 = (surface) => ({
+      __fsAgentSettings: surface,
+      body: null,
+      contains: () => true,
+      querySelector: () => null,
+      querySelectorAll: () => []
+    });
+    const MODEL_LABELS104 = Object.keys(rules104.AGENT_MODEL_QUOTES);
+    const buildSettingsDom104 = () => {
+      const surface = makeEl104('div', { className: 'fs-pop' });
+      surface.appendChild(makeEl104('div', { text: 'Agent settings' }));
+      const confirmSec = makeEl104('div');
+      confirmSec.appendChild(makeEl104('div', { text: 'Confirm before generating' }));
+      const rowAlways = makeEl104('div');
+      rowAlways.appendChild(makeEl104('span', { attrs: { role: 'radio', 'aria-checked': 'true' } }));
+      rowAlways.appendChild(makeEl104('span', { text: 'Always' }));
+      rowAlways.appendChild(makeEl104('span', { text: 'Agent will ask for confirmation before generating media.' }));
+      const rowNever = makeEl104('div');
+      rowNever.appendChild(makeEl104('span', { attrs: { role: 'radio', 'aria-checked': 'false' } }));
+      rowNever.appendChild(makeEl104('span', { text: 'Never' }));
+      rowNever.appendChild(makeEl104('span', { text: 'Agent will generate media and spend credits automatically.' }));
+      confirmSec.appendChild(rowAlways);
+      confirmSec.appendChild(rowNever);
+      surface.appendChild(confirmSec);
+      const imgSec = makeEl104('div');
+      imgSec.appendChild(makeEl104('div', { text: 'Image generation default' }));
+      imgSec.appendChild(makeEl104('button', { text: '16:9', attrs: { 'aria-pressed': 'true' } }));
+      imgSec.appendChild(makeEl104('button', { text: '9:16', attrs: { 'aria-pressed': 'false' } }));
+      const imgX1 = makeEl104('button', { text: 'x1', selected: false });
+      const imgX2 = makeEl104('button', { text: 'x2', selected: true });
+      imgSec.appendChild(imgX1);
+      imgSec.appendChild(imgX2);
+      imgSec.appendChild(makeEl104('button', { text: 'Nano Banana Pro', attrs: { 'aria-haspopup': 'listbox' } }));
+      surface.appendChild(imgSec);
+      const vidSec = makeEl104('div');
+      vidSec.appendChild(makeEl104('div', { text: 'Video generation default' }));
+      const modelBtn = makeEl104('button', { text: 'Omni 1.1 Flash', attrs: { 'aria-haspopup': 'listbox' } });
+      modelBtn.appendChild(makeEl104('span', { text: 'expand_more' }));
+      vidSec.appendChild(modelBtn);
+      vidSec.appendChild(makeEl104('button', { text: '16:9', attrs: { 'aria-pressed': 'false' } }));
+      vidSec.appendChild(makeEl104('button', { text: '9:16', attrs: { 'aria-pressed': 'true' } }));
+      const vidX1 = makeEl104('button', { text: 'x1', selected: true });
+      const vidX2 = makeEl104('button', { text: 'x2', selected: false });
+      vidSec.appendChild(vidX1);
+      vidSec.appendChild(vidX2);
+      surface.appendChild(vidSec);
+      return surface;
+    };
+    { // (C) the FLOW-MAP-shaped read: all four values land,
+      // the video section's values win over the image decoys
+      const surface = buildSettingsDom104();
+      const read = withDoc104(makeDoc104(surface), driver104.pageReadAgentSettings, driver104.AGENT_SELECTORS, MODEL_LABELS104);
+      eq('X104 reader FLOW-MAP: the surface reads present', read.present, true);
+      eq('X104 reader FLOW-MAP: confirm resolves from the sibling radio state', read.confirm, 'Always');
+      eq('X104 reader FLOW-MAP: the model reads through the icon-ligature suffix', read.model, 'Omni 1.1 Flash');
+      eq('X104 reader FLOW-MAP: the VIDEO aspect wins over the image decoy', read.aspect, '9:16');
+      eq('X104 reader FLOW-MAP: the VIDEO outputs win over the image decoy', read.outputs, 'x1');
+      const survey = withDoc104(makeDoc104(surface), driver104.pageSurveySettingsSurface, driver104.AGENT_SELECTORS);
+      ok('X104 reader FLOW-MAP: the surface survey lists the interactive controls', Array.isArray(survey) && survey.some(e => e.includes('Omni 1.1 Flash')));
+      ok('X104 reader FLOW-MAP: the survey stays within its ~500-char cap', Array.isArray(survey) && survey.join(' | ').length <= 510);
+    }
+    { // (D) shadow-root controls: the Confirm rows live inside
+      // a host's shadow root — the flat query the old reader
+      // used can never see them; the deep read still resolves
+      const surface = makeEl104('div', { className: 'fs-pop' });
+      surface.appendChild(makeEl104('div', { text: 'Agent settings' }));
+      surface.appendChild(makeEl104('div', { text: 'Confirm before generating' }));
+      const host = makeEl104('div', { className: 'confirm-host' });
+      const rowAlways = makeEl104('div');
+      rowAlways.appendChild(makeEl104('span', { attrs: { role: 'radio', 'aria-checked': 'true' } }));
+      rowAlways.appendChild(makeEl104('span', { text: 'Always' }));
+      const rowNever = makeEl104('div');
+      rowNever.appendChild(makeEl104('span', { attrs: { role: 'radio', 'aria-checked': 'false' } }));
+      rowNever.appendChild(makeEl104('span', { text: 'Never' }));
+      host.shadowRoot = { children: [rowAlways, rowNever] };
+      surface.appendChild(host);
+      const read = withDoc104(makeDoc104(surface), driver104.pageReadAgentSettings, driver104.AGENT_SELECTORS, MODEL_LABELS104);
+      eq('X104 reader shadow: confirm resolves through the shadow root', read.confirm, 'Always');
+    }
+    { // (E) the section scroll: 'Confirm before generating' is
+      // scrolled into view and the scrollable ancestor wound
+      const surface = makeEl104('div', { className: 'fs-pop' });
+      const scroller = makeEl104('div', { className: 'scroll-area', scrollHeight: 900, clientHeight: 300 });
+      const sec = makeEl104('div');
+      const head = makeEl104('div', { text: 'Confirm before generating', onScrollIntoView: true });
+      sec.appendChild(head);
+      scroller.appendChild(sec);
+      surface.appendChild(scroller);
+      const r = withDoc104(makeDoc104(surface), driver104.pageScrollAgentSettingsToSection, driver104.AGENT_SELECTORS, 'Confirm before generating');
+      eq('X104 scroll-section: the section is found', r.found, true);
+      eq('X104 scroll-section: the heading was scrolled into view', head._scrolledIntoView, true);
+      eq('X104 scroll-section: the scrollable ancestor was wound', scroller.scrollTop, 900);
+    }
+    doctor104.resetLastAgentRun();
+  }
+
+  // =====================================================================
+  // X105 (v2.48.102, local package) — PIN ALL RUN PARAMETERS IN
+  // THE AGENT INSTRUCTION (Fix E) + SETTINGS SURVEY TIMING
+  // (Fix F), from the AGENTTEST10 live run (.101, 2026-11-13):
+  // Fix C worked — alignment failed ('confirm' unreadable),
+  // the named fallback fired, the fresh proposal named the
+  // RIGHT model (Omni 1.1 Flash) — but quoted 15 vs the run's
+  // expected 7 and parked (correctly; one fallback only). 15 =
+  // Omni 1.1 at 360p for 15 SECONDS (1 credit/sec): the Agent
+  // picks duration (and resolution) itself, and its quotes
+  // across the live tests varied 12 / 30 / 15 purely from
+  // those unpinned choices. Fix E: EVERY send (the initial
+  // instruction, the settings-aligned re-send, the named
+  // fallback) carries the pinned-parameter sentence derived
+  // from the run's ACTUAL settings — " (Use Omni 1.1 Flash,
+  // 360p resolution, 10 seconds, vertical 9:16, exactly 1
+  // video.)" — the owner's recording proves chat-pinned
+  // parameters are obeyed. The expected-cost guard is
+  // unchanged. Fix F: TEST10's Doctor-detail survey
+  // photographed the PANEL, not the settings surface (Save had
+  // already closed it) — the survey is now captured at the
+  // FIRST unreadable read, while the surface is open, and the
+  // mismatch detail prefers that capture.
+  // =====================================================================
+  {
+    const fs105 = require('fs');
+    const path105 = require('path');
+    const doctor105 = require('../engine/agentDoctor');
+    const driver105 = require('../engine/agentDriver');
+    const read105 = (rel) => fs105.readFileSync(path105.join(__dirname, '..', rel), 'utf8');
+    const driverSrc105 = read105('engine/agentDriver.js');
+
+    // --- source pins ---
+    ok('X105 Fix E: the pinned instruction is composed once from the run settings', driverSrc105.includes('const instructionText = pinnedAgentInstruction(promptText, settings, agentClips) || promptText')); // v2.48.103: the composition now carries the task's agentClips (Bulk Mode, X106); at clips 1 the composed text is byte-identical
+    ok('X105 Fix E: the initial send and the aligned re-send both send the pinned instruction', driverSrc105.includes('const sentFirst = await sendChat(instructionText)') && driverSrc105.includes('const resent = await sendChat(instructionText)'));
+    ok('X105 Fix E: the pin helpers are exported for fixtures', typeof driver105.pinnedAgentInstruction === 'function' && typeof driver105.pinnedParamsSuffix === 'function' && typeof driver105.agentParamPins === 'function');
+    ok('X105 Fix F: the survey is captured at the first unreadable read, while the surface is open', driverSrc105.includes('openSurveyText = await captureSurfaceSurvey()'));
+    ok('X105 Fix F: the mismatch detail prefers the while-open capture', driverSrc105.includes('let surveyText = openSurveyText;'));
+
+    // --- composition fixtures ---
+    eq('X105 pins: the standard test run (Omni 1.1 / 360p / 10s / 9:16)', driver105.pinnedAgentInstruction('A red ball rolling', { model: 'Omni Flash', quality: '360p', duration: '10s', aspectRatio: '9:16' }), 'A red ball rolling (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)');
+    eq('X105 pins: a 720p / 16:9 variant reads horizontal at 720p', driver105.pinnedAgentInstruction('A red ball rolling', { model: 'Omni 1.2 Flash', quality: '720p', duration: '8s', aspectRatio: '16:9' }), 'A red ball rolling (Use Omni 1.2 Flash, 720p resolution, 8 seconds, horizontal 16:9, exactly 1 video.)');
+    eq('X105 pins: 1080p quality pins the 720p GENERATION resolution (1080p is an enhanced download)', driver105.pinnedAgentInstruction('A red ball rolling', { model: 'Omni Flash', quality: '1080p', duration: '10s', aspectRatio: '9:16' }), 'A red ball rolling (Use Omni 1.1 Flash, 720p resolution, 10 seconds, vertical 9:16, exactly 1 video.)');
+    eq('X105 pins: a Veo run pins the Veo label', driver105.pinnedAgentInstruction('A red ball rolling', { model: 'Veo 3.1 Lite', quality: '720p', duration: '8s', aspectRatio: '16:9' }), 'A red ball rolling (Use Veo 3.1 - Lite, 720p resolution, 8 seconds, horizontal 16:9, exactly 1 video.)');
+    eq('X105 pins: an unmapped model still pins resolution + duration + aspect', driver105.pinnedAgentInstruction('A red ball rolling', { model: 'Bogus Model', quality: '360p', duration: '10s', aspectRatio: '9:16' }), 'A red ball rolling (Use 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)');
+    eq('X105 pins: unset quality/duration fall back to the rate helper defaults (360p / 6s)', driver105.pinnedAgentInstruction('A red ball rolling', { model: 'Omni Flash', aspectRatio: '9:16' }), 'A red ball rolling (Use Omni 1.1 Flash, 360p resolution, 6 seconds, vertical 9:16, exactly 1 video.)');
+    eq('X105 pins: a numeric duration pins whole seconds', driver105.pinnedAgentInstruction('A red ball rolling', { model: 'Omni Flash', quality: '360p', duration: 10, aspectRatio: '9:16' }), 'A red ball rolling (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)');
+    eq('X105 pins: an empty prompt yields null', driver105.pinnedAgentInstruction('   ', { model: 'Omni Flash', quality: '360p', duration: '10s', aspectRatio: '9:16' }), null);
+    eq('X105 pins: agentParamPins derives the four pins', JSON.stringify(driver105.agentParamPins({ model: 'Omni Flash', quality: '360p', duration: '10s', aspectRatio: '9:16' })), JSON.stringify({ modelLabel: 'Omni 1.1 Flash', resolution: '360p', seconds: 10, aspectPhrase: 'vertical 9:16' }));
+    eq('X105 pins: the named fallback text IS the pinned instruction for a mapped model', driver105.namedRetryInstruction('A red ball rolling', { model: 'Omni Flash', quality: '360p', duration: '10s', aspectRatio: '9:16' }), driver105.pinnedAgentInstruction('A red ball rolling', { model: 'Omni Flash', quality: '360p', duration: '10s', aspectRatio: '9:16' }));
+
+    // --- mocked-loop fixtures (the X104 harness shape, plus an
+    // event log so the survey's TIMING is assertable) ---
+    const PROP_OMNI12_30_105 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.2 Flash. Would you like me to kick off this 1 video generation, costing 30 credits?';
+    const PROP_OMNI11_105 = 'I\'m going to generate a video of a red ball rolling on green grass on a sunny day using your default model Omni 1.1 Flash. Would you like me to kick off this 1 video generation, costing 7 credits?';
+    const TILE_FP105 = 'a red ball rolling on green grass on a sunny day';
+    const PINNED105 = 'A red ball rolling on green grass, sunny day (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)';
+    const SURVEY_SETTINGS_105 = ['<button text="Always" @900,200 120x32>', '<button text="Omni 1.1 Flash expand_more" @900,420 200x40>'];
+    const SURVEY_PANEL_105 = ['<div text="Make a short video of a red ball rolling" @904,124 344x461>', '<button aria="Good response" text="thumb_up" @920,526 32x32>'];
+    const makeAgentEngine105 = (o) => {
+      const opts = o || {};
+      const logs = [];
+      const clicks = [];
+      const settingsClicks = [];
+      const typed = [];
+      const state = {
+        panelText: opts.panelText || '',
+        groupText: opts.groupText || '',
+        permEnabled: !!opts.permEnabled,
+        permPresent: opts.permPresent !== undefined ? opts.permPresent : !!opts.permEnabled,
+        settingsState: opts.settingsState || { present: true, confirm: 'Always', model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1' },
+        gridFps: (opts.gridFps || []).slice(),
+        savedClicks: 0,
+        sends: 0,
+        anchorCalls: 0,
+        surfaceOpen: false,
+        openCalls: [],
+        events: []
+      };
+      const engine = {
+        isStopping: false,
+        capturedVideoUrls: [],
+        claimedTileFingerprints: new Set(),
+        currentAccount: { name: 'Mock Account' },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        insertNativeText: async (t) => { typed.push(String(t)); },
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        page: {
+          keyboard: { press: async () => {}, type: async (t) => { typed.push(String(t)); } },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) typed.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => {
+            const name = fn && fn.name ? fn.name : '';
+            switch (name) {
+              case 'pageFindAgentToggle': return { found: true, on: true };
+              case 'pageClickAgentToggle': return true;
+              case 'pageReadAgentPanelText': return state.panelText;
+              case 'pageAnchorAgentPanel':
+                state.anchorCalls++;
+                return { found: true, depth: 2, textLength: String(state.panelText || '').length, containsComposer: true, text: state.panelText };
+              case 'pageSurveyAgentDom': return [];
+              case 'pagePermissionState':
+                return state.permEnabled
+                  ? { present: true, enabled: true, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: true, groupText: state.groupText }
+                  : { present: state.permPresent, enabled: false, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: false, groupText: state.groupText };
+              case 'pageClickPermissionOption':
+                clicks.push(rest[1]);
+                state.permEnabled = false;
+                if (opts.onPermissionClick) opts.onPermissionClick(rest[1], state);
+                return rest[1];
+              case 'pageFocusAgentInput': return true;
+              case 'pageClickAgentSend':
+                state.sends++;
+                if (opts.onSend) opts.onSend(state);
+                return true;
+              case 'pageGridFingerprints': return state.gridFps.slice();
+              case 'pageGalleryLabels': return [];
+              case 'pageOpenAgentSettings':
+                state.openCalls.push('a');
+                if (opts.aOpens) { state.surfaceOpen = true; return true; }
+                return false;
+              case 'pageClickComposerTuneIcon':
+                state.openCalls.push('a2');
+                if (opts.tuneOpens) { state.surfaceOpen = true; return true; }
+                return false;
+              case 'pageClickComposerSettingsIcon':
+                state.openCalls.push('b');
+                if (opts.bOpens) { state.surfaceOpen = true; return true; }
+                return false;
+              case 'pageClickComposerToolbarLastIcon':
+                state.openCalls.push('c');
+                if (opts.cOpens) { state.surfaceOpen = true; return true; }
+                return false;
+              case 'pageAgentSettingsSurface':
+                return state.surfaceOpen
+                  ? { present: true, via: 'text', confirm: true, videoDefault: true }
+                  : { present: false, via: null, confirm: false, videoDefault: false };
+              case 'pageAgentSettingsPresent': return state.surfaceOpen;
+              case 'pageSurveySettingsRegion': return (opts.surveyEntries || []).slice();
+              case 'pageSurveySettingsSurface':
+                state.events.push('survey');
+                // Fix F's whole point: WHAT the survey sees
+                // depends on WHEN it runs — the settings DOM
+                // while the surface is open (before Save),
+                // the panel after Save closed it.
+                return (state.savedClicks === 0 ? (opts.surfaceSurveyEntries || []) : (opts.lateSurveyEntries || [])).slice();
+              case 'pageScrollAgentSettingsToVideo': return { found: true, scrolled: true };
+              case 'pageScrollAgentSettingsToSection': return { found: true, scrolled: true };
+              case 'pageReadAgentSettings': return { ...state.settingsState, present: state.surfaceOpen || state.settingsState.present };
+              case 'pageClickSettingsText':
+                settingsClicks.push(rest[1]);
+                if (opts.onSettingsClick) opts.onSettingsClick(rest[1], state);
+                return true;
+              case 'pageSaveAgentSettings':
+                state.events.push('save');
+                state.savedClicks++;
+                return true;
+              default: return { count: 0, labels: [] };
+            }
+          }
+        }
+      };
+      engine.getRequiredCredits = () => (opts.runExpected !== undefined ? opts.runExpected : 7);
+      return { engine, logs, clicks, settingsClicks, typed, state };
+    };
+    const runArgs105 = (over) => ({
+      promptText: 'A red ball rolling on green grass, sunny day',
+      settings: { model: 'Omni Flash', aspectRatio: '9:16', duration: '10s', quality: '360p' },
+      promptIndex: 0,
+      totalPrompts: 1,
+      chatPollMs: 5,
+      mediaPollMs: 5,
+      settlePollMs: 5,
+      settleTimeoutMs: 5000,
+      mediaTimeoutMs: 2000,
+      heartbeatMs: 40,
+      anchorRetryMs: 300,
+      settingsOpenWaitMs: 5,
+      settingsSurfaceWaitMs: 30,
+      ...(over || {})
+    });
+
+    { // (A) Fix E's happy path: the FIRST proposal already
+      // quotes exactly the run's expected cost (the pinned
+      // duration/resolution leave the Agent nothing to drift)
+      // -> immediate Approve: no Reject, no settings attempt,
+      // exactly one send — the pinned instruction.
+      doctor105.resetLastAgentRun();
+      const fx = makeAgentEngine105({
+        panelText: PROP_OMNI11_105,
+        permEnabled: true,
+        onPermissionClick: (label, state) => {
+          if (label === 'Approve') state.gridFps = [TILE_FP105];
+        }
+      });
+      const res = await driver105.submitViaAgent(fx.engine, runArgs105({}));
+      eq('X105 fixture at-cost: the run completes', res.status, 'SUBMITTED');
+      eq('X105 fixture at-cost: the only click is Approve (no Reject)', JSON.stringify(fx.clicks), JSON.stringify(['Approve']));
+      eq('X105 fixture at-cost: exactly one send', fx.state.sends, 1);
+      eq('X105 fixture at-cost: the one send is the pinned instruction', JSON.stringify(fx.typed), JSON.stringify([PINNED105]));
+      // v2.48.104 SUPERSEDES the .103 pins "the settings surface was
+      // never opened" / "no retry line was logged": SETTINGS FIRST
+      // means EVERY run now aligns the project settings (with one
+      // retry) BEFORE sending, at-cost proposal or not. The new pins:
+      // the openers were tried, starting with the panel control, and
+      // the settings-first summary line was logged; what must still
+      // NEVER happen on an at-cost first proposal is a REJECT or a
+      // named-model retry.
+      ok('X105 fixture at-cost: settings-first TRIED to open the surface before the send [v2.48.104 supersedes the never-opened pin]', fx.state.openCalls.length > 0 && fx.state.openCalls[0] === 'a');
+      ok('X105 fixture at-cost: the settings-first line was logged and no RETRY fired [v2.48.104]', fx.logs.some(l => l.includes('[AGENT] settings-first:')) && !fx.logs.some(l => l.includes('retry-named-model')) && !fx.logs.some(l => l.includes('proposal rejected')));
+    }
+    { // (B) Fix F: the first settings read is all-'unreadable'
+      // while the surface is open -> the survey is captured
+      // THEN (before Save) — the Doctor detail carries the
+      // SETTINGS entries, not the panel entries a post-Save
+      // capture would see — and the run still completes via
+      // the named fallback (Fix C) on the pinned re-send.
+      doctor105.resetLastAgentRun();
+      const fx = makeAgentEngine105({
+        panelText: PROP_OMNI12_30_105,
+        permEnabled: true,
+        settingsState: { present: true, confirm: null, model: null, aspect: null, outputs: null },
+        aOpens: true,
+        surfaceSurveyEntries: SURVEY_SETTINGS_105,
+        lateSurveyEntries: SURVEY_PANEL_105,
+        onSend: (state) => {
+          if (state.sends === 2) {
+            state.panelText = PROP_OMNI11_105;
+            state.permEnabled = true;
+          }
+        },
+        onPermissionClick: (label, state) => {
+          if (label === 'Approve') state.gridFps = [TILE_FP105];
+        }
+      });
+      const res = await driver105.submitViaAgent(fx.engine, runArgs105({}));
+      eq('X105 fixture survey-timing: the run completes through the named fallback', res.status, 'SUBMITTED');
+      eq('X105 fixture survey-timing: Reject then Approve', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Approve']));
+      eq('X105 fixture survey-timing: both sends are the pinned instruction', JSON.stringify(fx.typed), JSON.stringify([PINNED105, PINNED105]));
+      const surveyAt = fx.state.events.indexOf('survey');
+      const saveAt = fx.state.events.indexOf('save');
+      ok('X105 fixture survey-timing: the survey was captured while the surface was open (before Save)', surveyAt !== -1 && saveAt !== -1 && surveyAt < saveAt);
+      eq('X105 fixture survey-timing: the survey ran exactly once (the while-open capture is preferred)', fx.state.events.filter(e => e === 'survey').length, 1);
+      ok('X105 fixture survey-timing: the logged survey shows the settings DOM', fx.logs.some(l => l.includes('settings survey:') && l.includes('Omni 1.1 Flash expand_more')));
+      const slotB = doctor105.getLastAgentRun();
+      ok('X105 fixture survey-timing: the Doctor detail carries the SETTINGS survey', !!slotB && typeof slotB.detail === 'string' && slotB.detail.includes('settings surface survey:') && slotB.detail.includes('Omni 1.1 Flash expand_more'));
+      ok('X105 fixture survey-timing: the Doctor detail does NOT carry the post-Save panel capture', !!slotB && typeof slotB.detail === 'string' && !slotB.detail.includes('thumb_up'));
+    }
+    doctor105.resetLastAgentRun();
+  }
+
+  // =====================================================================
+  // X106 (v2.48.103, local package) — BULK MODE for the Agent
+  // driver + THE AGENT-BATCH FIX, from the owner's firsthand
+  // study of Flow's Agent (2026-11-13) and the same day's bug:
+  // PART 1 — an MCP flowstudio_generate_in_app call with SIX
+  // prompts and agentMode ON ran only ONE mashed prompt
+  // (Activity: "Generation started: 1 prompt(s)", credit plan
+  // "1 video(s) × 7"). Root cause, found in the DART intake:
+  // lib/main.dart joined the prompts into the Prompts box text
+  // and GeneratorProvider._reparseItems, in Agent mode
+  // (!_isBulkMode), parses the WHOLE text as ONE ParsedPrompt —
+  // by design for a pasted chat message, wrong for an MCP list.
+  // One item -> one engine task; the driver's pin said
+  // "exactly 1 video", so the Agent made one video and the run
+  // ended. (The engine side was exonerated: the bridge stash,
+  // the pool queue and createBatchTasks all carry N items —
+  // the collapse happened before the engine ever saw the run.)
+  // Fix: the MCP intake is now a DISCRETE prompt list
+  // (setMcpPrompts) — one item per prompt in Bulk AND Agent
+  // mode; manual edits clear it, a mode switch does not.
+  // PART 2 — agentClips: one conversation makes N clips. The
+  // instruction pins "exactly N videos"; proposals are guarded
+  // at the expected TOTAL (N × per-clip) AND the run's model
+  // must match; reject paths (pricier-model settings retry,
+  // named fallback) restate the same count. PART 3 — the
+  // driver waits for N NEW grid tiles (pageGridTilesDetailed:
+  // fingerprint + grid title + failed flag, first-seen order),
+  // hands EVERY tile to the download pipeline as sibling tasks
+  // (the pool names the saves <TAG>-S1..SN via the tag), and a
+  // shortfall hands off what exists with an explicit
+  // agent-clips-shortfall reason — never a hang, never a
+  // wholesale re-send. PART 4 — a FAILED tile earns ONE repair
+  // message in the SAME conversation (per failed scene, one
+  // round), guarded at the PER-CLIP cost; the remake fills the
+  // failed scene's slot. agentClips absent/1 keeps every
+  // pre-.103 fixture's behaviour (X97–X105 above, unchanged).
+  // =====================================================================
+  {
+    const fs106 = require('fs');
+    const path106 = require('path');
+    const doctor106 = require('../engine/agentDoctor');
+    const driver106 = require('../engine/agentDriver');
+    const rules106 = require('../engine/agentRules');
+    const read106 = (rel) => fs106.readFileSync(path106.join(__dirname, '..', rel), 'utf8');
+    const driverSrc106 = read106('engine/agentDriver.js');
+    const rulesSrc106 = read106('engine/agentRules.js');
+    const poolSrc106 = read106('engine/workerPool.js');
+    const bridgeSrc106 = read106('engine_bridge.js');
+    const mcpSrc106 = read106('mcp_server.js');
+    const providerSrc106 = read106('lib/providers/generator_provider.dart');
+    const mainSrc106 = read106('lib/main.dart');
+    const promptItemSrc106 = read106('lib/models/prompt_item.dart');
+
+    // --- source pins: Part 2 carriage (bridge -> pool -> driver) ---
+    ok('X106 carriage: the bridge keeps a per-run agentClips map for the pool', bridgeSrc106.includes('const runAgentClips = {};') && bridgeSrc106.includes('agentClipsByIndex: runAgentClips'));
+    ok('X106 carriage: formatted items record counts above 1 by index', bridgeSrc106.includes('runAgentClips[itemIndex] = itemClips'));
+    ok('X106 carriage: buildPool forwards the map', bridgeSrc106.includes('agentClipsByIndex: (agentClipsByIndex'));
+    ok('X106 carriage: start-ui filters agentClips WITH the prompts and rides the SSE payload', bridgeSrc106.includes('agentClipsList') && bridgeSrc106.includes('agentClips: agentClipsList'));
+    ok('X106 carriage: the pool stores the map and reads it by prompt_index at submit', poolSrc106.includes('this.agentClipsByIndex') && poolSrc106.includes('agentClipsByIndex[nextTask.prompt_index]'));
+    ok('X106 carriage: the pool hands clips to the driver on a settings CLONE', poolSrc106.includes('? { ...settings, agentClips: taskAgentClips }'));
+    ok('X106 carriage: the pool expands sibling scene tasks into the download window', poolSrc106.includes('submitRes.agentExtraTasks') && poolSrc106.includes('activeWorkerTasks.push(extra)'));
+    ok('X106 carriage: the pool surfaces a driver shortfall (log + Activity)', poolSrc106.includes('submitRes.agentShortfall'));
+    ok('X106 carriage: bulk siblings are exempt from the pipeline completed-row shortcut', poolSrc106.includes('!(engineTask.agentSceneCount > 1)'));
+    ok('X106 carriage: MCP generate converts prompts to {text, agentClips} objects only when asked', mcpSrc106.includes('{ text: p, agentClips: clipsFor(i) }'));
+    ok('X106 carriage: MCP generate_in_app passes agentClips through to start-ui', mcpSrc106.includes('body.agentClips = args.agentClips'));
+    ok('X106 driver: the conversation guard prices the expected TOTAL', driverSrc106.includes('agentRules.expectedTotalCost(runExpected, agentClips)'));
+    ok('X106 driver: siblings ride the primary result + the shortfall is named on it', driverSrc106.includes('primaryTask.agentExtraTasks = sceneTasks.slice(1)') && driverSrc106.includes('agent-clips-shortfall: only'));
+
+    // --- source pins: Part 1, the Dart intake fix ---
+    ok('X106 batch-fix: the provider keeps a DISCRETE MCP prompt list', providerSrc106.includes('List<String>? _mcpDiscretePrompts;') && providerSrc106.includes('void setMcpPrompts(List<String> prompts, List<int> clips)'));
+    ok('X106 batch-fix: the discrete list wins over the Agent whole-text rule in _reparseItems', providerSrc106.includes('_mcpDiscretePrompts!.map((t)'));
+    ok('X106 batch-fix: manual edits clear the discrete intake', providerSrc106.includes('_mcpDiscretePrompts = null;'));
+    ok('X106 batch-fix: items carry agentClips to the engine start body', providerSrc106.includes("'agentClips': i.agentClips,"));
+    ok('X106 batch-fix: main.dart uses the discrete intake (the setRawText join collapse is gone)', mainSrc106.includes('generator.setMcpPrompts(') && !mainSrc106.includes("generator.setRawText(prompts.join("));
+    ok('X106 batch-fix: PromptItem carries agentClips (default 1)', promptItemSrc106.includes('final int agentClips;') && promptItemSrc106.includes('this.agentClips = 1,'));
+
+    // --- rules units ---
+    eq('X106 rules: normalizeAgentClips(3)', rules106.normalizeAgentClips(3), 3);
+    eq('X106 rules: normalizeAgentClips("3")', rules106.normalizeAgentClips('3'), 3);
+    eq('X106 rules: normalizeAgentClips(0) falls to 1', rules106.normalizeAgentClips(0), 1);
+    eq('X106 rules: normalizeAgentClips(undefined) falls to 1', rules106.normalizeAgentClips(undefined), 1);
+    eq('X106 rules: normalizeAgentClips(2.9) floors', rules106.normalizeAgentClips(2.9), 2);
+    eq('X106 rules: expectedTotalCost(7, 3)', rules106.expectedTotalCost(7, 3), 21);
+    eq('X106 rules: expectedTotalCost with an unknown per-clip cost is null', rules106.expectedTotalCost(null, 3), null);
+    ok('X106 rules: both helpers are exported from agentRules', rulesSrc106.includes('function normalizeAgentClips') && rulesSrc106.includes('function expectedTotalCost'));
+
+    // --- composition fixtures ---
+    const SET106 = { model: 'Omni Flash', quality: '360p', duration: '10s', aspectRatio: '9:16' };
+    eq('X106 pins: a bulk instruction asks for exactly N videos', driver106.pinnedAgentInstruction('A three-scene story', SET106, 3), 'A three-scene story (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 3 videos.)');
+    eq('X106 pins: clips=1 is the v2.48.102 sentence byte-for-byte', driver106.pinnedAgentInstruction('A red ball rolling', SET106, 1), 'A red ball rolling (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)');
+    eq('X106 pins: clips can ride the settings object too', driver106.pinnedAgentInstruction('A three-scene story', { ...SET106, agentClips: 3 }), 'A three-scene story (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 3 videos.)');
+    eq('X106 pins: the named fallback restates the same clip count', driver106.namedRetryInstruction('A three-scene story', SET106, 3), driver106.pinnedAgentInstruction('A three-scene story', SET106, 3));
+    eq('X106 pins: the repair message names the failed scene + per-clip pins', driver106.repairMessageFor('Cat chasing a butterfly', SET106), 'Please remake just the failed video "Cat chasing a butterfly" — it failed to generate. (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)');
+    eq('X106 pins: the repair message without a title stays generic', driver106.repairMessageFor('', SET106), 'Please remake just the one video that failed to generate. (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 1 video.)');
+    eq('X106 task: buildAgentTask defaults the scene fields to single-clip', JSON.stringify([driver106.buildAgentTask({ videoId: 'v', promptText: 'p', promptIndex: 0 }).agentSceneIndex, driver106.buildAgentTask({ videoId: 'v', promptText: 'p', promptIndex: 0 }).agentSceneCount]), JSON.stringify([1, 1]));
+
+    // --- pool construction (the holder defaults) ---
+    const { WorkerPool: WorkerPool106 } = require('../engine/workerPool');
+    eq('X106 pool: the agentClips map is stored when given', new WorkerPool106({ agentClipsByIndex: { 0: 3 } }).agentClipsByIndex[0], 3);
+    eq('X106 pool: no map (older callers) reads as null = all single-clip', new WorkerPool106({}).agentClipsByIndex, null);
+
+    // --- mocked-loop fixtures (the X105 harness + grid tiles) ---
+    const PROP21_106 = 'Here is my plan for the three scenes. I will generate them using your default model Omni 1.1 Flash. Would you like me to kick off these 3 video generations, costing 21 credits?';
+    const PROP22_106 = 'Here is my plan for the three scenes. I will generate them using your default model Omni 1.1 Flash. Would you like me to kick off these 3 video generations, costing 22 credits?';
+    const PROP30_106 = 'Here is my plan for the three scenes. I will generate them using your default model Omni 1.1 Flash. Would you like me to kick off these 3 video generations, costing 30 credits?';
+    const PROP21_12_106 = 'Here is my plan for the three scenes. I will generate them using your default model Omni 1.2 Flash. Would you like me to kick off these 3 video generations, costing 21 credits?';
+    const PROP22_12_106 = 'Here is my plan for the three scenes. I will generate them using your default model Omni 1.2 Flash. Would you like me to kick off these 3 video generations, costing 22 credits?';
+    const REPAIR7_106 = 'Understood — I will remake that one video using Omni 1.1 Flash. Shall I kick off this 1 video generation, costing 7 credits?';
+    const REPAIR8_106 = 'Understood — I will remake that one video using Omni 1.1 Flash. Shall I kick off this 1 video generation, costing 8 credits?';
+    const T1_106 = { fp: 'cat waking up in sunlight', title: 'Cat waking up in sunlight', failed: false };
+    const T2F_106 = { fp: 'cat chasing a butterfly generation failed', title: 'Cat chasing a butterfly — generation failed', failed: true };
+    const T2_106 = { fp: 'cat chasing a butterfly', title: 'Cat chasing a butterfly', failed: false };
+    const T3_106 = { fp: 'cat sleeping at dusk', title: 'Cat sleeping at dusk', failed: false };
+    const T4_106 = { fp: 'cat chasing a butterfly at noon', title: 'Cat chasing a butterfly at noon', failed: false };
+    const PINNED3_106 = 'A three-scene story of a cat: waking, chasing, sleeping (Use Omni 1.1 Flash, 360p resolution, 10 seconds, vertical 9:16, exactly 3 videos.)';
+    const makeAgentEngine106 = (o) => {
+      const opts = o || {};
+      const logs = [];
+      const clicks = [];
+      const typed = [];
+      const registered = [];
+      const polled = [];
+      const state = {
+        panelText: opts.panelText || '',
+        groupText: opts.groupText !== undefined ? opts.groupText : (opts.panelText || ''),
+        permEnabled: !!opts.permEnabled,
+        permPresent: opts.permPresent !== undefined ? opts.permPresent : !!opts.permEnabled,
+        settingsState: opts.settingsState || { present: true, confirm: 'Always', model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1' },
+        gridTiles: [],
+        gridPolls: 0,
+        sends: 0,
+        surfaceOpen: false,
+        savedClicks: 0,
+        events: []
+      };
+      const engine = {
+        isStopping: false,
+        capturedVideoUrls: [],
+        claimedTileFingerprints: new Set(),
+        currentAccount: { name: 'Mock Account' },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        insertNativeText: async (t) => { typed.push(String(t)); },
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: (task) => { registered.push(task.videoId); },
+        _startApiPoll: (task) => { polled.push(task.videoId); },
+        netCapture: { beginSubmission: () => {} },
+        page: {
+          keyboard: { press: async () => {}, type: async (t) => { typed.push(String(t)); } },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) typed.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => {
+            const name = fn && fn.name ? fn.name : '';
+            switch (name) {
+              case 'pageFindAgentToggle': return { found: true, on: true };
+              case 'pageClickAgentToggle': return true;
+              case 'pageReadAgentPanelText': return state.panelText;
+              case 'pageAnchorAgentPanel': return { found: true, depth: 2, textLength: String(state.panelText || '').length, containsComposer: true, text: state.panelText };
+              case 'pageSurveyAgentDom': return [];
+              case 'pagePermissionState':
+                return state.permEnabled
+                  ? { present: true, enabled: true, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: true, groupText: state.groupText }
+                  : { present: state.permPresent, enabled: false, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: false, groupText: state.groupText };
+              case 'pageClickPermissionOption':
+                clicks.push(rest[1]);
+                state.permEnabled = false;
+                if (opts.onPermissionClick) opts.onPermissionClick(rest[1], state);
+                return rest[1];
+              case 'pageFocusAgentInput': return true;
+              case 'pageClickAgentSend':
+                state.sends++;
+                if (opts.onSend) opts.onSend(state);
+                return true;
+              case 'pageGridFingerprints': return state.gridTiles.filter(t => !t.failed).map(t => t.fp);
+              case 'pageGridTilesDetailed':
+                state.gridPolls++;
+                if (opts.onGridPoll) opts.onGridPoll(state);
+                return state.gridTiles.map(t => ({ ...t }));
+              case 'pageGalleryLabels': return [];
+              case 'pageOpenAgentSettings': if (opts.aOpens) { state.surfaceOpen = true; return true; } return false;
+              case 'pageClickComposerTuneIcon': if (opts.tuneOpens) { state.surfaceOpen = true; return true; } return false;
+              case 'pageClickComposerSettingsIcon': if (opts.bOpens) { state.surfaceOpen = true; return true; } return false;
+              case 'pageClickComposerToolbarLastIcon': if (opts.cOpens) { state.surfaceOpen = true; return true; } return false;
+              case 'pageAgentSettingsSurface': return state.surfaceOpen ? { present: true, via: 'text', confirm: true, videoDefault: true } : { present: false, via: null, confirm: false, videoDefault: false };
+              case 'pageAgentSettingsPresent': return state.surfaceOpen;
+              case 'pageSurveySettingsRegion': return [];
+              case 'pageSurveySettingsSurface': state.events.push('survey'); return [];
+              case 'pageScrollAgentSettingsToVideo': return { found: true, scrolled: true };
+              case 'pageScrollAgentSettingsToSection': return { found: true, scrolled: true };
+              case 'pageReadAgentSettings': return { ...state.settingsState, present: state.surfaceOpen || state.settingsState.present };
+              case 'pageClickSettingsText': if (opts.onSettingsClick) opts.onSettingsClick(rest[1], state); return true;
+              case 'pageSaveAgentSettings': state.events.push('save'); state.savedClicks++; return true;
+              default: return { count: 0, labels: [] };
+            }
+          }
+        }
+      };
+      engine.getRequiredCredits = () => 7;
+      return { engine, logs, clicks, typed, registered, polled, state };
+    };
+    const runArgs106 = (over) => ({
+      promptText: 'A three-scene story of a cat: waking, chasing, sleeping',
+      settings: { model: 'Omni Flash', aspectRatio: '9:16', duration: '10s', quality: '360p' },
+      promptIndex: 0,
+      totalPrompts: 1,
+      agentClips: 3,
+      chatPollMs: 5,
+      mediaPollMs: 5,
+      settlePollMs: 5,
+      settleTimeoutMs: 5000,
+      mediaTimeoutMs: 2500,
+      heartbeatMs: 40,
+      anchorRetryMs: 300,
+      settingsOpenWaitMs: 5,
+      settingsSurfaceWaitMs: 30,
+      ...(over || {})
+    });
+
+    { // (1) combined quote == N x rate (21) -> Approve; three
+      // tiles arriving staggered -> three sibling handoffs in
+      // grid order, each registered + api-polled, none twice
+      doctor106.resetLastAgentRun();
+      const fx = makeAgentEngine106({
+        panelText: PROP21_106, permEnabled: true,
+        onGridPoll: (state) => {
+          if (state.gridPolls === 2) state.gridTiles = [T1_106];
+          else if (state.gridPolls === 4) state.gridTiles = [T1_106, T2_106];
+          else if (state.gridPolls >= 6) state.gridTiles = [T1_106, T2_106, T3_106];
+        }
+      });
+      const res = await driver106.submitViaAgent(fx.engine, runArgs106({}));
+      eq('X106 fixture combined: the run completes', res.status, 'SUBMITTED');
+      eq('X106 fixture combined: the only click is Approve', JSON.stringify(fx.clicks), JSON.stringify(['Approve']));
+      eq('X106 fixture combined: the one send is the bulk pinned instruction', JSON.stringify(fx.typed), JSON.stringify([PINNED3_106]));
+      eq('X106 fixture combined: two sibling tasks ride the primary', (res.agentExtraTasks || []).length, 2);
+      eq('X106 fixture combined: scene indexes are 1,2,3 in grid order', JSON.stringify([res.agentSceneIndex, ...(res.agentExtraTasks || []).map(t => t.agentSceneIndex)]), JSON.stringify([1, 2, 3]));
+      eq('X106 fixture combined: tile titles ride the handoff in order', JSON.stringify((res.agentTiles || []).map(t => t.title)), JSON.stringify(['Cat waking up in sunlight', 'Cat chasing a butterfly', 'Cat sleeping at dusk']));
+      eq('X106 fixture combined: all three tiles registered for download', fx.registered.length, 3);
+      eq('X106 fixture combined: all three tiles api-polled', fx.polled.length, 3);
+      eq('X106 fixture combined: no tile handed off twice', new Set(fx.registered).size, 3);
+      ok('X106 fixture combined: no shortfall on a full delivery', !res.agentShortfall);
+      ok('X106 fixture combined: the bulk plan line names the expected total', fx.logs.some(l => l.includes('bulk task') && l.includes('21 credits')));
+    }
+    { // (2a) combined quote 22 with the SAME model -> Reject +
+      // park at once: the pre-bulk over-cost discipline (the
+      // settings retry exists only for pricier/unnamed models)
+      doctor106.resetLastAgentRun();
+      const fx = makeAgentEngine106({ panelText: PROP22_106, permEnabled: true, aOpens: true });
+      const res = await driver106.submitViaAgent(fx.engine, runArgs106({}));
+      eq('X106 fixture over-cost: the run parks', res.status, 'AGENT_PARKED');
+      eq('X106 fixture over-cost: one Reject, nothing approved', JSON.stringify(fx.clicks), JSON.stringify(['Reject']));
+      eq('X106 fixture over-cost: no re-send for a same-model over-cost', fx.typed.length, 1);
+      ok('X106 fixture over-cost: the park reason prices the TOTAL (21), not the per-clip cost', String(res.reason || '').includes('expected cost of 21'), );
+    }
+    { // (2b) combined quote 22 with a PRICIER model -> Reject,
+      // settings align, re-send RESTATING the clip count, the
+      // fresh 30 still over the total -> Reject + park
+      doctor106.resetLastAgentRun();
+      const fx = makeAgentEngine106({
+        panelText: PROP22_12_106, permEnabled: true, aOpens: true,
+        onSend: (state) => {
+          if (state.sends === 2) { state.panelText = PROP30_106; state.groupText = PROP30_106; state.permEnabled = true; }
+        }
+      });
+      const res = await driver106.submitViaAgent(fx.engine, runArgs106({}));
+      eq('X106 fixture over-cost-retry: the run parks after the retry', res.status, 'AGENT_PARKED');
+      eq('X106 fixture over-cost-retry: Reject, Reject', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Reject']));
+      eq('X106 fixture over-cost-retry: the re-send is the bulk pinned instruction again', JSON.stringify(fx.typed), JSON.stringify([PINNED3_106, PINNED3_106]));
+      ok('X106 fixture over-cost-retry: the park reason prices the TOTAL (21)', String(res.reason || '').includes('expected cost of 21'));
+    }
+    { // (2c) wrong model AT the total, settings surface never
+      // found -> the NAMED fallback re-send restates the count;
+      // the fresh proposal is the wrong model again -> the
+      // bulk model gate parks it (a bulk approval needs the
+      // total AND the model)
+      doctor106.resetLastAgentRun();
+      const fx = makeAgentEngine106({
+        panelText: PROP21_12_106, permEnabled: true,
+        onSend: (state) => {
+          if (state.sends === 2) { state.panelText = PROP21_12_106; state.groupText = PROP21_12_106; state.permEnabled = true; }
+        }
+      });
+      const res = await driver106.submitViaAgent(fx.engine, runArgs106({}));
+      eq('X106 fixture model-gate: the run parks', res.status, 'AGENT_PARKED');
+      eq('X106 fixture model-gate: both sends are the bulk pinned instruction', JSON.stringify(fx.typed), JSON.stringify([PINNED3_106, PINNED3_106]));
+      ok('X106 fixture model-gate: the park reason is agent-model-mismatch', String(res.reason || '').includes('agent-model-mismatch'));
+    }
+    { // (2d) wrong model at the total -> align succeeds -> the
+      // fresh proposal is the run's model at the total ->
+      // Approve, all three tiles handed off
+      doctor106.resetLastAgentRun();
+      const fx = makeAgentEngine106({
+        panelText: PROP21_12_106, permEnabled: true, aOpens: true,
+        onSend: (state) => {
+          if (state.sends === 2) { state.panelText = PROP21_106; state.groupText = PROP21_106; state.permEnabled = true; }
+        },
+        onPermissionClick: (label, state) => { if (label === 'Approve') state.gridTiles = [T1_106, T2_106, T3_106]; }
+      });
+      const res = await driver106.submitViaAgent(fx.engine, runArgs106({}));
+      eq('X106 fixture model-retry: the run completes', res.status, 'SUBMITTED');
+      eq('X106 fixture model-retry: Reject then Approve', JSON.stringify(fx.clicks), JSON.stringify(['Reject', 'Approve']));
+      eq('X106 fixture model-retry: all three tiles handed off', (res.agentTiles || []).length, 3);
+    }
+    { // (4) shortfall: only 2 of 3 tiles by the media timeout
+      // -> 2 handed off + the shortfall reason; the instruction
+      // is NOT re-sent and no repair is attempted (nothing
+      // visibly failed)
+      doctor106.resetLastAgentRun();
+      const fx = makeAgentEngine106({
+        panelText: PROP21_106, permEnabled: true,
+        onPermissionClick: (label, state) => { if (label === 'Approve') state.gridTiles = [T1_106, T2_106]; }
+      });
+      const res = await driver106.submitViaAgent(fx.engine, runArgs106({ mediaTimeoutMs: 900 }));
+      eq('X106 fixture shortfall: the run still completes with what exists', res.status, 'SUBMITTED');
+      eq('X106 fixture shortfall: two tiles handed off', 1 + (res.agentExtraTasks || []).length, 2);
+      ok('X106 fixture shortfall: the reason names 2 of 3', String(res.agentShortfall || '').includes('only 2 of 3'));
+      eq('X106 fixture shortfall: the instruction was sent exactly once', fx.typed.length, 1);
+      ok('X106 fixture shortfall: the shortfall is in the run log', fx.logs.some(l => l.includes('clips shortfall')));
+      ok('X106 fixture shortfall: no failed tile -> the repair round reports nothing to do', fx.logs.some(l => l.includes('repair round found nothing')));
+      const slotS = doctor106.getLastAgentRun();
+      ok('X106 fixture shortfall: the Doctor detail carries the shortfall', !!slotS && typeof slotS.detail === 'string' && slotS.detail.includes('agent-clips-shortfall'));
+    }
+    { // (5a) repair: tile 2 of 3 FAILED -> exactly one repair
+      // message in the same conversation -> per-clip proposal
+      // 7 approved -> the remake fills scene slot 2 -> total 3
+      doctor106.resetLastAgentRun();
+      const fx = makeAgentEngine106({
+        panelText: PROP21_106, permEnabled: true,
+        onPermissionClick: (label, state) => {
+          if (label === 'Approve' && state.sends === 1) state.gridTiles = [T1_106, T2F_106, T3_106];
+          else if (label === 'Approve' && state.sends === 2) state.gridTiles = [T1_106, T2F_106, T3_106, T4_106];
+        },
+        onSend: (state) => {
+          if (state.sends === 2) { state.panelText = REPAIR7_106; state.groupText = REPAIR7_106; state.permEnabled = true; }
+        }
+      });
+      const res = await driver106.submitViaAgent(fx.engine, runArgs106({ mediaTimeoutMs: 900 }));
+      eq('X106 fixture repair: the run completes', res.status, 'SUBMITTED');
+      eq('X106 fixture repair: exactly two sends (instruction + ONE repair)', fx.typed.length, 2);
+      eq('X106 fixture repair: the repair message names the failed scene', fx.typed[1], driver106.repairMessageFor('Cat chasing a butterfly — generation failed', SET106));
+      eq('X106 fixture repair: Approve (combined) then Approve (repair)', JSON.stringify(fx.clicks), JSON.stringify(['Approve', 'Approve']));
+      eq('X106 fixture repair: three tiles handed off in the end', (res.agentTiles || []).length, 3);
+      eq('X106 fixture repair: the remake fills the failed scene slot (S2)', (res.agentTiles || [])[1] && res.agentTiles[1].fingerprint, T4_106.fp);
+      eq('X106 fixture repair: the remake keeps scene index 2', (res.agentTiles || [])[1] && res.agentTiles[1].sceneIndex, 2);
+      ok('X106 fixture repair: a repaired delivery has NO shortfall', !res.agentShortfall);
+      eq('X106 fixture repair: all three tiles registered', fx.registered.length, 3);
+    }
+    { // (5b) repair proposal at 8 (over the per-clip guard) ->
+      // NOT approved; partial handoff of the 2 good tiles with
+      // the shortfall reason; scene indexes keep the gap (1,3)
+      doctor106.resetLastAgentRun();
+      const fx = makeAgentEngine106({
+        panelText: PROP21_106, permEnabled: true,
+        onPermissionClick: (label, state) => { if (label === 'Approve') state.gridTiles = [T1_106, T2F_106, T3_106]; },
+        onSend: (state) => {
+          if (state.sends === 2) { state.panelText = REPAIR8_106; state.groupText = REPAIR8_106; state.permEnabled = true; }
+        }
+      });
+      const res = await driver106.submitViaAgent(fx.engine, runArgs106({ mediaTimeoutMs: 900 }));
+      eq('X106 fixture repair-over: the run completes with the good tiles', res.status, 'SUBMITTED');
+      eq('X106 fixture repair-over: Approve then Reject (the repair is refused)', JSON.stringify(fx.clicks), JSON.stringify(['Approve', 'Reject']));
+      eq('X106 fixture repair-over: still exactly one repair message', fx.typed.length, 2);
+      eq('X106 fixture repair-over: two tiles handed off', (res.agentTiles || []).length, 2);
+      eq('X106 fixture repair-over: scene indexes keep the failed gap', JSON.stringify((res.agentTiles || []).map(t => t.sceneIndex)), JSON.stringify([1, 3]));
+      ok('X106 fixture repair-over: the shortfall cites the per-clip guard', String(res.agentShortfall || '').includes('only 2 of 3') && String(res.agentShortfall || '').includes('per-clip expected 7'));
+    }
+    doctor106.resetLastAgentRun();
+  }
+  {
+    // (6) Part 1's queue half, against the REAL db in a child
+    // process (throwaway data dir): a 3-prompt batch queues
+    // THREE task rows — the count the collapsed intake never
+    // produced. (The collapse itself was in the Dart intake,
+    // pinned by the source fixtures in the X106 block above.)
+    const { execFileSync } = require('child_process');
+    const os106 = require('os');
+    const fs106b = require('fs');
+    const path106b = require('path');
+    const tmpDir106 = fs106b.mkdtempSync(path106b.join(os106.tmpdir(), 'fs-x106-db-'));
+    const dbPath106 = JSON.stringify(path106b.join(__dirname, '..', 'engine', 'db.js'));
+    const script106 = `(async () => {
+      const { dbService } = require(${dbPath106});
+      await dbService.ensureInit();
+      const rows = dbService.createBatchTasks('b-x106', [
+        { text: 'Scene one: a cat wakes', tag: 'STORYX', index: 0 },
+        { text: 'Scene two: a cat chases', tag: 'STORYX', index: 1 },
+        { text: 'Scene three: a cat sleeps', tag: 'STORYX', index: 2 }
+      ], {});
+      console.log(JSON.stringify({ count: rows.length, texts: rows.map(r => r.prompt_text), idx: rows.map(r => r.prompt_index) }));
+    })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+    let rt106 = null;
+    try {
+      const out = execFileSync(process.execPath, ['-e', script106], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir106 }, encoding: 'utf8' });
+      rt106 = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+    } catch (e) { rt106 = null; }
+    ok('X106 batch-DB: the round-trip child ran', !!rt106);
+    eq('X106 batch-DB: a 3-prompt batch queues 3 tasks', rt106 && rt106.count, 3);
+    eq('X106 batch-DB: every prompt text survives as its own row', JSON.stringify(rt106 && rt106.texts), JSON.stringify(['Scene one: a cat wakes', 'Scene two: a cat chases', 'Scene three: a cat sleeps']));
+    eq('X106 batch-DB: row indexes are 0,1,2', JSON.stringify(rt106 && rt106.idx), JSON.stringify([0, 1, 2]));
+    try { fs106b.rmSync(tmpDir106, { recursive: true, force: true }); } catch (e) {}
+  }
+
+  // =====================================================================
+  // X107 — v2.48.104 SETTINGS FIRST + INSTRUCTIONS + COOKIES-era
+  // closeout (the owner's FINAL-version order, 2026-11-14, from
+  // his four screenshots): before an Agent run sends ANYTHING it
+  // (1) aligns the project's Agent settings to the run — Confirm
+  // = Always, the run's VIDEO model + aspect, outputs x1, Image
+  // defaults untouched — with Save and a read-back verify (one
+  // retry; a mismatch is LOGGED and the run CONTINUES — the chat
+  // pin + quote guard remain the safety net, because the owner's
+  // own recording showed settings alone do not bind the Agent);
+  // (2) ensures the project carries the standing instruction
+  // "FlowStudio Run Rules" (added once per project, then left
+  // alone; failure never fatal); (3) answers a pre-proposal
+  // resolution/quality/model/aspect QUESTION once per run with
+  // the fixed settings-based answer — every other question keeps
+  // the standing never-improvise discipline. The Doctor records
+  // lastSettingsFirst for the chat-side check.
+  {
+    const fs107 = require('fs');
+    const path107 = require('path');
+    const rules107 = require('../engine/agentRules');
+    const driver107 = require('../engine/agentDriver');
+    const doctor107 = require('../engine/agentDoctor');
+    const driverSrc107 = fs107.readFileSync(path107.join(__dirname, '..', 'engine', 'agentDriver.js'), 'utf8');
+    const rulesSrc107 = fs107.readFileSync(path107.join(__dirname, '..', 'engine', 'agentRules.js'), 'utf8');
+    const doctorSrc107 = fs107.readFileSync(path107.join(__dirname, '..', 'engine', 'agentDoctor.js'), 'utf8');
+
+    // --- the pure rules: exact strings + the question shape ---
+    eq('X107 rules: the standing instruction title is exact', rules107.AGENT_INSTRUCTION_TITLE, 'FlowStudio Run Rules');
+    eq('X107 rules: the standing instruction guideline is byte-for-byte the brief text', rules107.AGENT_INSTRUCTION_BODY, "Always use the video model, aspect ratio and output count saved in this project's Agent settings. Never ask which resolution to use — follow the saved settings and the user's message. When the user asks for several scenes, give ONE combined proposal covering all of them.");
+    eq('X107 rules: the fixed settings answer names the run model + aspect', rules107.settingsAnswerText({ model: 'Omni Flash', aspectRatio: '9:16' }), 'Use the saved project settings: Omni 1.1 Flash, 9:16, x1 output, 360p.');
+    ok('X107 rules: a 720p question IS a settings question', rules107.looksLikeSettingsQuestion('Quick question: should I generate this in 720p, or use a different resolution?'));
+    ok('X107 rules: an aspect question IS a settings question', rules107.looksLikeSettingsQuestion('Do you want me to use a different aspect ratio?'));
+    ok('X107 rules: a content question is NOT a settings question', !rules107.looksLikeSettingsQuestion('Quick question: should the ball be red or blue?'));
+    ok('X107 rules: a proposal is NEVER a settings question', !rules107.looksLikeSettingsQuestion('I can generate that with Omni 1.1 Flash costing 7 credits. Which model should I use?'));
+    ok('X107 rules: a plan statement is NOT a settings question', !rules107.looksLikeSettingsQuestion('I will use the 720p setting from your project for this video.'));
+    ok('X107 source: the driver runs settings-first BEFORE the first send', driverSrc107.indexOf('const settingsFirstRes = await runSettingsFirst(engine, settings, log, a);') > -1 && driverSrc107.indexOf('const settingsFirstRes = await runSettingsFirst(engine, settings, log, a);') < driverSrc107.indexOf('const sentFirst = await sendChat(instructionText)'));
+    ok('X107 source: the instructions ensure also runs before the first send', driverSrc107.indexOf('const instructionsRes = await ensureAgentInstructions(engine, log, a);') > -1 && driverSrc107.indexOf('const instructionsRes = await ensureAgentInstructions(engine, log, a);') < driverSrc107.indexOf('const sentFirst = await sendChat(instructionText)'));
+    ok('X107 source: the conversation loop consults the settings-question rule', driverSrc107.includes('agentRules.looksLikeSettingsQuestion(text)') && driverSrc107.includes('agentRules.settingsAnswerText(settings)'));
+    ok('X107 source: the doctor records and exposes lastSettingsFirst', doctorSrc107.includes('recordSettingsFirst') && doctorSrc107.includes('lastSettingsFirst: getLastSettingsFirst()'));
+    ok('X107 source: the rules carry the standing instruction constants', rulesSrc107.includes("AGENT_INSTRUCTION_TITLE = 'FlowStudio Run Rules'"));
+
+    // --- the Doctor slot, functionally ---
+    doctor107.resetLastSettingsFirst();
+    eq('X107 doctor: lastSettingsFirst starts null', doctor107.doctorPayload('2.48.104').lastSettingsFirst, null);
+    doctor107.recordSettingsFirst({ model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1', confirm: 'Always', readBackOk: true, instruction: 'added' });
+    const sf107 = doctor107.doctorPayload('2.48.104').lastSettingsFirst;
+    ok('X107 doctor: the recorded entry round-trips through the payload', !!sf107 && sf107.model === 'Omni 1.1 Flash' && sf107.readBackOk === true && sf107.instruction === 'added' && typeof sf107.at === 'string');
+    ok('X107 doctor: the one-line rendering carries every field', doctor107.settingsFirstLine(sf107).includes('readBack=ok') && doctor107.settingsFirstLine(sf107).includes('instruction=added'));
+    doctor107.recordSettingsFirst({ instruction: 'bogus' });
+    eq('X107 doctor: an unknown instruction status normalises to failed', doctor107.getLastSettingsFirst().instruction, 'failed');
+
+    // --- the fake engine (X97/X106 shapes + the instructions surface) ---
+    const PROMPT107 = 'Make a short video of a red ball rolling on green grass, sunny day';
+    const PINNED107 = driver107.pinnedAgentInstruction(PROMPT107, { model: 'Omni Flash', quality: '360p', duration: '10', aspectRatio: '9:16' });
+    const PROP107 = 'Here is my plan: one 10-second clip of the red ball on the grass. I will generate 1 video with Omni 1.1 Flash costing 7 credits. Would you like me to kick off generation of the video?';
+    const TILE107 = { fp: 'fp-107-a', name: 'Red ball rolling on grass' };
+    function makeAgentEngine107(opts = {}) {
+      const state = {
+        settingsSurfaceOpen: false,
+        settingsState: { ...(opts.settingsState || { confirm: 'Always', model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1' }) },
+        settingsClicks: [],
+        savedClicks: 0,
+        openCalls: [],
+        clicks: [],
+        typed: [],
+        sends: 0,
+        panelText: opts.initialText || '',
+        permEnabled: !!opts.permEnabled,
+        permPresent: false,
+        groupText: '',
+        anchorCalls: 0,
+        instructionsSurfaceOpen: false,
+        instructionTitles: [...(opts.instructionTitles || [])],
+        filledInstruction: null,
+        formOpen: false,
+        events: []
+      };
+      const logs = [];
+      const engine = {
+        isStopping: false,
+        captureArmed: false,
+        currentAccount: { name: 'Account', credits: 1000 },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        logs,
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        getRequiredCredits: () => 7,
+        insertNativeText: async (t) => { state.typed.push(String(t)); },
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        page: {
+          keyboard: { press: async () => {}, type: async (t) => { state.typed.push(String(t)); } },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) state.typed.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => {
+            const name = fn && fn.name ? fn.name : '';
+            switch (name) {
+              case 'pageFindAgentToggle': return { found: true, on: true };
+              case 'pageClickAgentToggle': return true;
+              case 'pageReadAgentPanelText': return state.panelText;
+              case 'pageAgentPanelText': return state.panelText;
+              case 'pageAnchorAgentPanel': state.anchorCalls++; return { found: true, depth: 2, textLength: String(state.panelText || '').length, containsComposer: true, text: state.panelText };
+              case 'pageSurveyAgentDom': return [];
+              case 'pagePermissionState':
+                return state.permEnabled
+                  ? { present: true, enabled: true, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: true, groupText: state.groupText }
+                  : { present: state.permPresent, enabled: false, options: ['Approve', 'Always approve in project', 'Reject'], promptLocked: false, groupText: state.groupText };
+              case 'pageClickPermissionOption':
+                state.clicks.push(rest[1]);
+                state.permEnabled = false;
+                if (opts.onPermissionClick) opts.onPermissionClick(rest[1], state);
+                return rest[1];
+              case 'pageFocusAgentInput': return true;
+              case 'pageClickAgentSend':
+                state.sends++;
+                state.events.push('send');
+                if (opts.onSend) opts.onSend(state);
+                return true;
+              case 'pageGridTilesDetailed': return opts.tiles ? opts.tiles(state) : [];
+              case 'pageGridFingerprints': return (opts.tiles ? opts.tiles(state) : []).map(t => t.fp);
+              case 'pageGalleryLabels': return [];
+              case 'pageOpenAgentSettings': state.openCalls.push('a'); if (opts.aOpens) { state.settingsSurfaceOpen = true; return true; } return false;
+              case 'pageAgentSettingsPresent': return state.settingsSurfaceOpen;
+              case 'pageAgentSettingsSurface': return state.settingsSurfaceOpen ? { present: true, via: 'text' } : { present: false, via: null };
+              case 'pageReadAgentSettings': return state.settingsSurfaceOpen ? { present: true, ...state.settingsState } : { present: false, confirm: null, model: null, aspect: null, outputs: null };
+              case 'pageClickComposerTuneIcon': state.openCalls.push('a2'); if (opts.a2Opens) { state.settingsSurfaceOpen = true; return true; } return false;
+              case 'pageClickComposerSettingsIcon': state.openCalls.push('b'); if (opts.bOpens) { state.settingsSurfaceOpen = true; return true; } return false;
+              case 'pageClickComposerToolbarLastIcon': state.openCalls.push('c'); if (opts.cOpens) { state.settingsSurfaceOpen = true; return true; } return false;
+              case 'pageClickSettingsText': {
+                if (!state.settingsSurfaceOpen) return false;
+                const text = rest[1];
+                state.settingsClicks.push(text);
+                if (opts.applySettingsClicks) {
+                  if (text === 'Always' || text === 'Never') state.settingsState.confirm = text;
+                  else if (text === '9:16' || text === '16:9') state.settingsState.aspect = text;
+                  else if (text === 'x1' || text === '1') state.settingsState.outputs = 'x1';
+                  else if (/Omni|Veo/.test(text)) state.settingsState.model = text;
+                }
+                if (opts.onSettingsClick) opts.onSettingsClick(text, state);
+                return true;
+              }
+              case 'pageSaveAgentSettings': if (state.settingsSurfaceOpen) { state.savedClicks++; state.events.push('save'); if (!opts.keepSettingsOpen) state.settingsSurfaceOpen = false; return true; } return false;
+              case 'pageSurveySettingsSurface': return [];
+              case 'pageSurveySettingsRegion': return [];
+              case 'pageClickComposerInstructionsIcon': if (opts.instrOpens) { state.instructionsSurfaceOpen = true; return true; } return false;
+              case 'pageAgentInstructionsSurface': return state.instructionsSurfaceOpen ? { present: true, via: 'text' } : { present: false, via: null };
+              case 'pageReadAgentInstructions': return { present: state.instructionsSurfaceOpen, text: state.instructionsSurfaceOpen ? ('Agent instructions ' + state.instructionTitles.join(' · ') + ' + Add instruction Done') : '' };
+              case 'pageClickAddInstruction': if (state.instructionsSurfaceOpen) { state.formOpen = true; return true; } return false;
+              case 'pageFillAgentInstruction': if (state.formOpen) { state.filledInstruction = rest[1]; return { titleSet: true, bodySet: true, toggle: true }; } return { titleSet: false, bodySet: false, toggle: null };
+              case 'pageClickInstructionsDone': if (state.formOpen && state.filledInstruction) { state.instructionTitles.push(state.filledInstruction.title); state.formOpen = false; } state.instructionsSurfaceOpen = false; return true;
+              case 'pageSurveyInstructionsSurface': return [];
+              default: return { count: 0, labels: [] };
+            }
+          }
+        }
+      };
+      return { engine, state, logs };
+    }
+    const runArgs107 = (over = {}) => ({
+      promptText: PROMPT107, promptIndex: 0, totalPrompts: 1,
+      settings: { model: 'Omni Flash', quality: '360p', duration: '10', aspectRatio: '9:16' },
+      videoModelTier: 'omni-flash', useAgentMode: true,
+      settingsOpenWaitMs: 5, settingsSurfaceWaitMs: 30, settingsSurfacePollMs: 5,
+      chatPollMs: 5, panelGuardMs: 1, ...over
+    });
+    const tiles107 = (state) => state.clicks.includes('Approve') ? [TILE107] : [];
+
+    // (1) SETTINGS FIRST: wrong settings are aligned + SAVED before
+    // the first send; the standing instruction is added; the run
+    // completes; the Doctor holds the verified record.
+    {
+      doctor107.resetLastSettingsFirst();
+      const fx = makeAgentEngine107({
+        aOpens: true, applySettingsClicks: true, instrOpens: true,
+        settingsState: { confirm: 'Never', model: 'Omni 1.2 Flash', aspect: '16:9', outputs: 'x2' },
+        initialText: PROP107, permEnabled: true, tiles: tiles107
+      });
+      const res = await driver107.submitViaAgent(fx.engine, runArgs107());
+      eq('X107 settings-first: the run completes', res.status, 'SUBMITTED');
+      ok('X107 settings-first: settings were SAVED before the first send', fx.state.events.indexOf('save') > -1 && fx.state.events.indexOf('send') > fx.state.events.indexOf('save'));
+      eq('X107 settings-first: the project settings end aligned to the run', JSON.stringify(fx.state.settingsState), JSON.stringify({ confirm: 'Always', model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1' }));
+      ok('X107 settings-first: the summary line reports the read-back values', fx.logs.some(l => l.includes('[AGENT] settings-first: model=Omni 1.1 Flash, aspect=9:16, outputs=x1, confirm=Always')));
+      eq('X107 settings-first: the instruction was filled with the exact title', fx.state.filledInstruction && fx.state.filledInstruction.title, 'FlowStudio Run Rules');
+      eq('X107 settings-first: the instruction was filled with the exact guideline', fx.state.filledInstruction && fx.state.filledInstruction.body, rules107.AGENT_INSTRUCTION_BODY);
+      const rec = doctor107.getLastSettingsFirst();
+      ok('X107 settings-first: the Doctor recorded a verified read-back + added instruction', !!rec && rec.readBackOk === true && rec.instruction === 'added' && rec.model === 'Omni 1.1 Flash' && rec.aspect === '9:16' && rec.outputs === 'x1' && rec.confirm === 'Always');
+      eq('X107 settings-first: only the pinned instruction was sent', JSON.stringify(fx.state.typed), JSON.stringify([PINNED107]));
+    }
+
+    // (2) The instruction already present: left exactly as it is.
+    {
+      doctor107.resetLastSettingsFirst();
+      const fx = makeAgentEngine107({
+        aOpens: true, applySettingsClicks: true, instrOpens: true,
+        instructionTitles: ['FlowStudio Run Rules'],
+        initialText: PROP107, permEnabled: true, tiles: tiles107
+      });
+      const res = await driver107.submitViaAgent(fx.engine, runArgs107());
+      eq('X107 instructions-present: the run completes', res.status, 'SUBMITTED');
+      eq('X107 instructions-present: the form was never filled', fx.state.filledInstruction, null);
+      ok('X107 instructions-present: the present line was logged', fx.logs.some(l => l.includes('agent instructions:') && l.includes('already present')));
+      eq('X107 instructions-present: the Doctor records present', doctor107.getLastSettingsFirst() && doctor107.getLastSettingsFirst().instruction, 'present');
+    }
+
+    // (3) Read-back mismatch: one retry, logged NOT verified, and
+    // the run CONTINUES to a normal completion (never a park).
+    {
+      doctor107.resetLastSettingsFirst();
+      const fx = makeAgentEngine107({
+        aOpens: true, instrOpens: true,
+        settingsState: { confirm: 'Always', model: 'Omni 1.2 Flash', aspect: '9:16', outputs: 'x1' },
+        initialText: PROP107, permEnabled: true, tiles: tiles107
+      });
+      const res = await driver107.submitViaAgent(fx.engine, runArgs107());
+      eq('X107 settings-mismatch: the run still completes', res.status, 'SUBMITTED');
+      eq('X107 settings-mismatch: the alignment was attempted exactly twice (one retry)', fx.state.savedClicks, 2);
+      ok('X107 settings-mismatch: the summary line shows the REAL read-back, marked not verified', fx.logs.some(l => l.includes('[AGENT] settings-first: model=Omni 1.2 Flash') && l.includes('read-back NOT verified')));
+      const rec = doctor107.getLastSettingsFirst();
+      ok('X107 settings-mismatch: the Doctor record is honest (readBackOk false, real model)', !!rec && rec.readBackOk === false && rec.model === 'Omni 1.2 Flash');
+    }
+
+    // (4) The Agent asks 720p before proposing: ONE fixed
+    // settings-based answer, then the proposal proceeds.
+    {
+      const ANSWER107 = rules107.settingsAnswerText({ model: 'Omni Flash', aspectRatio: '9:16' });
+      const fx = makeAgentEngine107({
+        aOpens: true, applySettingsClicks: true, instrOpens: true,
+        instructionTitles: ['FlowStudio Run Rules'],
+        initialText: 'Quick question before I start: should I generate this in 720p, or use a different resolution?',
+        tiles: tiles107,
+        onSend: (state) => {
+          if (state.typed[state.typed.length - 1] === ANSWER107) { state.panelText = PROP107; state.permEnabled = true; }
+        }
+      });
+      const res = await driver107.submitViaAgent(fx.engine, runArgs107());
+      eq('X107 settings-answer: the run completes after the answer', res.status, 'SUBMITTED');
+      eq('X107 settings-answer: exactly the pinned instruction + the one fixed answer were sent', JSON.stringify(fx.state.typed), JSON.stringify([PINNED107, ANSWER107]));
+      ok('X107 settings-answer: the answer was logged as the one allowed reply', fx.logs.some(l => l.includes('answered ONCE from the saved project settings')));
+    }
+
+    // (5) A non-settings question: NO answer (the old discipline).
+    {
+      const fx = makeAgentEngine107({
+        aOpens: true, applySettingsClicks: true, instrOpens: true,
+        instructionTitles: ['FlowStudio Run Rules'],
+        initialText: 'Quick question: should the ball be red or blue?'
+      });
+      const res = await driver107.submitViaAgent(fx.engine, runArgs107({ proposalWaitMs: 400 }));
+      eq('X107 other-question: no proposal ever arrives -> the run fails as before', res.status, 'AGENT_FAILED');
+      eq('X107 other-question: nothing but the pinned instruction was sent', JSON.stringify(fx.state.typed), JSON.stringify([PINNED107]));
+      ok('X107 other-question: no settings answer was logged', !fx.logs.some(l => l.includes('answered ONCE')));
+    }
+
+    // (6) DOM fixtures: the REAL page functions against surfaces
+    // modelled on the owner's screenshots (image-53 list screen,
+    // image-54 instruction form).
+    {
+      const sel107 = driver107.AGENT_SELECTORS;
+      const makeEl107 = (tag, opts = {}) => {
+        const el = {
+          tagName: String(tag || 'div').toUpperCase(),
+          children: [], parentElement: null, style: {},
+          attrs: { ...(opts.attrs || {}) },
+          innerText: opts.text || '',
+          value: opts.value, checked: opts.checked, disabled: !!opts.disabled,
+          isContentEditable: !!opts.contentEditable, _clicked: 0,
+          getAttribute(k) { return k in el.attrs ? el.attrs[k] : null; },
+          setAttribute(k, v) { el.attrs[k] = String(v); },
+          appendChild(c) { c.parentElement = el; el.children.push(c); return c; },
+          click() { el._clicked++; if (opts.onClick) opts.onClick(el); },
+          focus() {},
+          dispatchEvent() { return true; },
+          getBoundingClientRect() { return { width: 100, height: 20, top: 0, left: 0, bottom: 20, right: 100 }; },
+          querySelectorAll(sel) {
+            const parts = String(sel).split(',').map(s => s.trim());
+            const match = (n) => parts.some(p => p === '*' || p.toLowerCase() === n.tagName.toLowerCase() || (p === '[role="button"]' && n.attrs.role === 'button') || (p === '[role="dialog"]' && n.attrs.role === 'dialog'));
+            const out = [];
+            const walk = (n) => { for (const c of n.children) { if (match(c)) out.push(c); walk(c); } };
+            walk(el);
+            return out;
+          },
+          querySelector(sel) { return el.querySelectorAll(sel)[0] || null; }
+        };
+        return el;
+      };
+      const makeDoc107 = (body) => ({
+        body, documentElement: body,
+        contains(el) { let n = el; while (n) { if (n === body) return true; n = n.parentElement; } return false; },
+        querySelectorAll(sel) { return body.querySelectorAll(sel); },
+        querySelector(sel) {
+          const all = body.querySelectorAll('*');
+          if (/aria-label="Send"/.test(sel)) return all.find(e => e.attrs['aria-label'] === 'Send') || null;
+          if (/data-testid="send-button"/.test(sel)) return all.find(e => e.attrs['data-testid'] === 'send-button') || null;
+          return null;
+        },
+        createTreeWalker() { return { nextNode: () => null }; }
+      });
+      const withDoc107 = (doc, fn) => {
+        const prev = global.document;
+        global.document = doc;
+        try { return fn(); } finally { global.document = prev; }
+      };
+      // (6a) list screen + form, with the screenshots' placeholders.
+      {
+        const body = makeEl107('body');
+        const composer = makeEl107('div', { text: 'add article_spark tune Send' });
+        const surface = makeEl107('div');
+        const titleInput = makeEl107('input', { attrs: { placeholder: 'Instruction title' } });
+        const guideline = makeEl107('textarea', { attrs: { placeholder: 'Create a guideline for your agent' } });
+        const toggle = makeEl107('div', { attrs: { role: 'switch', 'aria-checked': 'false' }, onClick: (el) => { el.attrs['aria-checked'] = el.attrs['aria-checked'] === 'true' ? 'false' : 'true'; } });
+        const showForm = () => {
+          surface.children = [];
+          surface.appendChild(toggle); surface.appendChild(titleInput); surface.appendChild(guideline);
+          const doneBtn = makeEl107('button', { text: 'Done', onClick: showList });
+          surface.appendChild(doneBtn);
+          surface.innerText = 'Instruction title Create a guideline for your agent Done';
+        };
+        const showList = () => {
+          surface.children = [];
+          const addBtn = makeEl107('button', { text: '+ Add instruction', onClick: showForm });
+          surface.appendChild(addBtn);
+          surface.appendChild(makeEl107('button', { text: 'Done' }));
+          const filled = titleInput.value ? ` ${titleInput.value}` : '';
+          surface.innerText = `Agent instructions My Custom Instruction${filled} + Add instruction Done`;
+        };
+        const instrBtn = makeEl107('button', { text: 'article_spark', onClick: () => { if (!body.children.includes(surface)) { showList(); body.appendChild(surface); } } });
+        composer.appendChild(makeEl107('button', { text: 'add' }));
+        composer.appendChild(instrBtn);
+        composer.appendChild(makeEl107('button', { text: 'tune' }));
+        body.appendChild(composer);
+        const doc = makeDoc107(body);
+        withDoc107(doc, () => {
+          eq('X107 DOM: the instructions surface starts closed', JSON.stringify(driver107.pageAgentInstructionsSurface(sel107)), JSON.stringify({ present: false, via: null }));
+          eq('X107 DOM: the composer instructions icon is found and clicked', driver107.pageClickComposerInstructionsIcon(sel107), true);
+          const surf = driver107.pageAgentInstructionsSurface(sel107);
+          ok('X107 DOM: the list surface is detected by its text anchors', surf.present === true);
+          const before = driver107.pageReadAgentInstructions(sel107);
+          ok('X107 DOM: the standing title is absent before adding', before.present === true && !before.text.includes('FlowStudio Run Rules'));
+          eq('X107 DOM: + Add instruction opens the form', driver107.pageClickAddInstruction(sel107), true);
+          const fill = driver107.pageFillAgentInstruction(sel107, { title: rules107.AGENT_INSTRUCTION_TITLE, body: rules107.AGENT_INSTRUCTION_BODY });
+          ok('X107 DOM: the form fill sets title + guideline (screenshot placeholders)', fill.titleSet === true && fill.bodySet === true);
+          eq('X107 DOM: the title field holds the exact title', titleInput.value, 'FlowStudio Run Rules');
+          eq('X107 DOM: the guideline field holds the exact guideline', guideline.value, rules107.AGENT_INSTRUCTION_BODY);
+          eq('X107 DOM: the enable toggle was switched ON by the fill', toggle.attrs['aria-checked'], 'true');
+          eq('X107 DOM: Done is clicked to save', driver107.pageClickInstructionsDone(sel107), true);
+          const after = driver107.pageReadAgentInstructions(sel107);
+          ok('X107 DOM: the saved instruction reads back in the list', after.text.includes('FlowStudio Run Rules'));
+        });
+      }
+      // (6b) a bare form (no placeholders): the fill fallbacks work.
+      {
+        const body = makeEl107('body');
+        const surface = makeEl107('div');
+        const input = makeEl107('input');
+        const area = makeEl107('textarea');
+        surface.appendChild(input); surface.appendChild(area);
+        surface.appendChild(makeEl107('button', { text: 'Done' }));
+        surface.innerText = 'Agent instructions Add instruction Done';
+        body.appendChild(surface);
+        const doc = makeDoc107(body);
+        withDoc107(doc, () => {
+          const fill = driver107.pageFillAgentInstruction(sel107, { title: 'T1', body: 'B1' });
+          ok('X107 DOM bare form: title + guideline still set via fallbacks', fill.titleSet === true && fill.bodySet === true && input.value === 'T1' && area.value === 'B1');
+          eq('X107 DOM bare form: no toggle is invented', fill.toggle, null);
+        });
+      }
+    }
+
+    // (7) The cookies-section restyle (Dart source pins): every
+    // cookies button is built from the Prompts-header chip
+    // system; no bespoke hover-button state classes remain for
+    // them; the header widgets themselves are untouched.
+    {
+      const sidebarSrc107 = fs107.readFileSync(path107.join(__dirname, '..', 'lib', 'widgets', 'sidebar_accounts.dart'), 'utf8');
+      const promptsSrc107 = fs107.readFileSync(path107.join(__dirname, '..', 'lib', 'widgets', 'prompts_editor.dart'), 'utf8');
+      ok('X107 dart: the add-cookies pill is the header gold chip (TactileType.gold, h26, r6, bevel 2.0)', sidebarSrc107.includes("class _HoverPillBtn extends StatelessWidget") && sidebarSrc107.includes('type: TactileType.gold'));
+      ok('X107 dart: the filter tabs are TactileChips', sidebarSrc107.includes('class _HoverFilterBtn extends StatelessWidget') && sidebarSrc107.includes('child: TactileChip('));
+      ok('X107 dart: the round add button is a circular chip-system button', sidebarSrc107.includes('class _HoverRoundAddBtn extends StatelessWidget') && sidebarSrc107.includes('shape: BoxShape.circle'));
+      ok('X107 dart: the action grid is chip-system (secondary) + Clear-style red TextButton', sidebarSrc107.includes('class _HoverActionGridBtn extends StatelessWidget') && sidebarSrc107.includes('type: TactileType.secondary') && sidebarSrc107.includes('color: isDim ? AppTheme.textFaint : AppTheme.red'));
+      ok('X107 dart: no bespoke hover state classes remain for the cookies buttons', !sidebarSrc107.includes('_HoverPillBtnState') && !sidebarSrc107.includes('_HoverFilterBtnState') && !sidebarSrc107.includes('_HoverActionGridBtnState') && !sidebarSrc107.includes('_HoverRoundAddBtnState'));
+      ok('X107 dart: the header chips the cookies buttons mirror are untouched', promptsSrc107.includes("'+ Add Tag'") && promptsSrc107.includes('TactileType.gold'));
+      ok('X107 dart: the account cards and the bottom NAV button keep their own widgets (not cookies controls)', sidebarSrc107.includes('class _HoverableAccountCard extends StatefulWidget') && sidebarSrc107.includes('class _HoverBottomSettingsBtn extends StatefulWidget'));
     }
   }
 

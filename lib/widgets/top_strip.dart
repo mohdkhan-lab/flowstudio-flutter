@@ -17,8 +17,9 @@ class TopStrip extends StatelessWidget {
     // the strip kept painting the OLD palette (AppTheme tokens
     // are read at build time) until an account or notification
     // event happened to rebuild it — the owner's "the theme does
-    // not change the whole interface". The value itself is unused.
-    context.watch<SettingsProvider>();
+    // not change the whole interface". (v2.48.104: the value is
+    // now also read — the zoom % label below.)
+    final settingsProv = context.watch<SettingsProvider>();
     final accounts = context.watch<AccountsProvider>();
     final notif = context.watch<NotificationsProvider>();
 
@@ -113,7 +114,7 @@ class TopStrip extends StatelessWidget {
                 // Version Pill — Tactile 3D
                 TactileChip(
                   color: AppTheme.accentText,
-                  label: 'v2.48.98',
+                  label: 'v2.48.104',
                   height: 22,
                   borderRadius: 11,
                   bevelDepth: 1.5,
@@ -203,6 +204,45 @@ class TopStrip extends StatelessWidget {
           // CREDITS is REMOVED — the top shows only the label and the
           // number. Syncing lives in the sidebar (Sync Selected /
           // Verify All), where it always also worked.
+          const SizedBox(width: 14),
+          // v2.48.104: UI ZOOM buttons (owner's order) — minus
+          // shrinks the whole interface, plus grows it; the %
+          // label between them resets to 100% when tapped. The
+          // scale is applied at the app root (main.dart) and
+          // persists in the engine settings ('ui_scale').
+          _buildCircleIcon(
+            icon: Icons.remove_rounded,
+            color: AppTheme.textDim,
+            tooltip: 'Zoom out — smaller UI',
+            onTap: () => context.read<SettingsProvider>().zoomOut(),
+          ),
+          const SizedBox(width: 5),
+          Tooltip(
+            message: 'Reset zoom to 100%',
+            child: GestureDetector(
+              onTap: () => context.read<SettingsProvider>().resetUiScale(),
+              child: Container(
+                constraints: const BoxConstraints(minWidth: 38),
+                alignment: Alignment.center,
+                padding: const EdgeInsets.symmetric(vertical: 4),
+                child: Text(
+                  '${(settingsProv.settings.uiScale * 100).round()}%',
+                  style: TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w800,
+                    color: AppTheme.textDim,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 5),
+          _buildCircleIcon(
+            icon: Icons.add_rounded,
+            color: AppTheme.textDim,
+            tooltip: 'Zoom in — bigger UI',
+            onTap: () => context.read<SettingsProvider>().zoomIn(),
+          ),
           const SizedBox(width: 14),
           // Notification Center: the bell — red badge with the
           // unread count; tapping toggles the panel overlay

@@ -23,7 +23,7 @@ const { usableCreditsTotal, storedCreditsTotal } = require('./engine/usableCredi
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.48.98';
+const SERVER_VERSION = '2.48.104';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -160,6 +160,31 @@ const TOOLS = [
     run: async () => bridgeCall('GET', '/api/status'),
   },
   {
+    name: 'flowstudio_agent_doctor',
+    description: 'Agent Doctor diagnostics: which replace-pack files this engine actually loaded (absolute path, byte size and md5 fingerprint of each — the agent driver and rules in engine/, the agent doctor itself, plus engine_bridge.js and mcp_server.js at the app root — compare against a replace-pack\'s notes to prove the replaced files are really live), plus the most recent Agent-mode run\'s recorded outcome (time, status, reason, last proposal, and a detail field carrying the settings DOM survey or the exact settings field that mismatched, when the run produced one) or null if no Agent run has happened since the app started. The payload also carries agentModeOverride: the current MCP Agent-mode override (true/false, or null when chat runs follow the app toggle — see flowstudio_set_agent_mode).',
+    inputSchema: { type: 'object', properties: {} },
+    run: async () => bridgeCall('GET', '/api/agent-doctor'),
+  },
+  {
+    // v2.48.99: the chat-side Agent-mode switch. The owner must
+    // never have to walk to the PC and flip the app's Agent Prompt
+    // toggle for a chat-driven run — this sets an engine-level
+    // override that MCP-originated runs (both generate tools)
+    // honour. In memory only: an app restart returns it to null.
+    name: 'flowstudio_set_agent_mode',
+    description: 'Set the Agent-mode override for chat-driven (MCP) generation runs, so the owner never has to touch the app\'s Agent Prompt toggle for a run started from chat. enabled=true: MCP runs go through Flow\'s own Agent (the rule-driven proposal/approve flow). enabled=false: MCP runs take the direct route. Omit enabled (or pass null) to clear the override — MCP runs then follow the app toggle (in-app route) / the direct route (engine route), as before. A per-call agentMode argument on a generate tool beats this override for that one run. Runs the owner starts by hand in the app are never affected. Returns the resulting agentModeOverride (true/false/null).',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        enabled: { type: ['boolean', 'null'], description: 'true = Agent route for MCP runs, false = direct route, null/omitted = clear the override' },
+      },
+    },
+    run: async (args) => {
+      const enabled = typeof (args && args.enabled) === 'boolean' ? args.enabled : null;
+      return bridgeCall('POST', '/api/mcp/agent-mode', { enabled });
+    },
+  },
+  {
     name: 'flowstudio_list_accounts',
     description: 'List Google Flow accounts with name, email, status (Live/Fail/Checking) and credits. Cookie values are never returned.',
     inputSchema: { type: 'object', properties: {} },
@@ -214,7 +239,7 @@ const TOOLS = [
   },
   {
     name: 'flowstudio_generate',
-    description: 'Start a video generation run in FlowStudio. Only the prompts are required — model, duration, aspect ratio and quality fall back to the app defaults. This spends Flow credits.',
+    description: 'Start a video generation run in FlowStudio. Only the prompts are required — model, duration, aspect ratio and quality fall back to the app defaults. This spends Flow credits. Agent mode: pass agentMode=true to run through Flow\'s own Agent or false for the direct route — a per-call agentMode beats the flowstudio_set_agent_mode override, which beats this route\'s default (direct).',
     inputSchema: {
       type: 'object',
       properties: {
@@ -226,17 +251,35 @@ const TOOLS = [
         parallelBrowsers: { type: 'number', description: 'How many accounts work in parallel (1-4)' },
         tag: { type: 'string', description: 'Optional tag used as the file name' },
         project: { type: 'string', description: 'Optional project name — the videos save into that project\'s own folder inside the output folder, exactly like a project typed into the app' },
+        agentMode: { type: 'boolean', description: 'Optional: true runs this call through Flow\'s own Agent, false forces the direct route. Beats the flowstudio_set_agent_mode override for this run only.' },
+        agentClips: { description: 'Optional (Agent mode, Bulk Mode v2.48.103): how many clips ONE Agent conversation makes for a prompt — a number applies to every prompt, an array gives a per-prompt count (parallel to prompts). Each bulk prompt runs as ONE conversation whose Agent is asked for that many clips at once; the combined proposal is approved only at or under clips × the per-clip cost with the run\'s model, and every clip is downloaded (saved <TAG>-S1..<TAG>-SN). Default 1 = one clip per conversation, as before.' },
       },
       required: ['prompts'],
     },
     run: async (args) => {
       const prompts = Array.isArray(args.prompts) ? args.prompts.filter((p) => typeof p === 'string' && p.trim()) : [];
       if (prompts.length === 0) throw new Error('prompts must be a non-empty array of strings');
-      const body = { prompts };
+      // mcpOrigin marks this start as chat-originated so the bridge
+      // applies the agent-mode precedence (per-call > override >
+      // default) instead of reading a UI toggle that is not in play.
+      const body = { prompts, mcpOrigin: true };
       for (const k of ['model', 'duration', 'aspectRatio', 'quality', 'tag', 'project']) {
         if (typeof args[k] === 'string' && args[k]) body[k] = args[k];
       }
       if (Number(args.parallelBrowsers) > 0) body.parallelBrowsers = Math.floor(Number(args.parallelBrowsers));
+      if (typeof args.agentMode === 'boolean') body.agentMode = args.agentMode;
+      // v2.48.103 (BULK MODE): agentClips converts the prompt
+      // strings into the bridge's object form {text, agentClips}
+      // — only when the caller actually asked for bulk counts,
+      // so the default start body stays exactly as before.
+      if (args.agentClips !== undefined && args.agentClips !== null) {
+        const clipsFor = (i) => {
+          const v = Array.isArray(args.agentClips) ? args.agentClips[i] : args.agentClips;
+          const n = Math.floor(Number(v));
+          return Number.isFinite(n) && n >= 1 ? n : 1;
+        };
+        body.prompts = prompts.map((p, i) => ({ text: p, agentClips: clipsFor(i) }));
+      }
       return bridgeCall('POST', '/api/generation/start', body);
     },
   },
@@ -250,13 +293,15 @@ const TOOLS = [
     // active or when the app screen is not connected; there is no
     // silent fallback to the direct engine route.
     name: 'flowstudio_generate_in_app',
-    description: 'Start a video generation run inside the FlowStudio app\'s own screen: the prompts appear in the app\'s Prompts box and the run starts exactly as if the user pressed the app\'s Generate button, so the app\'s Progress section shows the run live on their screen. A project name, when given, becomes the app\'s current Project field value before the run starts, so the videos save into that project\'s folder. The FlowStudio app must be open on its main screen. This spends Flow credits like a normal run. Use flowstudio_generate instead when nobody needs to watch the app screen.',
+    description: 'Start a video generation run inside the FlowStudio app\'s own screen: the prompts appear in the app\'s Prompts box and the run starts exactly as if the user pressed the app\'s Generate button, so the app\'s Progress section shows the run live on their screen. A project name, when given, becomes the app\'s current Project field value before the run starts, so the videos save into that project\'s folder. The FlowStudio app must be open on its main screen. This spends Flow credits like a normal run. Use flowstudio_generate instead when nobody needs to watch the app screen. Agent mode: pass agentMode=true/false to decide this run\'s route from chat — the engine enforces it over the app\'s Agent Prompt toggle, so the owner never has to touch the toggle for a chat run. A per-call agentMode beats the flowstudio_set_agent_mode override; with neither, the app toggle decides as before. The result reports the agentMode the engine resolved for the run (null = the app toggle decides).',
     inputSchema: {
       type: 'object',
       properties: {
         prompts: { type: 'array', items: { type: 'string' }, description: 'One prompt per video' },
         tag: { type: 'string', description: 'Optional tag — becomes the app\'s selected TAG (used as the file name)' },
         project: { type: 'string', description: 'Optional project name — becomes the app\'s current Project field value before the run starts' },
+        agentMode: { type: 'boolean', description: 'Optional: true runs this call through Flow\'s own Agent, false forces the direct route — enforced by the engine over the app\'s Agent Prompt toggle for this run. Beats the flowstudio_set_agent_mode override.' },
+        agentClips: { description: 'Optional (Agent mode, Bulk Mode v2.48.103): how many clips ONE Agent conversation makes for a prompt — a number applies to every prompt, an array gives a per-prompt count (parallel to prompts). Each bulk prompt becomes ONE app prompt item whose Agent conversation is asked for that many clips at once; the combined proposal is approved only at or under clips × the per-clip cost with the run\'s model, and every clip is downloaded (saved <TAG>-S1..<TAG>-SN). Default 1 = one clip per conversation, as before.' },
         skipFirstTaskDownload: { type: 'boolean', description: 'TEST FLAG (v2.48.62, ZC30): when true, the FIRST prompt of this run is generated as usual but its download step is deliberately skipped — the task stays parked (pending + needs_check) for a later download-only Resume, no download attempt is counted and the prompt is never resubmitted. Exists to separate first-vs-latest-render effects in the download investigation; leave unset for normal runs.' },
       },
       required: ['prompts'],
@@ -267,6 +312,12 @@ const TOOLS = [
       const body = { prompts };
       if (typeof args.tag === 'string' && args.tag) body.tag = args.tag;
       if (typeof args.project === 'string' && args.project) body.project = args.project;
+      if (typeof args.agentMode === 'boolean') body.agentMode = args.agentMode;
+      // v2.48.103 (BULK MODE): passed through as-is (number or
+      // per-prompt array) — the bridge normalises it against
+      // the filtered prompt list and the app applies it per
+      // prompt item.
+      if (args.agentClips !== undefined && args.agentClips !== null) body.agentClips = args.agentClips;
       if (args.skipFirstTaskDownload === true) body.skipFirstTaskDownload = true;
       return bridgeCall('POST', '/api/generation/start-ui', body);
     },

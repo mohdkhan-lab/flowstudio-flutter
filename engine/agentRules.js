@@ -123,11 +123,35 @@ function normalizeAgentModelLabel(raw) {
 }
 
 /**
+ * Scan a text for ANY known Agent model label (the keys of
+ * AGENT_MODEL_QUOTES), longest label first, case-insensitive,
+ * over whitespace-squeezed text. The fallback of last resort in
+ * parseProposalModel (v2.48.99): the .98 field run's proposal
+ * named its model in a sentence the sentence patterns did not
+ * reach inside the text the driver had — a plain label mention
+ * anywhere in the block is still the model the Agent means.
+ * Returns the canonical label, or null when none appears.
+ */
+function scanKnownModelLabel(text) {
+  const flat = String(text || '').replace(/\s+/g, ' ').toLowerCase();
+  if (!flat) return null;
+  const labels = Object.keys(AGENT_MODEL_QUOTES).slice()
+    .sort((a, b) => b.length - a.length);
+  for (const label of labels) {
+    if (flat.includes(label.toLowerCase())) return label;
+  }
+  return null;
+}
+
+/**
  * Extract the model a proposal says it will use. Field wordings
  * (live calibration, 2026-11-12): "using your default model Omni
  * 1.2 Flash.", "Using your default model Veo 3.1 - Lite, I'll
- * generate …", "… using Omni 1.2 Flash." Returns the canonical
- * Agent label, or null when the proposal names no known model.
+ * generate …", "… using Omni 1.2 Flash." The sentence patterns
+ * are the PRIMARY source; when none of them names a model, a
+ * known-label scan over the whole text is the fallback
+ * (v2.48.99). Returns the canonical Agent label, or null when
+ * the proposal names no known model.
  */
 function parseProposalModel(text) {
   const s = String(text || '');
@@ -150,7 +174,169 @@ function parseProposalModel(text) {
       if (label) return label;
     }
   }
-  return null;
+  // v2.48.99 fallback: any canonical label mentioned anywhere.
+  return scanKnownModelLabel(s);
+}
+
+/**
+ * v2.48.100 — the LATEST proposal in a panel text. The session
+ * panel ACCUMULATES history: a settled proposal's text (and the
+ * Agent's cancellation reply) stays on screen ABOVE the fresh
+ * proposal (AGENTTEST8, 2026-11-13: the fresh 7-credit Omni 1.1
+ * proposal sat under the rejected 12-credit Omni 1.2 one for
+ * 163s while every first-match parse kept reading the stale
+ * sentence). parseQuotedCost/parseProposalModel match the FIRST
+ * costing sentence — right for a single-proposal block, wrong
+ * for the accumulated panel. This reader works from the LAST
+ * 'costing N credits' occurrence instead:
+ *
+ *   quoted    — the integer of the LAST costing match.
+ *   model     — parsed from the proposal BLOCK around that
+ *               match: the text since the previous costing
+ *               sentence (or a bounded window before it) up to
+ *               the end of its own sentence. The model sentence
+ *               precedes the costing sentence inside one block,
+ *               and the previous block's model sits before the
+ *               previous costing sentence, so the window never
+ *               reaches it.
+ *   sentence  — the full sentence carrying the costing match
+ *               (whitespace-collapsed), for the signature.
+ *   signature — `${model || 'unknown'}|${quoted}|${sentence}`,
+ *               the identity the driver dedupes on: a proposal
+ *               is "the same proposal" iff its signature is the
+ *               same, regardless of which DOM node renders it.
+ *
+ * Returns null when the text carries no costing sentence.
+ */
+function latestProposal(text) {
+  const s = String(text || '');
+  if (!s) return null;
+  const re = /costing\s+(\d{1,4})\s*credits?\b/gi;
+  const matches = [];
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    matches.push({ index: m.index, end: m.index + m[0].length, quoted: parseInt(m[1], 10) });
+  }
+  if (!matches.length) return null;
+  const last = matches[matches.length - 1];
+  if (!Number.isFinite(last.quoted) || last.quoted < 0) return null;
+  // The sentence carrying the costing match: back to the
+  // previous sentence end (or the block's start), forward to
+  // the next one.
+  let sentStart = 0;
+  for (let i = last.index - 1; i >= 0; i--) {
+    const ch = s[i];
+    if (ch === '.' || ch === '?' || ch === '!' || ch === '\n') { sentStart = i + 1; break; }
+  }
+  let sentEnd = s.length;
+  for (let i = last.end; i < s.length; i++) {
+    const ch = s[i];
+    if (ch === '.' || ch === '?' || ch === '!' || ch === '\n') { sentEnd = i + 1; break; }
+  }
+  const sentence = s.slice(sentStart, sentEnd).replace(/\s+/g, ' ').trim();
+  // The model window: from just after the PREVIOUS costing
+  // sentence (the stale block ends there — its cancellation
+  // reply names no model), through this proposal's sentence
+  // end. Within one block the model sentence can sit FAR
+  // before the costing sentence (the .99 widening exists
+  // because of exactly that), so the single-proposal lookback
+  // reaches 4000 chars — the group-text cap scale.
+  const prevEnd = matches.length > 1 ? matches[matches.length - 2].end : 0;
+  const windowStart = Math.max(prevEnd, last.index - 4000);
+  const windowText = s.slice(windowStart, sentEnd);
+  const model = parseProposalModel(windowText) || scanKnownModelLabel(windowText);
+  return {
+    quoted: last.quoted,
+    model: model || null,
+    sentence,
+    signature: `${model || 'unknown'}|${last.quoted}|${sentence.toLowerCase()}`
+  };
+}
+
+/**
+ * v2.48.103 (BULK MODE) — normalise a task's agentClips value:
+ * how many clips ONE Agent conversation is asked to make for
+ * this task. Accepts a number or a numeric string from any
+ * caller (MCP argument, bridge body, Dart item, settings);
+ * anything unreadable, non-finite or below 1 becomes 1 — the
+ * single-clip behaviour every run had before bulk mode, so an
+ * absent field is byte-for-byte the old semantics.
+ */
+function normalizeAgentClips(value) {
+  const n = (typeof value === 'string') ? Number(value.trim()) : Number(value);
+  if (!Number.isFinite(n)) return 1;
+  const i = Math.floor(n);
+  return i >= 1 ? i : 1;
+}
+
+/**
+ * v2.48.103 (BULK MODE) — a bulk task's expected TOTAL cost:
+ * the per-clip expected cost (the same number the single-clip
+ * guard has always used — rate helper first, flat quote table
+ * as fallback) times the clip count. Null when the per-clip
+ * cost is unknown: nothing may approve on an unknown total,
+ * exactly as nothing may approve on an unknown single cost.
+ */
+function expectedTotalCost(perClipExpected, clips) {
+  const per = Number(perClipExpected);
+  if (!Number.isFinite(per) || per <= 0) return null;
+  return per * normalizeAgentClips(clips);
+}
+
+/**
+ * v2.48.104 (SETTINGS FIRST + INSTRUCTIONS — the owner's final-
+ * version order): before any instruction is sent, the driver
+ * aligns the project's Agent settings to the run (Confirm =
+ * Always, the run's video model/aspect, outputs x1 — saved and
+ * read back), and makes sure the project carries ONE standing
+ * instruction, added once and then left alone:
+ *
+ *   title: "FlowStudio Run Rules"
+ *   body:  the guideline text below, byte-for-byte — it tells
+ *          the Agent to follow the saved settings (the settings
+ *          are the run's truth), to never ask about resolution,
+ *          and to quote multi-scene work as ONE combined
+ *          proposal (the shape the Bulk Mode guard prices).
+ */
+const AGENT_INSTRUCTION_TITLE = 'FlowStudio Run Rules';
+const AGENT_INSTRUCTION_BODY = 'Always use the video model, aspect ratio and output count saved in this project\'s Agent settings. Never ask which resolution to use — follow the saved settings and the user\'s message. When the user asks for several scenes, give ONE combined proposal covering all of them.';
+
+/**
+ * v2.48.104 — does this Agent text ask the USER to choose a
+ * generation parameter (resolution / quality / model / aspect)
+ * instead of proposing? The driver answers such a question
+ * ONCE per run with the fixed settings-based answer below —
+ * every other question keeps the standing discipline (logged,
+ * waited through, never improvised). The shape required: a
+ * question (a '?' or an asking opener) AND a parameter word.
+ * A proposal is never a settings question (its costing
+ * sentence marks it; the driver also checks that first).
+ */
+const SETTINGS_QUESTION_PARAM_RE = /\b(720p|1080p|360p|resolution|aspect(?:\s+ratio)?|quality|which model|what model|model should|settings?)\b/i;
+const SETTINGS_QUESTION_SHAPE_RE = /(\?|^\s*(should|shall|would you|do you|which|what)\b)/i;
+function looksLikeSettingsQuestion(text) {
+  const s = String(text || '');
+  if (!s || !SETTINGS_QUESTION_PARAM_RE.test(s)) return false;
+  if (/costing\s+\d{1,4}\s*credits?\b/i.test(s)) return false;
+  return SETTINGS_QUESTION_SHAPE_RE.test(s);
+}
+
+/**
+ * v2.48.104 — THE fixed settings-based answer (the owner's
+ * wording, with the run's own model label + aspect filled
+ * in): the Agent is pointed at the saved project settings
+ * instead of being given a fresh choice. 360p is the
+ * generation resolution of the standard run the owner
+ * calibrated; x1 is the aligned output count. Returns null
+ * when the run's model has no Agent mapping (nothing truthful
+ * to name — the driver then keeps waiting, as before).
+ */
+function settingsAnswerText(settings) {
+  const s = settings || {};
+  const mapped = mapAgentModel(s.model || 'Omni Flash');
+  if (!mapped) return null;
+  const aspect = (s.aspectRatio === '16:9' || s.aspectRatio === '9:16') ? s.aspectRatio : '9:16';
+  return `Use the saved project settings: ${mapped.flowLabel}, ${aspect}, x1 output, 360p.`;
 }
 
 /**
@@ -167,6 +353,17 @@ function parseProposalModel(text) {
  *                          retry is unspent: Reject (free), align
  *                          the Agent settings to the run's model,
  *                          re-send the instruction ONCE.
+ *                          v2.48.99: an over-cost proposal whose
+ *                          model could NOT be read takes the
+ *                          same branch (reason
+ *                          'agent-model-unnamed-over-cost') —
+ *                          the .98 field run quoted 30 credits
+ *                          with no model named, and no x1 flat
+ *                          quote is 30: Agent quotes vary with
+ *                          the duration/resolution IT picks, so
+ *                          forcing the run's model + x1 + the
+ *                          run's aspect via the settings is the
+ *                          right corrective there too.
  *   act 'park'           — over cost with no settings fix left:
  *                          Reject (free), then park the card
  *                          (pending + needs_check), reason
@@ -192,6 +389,14 @@ function decideOnProposal(input) {
   if (modelPricier && !i.retried) {
     return { act: 'retry-settings', reason: 'agent-model-over-cost' };
   }
+  // v2.48.99: the proposal's model could not be read at all and
+  // the quote is over the run's cost — same corrective as a
+  // pricier named model (force the run's model + x1 + aspect
+  // via the Agent settings, ask once more). Distinct reason so
+  // the driver logs the unnamed-model line.
+  if (!i.proposalModel && !i.retried) {
+    return { act: 'retry-settings', reason: 'agent-model-unnamed-over-cost' };
+  }
   return { act: 'park', reason: 'agent-over-cost' };
 }
 
@@ -210,9 +415,17 @@ module.exports = {
   AGENT_MODEL_MAP,
   mapAgentModel,
   agentExpectedCost,
+  normalizeAgentClips,
+  expectedTotalCost,
   parseQuotedCost,
   normalizeAgentModelLabel,
+  scanKnownModelLabel,
   parseProposalModel,
+  latestProposal,
   decideOnProposal,
-  panelTail
+  panelTail,
+  AGENT_INSTRUCTION_TITLE,
+  AGENT_INSTRUCTION_BODY,
+  looksLikeSettingsQuestion,
+  settingsAnswerText
 };

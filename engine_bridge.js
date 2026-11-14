@@ -76,6 +76,8 @@ const projectFolder = require('./engine/projectFolder');
 const sequenceReport = require('./engine/sequenceReport');
 const { duplicateQueueEntryLogLine } = require('./engine/queueDedupe');
 const { recordActivity, getActivityStore } = require('./engine/activityStore');
+const agentDoctor = require('./engine/agentDoctor');
+const agentRules = require('./engine/agentRules');
 const mcp = require('./mcp_server');
 const { ensureBridgePort } = require('./engine/portTakeover');
 const { createFunnelKeeper, inspectChain, repairChain, selfTestFunnelUrl } = require('./engine/funnelKeeper');
@@ -172,8 +174,20 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.98';
+const APP_VERSION = '2.48.104';
 let activeWorkerPool = null;
+// v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
+// engine as TWO calls — /api/generation/start-ui here, then the
+// app's own /api/generation/start once the app has put the prompts
+// in its box and pressed its Generate button. The agent mode the
+// MCP caller asked for (per-call parameter, else the stored
+// override from flowstudio_set_agent_mode) rides between those
+// calls in this one-shot stash: { agentMode, count, tag, at }.
+// The next start whose prompt count (and tag, when one was given)
+// matches consumes it; anything older than three minutes is
+// ignored, so a stale stash can never hijack a later manual run.
+let pendingMcpUiAgentMode = null;
+const MCP_UI_AGENT_MODE_TTL_MS = 180000;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
 // onRunStart. The missing-scene redo route reads it to compute
@@ -317,6 +331,21 @@ async function startBridge() {
     try { recordActivity({ message: staleEngineNote, category: 'system', level: 'warning' }); } catch (e) {}
     try { broadcastEvent('automation-log', { message: staleEngineNote, level: 'warning' }); } catch (e) {}
   }
+
+  // Agent Doctor (2026-11-12): prove WHICH agent files this
+  // engine process loaded — the fingerprint snapshot is taken
+  // NOW, at startup, and logged once, so the owner's copied app
+  // log and the MCP doctor tool can both show whether a
+  // replace-pack driver is really the one running (the AGENTTEST6
+  // lesson: new files on disk, old driver in memory, no way to
+  // tell from outside). Never blocks startup.
+  try {
+    const doctorLine = agentDoctor.doctorStartupLine(agentDoctor.loadedAgentFiles());
+    console.log(doctorLine);
+    try { recordActivity({ message: doctorLine, category: 'system', level: 'info' }); } catch (e) {}
+    try { broadcastEvent('automation-log', { message: doctorLine, level: 'info' }); } catch (e) {}
+  } catch (e) {}
+
   try {
     if (mcp.mcpEnabled(dbService)) {
       funnelKeeper = createFunnelKeeper({
@@ -339,7 +368,7 @@ async function startBridge() {
   // cannot tell them apart, and neither can the Activity history.
   // onRunStart is wired here too: it records the run's composition
   // into lastRunInfo, which the redo route reads.
-  function buildPool({ parallelBrowsers, accountIds, getSettingsHint, runStarted } = {}) {
+  function buildPool({ parallelBrowsers, accountIds, getSettingsHint, runStarted, agentClipsByIndex } = {}) {
     // v2.22.0 fix: browser visibility comes from the engine's own
     // 'browser_background' setting — the SAME key the original
     // Electron main.js uses ('1' or unset = background ON, '0' =
@@ -361,6 +390,10 @@ async function startBridge() {
       // IDs from the generate request — the pool may use ONLY
       // these. Absent (old callers) = no restriction.
       allowedAccountIds: Array.isArray(accountIds) ? accountIds : null,
+      // v2.48.103 (BULK MODE): the run's live agentClips map
+      // ({ promptIndex: clips }) — the start route fills it
+      // while formatting prompts, before runQueue runs.
+      agentClipsByIndex: (agentClipsByIndex && typeof agentClipsByIndex === 'object') ? agentClipsByIndex : null,
       // v2.28.0: the engine's log() passes ONE OBJECT
       // ({ message, type, timestamp, ...extra }) — the old wiring
       // treated it as (msg, type) strings, so the whole object
@@ -539,6 +572,35 @@ async function startBridge() {
         return sendJson(200, { ok: true, version: APP_VERSION, workers: activeWorkerPool ? 1 : 0 });
       }
 
+      // 2b. Agent Doctor: the loaded agent files' fingerprints
+      // (startup snapshot) + the most recent Agent-mode run's
+      // recorded outcome. Read-only diagnostics for the MCP
+      // flowstudio_agent_doctor tool.
+      if (pathname === '/api/agent-doctor' && req.method === 'GET') {
+        return sendJson(200, agentDoctor.doctorPayload(APP_VERSION));
+      }
+
+      // 2c. MCP agent-mode switch (v2.48.99): set or clear the
+      // engine-level Agent-mode override for MCP-originated runs
+      // (stored in engine/agentDoctor, reported by the doctor).
+      // Body { enabled: true | false } sets it; { enabled: null }
+      // or a missing field clears it back to "follow the app".
+      // Returns the resulting state. Manual runs started in the
+      // app are never affected by this override.
+      if (pathname === '/api/mcp/agent-mode' && req.method === 'POST') {
+        const body = await readBody();
+        const next = agentDoctor.setAgentModeOverride(
+          typeof body.enabled === 'boolean' ? body.enabled : null
+        );
+        broadcastEvent('automation-log', {
+          message: next === null
+            ? '🔌 MCP • Agent-mode override cleared — chat runs follow the app toggle again.'
+            : `🔌 MCP • Agent-mode override ${next ? 'ON — chat runs will use Flow\u2019s Agent' : 'OFF — chat runs will use the direct route'}.`,
+          level: 'info',
+        });
+        return sendJson(200, { ok: true, agentModeOverride: next });
+      }
+
       // 3. Settings Endpoints
       if (pathname === '/api/settings' && req.method === 'GET') {
         const keys = [
@@ -561,6 +623,9 @@ async function startBridge() {
           // v2.31.0: MCP connector on/off (the token itself is only
           // ever served by the /api/mcp/* endpoints below).
           'mcp_enabled',
+          // v2.48.104: UI zoom (top-strip − / + buttons) — the app
+          // reads it back at startup so the owner's scale persists.
+          'ui_scale',
         ];
         const settings = {};
         for (const k of keys) {
@@ -1303,9 +1368,18 @@ async function startBridge() {
       // refusal — there is deliberately NO engine fallback here.
       if (pathname === '/api/generation/start-ui' && req.method === 'POST') {
         const body = await readBody();
-        const prompts = Array.isArray(body.prompts)
-          ? body.prompts.filter((p) => typeof p === 'string' && p.trim())
-          : [];
+        // v2.48.103 (BULK MODE): agentClips rides with the
+        // prompts — a single number for every prompt, or an
+        // array parallel to the prompts — filtered TOGETHER
+        // with them so the two lists can never drift apart,
+        // then normalised (absent/garbage = 1 = single-clip).
+        const rawPromptList = Array.isArray(body.prompts) ? body.prompts : [];
+        const rawClipsList = Array.isArray(body.agentClips) ? body.agentClips : null;
+        const keptPairs = rawPromptList
+          .map((p, i) => ({ p, c: rawClipsList ? rawClipsList[i] : body.agentClips }))
+          .filter((x) => typeof x.p === 'string' && x.p.trim());
+        const prompts = keptPairs.map((x) => x.p);
+        const agentClipsList = keptPairs.map((x) => agentRules.normalizeAgentClips(x.c));
         if (prompts.length === 0) {
           return sendJson(400, { ok: false, error: 'prompts must be a non-empty array of non-empty strings' });
         }
@@ -1327,6 +1401,23 @@ async function startBridge() {
         // bhejta hai, jahan se ye run ki settings me aata
         // hai. Mustaqil app setting NAHI hai.
         const skipFirstTaskDownload = body.skipFirstTaskDownload === true;
+        // v2.48.99 (MCP AGENT-MODE SWITCH): the mode this MCP run
+        // asked for — the per-call parameter beats the stored
+        // override; null means "no instruction", and the app's own
+        // toggle then decides exactly as before. A decided mode is
+        // stashed for the app's follow-up /api/generation/start
+        // (see pendingMcpUiAgentMode above) AND rides the SSE
+        // payload, where the current app ignores the unknown field
+        // — the stash is what enforces it.
+        const uiAgentMode = agentDoctor.resolveAgentMode({
+          param: typeof body.agentMode === 'boolean' ? body.agentMode : undefined,
+          override: agentDoctor.getAgentModeOverride(),
+          ui: undefined
+        });
+        const uiRunAgentMode = uiAgentMode.source === 'ui' ? null : uiAgentMode.agentMode;
+        if (uiRunAgentMode !== null) {
+          pendingMcpUiAgentMode = { agentMode: uiRunAgentMode, count: prompts.length, tag, at: Date.now() };
+        }
         // v2.48.70 (ITEM E — fallback): MCP se likhi hui
         // settings (DB app_settings) is run ke saath PUSH
         // bhi hoti hain — Dart inhe apne SettingsProvider
@@ -1347,8 +1438,8 @@ async function startBridge() {
           message: `🔌 MCP • Muse started a run from the app screen (${prompts.length} prompts)`,
           level: 'info',
         });
-        broadcastEvent('mcp-ui-generate-request', { prompts, tag, project, skipFirstTaskDownload, settings: settingsHint });
-        return sendJson(200, { ok: true, started: true, prompts: prompts.length });
+        broadcastEvent('mcp-ui-generate-request', { prompts, tag, project, skipFirstTaskDownload, settings: settingsHint, agentMode: uiRunAgentMode, agentClips: agentClipsList });
+        return sendJson(200, { ok: true, started: true, prompts: prompts.length, agentMode: uiRunAgentMode, agentClips: agentClipsList });
       }
 
       if (pathname === '/api/generation/start' && req.method === 'POST') {
@@ -1394,9 +1485,15 @@ async function startBridge() {
         // starts and the missing-scene redo get identical wiring).
         // The settings hint is read lazily — onRunStart fires during
         // runQueue, after `settings` below exists.
+        // v2.48.103 (BULK MODE): the run's agentClips map — filled
+        // by the prompt formatting below (per-item agentClips, or
+        // the run-level config.agentClips) BEFORE runQueue runs,
+        // and read by the pool at Agent-submit time.
+        const runAgentClips = {};
         const pool = buildPool({
           parallelBrowsers: config.parallelBrowsers || 1,
           accountIds: Array.isArray(config.accountIds) ? config.accountIds : null,
+          agentClipsByIndex: runAgentClips,
           getSettingsHint: () => settings,
           // v2.48.85 (P1 COMPLETION): this route is the
           // ENGINE-side start — its runs must announce
@@ -1461,6 +1558,11 @@ async function startBridge() {
             // so a string prompt's label never rides into the
             // submitted words either.
             const parts = promptParser.splitLabelPrefix(p);
+            // v2.48.103: a run-level config.agentClips applies
+            // to string prompts too (per-item counts need the
+            // object form below).
+            const strClips = agentRules.normalizeAgentClips(config.agentClips);
+            if (strClips > 1) runAgentClips[idx] = strClips;
             return { text: parts.text, index: idx, tag: parts.label || config.tag || '' };
           }
           // v2.34.0 (Problem 5): the object path is cleaned the same
@@ -1471,9 +1573,21 @@ async function startBridge() {
           // in the text only fills a missing tag.
           const rawText = p.text || p.prompt || '';
           const parts = promptParser.splitLabelPrefix(rawText);
+          const itemIndex = Number.isInteger(p.index) ? p.index : idx;
+          // v2.48.103 (BULK MODE): the item's agentClips (an MCP
+          // generate call may send prompt objects to carry it),
+          // else the run-level config.agentClips, lands in the
+          // pool's per-run map keyed by the item's index. Only
+          // counts above 1 are recorded — 1 is the default the
+          // pool assumes, so single-clip runs leave the map
+          // empty and behave exactly as before.
+          const itemClips = agentRules.normalizeAgentClips(
+            p.agentClips !== undefined ? p.agentClips
+              : (p.agent_clips !== undefined ? p.agent_clips : config.agentClips));
+          if (itemClips > 1) runAgentClips[itemIndex] = itemClips;
           return {
             text: parts.text,
-            index: Number.isInteger(p.index) ? p.index : idx,
+            index: itemIndex,
             tag: p.tag || parts.label || config.tag || ''
           };
         });
@@ -1496,6 +1610,52 @@ async function startBridge() {
           default_aspect_ratio: dbService.getSetting('default_aspect', ''),
           default_quality: dbService.getSetting('default_quality', '')
         }, config, { model: 'Omni Flash', duration: '4s', aspectRatio: '9:16', quality: '720p' });
+        // v2.48.99 (MCP AGENT-MODE SWITCH): decide THIS run's agent
+        // mode at the one point every run passes through — the
+        // settings object the pool reads when it chooses Flow's
+        // Agent (engine submitViaAgent) over the direct prompt box.
+        //   · A start the MCP server marked (mcpOrigin) follows the
+        //     precedence: per-call parameter > stored override >
+        //     direct route (its config carries no UI toggle).
+        //   · A start from the app that answers a pending MCP
+        //     in-app request (the one-shot stash from start-ui,
+        //     matched on prompt count + tag, fresh for three
+        //     minutes) takes the mode that request resolved to —
+        //     the app's toggle gets no vote on an MCP-originated run.
+        //   · Any other start is the owner's own manual run: the
+        //     app's toggle (config.agentMode) decides, unchanged,
+        //     and the override never touches it.
+        let resolvedRunAgentMode = config.agentMode === true;
+        let agentModeSource = 'ui';
+        if (config.mcpOrigin === true) {
+          const r = agentDoctor.resolveAgentMode({
+            param: typeof config.agentMode === 'boolean' ? config.agentMode : undefined,
+            override: agentDoctor.getAgentModeOverride(),
+            ui: undefined
+          });
+          resolvedRunAgentMode = r.agentMode;
+          agentModeSource = r.source === 'ui' ? 'mcp-default' : `mcp-${r.source}`;
+        } else if (pendingMcpUiAgentMode) {
+          const stash = pendingMcpUiAgentMode;
+          const stashFresh = (Date.now() - stash.at) <= MCP_UI_AGENT_MODE_TTL_MS;
+          const stashMatches = stashFresh
+            && stash.count === formattedPrompts.length
+            && (!stash.tag || stash.tag === (config.tag || ''));
+          if (stashMatches) {
+            resolvedRunAgentMode = stash.agentMode;
+            agentModeSource = 'mcp-stash';
+            pendingMcpUiAgentMode = null;
+          } else if (!stashFresh) {
+            pendingMcpUiAgentMode = null;
+          }
+        }
+        if (agentModeSource === 'mcp-param' || agentModeSource === 'mcp-override' || agentModeSource === 'mcp-stash') {
+          broadcastEvent('automation-log', {
+            message: `🔌 MCP • This run\u2019s Agent mode: ${resolvedRunAgentMode ? 'ON (Flow\u2019s Agent)' : 'OFF (direct route)'} — decided by ${agentModeSource === 'mcp-param' ? 'the chat call\u2019s own choice' : agentModeSource === 'mcp-override' ? 'the stored chat override' : 'the chat in-app request'}.`,
+            level: 'info',
+          });
+        }
+
         const settings = {
           model: effective.model,
           duration: effective.duration,
@@ -1524,7 +1684,11 @@ async function startBridge() {
           // submits through Flow's own Agent (rule-driven since
           // v2.48.97). Persisted in settings_json like the other
           // run settings, so a resume keeps the mode.
-          agentMode: config.agentMode === true,
+          // v2.48.99: the value is the RESOLVED mode computed
+          // above — for MCP-originated runs the chat's per-call
+          // choice or stored override wins over the app toggle,
+          // so a chat run never needs the toggle touched by hand.
+          agentMode: resolvedRunAgentMode,
         };
 
         // Start asynchronously via runQueue (into the project

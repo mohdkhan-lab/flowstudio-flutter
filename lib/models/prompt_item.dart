@@ -51,11 +51,19 @@ class PromptItem {
   // Null when the engine did not report one — the card then shows no
   // credit figure at all instead of an invented one.
   int? creditsUsed;
+  // v2.48.103 (BULK MODE): how many clips this item's ONE Agent
+  // conversation is asked to make (Agent mode only). Set from an
+  // MCP in-app run's per-prompt agentClips; 1 = one clip per
+  // conversation, the behaviour every run had before bulk mode.
+  // Rides to the engine on the start body beside the item's
+  // text/index/tag.
+  final int agentClips;
 
   PromptItem({
     required this.index,
     required this.text,
     this.label,
+    this.agentClips = 1,
     this.status = PromptStatus.pending,
     this.progress = 0.0,
     this.videoUrl,
@@ -74,6 +82,7 @@ class PromptItem {
     int? index,
     String? text,
     String? label,
+    int? agentClips,
     PromptStatus? status,
     double? progress,
     String? videoUrl,
@@ -88,6 +97,7 @@ class PromptItem {
       index: index ?? this.index,
       text: text ?? this.text,
       label: label ?? this.label,
+      agentClips: agentClips ?? this.agentClips,
       status: status ?? this.status,
       progress: progress ?? this.progress,
       videoUrl: videoUrl ?? this.videoUrl,

@@ -71,6 +71,37 @@ class FlowStudioApp extends StatelessWidget {
             // instantly by design.
             themeAnimationDuration: const Duration(milliseconds: 250),
             themeAnimationCurve: Curves.easeInOut,
+            // v2.48.104: UI zoom (owner's order — top-strip
+            // − / % / + buttons). The whole interface is laid
+            // out at window÷scale and painted scaled, so panels,
+            // text and buttons grow/shrink as ONE unit.
+            // MediaQuery reports the divided size too, so
+            // MediaQuery-driven widgets agree with the layout
+            // they see. At 100% the child passes through
+            // untouched — the tuned 1024×768 fit is unchanged.
+            builder: (context, child) {
+              final scale = settingsProv.settings.uiScale;
+              if (child == null) return const SizedBox.shrink();
+              if (scale == 1.0) return child;
+              return LayoutBuilder(
+                builder: (context, constraints) {
+                  final w = constraints.maxWidth / scale;
+                  final h = constraints.maxHeight / scale;
+                  return MediaQuery(
+                    data: MediaQuery.of(context)
+                        .copyWith(size: Size(w, h)),
+                    child: Align(
+                      alignment: Alignment.topLeft,
+                      child: Transform.scale(
+                        scale: scale,
+                        alignment: Alignment.topLeft,
+                        child: SizedBox(width: w, height: h, child: child),
+                      ),
+                    ),
+                  );
+                },
+              );
+            },
             home: const MainStudioScreen(),
           );
         },
@@ -147,16 +178,24 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
 
   /// v2.32.2: Muse (through the MCP connector) asked for a run to
   /// start from THIS screen. The prompts land in the Prompts box
-  /// exactly as if pasted — GeneratorProvider.setRawText is the
-  /// box's own text state, and the join is the blank-line join
-  /// appendPrompts uses (Bulk mode parses blank-line-separated
-  /// blocks; Agent mode takes the whole text as one prompt, exactly
-  /// as a paste would). A sent tag becomes the selected TAG, a sent
-  /// project becomes the Project field's value (through the same
-  /// setter the field itself uses, so the run saves into that
-  /// project's folder and History groups it there), and the run
-  /// starts through the very handler the Generate button invokes —
-  /// no duplicated generation logic anywhere.
+  /// exactly as if pasted, and the run starts through the very
+  /// handler the Generate button invokes — no duplicated
+  /// generation logic anywhere. A sent tag becomes the selected
+  /// TAG, a sent project becomes the Project field's value (through
+  /// the same setter the field itself uses, so the run saves into
+  /// that project's folder and History groups it there).
+  /// v2.48.103 (the agent-batch fix): the intake is now
+  /// GeneratorProvider.setMcpPrompts — the prompts are kept as a
+  /// DISCRETE list, so each one queues as its own task (its own
+  /// Agent conversation in Agent mode) in Bulk and Agent mode
+  /// alike. The old setRawText intake let Agent mode's
+  /// whole-text-as-one-prompt rule collapse an MCP batch of N
+  /// prompts into ONE mashed prompt — the run "started: 1
+  /// prompt(s)", spent one video's credits and ended, prompts
+  /// 2–N never running. The box still displays the joined text.
+  /// The request's agentClips list (Bulk Mode, parallel to the
+  /// prompts; a bare number applies to all) rides along per
+  /// prompt.
   void _handleMcpUiGenerateRequest(Map<String, dynamic> data) {
     if (!mounted) return;
     final raw = data['prompts'];
@@ -167,8 +206,22 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
             .toList()
         : <String>[];
     if (prompts.isEmpty) return;
+    // v2.48.103: per-prompt agentClips — a parallel list, or a
+    // single number for every prompt; anything unreadable is 1.
+    final rawClips = data['agentClips'];
+    int clipsAt(int i) {
+      final v = rawClips is List
+          ? (i < rawClips.length ? rawClips[i] : null)
+          : rawClips;
+      final n = v is num ? v.toInt() : int.tryParse('${v ?? ''}') ?? 1;
+      return n >= 1 ? n : 1;
+    }
+
     final generator = context.read<GeneratorProvider>();
-    generator.setRawText(prompts.join('\n\n'));
+    generator.setMcpPrompts(
+      prompts,
+      List.generate(prompts.length, clipsAt),
+    );
     final tag = data['tag']?.toString().trim() ?? '';
     if (tag.isNotEmpty) {
       generator.setSelectedTag(tag);

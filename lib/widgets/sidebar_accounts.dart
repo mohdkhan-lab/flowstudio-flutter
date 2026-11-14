@@ -632,12 +632,24 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
               ),
             ),
             const SizedBox(height: 14),
+            // v2.48.104: the empty-state import joins the header
+            // chip system too — the same gold treatment as
+            // "+ Add Tag" (was the large primary button).
             TactileButton(
-              type: TactileType.primary,
-              height: 32,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              label: '+ Import Cookies',
+              type: TactileType.gold,
+              height: 26,
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              borderRadius: 6,
+              bevelDepth: 2.0,
               onTap: () => accountsProv.pickAndImportCookieFiles(),
+              child: Text(
+                '+ Import Cookies',
+                style: TextStyle(
+                  fontSize: 10.5,
+                  fontWeight: FontWeight.bold,
+                  color: AppTheme.accentText,
+                ),
+              ),
             ),
           ],
         ),
@@ -1156,179 +1168,77 @@ class _DashedBorderPainter extends CustomPainter {
 // v2.48.2: Luxury Soft Hover Components
 // ---------------------------------------------------------------------------
 
-class _HoverPillBtn extends StatefulWidget {
+// v2.48.104 (owner, FINAL version): the cookies-section buttons
+// wear the SAME chip system as the Prompts header ("+ Add Tag"
+// gold chip, the count pills, "Clear") — one tactile language
+// app-wide, tokens reused, no new style system. This button IS
+// the header's gold chip: TactileButton gold, height 26,
+// radius 6, bevel 2.0, 10.5 bold accentText. Behaviour and the
+// tooltip are unchanged; the hover-lift now comes from the
+// shared chip itself.
+class _HoverPillBtn extends StatelessWidget {
   final String label;
   final VoidCallback onTap;
 
   const _HoverPillBtn({required this.label, required this.onTap});
 
   @override
-  State<_HoverPillBtn> createState() => _HoverPillBtnState();
-}
-
-class _HoverPillBtnState extends State<_HoverPillBtn> {
-  bool _hovered = false;
-  bool _pressed = false;
-
-  @override
   Widget build(BuildContext context) {
-    final double translateY = _pressed ? 1.5 : (_hovered ? -2.5 : 0.0);
-    final double bevel = _pressed ? 0.8 : (_hovered ? 3.7 : 2.5);
-
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() {
-        _hovered = false;
-        _pressed = false;
-      }),
-      cursor: SystemMouseCursors.click,
-      child: Tooltip(
-        message: 'Import cookies from file or clipboard',
-        child: GestureDetector(
-          onTapDown: (_) => setState(() => _pressed = true),
-          onTapUp: (_) => setState(() => _pressed = false),
-          onTapCancel: () => setState(() => _pressed = false),
-          onTap: widget.onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOutCubic,
-            height: 34,
-            alignment: Alignment.center,
-            transform: Matrix4.translationValues(0, translateY, 0),
-            decoration: BoxDecoration(
-              // v2.48.89: light mode rests on inputBg — the
-              // near-clear overlay08 read as a dark slate slab in
-              // the owner's .88 screenshot.
-              // v2.48.90: light mode rests on buttonBg — the ONE
-              // uniform warm-tan button face (see AppPalette).
-              color: _hovered ? AppTheme.accentGold.withValues(alpha: 0.18) : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg),
-              borderRadius: BorderRadius.circular(17),
-              border: Border.all(
-                color: _hovered ? AppTheme.accentGold : AppTheme.borderHighlight,
-                width: 1.2,
-              ),
-              boxShadow: [
-                // Style 6: 3D mechanical bevel
-                BoxShadow(
-                  color: AppTheme.bevelPrimary,
-                  offset: Offset(0, bevel),
-                  blurRadius: 0,
-                ),
-                if (_hovered)
-                  BoxShadow(
-                    color: AppTheme.glowPrimary.withValues(alpha: 0.35),
-                    blurRadius: 14,
-                    spreadRadius: 0.5,
-                    offset: const Offset(0, 3.5),
-                  ),
-              ],
-            ),
-            child: Text(
-              widget.label,
-              style: TextStyle(
-                fontSize: 12,
-                fontWeight: FontWeight.bold,
-                // v2.48.88: hover lifts the pill on a pale gold
-                // tint — white text vanishes on it in light mode;
-                // the hover label is the dark-gold accentText
-                // there (dark keeps its white-on-tint).
-                color: _hovered
-                    ? (AppTheme.dark ? Colors.white : AppTheme.accentText)
-                    : AppTheme.accentText,
-              ),
-            ),
-          ),
+    return TactileButton(
+      type: TactileType.gold,
+      height: 26,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      borderRadius: 6,
+      bevelDepth: 2.0,
+      tooltip: 'Import cookies from file or clipboard',
+      onTap: onTap,
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 10.5,
+          fontWeight: FontWeight.bold,
+          color: AppTheme.accentText,
         ),
       ),
     );
   }
 }
 
-class _HoverRoundAddBtn extends StatefulWidget {
+// v2.48.104: the round add button joins the same chip system —
+// a circular gold-family TactileButton at the header chips'
+// 26px height (was a bespoke 34px hover circle).
+class _HoverRoundAddBtn extends StatelessWidget {
   final VoidCallback onTap;
 
   const _HoverRoundAddBtn({required this.onTap});
 
   @override
-  State<_HoverRoundAddBtn> createState() => _HoverRoundAddBtnState();
-}
-
-class _HoverRoundAddBtnState extends State<_HoverRoundAddBtn> {
-  bool _hovered = false;
-  bool _pressed = false;
-
-  @override
   Widget build(BuildContext context) {
-    final double translateY = _pressed ? 1.5 : (_hovered ? -2.5 : 0.0);
-    final double bevel = _pressed ? 0.8 : (_hovered ? 3.7 : 2.5);
-
-    return MouseRegion(
-      onEnter: (_) => setState(() => _hovered = true),
-      onExit: (_) => setState(() {
-        _hovered = false;
-        _pressed = false;
-      }),
-      cursor: SystemMouseCursors.click,
-      child: Tooltip(
-        message: 'Add Account',
-        child: GestureDetector(
-          onTapDown: (_) => setState(() => _pressed = true),
-          onTapUp: (_) => setState(() => _pressed = false),
-          onTapCancel: () => setState(() => _pressed = false),
-          onTap: widget.onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOutCubic,
-            width: 34,
-            height: 34,
-            alignment: Alignment.center,
-            transform: Matrix4.translationValues(0, translateY, 0),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              // v2.48.90: in light mode the resting face joins
-              // the uniform button design (buttonBg warm tan);
-              // the hover keeps its gold tint. Dark keeps the
-              // gold-tint fills in both states, byte-identical.
-              color: _hovered
-                  ? AppTheme.accentGold.withValues(alpha: 0.25)
-                  : (AppTheme.dark
-                      ? AppTheme.accentGold.withValues(alpha: 0.12)
-                      : AppTheme.buttonBg),
-              border: Border.all(
-                color: _hovered ? AppTheme.accentGold : AppTheme.borderHighlight,
-                width: 1.2,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: AppTheme.bevelPrimary,
-                  offset: Offset(0, bevel),
-                  blurRadius: 0,
-                ),
-                if (_hovered)
-                  BoxShadow(
-                    color: AppTheme.glowPrimary.withValues(alpha: 0.35),
-                    blurRadius: 14,
-                    spreadRadius: 0.5,
-                    offset: const Offset(0, 3.5),
-                  ),
-              ],
-            ),
-            child: Icon(
-              Icons.add,
-              size: 18,
-              // v2.48.88: same light-hover rule as _HoverPillBtn.
-              color: _hovered
-                  ? (AppTheme.dark ? Colors.white : AppTheme.accentText)
-                  : AppTheme.accentText,
-            ),
-          ),
-        ),
+    return TactileButton(
+      type: TactileType.icon,
+      shape: BoxShape.circle,
+      width: 26,
+      height: 26,
+      bevelDepth: 1.8,
+      padding: EdgeInsets.zero,
+      tooltip: 'Add Account',
+      onTap: onTap,
+      child: Icon(
+        Icons.add,
+        size: 15,
+        color: AppTheme.accentText,
       ),
     );
   }
 }
 
-class _HoverFilterBtn extends StatefulWidget {
+// v2.48.104: the account filter tabs are TactileChips now —
+// the header count-pill component itself (tinted fill, tint
+// border, soft bevel). The active tab wears its tint colour
+// exactly like the header pills; inactive tabs wear the
+// neutral border token. Same label + count column, same
+// onTap, same tooltip; only the surface changed.
+class _HoverFilterBtn extends StatelessWidget {
   final String label;
   final int count;
   final bool isActive;
@@ -1346,108 +1256,40 @@ class _HoverFilterBtn extends StatefulWidget {
   });
 
   @override
-  State<_HoverFilterBtn> createState() => _HoverFilterBtnState();
-}
-
-class _HoverFilterBtnState extends State<_HoverFilterBtn> {
-  bool _hovered = false;
-  bool _pressed = false;
-
-  @override
   Widget build(BuildContext context) {
-    final isActive = widget.isActive;
-    final double translateY = _pressed ? 1.5 : (_hovered ? -2.5 : 0.0);
-    final double bevel = _pressed ? 0.8 : (_hovered ? 3.7 : 2.5);
-    final bevelColor = isActive ? AppTheme.bevelPrimary : AppTheme.bevelSecondary;
-    final activeTint = widget.accentColor ?? AppTheme.accentGold;
-
+    final activeTint = accentColor ?? AppTheme.accentGold;
     return Expanded(
       child: Tooltip(
-        message: widget.tooltip ?? widget.label,
+        message: tooltip ?? label,
         waitDuration: const Duration(milliseconds: 350),
-        child: MouseRegion(
-          onEnter: (_) => setState(() => _hovered = true),
-          onExit: (_) => setState(() {
-            _hovered = false;
-            _pressed = false;
-          }),
-          cursor: SystemMouseCursors.click,
-          child: GestureDetector(
-            onTapDown: (_) => setState(() => _pressed = true),
-            onTapUp: (_) => setState(() => _pressed = false),
-            onTapCancel: () => setState(() => _pressed = false),
-            onTap: widget.onTap,
-            child: AnimatedContainer(
-              duration: const Duration(milliseconds: 180),
-              curve: Curves.easeOutCubic,
-              padding: const EdgeInsets.symmetric(vertical: 5),
-              alignment: Alignment.center,
-              transform: Matrix4.translationValues(0, translateY, 0),
-              decoration: BoxDecoration(
-                // v2.48.89: inactive light tabs rest on inputBg
-                // (the overlay08 fill read dark-slab in the
-                // owner's .88 screenshot).
-                // v2.48.90: inactive light tabs rest on buttonBg,
-                // the uniform warm-tan button face.
-                color: isActive
-                    ? activeTint.withValues(alpha: _hovered ? 0.25 : 0.16)
-                    : (_hovered ? AppTheme.surfaceElevated : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg)),
-                borderRadius: BorderRadius.circular(8),
-                border: Border.all(
-                  color: isActive
-                      ? activeTint
-                      : (_hovered ? (widget.accentColor ?? AppTheme.accentAmber) : AppTheme.borderSoft),
-                  width: isActive ? 1.2 : 1.0,
+        child: TactileChip(
+          color: isActive ? activeTint : AppTheme.borderSoft,
+          height: 36,
+          borderRadius: 9,
+          bevelDepth: 1.5,
+          padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
+          onTap: onTap,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text(
+                label,
+                style: TextStyle(
+                  fontSize: 9,
+                  fontWeight: FontWeight.w700,
+                  color: isActive ? activeTint : AppTheme.textDim,
                 ),
-                boxShadow: [
-                  BoxShadow(
-                    color: bevelColor,
-                    offset: Offset(0, bevel),
-                    blurRadius: 0,
-                  ),
-                  if (_hovered)
-                    BoxShadow(
-                      color: isActive
-                          ? activeTint.withValues(alpha: 0.35)
-                          : (widget.accentColor ?? AppTheme.glowPrimary).withValues(alpha: 0.25),
-                      blurRadius: 14,
-                      spreadRadius: 0.5,
-                      offset: const Offset(0, 3.5),
-                    ),
-                ],
               ),
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                children: [
-                  Text(
-                    widget.label,
-                    style: TextStyle(
-                      fontSize: 9,
-                      fontWeight: FontWeight.w700,
-                      // v2.48.88: the active/hover fills are pale
-                      // alpha tints — white text reads on them in
-                      // dark mode only. In the white theme the
-                      // label wears the tint colour itself (or
-                      // textMain on hover), never white-on-tint.
-                      color: isActive
-                          ? (AppTheme.dark ? Colors.white : activeTint)
-                          : (_hovered ? (AppTheme.dark ? Colors.white : AppTheme.textMain) : AppTheme.textDim),
-                    ),
-                  ),
-                  const SizedBox(height: 1),
-                  Text(
-                    '${widget.count}',
-                    style: TextStyle(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w800,
-                      color: isActive
-                          ? (AppTheme.dark ? Colors.white : activeTint)
-                          : (_hovered ? (AppTheme.dark ? Colors.white : (widget.accentColor ?? AppTheme.textDim)) : (widget.accentColor ?? AppTheme.textDim)),
-                    ),
-                  ),
-                ],
+              const SizedBox(height: 1),
+              Text(
+                '$count',
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w800,
+                  color: isActive ? activeTint : (accentColor ?? AppTheme.textDim),
+                ),
               ),
-            ),
+            ],
           ),
         ),
       ),
@@ -1517,7 +1359,13 @@ class _HoverableAccountCardState extends State<_HoverableAccountCard> {
   }
 }
 
-class _HoverActionGridBtn extends StatefulWidget {
+// v2.48.104: the cookies action grid wears the header system
+// too — neutral actions are TactileButtons at the chips' 26px
+// height, and the destructive action ("Delete Selected")
+// wears the header "Clear" treatment exactly: a plain red
+// bold TextButton (faint when dimmed). Same labels, tooltips,
+// enabled/dim logic and onTap wiring; only surfaces changed.
+class _HoverActionGridBtn extends StatelessWidget {
   final String label;
   final String? tooltip;
   final bool isDim;
@@ -1533,103 +1381,43 @@ class _HoverActionGridBtn extends StatefulWidget {
   });
 
   @override
-  State<_HoverActionGridBtn> createState() => _HoverActionGridBtnState();
-}
-
-class _HoverActionGridBtnState extends State<_HoverActionGridBtn> {
-  bool _hovered = false;
-  bool _pressed = false;
-
-  @override
   Widget build(BuildContext context) {
-    final enabled = widget.onTap != null;
-    final double translateY = (_pressed && enabled) ? 1.5 : ((_hovered && enabled) ? -2.5 : 0.0);
-    final double bevel = (_pressed && enabled) ? 0.8 : ((_hovered && enabled) ? 3.7 : 2.5);
-    final bevelColor = AppTheme.bevelSecondary;
-
-    return MouseRegion(
-      onEnter: (_) {
-        if (enabled) setState(() => _hovered = true);
-      },
-      onExit: (_) {
-        if (enabled) {
-          setState(() {
-            _hovered = false;
-            _pressed = false;
-          });
-        }
-      },
-      cursor: enabled ? SystemMouseCursors.click : SystemMouseCursors.basic,
-      child: Tooltip(
-        message: widget.tooltip ?? widget.label,
-        child: GestureDetector(
-          onTapDown: (_) {
-            if (enabled) setState(() => _pressed = true);
-          },
-          onTapUp: (_) {
-            if (_pressed) setState(() => _pressed = false);
-          },
-          onTapCancel: () {
-            if (_pressed) setState(() => _pressed = false);
-          },
-          onTap: widget.onTap,
-          child: AnimatedContainer(
-            duration: const Duration(milliseconds: 180),
-            curve: Curves.easeOutCubic,
-            height: 30,
-            alignment: Alignment.center,
-            transform: Matrix4.translationValues(0, translateY, 0),
-            decoration: BoxDecoration(
-              // Clean dark slate background — NO red fill brick!
-              // v2.48.88: light fill = the inputBg token, not a slab.
-              // v2.48.90: light fill = buttonBg, the uniform
-              // warm-tan button face shared by every button.
-              color: _hovered && enabled
-                  ? AppTheme.surfaceElevated
-                  : (AppTheme.dark ? AppTheme.overlay08 : AppTheme.buttonBg),
-              borderRadius: BorderRadius.circular(6),
-              border: Border.all(
-                color: _hovered && enabled
-                    ? (widget.isRed ? AppTheme.red : AppTheme.accentAmber)
-                    : AppTheme.borderSoft,
-              ),
-              boxShadow: [
-                BoxShadow(
-                  color: enabled
-                      ? (widget.isRed ? AppTheme.red.withValues(alpha: 0.3) : bevelColor)
-                      : (AppTheme.dark ? Colors.black26 : AppTheme.borderSoft),
-                  offset: Offset(0, bevel),
-                  blurRadius: 0,
-                ),
-                if (_hovered && enabled)
-                  BoxShadow(
-                    color: widget.isRed
-                        ? AppTheme.red.withValues(alpha: 0.30)
-                        : AppTheme.glowPrimary.withValues(alpha: 0.25),
-                    blurRadius: 14,
-                    spreadRadius: 0.5,
-                    offset: const Offset(0, 3.5),
-                  ),
-              ],
-            ),
-            child: Text(
-              widget.label,
-              style: TextStyle(
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                color: widget.isRed
-                    // v2.48.89: the half-alpha pale red is a dark-mode
-                    // dim only — in light mode the dim red label wears
-                    // the deepened red token at full strength.
-                    ? (widget.isDim ? (AppTheme.dark ? const Color(0x80F87171) : AppTheme.red) : AppTheme.red)
-                    : (widget.isDim
-                        ? AppTheme.textFaint
-                        : (_hovered
-                            ? (AppTheme.dark ? Colors.white : AppTheme.textMain)
-                            : AppTheme.textMain)),
-              ),
+    if (isRed) {
+      return Tooltip(
+        message: tooltip ?? label,
+        child: TextButton(
+          onPressed: onTap,
+          style: TextButton.styleFrom(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            minimumSize: const Size(0, 26),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          ),
+          child: Text(
+            label,
+            style: TextStyle(
+              fontSize: 10.5,
+              fontWeight: FontWeight.bold,
+              color: isDim ? AppTheme.textFaint : AppTheme.red,
             ),
           ),
+        ),
+      );
+    }
+    return TactileButton(
+      type: TactileType.secondary,
+      height: 26,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      borderRadius: 6,
+      bevelDepth: 2.0,
+      enabled: onTap != null,
+      tooltip: tooltip ?? label,
+      onTap: onTap,
+      child: Text(
+        label,
+        style: TextStyle(
+          fontSize: 10.5,
+          fontWeight: FontWeight.bold,
+          color: isDim ? AppTheme.textFaint : AppTheme.textMain,
         ),
       ),
     );

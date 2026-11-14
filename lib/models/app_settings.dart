@@ -17,6 +17,7 @@ class AppSettings {
   bool previewAutoplay;
   bool autoVerifyOnStart;
   bool autoCheckUpdates;
+  double uiScale; // v2.48.104: UI zoom (0.7–1.5) — top-strip − / + buttons; applied at the app root
   String currentVersion;
   String whatsAppLink;
   String chatLink;
@@ -41,7 +42,8 @@ class AppSettings {
     this.previewAutoplay = true,
     this.autoVerifyOnStart = false,
     this.autoCheckUpdates = true,
-    this.currentVersion = 'v2.48.98',
+    this.uiScale = 1.0,
+    this.currentVersion = 'v2.48.104',
     // v2.34.0 (Problem 12): no placeholder social links ship any
     // more — an unconfigured service shows NO icon (top strip /
     // About) instead of an icon that opens a dead page. The owner
@@ -71,6 +73,7 @@ class AppSettings {
     bool? previewAutoplay,
     bool? autoVerifyOnStart,
     bool? autoCheckUpdates,
+    double? uiScale,
     String? currentVersion,
     String? whatsAppLink,
     String? chatLink,
@@ -95,6 +98,7 @@ class AppSettings {
       previewAutoplay: previewAutoplay ?? this.previewAutoplay,
       autoVerifyOnStart: autoVerifyOnStart ?? this.autoVerifyOnStart,
       autoCheckUpdates: autoCheckUpdates ?? this.autoCheckUpdates,
+      uiScale: uiScale ?? this.uiScale,
       currentVersion: currentVersion ?? this.currentVersion,
       whatsAppLink: whatsAppLink ?? this.whatsAppLink,
       chatLink: chatLink ?? this.chatLink,

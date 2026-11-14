@@ -19,6 +19,7 @@ const crypto = require('crypto');
 const sequenceReport = require('./sequenceReport');
 const { duplicateQueueEntryLogLine } = require('./queueDedupe');
 const browserMode = require('./browserMode');
+const agentRules = require('./agentRules');
 const resolutionMemory = require('./resolutionMemory');
 const windowStyle = require('./windowStyle');
 const { sleepBlocker } = require('./sleepBlocker');
@@ -95,6 +96,15 @@ class WorkerPool {
     // callers / engine-internal runs).
     this.allowedAccountIds = Array.isArray(options.allowedAccountIds)
       ? new Set(options.allowedAccountIds.map(String))
+      : null;
+    // v2.48.103 (BULK MODE): the run's per-task agentClips map,
+    // { promptIndex: clips } — a LIVE object the bridge fills
+    // while formatting the run's prompts (before runQueue is
+    // called) and this pool reads at Agent-submit time. Absent
+    // (every older caller, redo/recovery pools) = every Agent
+    // task is single-clip, exactly as before.
+    this.agentClipsByIndex = (options.agentClipsByIndex && typeof options.agentClipsByIndex === 'object')
+      ? options.agentClipsByIndex
       : null;
     this.onLog = options.onLog || (() => {});
     this.onProgress = options.onProgress || (() => {});
@@ -1453,7 +1463,13 @@ class WorkerPool {
         if (!engineTask || engineTask.mediaSaved) return;
         try {
           const fresh = dbService.getTask(rowTask.id);
-          if (fresh && fresh.status === 'completed') return;
+          // v2.48.103 (BULK MODE): a multi-clip Agent task's
+          // sibling scenes share ONE queue row — the first
+          // scene's completion must not starve the others'
+          // downloads, so the already-completed shortcut does
+          // not apply to them (each sibling still saves its own
+          // file under its own scene tag).
+          if (fresh && fresh.status === 'completed' && !(engineTask.agentSceneCount > 1)) return;
         } catch (e) {}
 
         this.log(`[Download Queue] Starting download for Prompt #${rowTask.prompt_index + 1} (${downloadPipeline.length} remaining in queue)…`, 'info');
@@ -2386,10 +2402,21 @@ class WorkerPool {
                 // box. The result vocabulary is the same, so
                 // every branch below — and the whole download
                 // pipeline behind SUBMITTED — works unchanged.
+                // v2.48.103 (BULK MODE): the task's agentClips
+                // (the bridge's per-run map, keyed by prompt
+                // index) rides a per-task CLONE of the run
+                // settings — the shared object is never mutated,
+                // and a single-clip task passes it through as-is.
+                const taskAgentClips = (settings.agentMode === true && this.agentClipsByIndex)
+                  ? agentRules.normalizeAgentClips(this.agentClipsByIndex[nextTask.prompt_index])
+                  : 1;
+                const submitSettings = taskAgentClips > 1
+                  ? { ...settings, agentClips: taskAgentClips }
+                  : settings;
                 const submitRes = (settings.agentMode === true)
                   ? await engine.submitViaAgent(
                       nextTask.prompt_text,
-                      settings,
+                      submitSettings,
                       currentIdx,
                       pendingTasks.length
                     )
@@ -2479,26 +2506,34 @@ class WorkerPool {
                 if (submitRes.status === 'AGENT_PARKED') {
                   // v2.48.97 (AGENT MODE — over cost): the Agent's
                   // proposal cost more than this run allows, even
-                  // after the one settings-fix retry. The card parks as
-                  // needs-attention (pending + needs_check), the
-                  // same visible parking the download stage uses —
-                  // nothing was generated, nothing was charged,
-                  // and the submission claim is NOT released (this
-                  // task must never be blindly re-fired at the
-                  // Agent by a retry loop).
-                  try { dbService.updateTaskProgress(nextTask.id, 'pending'); } catch (e) {}
-                  try { dbService.setTaskNeedsCheck(nextTask.id, 1); } catch (e) {}
+                  // after the one settings-fix retry — nothing was
+                  // generated, nothing was charged, and the
+                  // submission claim is NOT released (this task must
+                  // never be blindly re-fired at the Agent by a
+                  // retry loop).
+                  // Pack 3 (item 8): the card ends as a plain
+                  // FAILURE with the park reason — NOT pending +
+                  // needs_check. Nothing was approved, so no video
+                  // exists in Flow: the old pending + check-mark
+                  // record fed the run-end note "videos had been
+                  // generated but their download is still
+                  // remaining" for a video that was never made,
+                  // and put the card on the check-only Resume
+                  // surface hunting a tile that cannot exist.
+                  // Failing it (the AGENT_FAILED discipline) keeps
+                  // both honest; the park reason still names why.
+                  try { dbService.failTask(nextTask.id, submitRes.reason || 'Agent proposal over cost'); } catch (e) {}
                   recordActivity({
                     category: 'generation', level: 'warn', accountId: workerAccount ? workerAccount.id : null, accountName: workerAccount ? workerAccount.name : null,
                     stage: 'agent',
                     taskId: nextTask.id,
                     promptIndex: currentIdx,
                     reason: submitRes.reason || 'Agent proposal over cost',
-                    detail: `Prompt #${currentIdx + 1}: Flow's Agent proposed a generation above this run's expected cost, so FlowStudio rejected it (free) and did not approve anything — no credits were spent. Run the prompt in Flow yourself, or adjust the run's model/settings and run again.`,
+                    detail: `Prompt #${currentIdx + 1}: Flow's Agent proposed a generation above this run's expected cost, so FlowStudio rejected it (free) and did not approve anything — no credits were spent and no video was generated. Run the prompt in Flow yourself, or adjust the run's model/settings and run again.`,
                     message: `Agent proposal parked: Prompt #${currentIdx + 1} — over cost, nothing approved`
                   });
-                  this.onTaskUpdate({ taskId: nextTask.id, promptIndex: currentIdx, promptText: nextTask.prompt_text, tag: nextTask.prompt_tag || '', status: 'pending', reason: submitRes.reason || 'Agent proposal over cost (agent-over-cost)' });
-                  noteTaskSettled(nextTask.id, 'moved');
+                  this.onTaskUpdate({ taskId: nextTask.id, promptIndex: currentIdx, promptText: nextTask.prompt_text, tag: nextTask.prompt_tag || '', status: 'failed', reason: submitRes.reason || 'Agent proposal over cost (agent-over-cost)' });
+                  noteTaskSettled(nextTask.id, 'failed');
                   continue;
                 }
 
@@ -2540,6 +2575,17 @@ class WorkerPool {
                   submitRes.taskId = nextTask.id;
                   // v2.3.0: the engine names the download by this tag.
                   submitRes.tag = nextTask.prompt_tag || '';
+                  // v2.48.103 (BULK MODE): a multi-clip Agent
+                  // task's scenes save as <TAG>-S1..<TAG>-SN —
+                  // the scene suffix rides the TAG itself (the
+                  // engine's tag naming turns it into the file
+                  // name unchanged), so no naming code changes.
+                  // The suffix applies only when a tag exists to
+                  // carry it; an untagged bulk task falls back
+                  // to the engine's numbered naming.
+                  if (submitRes.agentSceneCount > 1 && submitRes.tag) {
+                    submitRes.tag = `${submitRes.tag}-S${submitRes.agentSceneIndex || 1}`;
+                  }
                   // v2.48.57 (PROJECT-TRUTH change 1): is
                   // task ke PROJECT ka URL abhi, submit ke
                   // pal par record kar lo — video SIRF isi
@@ -2574,6 +2620,41 @@ class WorkerPool {
                     }
                   } catch (e) {}
                   activeWorkerTasks.push(submitRes);
+
+                  // v2.48.103 (BULK MODE): the primary's sibling
+                  // scene tasks join the SAME download window —
+                  // same queue row, same account, same project —
+                  // each with its own capture binding, so the
+                  // monitor/pipeline downloads and saves every
+                  // clip of the conversation, not just the
+                  // first. A shortfall the driver reported is
+                  // surfaced as an Activity warning + warn log:
+                  // the delivered clips still complete the row.
+                  if (Array.isArray(submitRes.agentExtraTasks)) {
+                    for (const extra of submitRes.agentExtraTasks) {
+                      extra.taskId = nextTask.id;
+                      extra.tag = (nextTask.prompt_tag && extra.agentSceneCount > 1)
+                        ? `${nextTask.prompt_tag}-S${extra.agentSceneIndex || 1}`
+                        : (nextTask.prompt_tag || '');
+                      activeWorkerTasks.push(extra);
+                    }
+                  }
+                  if (submitRes.agentShortfall) {
+                    this.log(`Worker #${workerIndex + 1}: ${submitRes.agentShortfall}`, 'warn');
+                    try {
+                      recordActivity({
+                        category: 'task', level: 'warn',
+                        accountId: workerAccount ? workerAccount.id : '',
+                        accountName: workerAccount ? workerAccount.name : '',
+                        stage: 'agent',
+                        taskId: nextTask.id,
+                        promptIndex: nextTask.prompt_index,
+                        detail: submitRes.agentShortfall,
+                        reason: submitRes.agentShortfall,
+                        message: `Agent bulk shortfall: ${nextTask.prompt_tag || `Prompt #${(nextTask.prompt_index || 0) + 1}`}`
+                      });
+                    } catch (e) {}
+                  }
 
                   if (activeWorkerTasks.length < maxBurstConcurrency && taskQueue.size() > 0 && !this.isStopping) {
                     await sleep(2500);
@@ -2866,7 +2947,7 @@ class WorkerPool {
         try {
           const stillDownloadPending = pendingTasks.filter(t => {
             const row = dbService.getTask(t.id);
-            return row && row.status === 'pending' && row.needs_check;
+            return WorkerPool.isDownloadPendingRow(row);
           });
           if (stillDownloadPending.length > 0) {
             this.log(`Note: ${stillDownloadPending.length} prompts' videos had been generated but their download is still remaining — they are in pending (check-only). On pressing Resume, ONLY their download will happen again; NO new charge will apply.`, 'warn');
@@ -3053,6 +3134,20 @@ WorkerPool.buildRunStatusText = function buildRunStatusText(stats) {
   let text = `Running — ${active} generating · ${done} complete · total ${total} prompts`;
   if (failed > 0) text += ` · ${failed} fail`;
   return text;
+};
+
+// Pack 3 (item 8): the run-end "videos had been generated but
+// their download is still remaining" note counts ONLY a row
+// that is genuinely download-pending: still pending AND flagged
+// needs_check. That shape belongs to the download stage alone
+// (a video WAS generated; only its download remains). An
+// AGENT_PARKED card no longer produces it — parks now end
+// failed (see the AGENT_PARKED branch) — and this predicate is
+// the note's single definition, pinned by fixtures so the two
+// can never drift apart again. Pure; a null/garbage row is not
+// download-pending.
+WorkerPool.isDownloadPendingRow = function isDownloadPendingRow(row) {
+  return !!(row && row.status === 'pending' && row.needs_check);
 };
 
 module.exports = { WorkerPool };

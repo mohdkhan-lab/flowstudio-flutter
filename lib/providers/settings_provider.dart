@@ -203,6 +203,13 @@ class SettingsProvider with ChangeNotifier {
         if (data['preview_autoplay'] != null) _settings.previewAutoplay = data['preview_autoplay'] != '0';
         if (data['auto_verify_start'] != null) _settings.autoVerifyOnStart = data['auto_verify_start'] == '1';
         if (data['auto_check_updates'] != null) _settings.autoCheckUpdates = data['auto_check_updates'] != '0';
+        // v2.48.104: UI zoom — the top-strip − / + buttons write
+        // 'ui_scale'; read it back so the owner's scale survives
+        // restarts. Clamped to the buttons' own range.
+        if (data['ui_scale'] != null) {
+          final z = double.tryParse(data['ui_scale'].toString());
+          if (z != null) _settings.uiScale = z.clamp(0.7, 1.5).toDouble();
+        }
         // v2.27.0: "Only run live accounts" moved from the sidebar into
         // Settings → Automation; the engine reads the same key
         // ('live_only_accounts') when a generation run starts.
@@ -323,6 +330,23 @@ class SettingsProvider with ChangeNotifier {
     AutomationBridge.instance.saveSetting('appearance', val);
     notifyListeners();
   }
+
+  // v2.48.104: UI zoom — the top strip's − / % / + buttons.
+  // 10% steps between 70% and 150%; tapping the % label resets
+  // to 100%. The scale is applied at the app root (main.dart)
+  // and persisted in the engine settings so it survives
+  // restarts.
+  void updateUiScale(double val) {
+    final snapped = (val * 20).round() / 20; // 5% grid — the ± steps land exactly
+    _settings.uiScale = snapped.clamp(0.7, 1.5).toDouble();
+    AutomationBridge.instance
+        .saveSetting('ui_scale', _settings.uiScale.toStringAsFixed(2));
+    notifyListeners();
+  }
+
+  void zoomIn() => updateUiScale(_settings.uiScale + 0.1);
+  void zoomOut() => updateUiScale(_settings.uiScale - 0.1);
+  void resetUiScale() => updateUiScale(1.0);
 
   // v2.26.0: colour theme (independent of the Dark/Light mode above).
   void setTheme(String id) {

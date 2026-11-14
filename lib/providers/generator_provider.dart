@@ -110,6 +110,23 @@ class GeneratorProvider with ChangeNotifier {
   // is ONE prompt, no splitting.
   bool _isBulkMode = true;
 
+  // v2.48.103 (BULK MODE + the agent-batch fix): an MCP in-app
+  // run's prompts as a DISCRETE list, with their parallel
+  // agentClips counts — set by setMcpPrompts below. While set,
+  // _reparseItems builds exactly one item per entry in Bulk
+  // AND Agent mode alike, instead of collapsing the joined
+  // text into a single Agent prompt. That collapse was the
+  // batch bug: an MCP run of six prompts with Agent mode on
+  // queued ONE mashed prompt (Activity: "Generation started:
+  // 1 prompt(s)", credit plan "1 video(s) × 7") and prompts
+  // 2–6 never ran. A manual edit (setRawText / appendPrompts /
+  // clearPrompts) clears the list — typed text then follows
+  // the mode rules again; switching the mode does NOT clear
+  // it, so an MCP batch survives the app's mode reconciliation
+  // between the intake and the Generate press.
+  List<String>? _mcpDiscretePrompts;
+  List<int>? _mcpDiscreteClips;
+
   GeneratorProvider() {
     _refreshEngineStats();
     // v2.48.74 (Item C REVISED): seed the Parked
@@ -1100,12 +1117,40 @@ class GeneratorProvider with ChangeNotifier {
   }
 
   void setRawText(String text) {
+    // v2.48.103: a manual edit ends the MCP discrete intake —
+    // the text now follows the Bulk/Agent mode rules again.
+    _mcpDiscretePrompts = null;
+    _mcpDiscreteClips = null;
     _promptsRawText = text;
     _reparseItems();
     notifyListeners();
   }
 
+  /// v2.48.103: intake for an MCP in-app run. The prompts are
+  /// kept as a DISCRETE list — each one becomes its own item
+  /// and its own engine task (its own Agent conversation when
+  /// Agent mode is on), in Bulk and Agent mode alike — with a
+  /// parallel agentClips count per prompt (Bulk Mode: how many
+  /// clips that prompt's one conversation makes). The Prompts
+  /// box still shows the joined text, exactly as a paste
+  /// would look; the discrete list is what gets counted,
+  /// estimated and sent.
+  void setMcpPrompts(List<String> prompts, List<int> clips) {
+    _mcpDiscretePrompts = List.of(prompts);
+    _mcpDiscreteClips = List.generate(
+      prompts.length,
+      (i) => (i < clips.length && clips[i] >= 1) ? clips[i] : 1,
+    );
+    _promptsRawText = prompts.join('\n\n');
+    _reparseItems();
+    notifyListeners();
+  }
+
   void appendPrompts(List<String> newPrompts) {
+    // v2.48.103: appending is a manual edit — the MCP discrete
+    // intake (if any) ends here.
+    _mcpDiscretePrompts = null;
+    _mcpDiscreteClips = null;
     // v2.29.0: imported prompts join with a BLANK line between
     // them — under the Bulk block rule each import stays its own
     // prompt (they used to merge into one block). SRT cues keep
@@ -1121,6 +1166,8 @@ class GeneratorProvider with ChangeNotifier {
   }
 
   void clearPrompts() {
+    _mcpDiscretePrompts = null;
+    _mcpDiscreteClips = null;
     _promptsRawText = '';
     _items.clear();
     _runStarted = false;
@@ -1150,15 +1197,37 @@ class GeneratorProvider with ChangeNotifier {
     // exactly like every Bulk item.
     final normalized = _promptsRawText.replaceAll('\r\n', '\n').trim();
     final List<ParsedPrompt> parsed;
-    if (normalized.isEmpty) {
+    // v2.48.103: the agentClips count per parsed item — only
+    // the MCP discrete intake carries counts; every other
+    // source leaves the list empty and items default to 1.
+    final List<int> parsedClips;
+    if (_mcpDiscretePrompts != null && _mcpDiscretePrompts!.isNotEmpty) {
+      // v2.48.103 (the agent-batch fix): an MCP in-app run's
+      // prompts are DISCRETE — one item per entry, each label
+      // split off exactly like the Agent single-prompt path —
+      // WHATEVER the Bulk/Agent mode says. The mode's
+      // whole-text-as-one-prompt rule is for text the owner
+      // typed or pasted as one message; an MCP batch is a list
+      // of separate instructions and must queue as N tasks.
+      parsed = _mcpDiscretePrompts!.map((t) {
+        final parts = PromptParser.splitLabelPrefix(
+          t.replaceAll('\r\n', '\n').trim(),
+        );
+        return ParsedPrompt(parts.label, parts.text);
+      }).toList();
+      parsedClips = _mcpDiscreteClips ?? const [];
+    } else if (normalized.isEmpty) {
       parsed = const [];
+      parsedClips = const [];
     } else if (!_isBulkMode) {
       final parts = PromptParser.splitLabelPrefix(normalized);
       parsed = [
         ParsedPrompt(parts.label, parts.text),
       ];
+      parsedClips = const [];
     } else {
       parsed = PromptParser.parse(_promptsRawText);
+      parsedClips = const [];
     }
 
     // v2.30.3: a fresh item set has had no run started for it —
@@ -1171,6 +1240,7 @@ class GeneratorProvider with ChangeNotifier {
         index: i + 1,
         text: parsed[i].text,
         label: parsed[i].label,
+        agentClips: i < parsedClips.length ? parsedClips[i] : 1,
         status: PromptStatus.pending,
       ),
     );
@@ -1263,6 +1333,11 @@ class GeneratorProvider with ChangeNotifier {
                 'text': i.text,
                 'index': i.index - 1,
                 'tag': i.label ?? '',
+                // v2.48.103 (BULK MODE): the item's agentClips
+                // count (1 unless an MCP in-app run set it) —
+                // the bridge records it in the run's per-task
+                // map and the pool hands it to the Agent driver.
+                'agentClips': i.agentClips,
               })
           .toList(),
       downloadFolder: settings.settings.outputDirectory,

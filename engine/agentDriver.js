@@ -387,6 +387,12 @@ const PANEL_GUARD_MS = 15 * 1000; // panel-not-found fail-fast window
 // falls back to group-only proposal detection.
 const ANCHOR_RETRY_MS = 10 * 1000; // send-time composer-anchor retry budget
 const ANCHOR_RETRY_POLL_MS = 500; // cadence between anchor attempts
+// v2.48.106 (Fix F3): a send is verified landed (composer
+// cleared / user bubble visible / Thinking) within this
+// budget before the run trusts it; an unlanded send gets ONE
+// alternate-path retry, then fails 'agent-send-unverified'
+// instead of burning the 180s proposal wait.
+const SEND_VERIFY_MS = 10 * 1000; // send-landing verification budget
 // Pack 3: the settings opener clicks, waits ~1.5s, then polls
 // for the surface's text anchors for up to ~8s per strategy (the
 // AGENTTEST7 surface never appeared for the single legacy
@@ -433,7 +439,82 @@ function isPanelTextImplausible(text) {
   const t = String(text || '').replace(/\s+/g, ' ').trim();
   if (t.length < 40) return true;
   const stripped = t.split(CANVAS_PLACEHOLDER_TEXT).join('').replace(/\s+/g, ' ').trim();
-  return stripped.length === 0;
+  if (stripped.length === 0) return true;
+  // v2.48.106 (AGENTTEST12, Fix F2): the EMPTY-COMPOSER CHROME
+  // is implausible too. TEST12's anchor sat on the composer
+  // ROW alone — its whole text was the placeholder plus the
+  // row's icon ligatures (85 chars) — and the old guard passed
+  // it as plausible, so the panel-not-found fast-fail never
+  // fired, the DOM survey never ran, the chrome was even
+  // logged as an "agent message", and the run burned the full
+  // 180s proposal wait against a node that holds no
+  // conversation at all.
+  return isComposerChromeOnly(t);
+}
+
+// The composer row's icon ligatures / labels (Material icon
+// font names render as text in innerText) — the ONLY tokens
+// allowed next to the placeholder in a chrome-only read.
+const COMPOSER_CHROME_TOKENS = new Set([
+  'expand_content', 'add', 'agent', 'article_spark', 'tune',
+  'arrow_forward', 'send', 'stop', 'start', 'generation'
+]);
+
+/**
+ * v2.48.106 — true when `text` is ONLY the empty Agent
+ * composer's chrome: the "What do you want to create?"
+ * placeholder plus icon-ligature tokens, with no conversation
+ * content at all. Any real prose token (a user bubble, an
+ * Agent reply, a session title) makes it false. Pure;
+ * fixture-pinned.
+ */
+function isComposerChromeOnly(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return false;
+  const m = t.match(/what do you want to create\??/i);
+  if (!m) return false;
+  const rest = (t.slice(0, m.index) + ' ' + t.slice(m.index + m[0].length)).trim();
+  if (!rest) return true;
+  const tokens = rest.split(/\s+/).filter(Boolean);
+  if (!tokens.length) return true;
+  return tokens.every(tok => COMPOSER_CHROME_TOKENS.has(tok.toLowerCase()));
+}
+
+/**
+ * v2.48.106 (Fix F5) — does an instructions-surface read-back
+ * carry the standing instruction's title? The read is
+ * { text, values }: `text` is the surface's visible text and
+ * `values` are the .value properties of its fields — on the
+ * live surface an instruction card's title lives ONLY in a
+ * title TEXTBOX's value (innerText can never see it), so both
+ * channels are searched. Matching is truncation-tolerant: a
+ * list row that ellipsises the title still matches on the
+ * longest word-boundary prefix (≥10 chars) followed by an
+ * ellipsis. Pure; fixture-pinned.
+ */
+function instructionTitleMatches(read, title) {
+  const want = String(title || '').replace(/\s+/g, ' ').trim();
+  if (!want) return false;
+  const haystacks = [];
+  if (read && typeof read.text === 'string') haystacks.push(read.text);
+  if (read && Array.isArray(read.values)) {
+    for (const v of read.values) haystacks.push(String(v || ''));
+  }
+  const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+  for (const raw of haystacks) {
+    const h = norm(raw);
+    if (!h) continue;
+    if (h.includes(want)) return true;
+    let p = want;
+    while (p.length > 10) {
+      const cut = p.lastIndexOf(' ');
+      if (cut <= 0) break;
+      p = p.slice(0, cut);
+      if (p.length < 10) break;
+      if (h.includes(`${p}…`) || h.includes(`${p}...`)) return true;
+    }
+  }
+  return false;
 }
 
 const STARTED_GENERATING_RE = /(i'?ve started generating|i have started generating|started generating|generation has started|now generating)/i;
@@ -644,6 +725,11 @@ function agentLine(kind, data) {
     case 'sent': return d.retry
       ? `[AGENT] re-sent the user's instruction to Flow's Agent (${Number(d.chars) || 0} characters) — the one settings-fix retry.`
       : `[AGENT] sent the user's instruction to Flow's Agent (${Number(d.chars) || 0} characters).`;
+    case 'send-verified': return `[AGENT] send verified — the instruction landed in the Agent conversation (${d.via || 'composer cleared'}).`;
+    case 'send-retry': return `[AGENT] the send did not land (the composer still holds the text, no user bubble, no Thinking) — retrying ONCE via the ${d.via || 'alternate'} path.`;
+    case 'send-unverified': return '[AGENT] agent-send-unverified: the instruction could not be confirmed in the Agent conversation after the send and one alternate-path retry — failing fast instead of waiting blind.';
+    case 'settings-detail': return `[AGENT] settings read detail — ${d.field}: label ${d.labelFound ? 'found' : 'NOT found'}, state ${d.stateFound ? 'found' : 'NOT found'} (root ${d.root || 'unknown'}).`;
+    case 'settings-surface-text': return `[AGENT] settings surface text (${Number(d.chars) || 0} chars): "${truncateForLog(d.text, 1000)}"`;
     case 'message': return `[AGENT] agent message: "${truncateForLog(d.text)}"`;
     case 'proposal': return `[AGENT] generation proposal from Flow's Agent — model ${d.model ? `${d.model}${d.modelSource ? ` (from ${d.modelSource})` : ''}` : 'not named'}, quoted ${d.quoted} credits (this run's expected cost: ${d.expected} credits) → ${d.act || '?'}.`;
     case 'option-clicked': return `[AGENT] clicked "${d.label}" in the proposal's Permission options.`;
@@ -779,6 +865,34 @@ function pageClickAgentToggle(selectors) {
 function pageAnchorAgentPanel(selectors) {
   const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
   const stash = (el) => { try { document.__fsAgentPanel = el || null; } catch (e) {} };
+  // v2.48.106 (Fix F1): the text of a subtree with the CANVAS
+  // / GRID subtrees PRUNED OUT — the placeholder leaf and the
+  // tile containers are removed from a clone, never used as a
+  // reason to reject the ancestor that holds them. TEST12's
+  // layout (live-DOM verified 2026-11-15): the Agent panel is
+  // a RIGHT-HAND COLUMN — header, conversation area, composer
+  // pinned at the bottom — and the conversation branches off
+  // ABOVE the depth where the old walk met the canvas
+  // placeholder, so every ancestor holding both was
+  // unreachable by construction and the anchor capped at the
+  // 85-char composer row.
+  const prunedText = (root) => {
+    if (!root) return '';
+    let clone = null;
+    try { clone = typeof root.cloneNode === 'function' ? root.cloneNode(true) : null; } catch (e) { clone = null; }
+    if (!clone) { try { return norm(root.innerText || ''); } catch (e) { return ''; } }
+    try { clone.querySelectorAll('flow-grid-tile-container').forEach(n => { try { n.remove(); } catch (e) {} }); } catch (e) {}
+    try {
+      const kill = [];
+      clone.querySelectorAll('*').forEach(n => {
+        let t = '';
+        try { t = norm(n.innerText || ''); } catch (e) { t = ''; }
+        if (t === 'Start creating or drop media' && !(n.querySelector && n.querySelector('div.ProseMirror, [contenteditable="true"]'))) kill.push(n);
+      });
+      kill.forEach(n => { try { n.remove(); } catch (e) {} });
+    } catch (e) {}
+    try { return norm(clone.innerText || ''); } catch (e) { return ''; }
+  };
   let composer = null;
   try {
     const all = Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror, [contenteditable="true"][role="textbox"]'));
@@ -795,24 +909,81 @@ function pageAnchorAgentPanel(selectors) {
     stash(null);
     return { found: false, depth: 0, textLength: 0, containsComposer: false, text: '' };
   }
-  let panel = composer;
+  // The ancestor chain, composer first, with pruned lengths.
+  const chain = [composer];
+  {
+    let cur = composer;
+    while (cur.parentElement && chain.length <= 14) {
+      const up = cur.parentElement;
+      if (up === document.body || up === document.documentElement) break;
+      chain.push(up);
+      cur = up;
+    }
+  }
+  const prunedLens = chain.map(el => prunedText(el).length);
+  // The conversation candidate: the smallest element carrying
+  // the last sent instruction's probe (the user's own bubble),
+  // else a role="log" conversation container, else the
+  // Permission options group's carrier. The anchor is the
+  // LOWEST COMMON ANCESTOR of composer + candidate — the
+  // panel root that holds BOTH.
+  let candidate = null;
+  try {
+    const probe = String(document.__fsAgentSentProbe || '').trim();
+    if (probe) {
+      let bestLen = Infinity;
+      const pool = Array.from(document.querySelectorAll('div, section, aside, li, p'));
+      for (const el of pool) {
+        if (el === composer || (el.contains && el.contains(composer))) continue;
+        let t = '';
+        try { t = norm(el.innerText || ''); } catch (e) { t = ''; }
+        if (t && t.includes(probe) && t.length < bestLen) { bestLen = t.length; candidate = el; }
+      }
+    }
+  } catch (e) { candidate = null; }
+  if (!candidate) {
+    try { candidate = document.querySelector('[role="log"]'); } catch (e) { candidate = null; }
+  }
+  if (!candidate) {
+    try {
+      const g = document.querySelector('[role="radiogroup"][aria-label="Permission options"], [aria-label="Permission options"]');
+      if (g) candidate = g;
+    } catch (e) { candidate = null; }
+  }
+  let panel = null;
   let depth = 0;
-  let cur = composer;
-  while (cur.parentElement && depth < 14) {
-    const up = cur.parentElement;
-    if (up === document.body || up === document.documentElement) break;
-    let upText = '';
-    try { upText = norm(up.innerText || ''); } catch (e) { upText = ''; }
-    let hasGrid = false;
-    try { hasGrid = !!up.querySelector('flow-grid-tile-container'); } catch (e) { hasGrid = false; }
-    if (hasGrid || upText.includes('Start creating or drop media')) break;
-    if (upText.length > 20000) break;
-    cur = up;
-    panel = cur;
-    depth++;
+  if (candidate && candidate !== composer && !(candidate.contains && candidate.contains(composer))) {
+    // LCA: the first chain element that also contains the
+    // candidate.
+    for (let i = 0; i < chain.length; i++) {
+      const el = chain[i];
+      let holds = false;
+      try { holds = el === candidate || (el.contains && el.contains(candidate)); } catch (e) { holds = false; }
+      if (holds) { panel = el; depth = i; break; }
+    }
+  }
+  if (!panel) {
+    // Fallback: climb while the pruned text stays bounded,
+    // preferring the highest ancestor that does NOT swallow
+    // the project grid (the panel column itself); only when
+    // every ancestor holds the grid does the walk take the
+    // deepest bounded one (its pruned text still excludes the
+    // grid/canvas subtrees).
+    let lastBounded = 0;
+    let lastGridFree = -1;
+    for (let i = 1; i < chain.length; i++) {
+      if (prunedLens[i] > 20000) break;
+      lastBounded = i;
+      let hasGrid = false;
+      try { hasGrid = !!chain[i].querySelector('flow-grid-tile-container'); } catch (e) { hasGrid = false; }
+      if (!hasGrid) lastGridFree = i;
+    }
+    const pick = lastGridFree >= 0 ? lastGridFree : lastBounded;
+    panel = chain[pick];
+    depth = pick;
   }
   stash(panel);
-  const text = norm(panel.innerText || '');
+  const text = prunedText(panel);
   return { found: true, depth, textLength: text.length, containsComposer: true, text };
 }
 
@@ -822,10 +993,91 @@ function pageAnchorAgentPanel(selectors) {
 // driver re-anchors explicitly instead of reading blind. There
 // is deliberately no per-message element hunting.
 function pageReadAgentPanelText(selectors) {
+  const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
   let panel = null;
   try { panel = document.__fsAgentPanel || null; } catch (e) { panel = null; }
   if (!panel || !document.contains(panel)) return null;
-  return String(panel.innerText || '').replace(/\s+/g, ' ').trim();
+  // v2.48.106 (Fix F1): the read is PRUNED the same way the
+  // anchor computes its text — grid-tile and canvas-placeholder
+  // subtrees inside the panel root never leak into the
+  // conversation text (the .97 canvas trap, inverted: the
+  // anchor may now legitimately sit above them).
+  let clone = null;
+  try { clone = typeof panel.cloneNode === 'function' ? panel.cloneNode(true) : null; } catch (e) { clone = null; }
+  if (!clone) { try { return norm(panel.innerText || ''); } catch (e) { return ''; } }
+  try { clone.querySelectorAll('flow-grid-tile-container').forEach(n => { try { n.remove(); } catch (e) {} }); } catch (e) {}
+  try {
+    const kill = [];
+    clone.querySelectorAll('*').forEach(n => {
+      let t = '';
+      try { t = norm(n.innerText || ''); } catch (e) { t = ''; }
+      if (t === 'Start creating or drop media' && !(n.querySelector && n.querySelector('div.ProseMirror, [contenteditable="true"]'))) kill.push(n);
+    });
+    kill.forEach(n => { try { n.remove(); } catch (e) {} });
+  } catch (e) {}
+  try { return norm(clone.innerText || ''); } catch (e) { return ''; }
+}
+
+// v2.48.106 (Fix F3) — stash the probe (the head of the text
+// about to be sent) so the anchor and the send verification
+// can find the user's own bubble in the conversation area.
+function pageNoteAgentSent(selectors, probe) {
+  try { document.__fsAgentSentProbe = String(probe || '').slice(0, 48); } catch (e) {}
+  return true;
+}
+
+// v2.48.106 (Fix F3) — did the send LAND? A landed send shows
+// at least one of: the sent text as a user bubble in the
+// conversation (an element carrying the probe that neither is
+// nor contains the composer), the composer CLEARED of the
+// probe, or "Thinking" in the panel (the Agent took the
+// message). The composer still holding the probe with no
+// bubble and no Thinking is an UNLANDED send (e.g. Enter
+// inserted a newline in the ProseMirror chat instead of
+// submitting). Never throws.
+function pageVerifyAgentSend(selectors, probe) {
+  const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+  const want = norm(probe || '');
+  const out = { landed: false, bubbleSeen: false, composerCleared: false, thinking: false, composerText: '', composerFound: false };
+  if (!want) { out.landed = true; out.composerCleared = true; return out; }
+  let composer = null;
+  try {
+    const all = Array.from(document.querySelectorAll('div.prosemirror-editor div.ProseMirror, div.ProseMirror[contenteditable="true"], div.ProseMirror, [contenteditable="true"][role="textbox"]'));
+    const ed = all.filter(e => e.isContentEditable || e.getAttribute('contenteditable') === 'true');
+    const pool = ed.length ? ed : all;
+    const vis = pool.filter(e => { const r = e.getBoundingClientRect(); return r.width > 30 && r.height > 8 && (e.checkVisibility ? e.checkVisibility() : true); });
+    const list = vis.length ? vis : pool;
+    if (list.length) {
+      composer = list.find(e => /what do you want to create/i.test(e.getAttribute('aria-label') || e.getAttribute('data-placeholder') || e.getAttribute('placeholder') || '')) ||
+        list.slice().sort((a, b) => b.getBoundingClientRect().top - a.getBoundingClientRect().top)[0];
+    }
+  } catch (e) { composer = null; }
+  let composerHolds = false;
+  if (composer) {
+    out.composerFound = true;
+    let ct = '';
+    try { ct = norm(composer.innerText || composer.value || ''); } catch (e) { ct = ''; }
+    out.composerText = ct.slice(0, 120);
+    composerHolds = ct.includes(want);
+    out.composerCleared = !composerHolds;
+  }
+  try {
+    const pool = Array.from(document.querySelectorAll('div, section, aside, li, p, span'));
+    for (const el of pool) {
+      if (composer && (el === composer || (el.contains && el.contains(composer)) || (composer.contains && composer.contains(el)))) continue;
+      let t = '';
+      try { t = norm(el.innerText || ''); } catch (e) { t = ''; }
+      if (t && t.includes(want)) { out.bubbleSeen = true; break; }
+    }
+  } catch (e) {}
+  try {
+    let panel = null;
+    try { panel = document.__fsAgentPanel || null; } catch (e) { panel = null; }
+    const scopeText = panel && document.contains(panel) ? norm(panel.innerText || '') : norm(document.body ? document.body.innerText || '' : '');
+    out.thinking = /\bthinking\b/i.test(scopeText);
+  } catch (e) {}
+  out.landed = !!(out.bubbleSeen || out.thinking || (composer && out.composerCleared));
+  return out;
 }
 
 // v2.48.98: a one-time DOM survey for the panel-not-found
@@ -1196,19 +1448,44 @@ function pageAgentSettingsPresent(selectors) {
 function pageReadAgentSettings(selectors, modelLabels) {
   const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
   let root = null;
+  let rootVia = null;
   // Pack 3: the text-anchor finder's stash is the surface of
   // record when it is live — it may match no selector at all.
   try {
     const st = document.__fsAgentSettings || null;
-    if (st && document.contains(st)) root = st;
+    if (st && document.contains(st)) { root = st; rootVia = 'stash'; }
   } catch (e) {}
   if (!root) {
     for (const sel of selectors.settingsPanel) {
       try { root = document.querySelector(sel); } catch (e) { root = null; }
-      if (root) break;
+      if (root) { rootVia = 'selector'; break; }
     }
   }
   if (!root) return { present: false, confirm: null, model: null, aspect: null, outputs: null };
+  // v2.48.106 (Fix F4): ROOT SANITY GATE. TEST12's surface
+  // WAS "found" yet every read came back null and the
+  // while-open survey photographed ZERO interactive elements:
+  // the text-anchor minimum can be a header-only subtree
+  // while the real controls live in a sibling scroll
+  // container. A root whose subtree holds no control
+  // candidate at all can never be read — climb to the nearest
+  // ancestor that DOES hold controls and read there instead
+  // of reading a provably wrong root twice.
+  {
+    const hasControls = (node) => {
+      try {
+        return !!node.querySelector('button, input, select, textarea, [role="radio"], [role="radiogroup"], [aria-haspopup], label');
+      } catch (e) { return false; }
+    };
+    if (!hasControls(root)) {
+      let up = root.parentElement || null;
+      for (let d = 0; up && d < 6; d++) {
+        if (hasControls(up)) { root = up; rootVia = `${rootVia || 'found'}+climbed${d + 1}`; break; }
+        up = up.parentElement || null;
+      }
+    }
+  }
+  const rootDesc = `<${String(root.tagName || '?').toLowerCase()}> via=${rootVia || 'unknown'} textLen=${norm(root.innerText || '').length}`;
 
   // Every element under a node, shadow roots included, in
   // document order.
@@ -1285,8 +1562,14 @@ function pageReadAgentSettings(selectors, modelLabels) {
   // The selected option among `texts` within `scope`: an exact
   // label carrier first, then a label-plus-description carrier
   // (the Confirm rows carry a description line under the label,
-  // so their row text starts with the label).
-  const readOption = (scope, texts) => {
+  // so their row text starts with the label). v2.48.106: the
+  // result is a DIAGNOSTIC object — labelFound (a carrier of
+  // the label text exists) and stateFound (some carrier
+  // reported a state at all) are reported separately, so a
+  // failure is never again one undifferentiated null.
+  const readOptionDiag = (scope, texts) => {
+    let labelFound = false;
+    let stateFound = false;
     for (const t of texts) {
       const exact = scope.filter(e => norm(e.innerText || '') === t);
       const prefixed = scope.filter(e => {
@@ -1294,10 +1577,60 @@ function pageReadAgentSettings(selectors, modelLabels) {
         return tx !== t && tx.startsWith(`${t} `);
       }).sort((x, y) => norm(x.innerText || '').length - norm(y.innerText || '').length);
       for (const hit of [...exact, ...prefixed]) {
-        if (stateForHit(hit) === true) return t;
+        labelFound = true;
+        const st = stateForHit(hit);
+        if (st !== null && st !== undefined) stateFound = true;
+        if (st === true) return { value: t, labelFound, stateFound };
       }
     }
-    return null;
+    return { value: null, labelFound, stateFound };
+  };
+  const readOption = (scope, texts) => readOptionDiag(scope, texts).value;
+
+  // v2.48.106 (Fix F4): the NATIVE radio read — the live
+  // surface (verified 2026-11-15) renders each option group
+  // as a real RADIO GROUP: input[type=radio] / [role=radio]
+  // elements whose checked state sits on the radio itself.
+  // Read those first: a radio's label is its own text, its
+  // <label> wrapper's text, or its row's text (which starts
+  // with the label, the description following it).
+  const readRadioGroupDiag = (scope, texts) => {
+    let labelFound = false;
+    let stateFound = false;
+    const radios = scope.filter(e => {
+      const tag = String(e.tagName || '');
+      if (tag === 'INPUT' && (e.getAttribute && e.getAttribute('type')) === 'radio') return true;
+      return typeof e.getAttribute === 'function' && e.getAttribute('role') === 'radio';
+    });
+    for (const r of radios) {
+      let rowText = '';
+      let node = r;
+      for (let d = 0; node && d < 3 && !rowText; d++) {
+        const t = norm(node.innerText || '');
+        if (t) rowText = t;
+        node = node.parentElement || null;
+      }
+      let matched = null;
+      for (const t of texts) {
+        if (rowText === t || rowText.startsWith(`${t} `)) { matched = t; break; }
+      }
+      if (!matched) continue;
+      labelFound = true;
+      const st = stateOf(r);
+      if (st !== null && st !== undefined) stateFound = true;
+      if (st === true) return { value: matched, labelFound, stateFound };
+    }
+    return { value: null, labelFound, stateFound };
+  };
+  const readOptionScoped = (scope, texts) => {
+    const nat = readRadioGroupDiag(scope, texts);
+    if (nat.value !== null) return nat;
+    const txt = readOptionDiag(scope, texts);
+    return {
+      value: txt.value,
+      labelFound: nat.labelFound || txt.labelFound,
+      stateFound: nat.stateFound || txt.stateFound
+    };
   };
 
   // The subtree of one settings section: its heading's
@@ -1323,7 +1656,8 @@ function pageReadAgentSettings(selectors, modelLabels) {
 
   const labels = Array.isArray(modelLabels) ? modelLabels : [];
   const confirmScope = sectionScope('Confirm before generating', ['Always', 'Never']) || els;
-  const confirm = readOption(confirmScope, ['Always', 'Never']);
+  const confirmDiag = readOptionScoped(confirmScope, ['Always', 'Never']);
+  const confirm = confirmDiag.value;
 
   // The model dropdown's displayed label, with the suffixes
   // the real control appends (icon ligatures, the 'Leaving
@@ -1332,6 +1666,7 @@ function pageReadAgentSettings(selectors, modelLabels) {
     .replace(/\b(expand_more|expand_less|arrow_drop_down|arrow_drop_up|keyboard_arrow_down|keyboard_arrow_up|unfold_more|unfold_less)\b/gi, ' ')
     .replace(/leaving\s+dec\s+\d+/gi, ' ')
     .replace(/\s+/g, ' ')
+    .replace(/[\s—–-]+$/, '')
     .trim();
   let model = null;
   const controlEls = els.filter(e => {
@@ -1341,23 +1676,56 @@ function pageReadAgentSettings(selectors, modelLabels) {
     const role = e.getAttribute('role');
     return e.getAttribute('aria-haspopup') === 'listbox' || role === 'combobox' || role === 'listbox';
   });
-  for (const label of labels) {
-    if (controlEls.some(e => stripModelText(e.innerText || '') === label)) { model = label; break; }
-  }
+  // v2.48.106 (Fix F4): SECTION-SCOPING IS MANDATORY for the
+  // model too — the Image section's dropdown (a Nano Banana
+  // label) and the Video section's dropdown are different
+  // controls; the Video section's button wins, the whole-root
+  // scan survives only as a fallback.
+  const videoScopeEls = sectionScope('Video generation default', labels.concat(['16:9', '9:16', 'x1'])) || els;
+  const modelDiag = { labelFound: false, stateFound: false };
+  const findModel = (pool) => {
+    const ctrls = pool.filter(e => controlEls.includes(e));
+    for (const label of labels) {
+      if (ctrls.some(e => stripModelText(e.innerText || '') === label)) { modelDiag.labelFound = true; return label; }
+    }
+    return null;
+  };
+  model = findModel(videoScopeEls);
+  if (!model) model = findModel(els);
   if (!model) {
     for (const label of labels) {
-      if (els.some(e => stripModelText(e.innerText || '') === label)) { model = label; break; }
+      if (els.some(e => stripModelText(e.innerText || '') === label)) { model = label; modelDiag.labelFound = true; break; }
     }
   }
+  modelDiag.stateFound = model !== null;
 
-  const videoScope = sectionScope('Video generation default', labels.concat(['16:9', '9:16', 'x1'])) || els;
-  const aspect = readOption(videoScope, ['16:9', '9:16']);
-  let outputs = readOption(videoScope, ['x1', 'x2', 'x3', 'x4']);
+  const aspectDiag = readOptionScoped(videoScopeEls, ['16:9', '9:16']);
+  const aspect = aspectDiag.value;
+  const outputsDiag = readOptionScoped(videoScopeEls, ['x1', 'x2', 'x3', 'x4']);
+  let outputs = outputsDiag.value;
   if (!outputs) {
-    const bare = readOption(videoScope, ['1', '2', '3', '4']);
+    const bare = readOption(videoScopeEls, ['1', '2', '3', '4']);
     if (bare) outputs = `x${bare}`;
   }
-  return { present: true, confirm, model, aspect, outputs };
+  return {
+    present: true,
+    confirm,
+    model,
+    aspect,
+    outputs,
+    // v2.48.106 (Fix F4): per-field diagnostics + the root
+    // descriptor + the surface's own text (truncated) ride
+    // every read, so the aligner can log WHY a field failed
+    // and a blind failure is impossible.
+    detail: {
+      confirm: { labelFound: confirmDiag.labelFound, stateFound: confirmDiag.stateFound },
+      model: { labelFound: modelDiag.labelFound, stateFound: modelDiag.stateFound },
+      aspect: { labelFound: aspectDiag.labelFound, stateFound: aspectDiag.stateFound },
+      outputs: { labelFound: outputsDiag.labelFound, stateFound: outputsDiag.stateFound },
+      root: rootDesc
+    },
+    surfaceText: norm(root.innerText || '').slice(0, 1000)
+  };
 }
 
 // Click the element carrying EXACTLY this text inside the Agent
@@ -1436,6 +1804,127 @@ function pageClickSettingsText(selectors, text) {
     }
   }
   return false;
+}
+
+/**
+ * v2.48.106 (Fix F4) — click ONE option inside ONE settings
+ * section, scoped by the section's heading. Section-scoping
+ * is mandatory on the live surface: the Image and Video
+ * sections carry aspect/output radios with DIFFERENT checked
+ * values, and an unscoped exact-text click can land on the
+ * Image section's twin. Radios are clicked natively first
+ * (the input / role=radio element, or its label/row), then
+ * exact-text controls in the section; when the section cannot
+ * be isolated, or the option renders in a portal (dropdown
+ * lists), the document is searched. Returns true iff clicked.
+ */
+function pageClickSettingsOption(selectors, sectionHeading, text) {
+  const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+  const want = norm(text || '');
+  if (!want) return false;
+  let root = null;
+  try {
+    const st = document.__fsAgentSettings || null;
+    if (st && document.contains(st)) root = st;
+  } catch (e) {}
+  if (!root) {
+    for (const sel of selectors.settingsPanel) {
+      try { root = document.querySelector(sel); } catch (e) { root = null; }
+      if (root) break;
+    }
+  }
+  const allDeep = (node) => {
+    const out = [];
+    const visit = (n) => {
+      if (!n) return;
+      let kids = [];
+      try { kids = n.children ? Array.from(n.children) : []; } catch (e) { kids = []; }
+      for (const k of kids) {
+        out.push(k);
+        visit(k);
+        try { if (k.shadowRoot) visit(k.shadowRoot); } catch (e) {}
+      }
+    };
+    visit(node);
+    return out;
+  };
+  const isInteractive = (e) => {
+    const tag = String(e.tagName || '');
+    if (tag === 'BUTTON' || tag === 'A' || tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA' || tag === 'LABEL') return true;
+    if (typeof e.getAttribute !== 'function') return false;
+    const role = e.getAttribute('role');
+    return role === 'radio' || role === 'option' || role === 'menuitem' || role === 'button' || role === 'combobox' || role === 'listbox' || !!e.getAttribute('aria-haspopup');
+  };
+  const clickEl = (el) => {
+    let target = el;
+    if (!isInteractive(target)) {
+      let up = target.parentElement || null;
+      for (let d = 0; up && d < 3; d++) {
+        if (isInteractive(up)) { target = up; break; }
+        up = up.parentElement || null;
+      }
+    }
+    try { target.click(); return true; } catch (e) { return false; }
+  };
+  const clickInPool = (pool) => {
+    // Native radios first: the radio whose row/label text is
+    // exactly the wanted option (or starts with it).
+    for (const e of pool) {
+      const tag = String(e.tagName || '');
+      const isRadio = (tag === 'INPUT' && (e.getAttribute && e.getAttribute('type')) === 'radio') ||
+        (typeof e.getAttribute === 'function' && e.getAttribute('role') === 'radio');
+      if (!isRadio) continue;
+      let node = e;
+      let rowText = '';
+      for (let d = 0; node && d < 3 && !rowText; d++) {
+        const t = norm(node.innerText || '');
+        if (t) rowText = t;
+        node = node.parentElement || null;
+      }
+      if (rowText === want || rowText.startsWith(`${want} `)) {
+        if (clickEl(e)) return true;
+      }
+    }
+    const el = pool.find(e => norm(e.getAttribute && e.getAttribute('aria-label') || e.innerText || '') === want);
+    if (el) return clickEl(el);
+    // Dropdown OPTIONS carry the suffixes the reader strips
+    // (icon ligatures, the 'Leaving Dec 5' retirement note) —
+    // a stripped-text match clicks those too. The retirement
+    // note hangs off an em-dash ("Omni 1.1 Flash — Leaving
+    // Dec 5"), so the dangling separator goes too.
+    const stripOpt = (t) => norm(t)
+      .replace(/\b(expand_more|expand_less|arrow_drop_down|arrow_drop_up|keyboard_arrow_down|keyboard_arrow_up|unfold_more|unfold_less)\b/gi, ' ')
+      .replace(/leaving\s+dec\s+\d+/gi, ' ')
+      .replace(/\s+/g, ' ')
+      .replace(/[\s—–-]+$/, '')
+      .trim();
+    const el2 = pool.find(e => stripOpt(e.innerText || '') === want);
+    if (el2) return clickEl(el2);
+    return false;
+  };
+  // The section's element pool: the heading's smallest
+  // carrier, climbed to the ancestor holding the options.
+  let sectionPool = null;
+  if (root && sectionHeading) {
+    const els = allDeep(root);
+    let head = null;
+    let bestLen = Infinity;
+    for (const e of els) {
+      const t = norm(e.innerText || '');
+      if (t.includes(sectionHeading) && t.length < bestLen) { bestLen = t.length; head = e; }
+    }
+    if (head) {
+      let node = head;
+      for (let d = 0; node && d <= 6; d++) {
+        const pool = [node, ...allDeep(node)];
+        if (pool.some(e => norm(e.innerText || '') === want)) { sectionPool = pool; break; }
+        node = node.parentElement || null;
+      }
+    }
+  }
+  if (sectionPool && clickInPool(sectionPool)) return true;
+  if (root && clickInPool(allDeep(root))) return true;
+  try { return clickInPool(allDeep(document.body)); } catch (e) { return false; }
 }
 
 // The settings surface's Save button (settings are per-project
@@ -1572,8 +2061,32 @@ function pageAgentInstructionsSurface(selectors) {
  */
 function pageReadAgentInstructions(selectors) {
   const norm = (s) => String(s || '').replace(/\s+/g, ' ').trim();
+  // v2.48.106 (Fix F5): the stash is trusted only while it
+  // still reads as the LIST surface (both anchors) — after
+  // Done the list re-renders and a still-attached stale
+  // subtree (e.g. the form container) reads back empty.
+  // Otherwise the surface is re-detected fresh by its text
+  // anchors, smallest carrier first.
   let root = null;
-  try { const st = document.__fsAgentInstructions; if (st && document.contains(st)) root = st; } catch (e) {}
+  try {
+    const st = document.__fsAgentInstructions;
+    if (st && document.contains(st)) {
+      const t = norm(st.innerText || '');
+      if (t.includes('Agent instructions') && t.includes('Add instruction')) root = st;
+    }
+  } catch (e) {}
+  if (!root) {
+    try {
+      const pool = Array.from(document.querySelectorAll('div, section, aside, form, [role="dialog"]'));
+      let best = null;
+      let bestLen = Infinity;
+      for (const el of pool) {
+        const t = norm(el.innerText || '');
+        if (t && t.length <= 6000 && t.includes('Agent instructions') && t.includes('Add instruction') && t.length < bestLen) { best = el; bestLen = t.length; }
+      }
+      root = best;
+    } catch (e) {}
+  }
   if (!root) {
     try {
       for (const sel of (selectors.instructionsPanel || [])) {
@@ -1582,18 +2095,36 @@ function pageReadAgentInstructions(selectors) {
       }
     } catch (e) {}
   }
-  if (!root) {
-    try {
-      const pool = Array.from(document.querySelectorAll('div, section, aside, form, [role="dialog"]'));
-      for (const el of pool) {
-        const t = norm(el.innerText || '');
-        if (t && t.length <= 6000 && t.includes('Agent instructions') && t.includes('Add instruction')) { root = el; break; }
-      }
-    } catch (e) {}
-  }
-  if (!root) return { present: false, text: '' };
+  if (!root) return { present: false, text: '', values: [] };
   try { document.__fsAgentInstructions = root; } catch (e) {}
-  return { present: true, text: norm(root.innerText || '').slice(0, 4000) };
+  // v2.48.106 (Fix F5): an instruction card's title and
+  // guideline live in input/textarea .value properties —
+  // innerText can NEVER see them (live-verified 2026-11-15).
+  // The read therefore carries the field values alongside
+  // the visible text, and `text` folds them in so existing
+  // text matchers keep working.
+  const values = [];
+  try {
+    const walk = (n) => {
+      let kids = [];
+      try { kids = n.children ? Array.from(n.children) : []; } catch (e) { kids = []; }
+      for (const k of kids) {
+        const tag = String(k.tagName || '');
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || k.isContentEditable === true || (k.getAttribute && k.getAttribute('contenteditable') === 'true')) {
+          let v = '';
+          try { v = typeof k.value === 'string' ? k.value : (k.isContentEditable ? String(k.textContent || '') : ''); } catch (e) { v = ''; }
+          v = norm(v);
+          if (v) values.push(v);
+        }
+        walk(k);
+        try { if (k.shadowRoot) walk(k.shadowRoot); } catch (e) {}
+      }
+    };
+    walk(root);
+  } catch (e) {}
+  const visible = norm(root.innerText || '');
+  const text = norm(`${visible} ${values.join(' ')}`).slice(0, 4000);
+  return { present: true, text, values };
 }
 
 /**
@@ -1975,6 +2506,16 @@ function pageSurveySettingsSurface(selectors) {
     if (entries.length && joined + entry.length + 3 > 500) break;
     entries.push(entry);
     joined += entry.length + 3;
+  }
+  // v2.48.106 (Fix F4): the survey must NEVER be silent on
+  // zero — TEST12's while-open survey found no interactive
+  // elements under the reader's root and logged NOTHING, so
+  // the one diagnostic built for exactly that failure
+  // produced no evidence. A zero now returns the root
+  // descriptor + its text length as a single entry.
+  if (!entries.length) {
+    const rootText = norm(root.innerText || '');
+    entries.push(`<${String(root.tagName || '?').toLowerCase()} settings-root> 0 interactive elements under this root; surface text ${rootText.length} chars: "${rootText.substring(0, 80)}"`);
   }
   return entries;
 }
@@ -2373,8 +2914,39 @@ async function alignAgentSettings(engine, settings, log, args) {
       try { await engine.page.evaluate(pageScrollAgentSettingsToVideo, AGENT_SELECTORS); } catch (e) {}
       await sleep(200);
     };
+    // v2.48.106 (Fix F4): per-field read diagnostics — every
+    // unreadable field logs labelFound/stateFound + the root
+    // descriptor, and the FIRST unreadable read of the run
+    // also logs the surface's own full text (truncated), so
+    // the next settings failure is never blind.
+    const logReadDetail = async (st) => {
+      if (!st || !st.present || !st.detail) return;
+      const fields = ['confirm', 'model', 'aspect', 'outputs'];
+      const unreadable = fields.filter(f => st[f] === null || st[f] === undefined);
+      for (const f of unreadable) {
+        const d = st.detail[f] || {};
+        log('settings-detail', { field: f, labelFound: !!d.labelFound, stateFound: !!d.stateFound, root: st.detail.root || 'unknown' });
+      }
+      if (unreadable.length && typeof st.surfaceText === 'string' && st.surfaceText && !a.__fsSettingsTextLogged) {
+        try { a.__fsSettingsTextLogged = true; } catch (e) {}
+        log('settings-surface-text', { text: st.surfaceText, chars: st.surfaceText.length });
+      }
+    };
+    // v2.48.106 (Fix F4): SET clicks are SECTION-SCOPED first
+    // (the Image section's twin radios must never take a
+    // Video-section click), with the legacy whole-surface
+    // text click as the fallback.
+    const clickOption = async (section, text) => {
+      let ok = false;
+      try { ok = (await engine.page.evaluate(pageClickSettingsOption, AGENT_SELECTORS, section, text)) === true; } catch (e) { ok = false; }
+      if (!ok) {
+        try { ok = (await engine.page.evaluate(pageClickSettingsText, AGENT_SELECTORS, text)) === true; } catch (e) { ok = false; }
+      }
+      return ok;
+    };
     await scrollBothSections();
     const state = await engine.page.evaluate(pageReadAgentSettings, AGENT_SELECTORS, KNOWN_AGENT_MODELS);
+    await logReadDetail(state);
     // v2.48.102 (Fix F): the FIRST unreadable read is the
     // survey moment — the surface has just been opened and
     // detected, nothing has been set or Saved yet, so the
@@ -2384,26 +2956,26 @@ async function alignAgentSettings(engine, settings, log, args) {
       openSurveyText = await captureSurfaceSurvey();
     }
     if (state.confirm !== 'Always') {
-      await engine.page.evaluate(pageClickSettingsText, AGENT_SELECTORS, 'Always');
+      await clickOption('Confirm before generating', 'Always');
       await sleep(300);
     }
     if (desired.modelLabel && state.model !== desired.modelLabel) {
       // Open the model dropdown (it shows the current label), then
       // pick the target label from the opened options.
       if (state.model) {
-        await engine.page.evaluate(pageClickSettingsText, AGENT_SELECTORS, state.model);
+        await clickOption('Video generation default', state.model);
         await sleep(500);
       }
-      await engine.page.evaluate(pageClickSettingsText, AGENT_SELECTORS, desired.modelLabel);
+      await clickOption('Video generation default', desired.modelLabel);
       await sleep(300);
     }
     if (desired.aspect && state.aspect !== desired.aspect) {
-      await engine.page.evaluate(pageClickSettingsText, AGENT_SELECTORS, desired.aspect);
+      await clickOption('Video generation default', desired.aspect);
       await sleep(300);
     }
     if (state.outputs !== 'x1') {
-      const okX = await engine.page.evaluate(pageClickSettingsText, AGENT_SELECTORS, 'x1');
-      if (!okX) await engine.page.evaluate(pageClickSettingsText, AGENT_SELECTORS, '1');
+      const okX = await clickOption('Video generation default', 'x1');
+      if (!okX) await clickOption('Video generation default', '1');
       await sleep(300);
     }
     const saved = await engine.page.evaluate(pageSaveAgentSettings, AGENT_SELECTORS);
@@ -2427,6 +2999,7 @@ async function alignAgentSettings(engine, settings, log, args) {
         try { after = await engine.page.evaluate(pageReadAgentSettings, AGENT_SELECTORS, KNOWN_AGENT_MODELS); } catch (e) { after = null; }
       }
     }
+    await logReadDetail(after);
     const checks = [
       ['confirm', 'Always', after ? after.confirm : null],
       ...(desired.modelLabel ? [['model', desired.modelLabel, after ? after.model : null]] : []),
@@ -2549,9 +3122,18 @@ async function ensureAgentInstructions(engine, log, args) {
       await sleep(openWaitMs);
       return waitSurface(surfaceWaitMs);
     };
-    const readText = async () => {
-      try { const r = await engine.page.evaluate(pageReadAgentInstructions, AGENT_SELECTORS); return (r && typeof r.text === 'string') ? r.text : ''; } catch (e) { return ''; }
+    // v2.48.106 (Fix F5): reads carry { text, values } and the
+    // title is matched by instructionTitleMatches — visible
+    // text AND field values, truncation-tolerantly (a card's
+    // title lives only in its textbox's .value on the live
+    // surface, where innerText can never see it).
+    const readBack = async () => {
+      try {
+        const r = await engine.page.evaluate(pageReadAgentInstructions, AGENT_SELECTORS);
+        return (r && typeof r === 'object') ? r : { present: false, text: '', values: [] };
+      } catch (e) { return { present: false, text: '', values: [] }; }
     };
+    const readText = async () => (await readBack()).text || '';
     const done = async () => {
       try { await engine.page.evaluate(pageClickInstructionsDone, AGENT_SELECTORS); } catch (e) {}
       await sleep(400);
@@ -2564,7 +3146,7 @@ async function ensureAgentInstructions(engine, log, args) {
       log('instructions-failed', { detail });
       return { status: 'failed', detail };
     }
-    if ((await readText()).includes(title)) {
+    if (instructionTitleMatches(await readBack(), title)) {
       await done();
       log('instructions-present', { title });
       return { status: 'present' };
@@ -2586,14 +3168,22 @@ async function ensureAgentInstructions(engine, log, args) {
       return { status: 'failed', detail: 'the instruction form could not be filled' };
     }
     await done();
-    let text = await readText();
-    if (!text.includes(title) && (await openSurface())) text = await readText();
-    if (text.includes(title)) {
+    // v2.48.106 (Fix F5): verify against a FRESH surface
+    // detection (the list re-renders after Done; a stale stash
+    // can read back an empty pre-save subtree), matched over
+    // the read's text + field values.
+    try { await engine.page.evaluate(pageAgentInstructionsSurface, AGENT_SELECTORS); } catch (e) {}
+    let back = await readBack();
+    if (!instructionTitleMatches(back, title) && (await openSurface())) {
+      try { await engine.page.evaluate(pageAgentInstructionsSurface, AGENT_SELECTORS); } catch (e) {}
+      back = await readBack();
+    }
+    if (instructionTitleMatches(back, title)) {
       log('instructions-added', { title });
       await done();
       return { status: 'added' };
     }
-    const detail = 'the instruction was filled and saved but does not read back on the instructions surface';
+    const detail = `the instruction was filled and saved but does not read back on the instructions surface (read-back: "${truncateForLog(back.text || '', 800)}")`;
     log('instructions-failed', { detail });
     return { status: 'failed', detail: 'the added instruction did not read back' };
   } catch (e) {
@@ -2643,6 +3233,7 @@ async function submitViaAgentInner(engine, args, noteProposal) {
   // run (alignAgentSettings consults it) — reset it here so a
   // reused args object can never leak a previous run's survey.
   try { a.__fsSettingsSurvey = undefined; } catch (e) {}
+  try { a.__fsSettingsTextLogged = undefined; } catch (e) {}
 
   if (engine.isStopping) return { status: 'STOPPED' };
   if (!promptText) {
@@ -2783,35 +3374,104 @@ async function submitViaAgentInner(engine, args, noteProposal) {
   log('settings-first-record', sfEntry);
 
   // 3. Send the pinned instruction as ONE chat message.
+  // v2.48.106 (Fix F3): a send is VERIFIED — before TEST12 a
+  // click or an Enter press counted as "sent" with no check
+  // that the text ever landed in the Agent chat (in a
+  // ProseMirror composer Enter can insert a newline instead
+  // of submitting), and every downstream symptom of an
+  // unlanded send (no reply, no group, frozen panel) followed
+  // exactly as logged. sendFailReason carries the specific
+  // failure to the caller when a send returns false.
+  let sendFailReason = null;
   const sendChat = async (text) => {
     const clean = String(text || '').replace(/[\r\n]+/g, ' ').trim();
     if (!clean) return false;
-    let focusedPanel = false;
-    try { focusedPanel = await engine.page.evaluate(pageFocusAgentInput, AGENT_SELECTORS); } catch (e) {}
-    if (focusedPanel) {
-      try {
-        if (!engine.cdpSession) engine.cdpSession = await engine.page.target().createCDPSession();
-        await engine.cdpSession.send('Input.insertText', { text: clean });
-      } catch (e) {
-        try { await engine.page.keyboard.type(clean, { delay: 5 }); } catch (e2) {}
+    const probe = clean.slice(0, 48);
+    try { await engine.page.evaluate(pageNoteAgentSent, AGENT_SELECTORS, probe); } catch (e) {}
+    const typeText = async () => {
+      let focusedPanel = false;
+      try { focusedPanel = await engine.page.evaluate(pageFocusAgentInput, AGENT_SELECTORS); } catch (e) {}
+      if (focusedPanel) {
+        try {
+          if (!engine.cdpSession) engine.cdpSession = await engine.page.target().createCDPSession();
+          await engine.cdpSession.send('Input.insertText', { text: clean });
+        } catch (e) {
+          try { await engine.page.keyboard.type(clean, { delay: 5 }); } catch (e2) {}
+        }
+      } else {
+        // Agent ON turns Flow's prompt box into the chat input —
+        // the engine's proven prompt-box writer is the right tool.
+        await engine.insertNativeText(clean);
       }
-    } else {
-      // Agent ON turns Flow's prompt box into the chat input —
-      // the engine's proven prompt-box writer is the right tool.
-      await engine.insertNativeText(clean);
+    };
+    const verifyLanded = async () => {
+      // Poll briefly: the bubble / Thinking render a beat
+      // after the submit. A NON-RESULT (the verify helper
+      // unreachable — mocked pages in fixtures) counts as
+      // 'unknown' and the legacy behaviour stands: a click or
+      // an Enter is taken as sent, never a false failure.
+      const budget = a.sendVerifyMs !== undefined ? a.sendVerifyMs : SEND_VERIFY_MS;
+      const deadline = Date.now() + Math.max(0, budget);
+      for (;;) {
+        let v = null;
+        try { v = await engine.page.evaluate(pageVerifyAgentSend, AGENT_SELECTORS, probe); } catch (e) { v = null; }
+        if (!v || typeof v !== 'object' || typeof v.landed !== 'boolean') return 'unknown';
+        // No composer on the page at all: there is nothing to
+        // verify against — the anchor / panel guard downstream
+        // owns that diagnosis (agent-panel-not-found), exactly
+        // as before send verification existed.
+        if (v.composerFound === false) return 'unknown';
+        if (v.landed) return v;
+        if (Date.now() >= deadline) return v;
+        await sleep(Math.min(400, Math.max(1, deadline - Date.now())));
+      }
+    };
+    await typeText();
+    await sleep(400);
+    let viaButton = false;
+    try { viaButton = await engine.page.evaluate(pageClickAgentSend, AGENT_SELECTORS); } catch (e) {}
+    if (!viaButton) {
+      try { await engine.page.keyboard.press('Enter'); } catch (e) {}
+    }
+    let verdict = await verifyLanded();
+    if (verdict === 'unknown') return true;
+    if (verdict && verdict.landed) {
+      log('send-verified', { via: verdict.bubbleSeen ? 'user bubble visible' : (verdict.thinking ? 'Thinking shown' : 'composer cleared') });
+      return true;
+    }
+    // Not landed: ONE retry via the ALTERNATE submit path
+    // (button when Enter was used, Enter when the button was
+    // used). The text is re-typed only when the composer no
+    // longer holds it — never duplicated into the bubble.
+    log('send-retry', { via: viaButton ? 'Enter key' : 'send button' });
+    if (verdict && verdict.composerCleared) await typeText();
+    else {
+      try { await engine.page.evaluate(pageFocusAgentInput, AGENT_SELECTORS); } catch (e) {}
     }
     await sleep(400);
-    let sent = false;
-    try { sent = await engine.page.evaluate(pageClickAgentSend, AGENT_SELECTORS); } catch (e) {}
-    if (!sent) {
-      try { await engine.page.keyboard.press('Enter'); sent = true; } catch (e) {}
+    if (viaButton) {
+      try { await engine.page.keyboard.press('Enter'); } catch (e) {}
+    } else {
+      let clicked = false;
+      try { clicked = await engine.page.evaluate(pageClickAgentSend, AGENT_SELECTORS); } catch (e) {}
+      if (!clicked) {
+        try { await engine.page.keyboard.press('Enter'); } catch (e) {}
+      }
     }
-    return sent;
+    verdict = await verifyLanded();
+    if (verdict === 'unknown') return true;
+    if (verdict && verdict.landed) {
+      log('send-verified', { via: verdict.bubbleSeen ? 'user bubble visible (retry)' : (verdict.thinking ? 'Thinking shown (retry)' : 'composer cleared (retry)') });
+      return true;
+    }
+    log('send-unverified', null, 'error');
+    sendFailReason = 'agent-send-unverified: the instruction was sent twice (the second time via the alternate submit path) but never landed in the Agent conversation — the composer still holds the text and no user bubble or Thinking appeared. Nothing was approved and no credits were spent.';
+    return false;
   };
 
   const sentFirst = await sendChat(instructionText);
   if (!sentFirst) {
-    return { status: 'AGENT_FAILED', reason: 'agent-ui-not-found: the chat message could not be sent to Flow\'s Agent (selector calibration needed).' };
+    return { status: 'AGENT_FAILED', reason: sendFailReason || 'agent-ui-not-found: the chat message could not be sent to Flow\'s Agent (selector calibration needed).' };
   }
   log('sent', { chars: instructionText.length });
 
@@ -2838,6 +3498,12 @@ async function submitViaAgentInner(engine, args, noteProposal) {
   let sentAt = Date.now();
   const panelGuardMs = a.panelGuardMs || PANEL_GUARD_MS;
   let panelGuardFired = false;
+  // v2.48.106 (Fix F1): growth-based re-anchor — while a send
+  // is outstanding and the anchored text stays implausible
+  // (composer chrome), the conversation may have rendered
+  // into a branch the send-time anchor did not hold; re-anchor
+  // on a slow cadence and adopt any richer text it finds.
+  let lastGrowthReanchorAt = 0;
 
   // 4. The conversation loop — whole-text polling. The ONLY texts
   // ever sent are the pinned instruction and, at most once per
@@ -2905,6 +3571,13 @@ async function submitViaAgentInner(engine, args, noteProposal) {
         if (re && re.found && typeof re.text === 'string') text = re.text;
       }
     } catch (e) {}
+    if (isPanelTextImplausible(text) && Date.now() - lastGrowthReanchorAt >= (a.anchorGrowthMs || 6000)) {
+      lastGrowthReanchorAt = Date.now();
+      try {
+        const re = await engine.page.evaluate(pageAnchorAgentPanel, AGENT_SELECTORS);
+        if (re && re.found && typeof re.text === 'string' && re.text !== text) text = re.text;
+      } catch (e) {}
+    }
     if (text !== lastPanelText) {
       lastPanelText = text;
       lastProgressAt = Date.now();
@@ -2939,6 +3612,8 @@ async function submitViaAgentInner(engine, args, noteProposal) {
             if (sentAnswer) {
               lastProgressAt = Date.now();
               roundStart = Date.now();
+            } else if (sendFailReason) {
+              return failRun(sendFailReason);
             }
           }
         }
@@ -3092,7 +3767,7 @@ async function submitViaAgentInner(engine, args, noteProposal) {
             retried = true;
             const resent = await sendChat(instructionText);
             if (!resent) {
-              return failRun('agent-ui-not-found: the instruction could not be re-sent after the Agent settings were aligned.');
+              return failRun(sendFailReason || 'agent-ui-not-found: the instruction could not be re-sent after the Agent settings were aligned.');
             }
             log('sent', { chars: instructionText.length, retry: true });
             // Pack 3 (item 10): a re-send restarts the wait —
@@ -3133,7 +3808,7 @@ async function submitViaAgentInner(engine, args, noteProposal) {
               log('retry-named', { model: runModelLabel, why: alignRes && alignRes.outcome ? `settings outcome: ${alignRes.outcome}` : undefined }, 'warn');
               const resent = await sendChat(namedText);
               if (!resent) {
-                return failRun('agent-ui-not-found: the instruction could not be re-sent with the run\'s model named in the text.');
+                return failRun(sendFailReason || 'agent-ui-not-found: the instruction could not be re-sent with the run\'s model named in the text.');
               }
               log('sent', { chars: namedText.length, retry: true });
               lastProgressAt = Date.now();
@@ -3571,6 +4246,11 @@ module.exports = {
   looksLikePolicyRefusal,
   hasProposalText,
   isPanelTextImplausible,
+  // v2.48.106 (Fixes F2/F5): the chrome-only plausibility
+  // helper and the truncation-tolerant instruction-title
+  // matcher — both pure, both fixture-pinned (X108).
+  isComposerChromeOnly,
+  instructionTitleMatches,
   looksLikeGenerationStarted,
   desiredAgentSettings,
   agentParamPins,
@@ -3583,6 +4263,14 @@ module.exports = {
   agentLine,
   buildAgentTask,
   pageAgentSettingsSurface,
+  // v2.48.106 (Fixes F1/F3/F4): the panel anchor + pruned
+  // read, the send-landing verifier and the section-scoped
+  // settings clicker — exported for the X108 fixtures.
+  pageAnchorAgentPanel,
+  pageReadAgentPanelText,
+  pageNoteAgentSent,
+  pageVerifyAgentSend,
+  pageClickSettingsOption,
   pageReadAgentSettings,
   pageClickComposerSettingsIcon,
   pageClickComposerToolbarLastIcon,

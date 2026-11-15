@@ -2579,7 +2579,14 @@ class FlowAutomationEngine {
       this.log('The Flow workspace is ready — prompts can be sent.', 'success');
     } catch (e) {}
 
-    await this.ensureAgentModeDisabled();
+    // v2.48.106 (Fix F6): the prep's Agent-chip disable is
+    // skipped for Agent-mode runs — AGENTTEST12's log showed
+    // the prep flipping the chip OFF "for direct video
+    // generation" moments before the Agent driver turned it
+    // back ON (a double flip the driver then had to undo).
+    // The driver owns the chip for Agent runs; direct runs
+    // keep the disable exactly as before.
+    await this.ensureAgentModeDisabled(settings && settings.agentMode === true);
 
     // v2.48.8: the workspace is already proven ready above — only
     // a short settle remains (was a blind 1.2-second sleep).
@@ -2859,7 +2866,11 @@ class FlowAutomationEngine {
   }
 
   // AUTO-DETECT & DISABLE GOOGLE FLOW "AGENT MODE" CHIP
-  async ensureAgentModeDisabled() {
+  // v2.48.106 (Fix F6): forAgentRun (or the instance flag set by
+  // submitViaAgent) skips the flip entirely — the Agent driver
+  // turns the chip ON itself for Agent runs.
+  async ensureAgentModeDisabled(forAgentRun) {
+    if (forAgentRun === true || this.__fsAgentRunActive === true) return false;
     if (!this.page || this.page.isClosed()) return false;
     try {
       const toggled = await this.page.evaluate(() => {
@@ -2897,12 +2908,20 @@ class FlowAutomationEngine {
   // keeps calling ensureAgentModeDisabled — Agent mode is opt-in
   // per run (settings.agentMode), never a global state.
   async submitViaAgent(promptText, settings, promptIndex, totalPrompts) {
-    return agentDriver.submitViaAgent(this, {
-      promptText,
-      settings,
-      promptIndex,
-      totalPrompts
-    });
+    // v2.48.106 (Fix F6): mark the engine as Agent-run-active
+    // so no prep-time ensureAgentModeDisabled can flip the
+    // chip OFF underneath the driver; submitPrompt clears it.
+    this.__fsAgentRunActive = true;
+    try {
+      return await agentDriver.submitViaAgent(this, {
+        promptText,
+        settings,
+        promptIndex,
+        totalPrompts
+      });
+    } finally {
+      this.__fsAgentRunActive = false;
+    }
   }
 
   // ATOMIC NATIVE TEXT INSERTION (bypasses keydown triggers for @ mentions / search hijacking)
@@ -3666,6 +3685,9 @@ class FlowAutomationEngine {
   // BEFORE the prompt fires, so the pool may safely re-queue the task
   // on another account.
   async submitPrompt(promptText, settings, promptIndex, totalPrompts) {
+    // v2.48.106 (Fix F6): a direct run clears any Agent-run
+    // flag, so the direct route's chip disable applies again.
+    this.__fsAgentRunActive = false;
     if (this.isStopping) return { status: 'STOPPED' };
     // v1.1: from here on, video streams on this page may be results of our
     // own submissions — arm the response capture (see launch handler).

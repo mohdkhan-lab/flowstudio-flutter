@@ -12158,6 +12158,486 @@ async function main() {
     }
   }
 
+  // =====================================================================
+  // X108 (v2.48.106) — AGENTTEST12 FIXES (F1–F6): the .105 field
+  // run failed with settings values all 'unreadable' ×2, the
+  // standing instruction's read-back failed, the panel anchor
+  // capped at the 85-char composer chrome, and the run burned
+  // the full 183s proposal wait with 0 credits spent. Root
+  // causes (diagnosis + live-DOM ground truth 2026-11-15):
+  // the anchor walk BREAKS on any ancestor holding the canvas
+  // placeholder / grid, and the conversation branches off
+  // above that point; the chrome text passed the plausibility
+  // guard; a send was never verified; the settings reader's
+  // roots could be header-only subtrees and its survey stayed
+  // silent on zero entries; instruction titles live only in
+  // input .value (innerText-blind); the prep flipped the Agent
+  // chip OFF before Agent runs. The fixtures below pin the
+  // fixes: (a) anchor v2 (LCA + pruned reads), (b) settings
+  // reader v2 + section-scoped aligner against a ground-truth
+  // surface, (c) instructions verify via .value, (d) chrome
+  // plausibility, (e) send verification + 'agent-send-unverified'.
+  // =====================================================================
+  {
+    const fs108 = require('fs');
+    const path108 = require('path');
+    const driver108 = require('../engine/agentDriver');
+    const read108 = (rel) => fs108.readFileSync(path108.join(__dirname, '..', rel), 'utf8');
+    const driverSrc108 = read108('engine/agentDriver.js');
+    const flowSrc108 = read108('engine/flowAutomation.js');
+
+    // --- source pins ---
+    ok('X108 source: the anchor is the composer+conversation LCA with pruned reads', driverSrc108.includes('LOWEST COMMON ANCESTOR') && driverSrc108.includes('prunedText'));
+    ok('X108 source: send verification exists with the unverified reason', driverSrc108.includes('pageVerifyAgentSend') && driverSrc108.includes('agent-send-unverified') && driverSrc108.includes('SEND_VERIFY_MS'));
+    ok('X108 source: the settings reader reports per-field detail + surface text', driverSrc108.includes('labelFound') && driverSrc108.includes('surfaceText'));
+    ok('X108 source: the section-scoped settings clicker exists', driverSrc108.includes('pageClickSettingsOption'));
+    ok('X108 source: instructions verify reads field values', driverSrc108.includes('instructionTitleMatches'));
+    ok('X108 source (F6): openFlowStudio threads the run mode into the chip disable', flowSrc108.includes("ensureAgentModeDisabled(settings && settings.agentMode === true)"));
+    ok('X108 source (F6): the Agent-run flag guards the disable and submitPrompt clears it', flowSrc108.includes('__fsAgentRunActive') && flowSrc108.includes('this.__fsAgentRunActive = false;'));
+
+    // --- mini-DOM 108: X98's engine + cloneNode/remove/value ---
+    const splitTop108 = (str, sep) => {
+      const out = []; let cur = ''; let br = 0; let q = false;
+      for (const ch of String(str)) {
+        if (q) { cur += ch; if (ch === '"') q = false; continue; }
+        if (ch === '"') { q = true; cur += ch; continue; }
+        if (ch === '[') br++;
+        if (ch === ']') br--;
+        if (ch === sep && br === 0) { if (cur.trim()) out.push(cur.trim()); cur = ''; continue; }
+        cur += ch;
+      }
+      if (cur.trim()) out.push(cur.trim());
+      return out;
+    };
+    const parseCompound108 = (src) => {
+      const c = { tag: null, classes: [], attrs: [] };
+      let rest = src;
+      const tagM = rest.match(/^(\*|[a-zA-Z][a-zA-Z0-9-]*)/);
+      if (tagM) { c.tag = tagM[1] === '*' ? null : tagM[1].toLowerCase(); rest = rest.slice(tagM[1].length); }
+      while (rest.length) {
+        if (rest[0] === '.') { const m = rest.match(/^\.([a-zA-Z0-9_-]+)/); c.classes.push(m[1]); rest = rest.slice(m[0].length); }
+        else if (rest[0] === '[') {
+          const end = rest.indexOf(']');
+          const body = rest.slice(1, end);
+          const m = body.match(/^([a-zA-Z0-9_-]+)(\*?=)?\s*(?:"([^"]*)")?\s*(i)?$/);
+          c.attrs.push({ name: m[1], op: m[2] || null, value: m[3] !== undefined ? m[3] : null, ci: !!m[4] });
+          rest = rest.slice(end + 1);
+        } else if (rest.startsWith(':checked')) { c.attrs.push({ name: 'checked', op: 'pseudo', value: null, ci: false }); rest = rest.slice(8); }
+        else { rest = rest.slice(1); }
+      }
+      return c;
+    };
+    const matchCompound108 = (el, c) => {
+      if (c.tag && String(el.tagName || '').toLowerCase() !== c.tag) return false;
+      const classes = String(el.className || '').split(/\s+/).filter(Boolean);
+      for (const cl of c.classes) if (!classes.includes(cl)) return false;
+      for (const a of c.attrs) {
+        if (a.op === 'pseudo') { if (!(a.name === 'checked' && el.checked === true)) return false; continue; }
+        if (a.name === 'disabled' && !a.op) { if (!(el.hasAttribute('disabled') || el.disabled === true)) return false; continue; }
+        const v = el.getAttribute(a.name);
+        if (!a.op) { if (v === null) return false; continue; }
+        if (v === null) return false;
+        const hay = a.ci ? v.toLowerCase() : v;
+        const needle = a.ci ? String(a.value).toLowerCase() : String(a.value);
+        if (a.op === '=' && hay !== needle) return false;
+        if (a.op === '*=' && !hay.includes(needle)) return false;
+      }
+      return true;
+    };
+    const descendants108 = (el) => {
+      const out = [];
+      const walk = (n) => { for (const c of n.children) { out.push(c); walk(c); } };
+      walk(el);
+      return out;
+    };
+    const queryAll108 = (rootEl, sel, includeSelf) => {
+      const groups = splitTop108(sel, ',').map(g => splitTop108(g, ' ').map(parseCompound108)).filter(g => g.length);
+      const universe = includeSelf ? [rootEl, ...descendants108(rootEl)] : descendants108(rootEl);
+      const matchesGroup = (el, compounds) => {
+        if (!matchCompound108(el, compounds[compounds.length - 1])) return false;
+        let idx = compounds.length - 2;
+        let n = el.parentElement;
+        const stopAt = rootEl.parentElement;
+        while (idx >= 0 && n && n !== stopAt) {
+          if (matchCompound108(n, compounds[idx])) idx--;
+          n = n.parentElement;
+        }
+        return idx < 0;
+      };
+      return universe.filter(el => groups.some(g => matchesGroup(el, g)));
+    };
+    const makeEl108 = (tag, opts) => {
+      const o = opts || {};
+      const el = {
+        tagName: String(tag || 'div').toUpperCase(),
+        children: [],
+        parentElement: null,
+        className: o.className || '',
+        disabled: !!o.disabled,
+        checked: !!o.checked,
+        value: o.value !== undefined ? o.value : undefined,
+        _text: o.text || '',
+        _attrs: {},
+        _rect: o.rect || { width: 100, height: 20, top: 0 },
+        _onClick: o.onClick || null,
+        getAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null; },
+        setAttribute(name, v) { this._attrs[name] = String(v); if (name === 'class') this.className = String(v); },
+        hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name); },
+        removeAttribute(name) { delete this._attrs[name]; },
+        appendChild(child) { child.parentElement = this; this.children.push(child); return child; },
+        remove() { if (this.parentElement) { const i = this.parentElement.children.indexOf(this); if (i >= 0) this.parentElement.children.splice(i, 1); this.parentElement = null; } },
+        contains(other) { let n = other; while (n) { if (n === this) return true; n = n.parentElement; } return false; },
+        focus() { this._focused = true; },
+        click() { this._clicks = (this._clicks || 0) + 1; if (this._onClick) this._onClick(this); },
+        scrollIntoView() {},
+        getBoundingClientRect() { return { width: this._rect.width, height: this._rect.height, top: this._rect.top, bottom: this._rect.top + this._rect.height, left: 0, right: this._rect.width }; },
+        checkVisibility() { return true; },
+        querySelector(sel2) { return queryAll108(this, sel2, false)[0] || null; },
+        querySelectorAll(sel2) { return queryAll108(this, sel2, false); },
+        cloneNode(deep) {
+          const c = makeEl108(this.tagName, { className: this.className, text: this._text, rect: this._rect, value: this.value });
+          c.checked = this.checked; c.disabled = this.disabled;
+          for (const k of Object.keys(this._attrs)) c._attrs[k] = this._attrs[k];
+          if (deep) for (const ch of this.children) c.appendChild(ch.cloneNode(true));
+          return c;
+        }
+      };
+      if (o.className) el._attrs.class = o.className;
+      if (o.attrs) for (const k of Object.keys(o.attrs)) el.setAttribute(k, o.attrs[k]);
+      Object.defineProperty(el, 'innerText', { get() { const parts = []; if (this._text) parts.push(this._text); for (const c of this.children) { const t = c.innerText; if (t) parts.push(t); } return parts.join(' '); } });
+      Object.defineProperty(el, 'textContent', { get() { return this.innerText; } });
+      Object.defineProperty(el, 'isContentEditable', { get() { return this.getAttribute('contenteditable') === 'true'; } });
+      return el;
+    };
+    const makeDocument108 = (bodyChildren) => {
+      const html = makeEl108('html');
+      const body = makeEl108('body');
+      html.appendChild(body);
+      (bodyChildren || []).forEach(c => body.appendChild(c));
+      return {
+        documentElement: html,
+        body,
+        __fsAgentPanel: null,
+        __fsAgentSettings: null,
+        __fsAgentInstructions: null,
+        __fsAgentSentProbe: '',
+        querySelector(sel) { return queryAll108(html, sel, true)[0] || null; },
+        querySelectorAll(sel) { return queryAll108(html, sel, true); },
+        contains(el) { return !!el && (el === html || html.contains(el)); }
+      };
+    };
+    const evaluateWithDom108 = (doc, fn, ...args) => {
+      const prevDoc = global.document;
+      const prevWin = global.window;
+      global.document = doc;
+      global.window = { document: doc };
+      try { return fn(...args); } finally {
+        if (prevDoc === undefined) delete global.document; else global.document = prevDoc;
+        if (prevWin === undefined) delete global.window; else global.window = prevWin;
+      }
+    };
+
+    // --- (a) anchor v2: the conversation branches off ABOVE
+    // the grid/canvas ancestor (the TEST12 geometry) ---
+    {
+      const PROBE108 = 'Create a video: a golden puppy chasing a blue bu';
+      const appRoot = makeEl108('div');
+      const canvasArea = makeEl108('div');
+      canvasArea.appendChild(makeEl108('div', { text: 'Start creating or drop media' }));
+      const grid = makeEl108('flow-grid-tile-container');
+      grid.appendChild(makeEl108('div', { text: 'an old project tile' }));
+      canvasArea.appendChild(grid);
+      const panelCol = makeEl108('div');
+      panelCol.appendChild(makeEl108('div', { text: 'Untitled session' }));
+      const composerWrap = makeEl108('div');
+      const composer = makeEl108('div', { className: 'ProseMirror', attrs: { contenteditable: 'true', 'aria-label': 'What do you want to create?' } });
+      composerWrap.appendChild(composer);
+      composerWrap.appendChild(makeEl108('div', { text: 'expand_content add Agent article_spark tune arrow_forward' }));
+      panelCol.appendChild(composerWrap);
+      const convoLayer = makeEl108('div');
+      convoLayer.appendChild(makeEl108('div', { text: `${PROBE108}tterfly through a sunny garden, photorealistic style please` }));
+      convoLayer.appendChild(makeEl108('div', { text: 'I can generate that video for you with Omni 1.1 Flash costing 7 credits. Permission options Approve Reject' }));
+      appRoot.appendChild(canvasArea);
+      appRoot.appendChild(panelCol);
+      appRoot.appendChild(convoLayer);
+      const doc = makeDocument108([appRoot]);
+      evaluateWithDom108(doc, driver108.pageNoteAgentSent, driver108.AGENT_SELECTORS, PROBE108);
+      const anchor = evaluateWithDom108(doc, driver108.pageAnchorAgentPanel, driver108.AGENT_SELECTORS);
+      ok('X108 (a) anchor v2: found despite the grid/canvas ancestor', anchor.found === true);
+      eq('X108 (a) anchor v2: the anchor climbs to the composer+conversation LCA (depth 3)', anchor.depth, 3);
+      ok('X108 (a) anchor v2: the anchored text reads the conversation (proposal visible)', anchor.text.includes('costing 7 credits'));
+      ok('X108 (a) anchor v2: the canvas placeholder is PRUNED from the read, not an anchor blocker', !anchor.text.includes('Start creating or drop media'));
+      ok('X108 (a) anchor v2: the anchored text is plausible', !driver108.isPanelTextImplausible(anchor.text));
+      const readBack = evaluateWithDom108(doc, driver108.pageReadAgentPanelText, driver108.AGENT_SELECTORS);
+      ok('X108 (a) the pruned panel read serves the conversation loop', typeof readBack === 'string' && readBack.includes('costing 7 credits') && !readBack.includes('Start creating or drop media'));
+      const verify = evaluateWithDom108(doc, driver108.pageVerifyAgentSend, driver108.AGENT_SELECTORS, PROBE108);
+      ok('X108 (a) send verification sees the user bubble and calls the send landed', verify.landed === true && verify.bubbleSeen === true);
+    }
+    {
+      // (a2) an UNLANDED send: the composer still holds the
+      // text, no bubble anywhere, no Thinking.
+      const wrap = makeEl108('div');
+      const composer = makeEl108('div', { className: 'ProseMirror', text: 'Create a video: a golden puppy chasing a blue bu', attrs: { contenteditable: 'true', 'aria-label': 'What do you want to create?' } });
+      wrap.appendChild(composer);
+      wrap.appendChild(makeEl108('div', { text: 'expand_content add Agent article_spark tune arrow_forward' }));
+      const doc = makeDocument108([wrap]);
+      const verify = evaluateWithDom108(doc, driver108.pageVerifyAgentSend, driver108.AGENT_SELECTORS, 'Create a video: a golden puppy chasing a blue bu');
+      ok('X108 (a2) send verification: a composer still holding the text is NOT landed', verify.landed === false && verify.composerCleared === false && verify.bubbleSeen === false);
+    }
+
+    // --- (b) settings reader v2 + the section-scoped aligner
+    // against the live-ground-truth surface shape ---
+    {
+      const clicks108 = [];
+      const radioGroup108 = () => ({ radios: [] });
+      const radioRow108 = (group, label, checked) => {
+        const row = makeEl108('div');
+        const radio = makeEl108('span', { attrs: { role: 'radio', 'aria-checked': checked ? 'true' : 'false' } });
+        radio._onClick = () => { clicks108.push(label); for (const r of group.radios) r.setAttribute('aria-checked', r === radio ? 'true' : 'false'); };
+        row.appendChild(radio);
+        row.appendChild(makeEl108('span', { text: label }));
+        group.radios.push(radio);
+        return row;
+      };
+      const checkedLabel108 = (group) => {
+        const r = group.radios.find(x => x.getAttribute('aria-checked') === 'true');
+        return r ? r.parentElement.innerText : null;
+      };
+      const surface = makeEl108('div');
+      surface.appendChild(makeEl108('div', { text: 'Agent settings' }));
+      const confirmSec = makeEl108('section');
+      confirmSec.appendChild(makeEl108('div', { text: 'Confirm before generating' }));
+      const gConfirm = radioGroup108();
+      confirmSec.appendChild(radioRow108(gConfirm, 'Always', false));
+      confirmSec.appendChild(radioRow108(gConfirm, 'Never', true));
+      surface.appendChild(confirmSec);
+      const imgSec = makeEl108('section');
+      imgSec.appendChild(makeEl108('div', { text: 'Image generation default' }));
+      const gImgAspect = radioGroup108();
+      imgSec.appendChild(radioRow108(gImgAspect, '16:9', true));
+      imgSec.appendChild(radioRow108(gImgAspect, '9:16', false));
+      const gImgOut = radioGroup108();
+      for (const o of ['x1', 'x2', 'x3', 'x4']) imgSec.appendChild(radioRow108(gImgOut, o, o === 'x2'));
+      imgSec.appendChild(makeEl108('button', { text: '🍌 Nano Banana 2.1' }));
+      surface.appendChild(imgSec);
+      const vidSec = makeEl108('section');
+      vidSec.appendChild(makeEl108('div', { text: 'Video generation default' }));
+      const gVidAspect = radioGroup108();
+      vidSec.appendChild(radioRow108(gVidAspect, '16:9', true));
+      vidSec.appendChild(radioRow108(gVidAspect, '9:16', false));
+      const gVidOut = radioGroup108();
+      for (const o of ['x1', 'x2', 'x3', 'x4']) vidSec.appendChild(radioRow108(gVidOut, o, o === 'x2'));
+      const vidModelBtn = makeEl108('button', { text: 'Veo 3.1 - Fast' });
+      vidSec.appendChild(vidModelBtn);
+      surface.appendChild(vidSec);
+      surface.appendChild(makeEl108('button', { text: 'Save' }));
+      const bodyKids = [surface];
+      const doc = makeDocument108(bodyKids);
+      doc.__fsAgentSettings = surface;
+      vidModelBtn._onClick = () => {
+        const portal = makeEl108('div');
+        const opt1 = makeEl108('button', { text: 'Omni 1.1 Flash — Leaving Dec 5' });
+        opt1._onClick = () => { vidModelBtn._text = 'Omni 1.1 Flash'; portal.remove(); };
+        const opt2 = makeEl108('button', { text: 'Veo 3.1 - Fast' });
+        opt2._onClick = () => { vidModelBtn._text = 'Veo 3.1 - Fast'; portal.remove(); };
+        portal.appendChild(opt1);
+        portal.appendChild(opt2);
+        doc.body.appendChild(portal);
+      };
+      const LABELS108 = ['Omni 1.1 Flash', 'Omni 1.2 Flash', 'Veo 3.1 - Lite', 'Veo 3.1 - Fast', 'Veo 3.1 - Quality'];
+      const before = evaluateWithDom108(doc, driver108.pageReadAgentSettings, driver108.AGENT_SELECTORS, LABELS108);
+      eq('X108 (b) reader v2: Confirm comes from the Confirm section radio group', before.confirm, 'Never');
+      eq('X108 (b) reader v2: the model is the VIDEO section dropdown, not the Image one', before.model, 'Veo 3.1 - Fast');
+      eq('X108 (b) reader v2: Video aspect wins over the Image twin (16:9 checked in both here, Video read)', before.aspect, '16:9');
+      eq('X108 (b) reader v2: Video outputs x2 wins over the run target until aligned', before.outputs, 'x2');
+      ok('X108 (b) reader v2: per-field diagnostics ride the read', !!before.detail && before.detail.confirm.labelFound === true && before.detail.confirm.stateFound === true && String(before.detail.root).includes('via='));
+      ok('X108 (b) reader v2: the surface text rides the read for blind-failure logging', typeof before.surfaceText === 'string' && before.surfaceText.includes('Agent settings'));
+      const survey = evaluateWithDom108(doc, driver108.pageSurveySettingsSurface, driver108.AGENT_SELECTORS);
+      ok('X108 (b) the survey lists interactive entries on a healthy surface', Array.isArray(survey) && survey.length > 0);
+
+      // The aligner, end to end, with the REAL page functions.
+      const alignLogs108 = [];
+      const engine108b = {
+        isStopping: false,
+        page: {
+          evaluate: async (fn, ...rest) => {
+            if (fn && fn.name && fn.name.startsWith('pageScroll')) return { found: true, scrolled: false };
+            return evaluateWithDom108(doc, fn, ...rest);
+          },
+          keyboard: { press: async () => {}, type: async () => {} },
+          target: () => ({ createCDPSession: async () => ({ send: async () => {} }) })
+        }
+      };
+      const alignRes = await driver108.alignAgentSettings(engine108b, { model: 'Omni Flash', aspectRatio: '9:16' }, (kind, data) => { alignLogs108.push(driver108.agentLine(kind, data)); }, { settingsOpenWaitMs: 5, settingsSurfaceWaitMs: 60, settingsSurfacePollMs: 5 });
+      ok('X108 (b) the aligner sets + SAVES + verifies against the real surface functions', alignRes && alignRes.aligned === true);
+      const after = evaluateWithDom108(doc, driver108.pageReadAgentSettings, driver108.AGENT_SELECTORS, LABELS108);
+      eq('X108 (b) after align: Confirm = Always', after.confirm, 'Always');
+      eq('X108 (b) after align: Video model = Omni 1.1 Flash (dropdown option with the Dec-5 suffix)', after.model, 'Omni 1.1 Flash');
+      eq('X108 (b) after align: Video aspect = 9:16', after.aspect, '9:16');
+      eq('X108 (b) after align: Video outputs = x1', after.outputs, 'x1');
+      eq('X108 (b) section-scoping: the Image aspect was NEVER touched (still 16:9)', checkedLabel108(gImgAspect), '16:9');
+      eq('X108 (b) section-scoping: the Image outputs were NEVER touched (still x2)', checkedLabel108(gImgOut), 'x2');
+      ok('X108 (b) section-scoping: no Image-section radio was clicked', !clicks108.some((c, i) => false) && checkedLabel108(gImgAspect) === '16:9' && checkedLabel108(gImgOut) === 'x2');
+    }
+
+    // --- (c) instructions verify v2: the title lives ONLY in
+    // an input's .value (the live surface's shape) ---
+    {
+      const surface = makeEl108('div');
+      surface.appendChild(makeEl108('div', { text: 'Agent instructions' }));
+      const card = makeEl108('div');
+      card.appendChild(makeEl108('button', { text: '' }));
+      card.appendChild(makeEl108('input', { value: 'FlowStudio Run Rules', attrs: { placeholder: 'Instruction title' } }));
+      card.appendChild(makeEl108('button', { text: '+' }));
+      card.appendChild(makeEl108('textarea', { value: 'Always use the video model, aspect ratio and output count saved in this project.', attrs: { placeholder: 'Create a guideline for your agent' } }));
+      surface.appendChild(card);
+      surface.appendChild(makeEl108('button', { text: '+ Add instruction' }));
+      surface.appendChild(makeEl108('button', { text: 'Done' }));
+      const doc = makeDocument108([surface]);
+      doc.__fsAgentInstructions = surface;
+      ok('X108 (c) fixture sanity: the title is invisible to innerText', !surface.innerText.includes('FlowStudio Run Rules'));
+      const read = evaluateWithDom108(doc, driver108.pageReadAgentInstructions, driver108.AGENT_SELECTORS);
+      ok('X108 (c) the read carries the card title from the input value', Array.isArray(read.values) && read.values.includes('FlowStudio Run Rules'));
+      ok('X108 (c) verify passes on a value-only title', driver108.instructionTitleMatches(read, 'FlowStudio Run Rules'));
+      doc.__fsAgentInstructions = null;
+      const readFresh = evaluateWithDom108(doc, driver108.pageReadAgentInstructions, driver108.AGENT_SELECTORS);
+      ok('X108 (c) verify re-detects the surface fresh (no stale stash)', readFresh.present === true && driver108.instructionTitleMatches(readFresh, 'FlowStudio Run Rules'));
+      ok('X108 (c) a different title does NOT match', !driver108.instructionTitleMatches(read, 'Some Other Rules'));
+      ok('X108 (c) truncation-tolerant: an ellipsised list title still matches', driver108.instructionTitleMatches({ text: '', values: ['FlowStudio Run…'] }, 'FlowStudio Run Rules'));
+    }
+
+    // --- (d) chrome-aware plausibility (pure) ---
+    {
+      const CHROME108 = 'What do you want to create? expand_content add Agent article_spark tune arrow_forward';
+      ok('X108 (d) the TEST12 chrome string is chrome-only', driver108.isComposerChromeOnly(CHROME108));
+      ok('X108 (d) the TEST12 chrome string is IMPLAUSIBLE (fast-fail + survey re-arm)', driver108.isPanelTextImplausible(CHROME108));
+      ok('X108 (d) the bare placeholder is chrome-only', driver108.isComposerChromeOnly('What do you want to create?'));
+      ok('X108 (d) placeholder + real prose is NOT chrome', !driver108.isComposerChromeOnly('What do you want to create? A video of a puppy chasing a butterfly in a sunny garden'));
+      ok('X108 (d) a real conversation stays plausible', !driver108.isPanelTextImplausible('Untitled session — I can generate that video for you with Omni 1.1 Flash costing 7 credits. Permission options Approve Reject'));
+      const unv = driver108.agentLine('send-unverified', null);
+      ok('X108 (d) the send-unverified log line carries the reason slug', unv.includes('agent-send-unverified'));
+      const det = driver108.agentLine('settings-detail', { field: 'model', labelFound: false, stateFound: true, root: '<div> via=stash textLen=812' });
+      ok('X108 (d) the settings-detail log line names field + label/state outcome', det.includes('model') && det.includes('NOT found') && det.includes('state found'));
+    }
+
+    // --- (e) send verification in the full run: a send that
+    // never lands fails 'agent-send-unverified' after exactly
+    // ONE alternate-path retry; a landed send proceeds ---
+    {
+      const PROMPT108 = 'Make a short video of a red ball rolling on green grass, sunny day';
+      function makeAgentEngine108(opts = {}) {
+        const state = {
+          settingsSurfaceOpen: false,
+          settingsState: { confirm: 'Always', model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1' },
+          savedClicks: 0,
+          typed: [],
+          sends: 0,
+          enterPresses: 0,
+          verifyCalls: 0,
+          panelText: opts.panelText || '',
+          instructionsSurfaceOpen: false,
+          instructionTitles: ['FlowStudio Run Rules'],
+          formOpen: false,
+          filledInstruction: null
+        };
+        const logs = [];
+        const engine = {
+          isStopping: false,
+          captureArmed: false,
+          currentAccount: { name: 'Account', credits: 1000 },
+          currentDownloadDir: '/tmp/mock-out',
+          currentSettings: {},
+          logs,
+          log: (line) => { logs.push(String(line)); },
+          onVideoStarted: () => {},
+          dismissAnyBlockingOverlays: async () => {},
+          checkCreditsState: async () => 'OK',
+          getRequiredCredits: () => 7,
+          insertNativeText: async (t) => { state.typed.push(String(t)); },
+          currentProjectUrl: () => 'https://flow.example/project',
+          registerBackendTask: () => {},
+          _startApiPoll: () => {},
+          netCapture: { beginSubmission: () => {} },
+          page: {
+            keyboard: {
+              press: async (key) => { if (key === 'Enter') state.enterPresses++; },
+              type: async (t) => { state.typed.push(String(t)); }
+            },
+            target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) state.typed.push(String(params.text)); } }) }),
+            evaluate: async (fn, ...rest) => {
+              const name = fn && fn.name ? fn.name : '';
+              switch (name) {
+                case 'pageFindAgentToggle': return { found: true, on: true };
+                case 'pageClickAgentToggle': return true;
+                case 'pageReadAgentPanelText': return state.panelText;
+                case 'pageAnchorAgentPanel': return { found: true, depth: 3, textLength: String(state.panelText || '').length, containsComposer: true, text: state.panelText };
+                case 'pageSurveyAgentDom': return [];
+                case 'pagePermissionState': return { present: false, enabled: false, options: [], promptLocked: false, groupText: '' };
+                case 'pageClickPermissionOption': return rest[1];
+                case 'pageFocusAgentInput': return true;
+                case 'pageNoteAgentSent': return true;
+                case 'pageVerifyAgentSend':
+                  state.verifyCalls++;
+                  return opts.verifyLanded
+                    ? { landed: true, bubbleSeen: true, composerCleared: true, thinking: false, composerText: '' }
+                    : { landed: false, bubbleSeen: false, composerCleared: false, thinking: false, composerText: 'the typed instruction is still sitting here' };
+                case 'pageClickAgentSend': state.sends++; return true;
+                case 'pageGridTilesDetailed': return [];
+                case 'pageGridFingerprints': return [];
+                case 'pageGalleryLabels': return [];
+                case 'pageAgentSettingsSurface': return state.settingsSurfaceOpen ? { present: true, via: 'text' } : { present: false, via: null };
+                case 'pageAgentSettingsPresent': return state.settingsSurfaceOpen;
+                case 'pageReadAgentSettings': return state.settingsSurfaceOpen ? { present: true, ...state.settingsState } : { present: false, confirm: null, model: null, aspect: null, outputs: null };
+                case 'pageClickComposerTuneIcon': state.settingsSurfaceOpen = true; return true;
+                case 'pageClickComposerSettingsIcon': state.settingsSurfaceOpen = true; return true;
+                case 'pageClickComposerToolbarLastIcon': state.settingsSurfaceOpen = true; return true;
+                case 'pageClickSettingsText': return state.settingsSurfaceOpen;
+                case 'pageClickSettingsOption': return false;
+                case 'pageSaveAgentSettings': if (state.settingsSurfaceOpen) { state.savedClicks++; state.settingsSurfaceOpen = false; return true; } return false;
+                case 'pageSurveySettingsSurface': return [];
+                case 'pageSurveySettingsRegion': return [];
+                case 'pageClickComposerInstructionsIcon': state.instructionsSurfaceOpen = true; return true;
+                case 'pageAgentInstructionsSurface': return state.instructionsSurfaceOpen ? { present: true, via: 'text' } : { present: false, via: null };
+                case 'pageReadAgentInstructions': return { present: state.instructionsSurfaceOpen, text: state.instructionsSurfaceOpen ? ('Agent instructions ' + state.instructionTitles.join(' · ') + ' + Add instruction Done') : '', values: state.instructionsSurfaceOpen ? state.instructionTitles.slice() : [] };
+                case 'pageClickAddInstruction': if (state.instructionsSurfaceOpen) { state.formOpen = true; return true; } return false;
+                case 'pageFillAgentInstruction': if (state.formOpen) { state.filledInstruction = rest[1]; return { titleSet: true, bodySet: true, toggle: true }; } return { titleSet: false, bodySet: false, toggle: null };
+                case 'pageClickInstructionsDone': if (state.formOpen && state.filledInstruction) { state.instructionTitles.push(state.filledInstruction.title); state.formOpen = false; } state.instructionsSurfaceOpen = false; return true;
+                case 'pageSurveyInstructionsSurface': return [];
+                default: return { count: 0, labels: [] };
+              }
+            }
+          }
+        };
+        return { engine, state, logs };
+      }
+      const runArgs108 = (over = {}) => ({
+        promptText: PROMPT108, promptIndex: 0, totalPrompts: 1,
+        settings: { model: 'Omni Flash', quality: '360p', duration: '10', aspectRatio: '9:16' },
+        videoModelTier: 'omni-flash', useAgentMode: true,
+        settingsOpenWaitMs: 5, settingsSurfaceWaitMs: 30, settingsSurfacePollMs: 5,
+        chatPollMs: 5, panelGuardMs: 1, heartbeatMs: 100000,
+        sendVerifyMs: 40, proposalWaitMs: 60, ...over
+      });
+      {
+        const fx = makeAgentEngine108({ verifyLanded: false });
+        const res = await driver108.submitViaAgent(fx.engine, runArgs108());
+        eq('X108 (e) an unlanded send fails the run', res.status, 'AGENT_FAILED');
+        ok('X108 (e) the failure reason is agent-send-unverified (never the 180s blind wait)', String(res.reason || '').includes('agent-send-unverified'));
+        eq('X108 (e) the send button was clicked exactly ONCE (the first attempt)', fx.state.sends, 1);
+        eq('X108 (e) exactly ONE alternate-path retry happened (Enter, since the button was used first)', fx.state.enterPresses, 1);
+        eq('X108 (e) the landing was verified twice per attempt (poll to budget)', fx.state.verifyCalls, 4);
+        ok('X108 (e) the run log carries the send-unverified line', fx.logs.some(l => l.includes('agent-send-unverified')));
+      }
+      {
+        const fx = makeAgentEngine108({ verifyLanded: true, panelText: 'Untitled session — planning your video now, one moment while I put the scenes together for you.' });
+        const res = await driver108.submitViaAgent(fx.engine, runArgs108());
+        ok('X108 (e2) a landed send is verified in the log', fx.logs.some(l => l.includes('send verified')));
+        ok('X108 (e2) a landed send does NOT fail as unverified — it reaches the proposal wait', String(res.reason || '').includes('agent-proposal-timeout') && !String(res.reason || '').includes('agent-send-unverified'));
+        eq('X108 (e2) a landed send needs no retry', fx.state.enterPresses, 0);
+      }
+    }
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

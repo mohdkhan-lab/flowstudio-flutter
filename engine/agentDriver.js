@@ -855,7 +855,17 @@ function buildAgentTask(fields) {
     // fields are inert downstream.
     agentSceneIndex: f.agentSceneIndex || 1,
     agentSceneCount: f.agentSceneCount || 1,
-    agentTileTitle: f.agentTileTitle || ''
+    agentTileTitle: f.agentTileTitle || '',
+    // v2.48.106 (Fix B): the conversation's group key (the
+    // primary task's videoId) shared by every scene task of a
+    // multi-clip run. The monitor's tile assignment binds a
+    // group by new-tile appearance in grid order (tileIdentity
+    // Pass 1.5): the siblings all carry the SAME prompt text,
+    // so the scored strict-win pass ties them forever, and a
+    // birth fingerprint may not survive Flow renaming the
+    // tile to its descriptive title. Null for single-clip
+    // tasks — inert downstream.
+    agentGroupKey: f.agentGroupKey || null
   };
 }
 
@@ -4338,6 +4348,15 @@ async function submitViaAgentInner(engine, args, noteProposal) {
 
   // =====================================================================
   // v2.48.103 BULK media phase (agentClips > 1) — Parts 3 + 4.
+  // v2.48.106 (Fix B): this phase's ONLY completion signal is
+  // the project GRID — new tiles appearing against the
+  // pre-submit snapshot (readGridTiles below). No backend or
+  // network media signal can end this wait or trigger the
+  // handoff: the AGENTBULK live run's downstream failure was
+  // an identification deadlock in the monitor, and the scene
+  // tasks now carry agentGroupKey so the monitor binds them
+  // by new-tile appearance in grid order (tileIdentity
+  // Pass 1.5) instead of by prompt fingerprints.
   // The conversation was approved for N clips at once; the grid
   // fills with this conversation's tiles (together at 0%, then
   // finishing at slightly different times). Wait until N NEW
@@ -4534,7 +4553,8 @@ async function submitViaAgentInner(engine, args, noteProposal) {
       lockedTileFingerprint: slot.repairedFp || slot.fp,
       agentSceneIndex: sceneIndex,
       agentSceneCount: agentClips,
-      agentTileTitle: slot.repairedTitle || slot.title || ''
+      agentTileTitle: slot.repairedTitle || slot.title || '',
+      agentGroupKey: videoId
     });
     try {
       if (engine.currentDownloadDir) {

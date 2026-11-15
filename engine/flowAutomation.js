@@ -13336,7 +13336,15 @@ class FlowAutomationEngine {
             key: t.videoId,
             promptWords: t._promptWords,
             preExistingFingerprints: t._preExistingFp,
-            lockedFingerprint: t.lockedTileFingerprint || null
+            lockedFingerprint: t.lockedTileFingerprint || null,
+            // v2.48.106 (Fix B): the sibling identity of a
+            // multi-clip Agent task — assignTiles Pass 1.5
+            // binds a conversation's scene tasks to its new
+            // tiles in scene/grid order (identical prompt text
+            // makes the scored strict-win pass a permanent
+            // tie among siblings).
+            agentGroupKey: t.agentGroupKey || null,
+            agentSceneIndex: t.agentSceneIndex || 0
           };
         });
         const tileAssignments = tileIdentity.assignTiles(taskViews, tileDescriptors, this.claimedTileFingerprints);

@@ -13168,6 +13168,127 @@ async function main() {
     }
   }
 
+  // =====================================================================
+  // X110 (v2.48.106) — ROUND 3: (A) MCP runs SWITCH the app's
+  // mode button; (B) the AGENTBULK identification deadlock.
+  // (A) Owner's live words (2026-11-15 21:34): the Bulk /
+  // Agent-Prompt button "does not switch; the prompt is put
+  // into the bulk sections and used from there" — Dart decided
+  // agentMode ONLY from its own chips (generator_provider
+  // `agentMode = !_isBulkMode`, default Bulk), the MCP in-app
+  // handler never called the mode setter, and the engine
+  // override lived where the UI could not see it. The fix:
+  // the in-app handler switches the mode from the payload's
+  // agentMode BEFORE the prompts land, and the bridge
+  // broadcasts 'agent-mode-override' so a chat-side flip moves
+  // the chips too.
+  // (B) AGENTBULK (2026-11-15 20:08–20:26, full live log):
+  // the combined 21-credit proposal approved, three scene
+  // tasks handed off — and the monitor identified NONE of
+  // their tiles in ten minutes (0 saves, 21 credits spent).
+  // The deadlock is in tileIdentity.assignTiles: the three
+  // siblings carry the SAME prompt text, so Pass 2's scored
+  // strict-win ties every tile among identical rivals and
+  // claims nothing; Pass 1 needs the birth fingerprint to
+  // survive Flow renaming the tile to its descriptive title.
+  // The fix is Pass 1.5 — siblings (agentGroupKey) bind by
+  // NEW-TILE APPEARANCE in grid order, per the round-3 brief.
+  // The sequence pins below replay the bulk log's shape: a
+  // media/backend signal with NO tiles binds nothing; tiles
+  // arriving later bind in scene order.
+  // =====================================================================
+  {
+    const fs110 = require('fs');
+    const path110 = require('path');
+    const read110 = (rel) => fs110.readFileSync(path110.join(__dirname, '..', rel), 'utf8');
+    const bridgeSrc110 = read110('engine_bridge.js');
+    const autoBridgeSrc110 = read110('lib/services/automation_bridge.dart');
+    const mainSrc110 = read110('lib/main.dart');
+    const driverSrc110 = read110('engine/agentDriver.js');
+    const flowSrc110 = read110('engine/flowAutomation.js');
+    const tileSrc110 = read110('engine/tileIdentity.js');
+    const tileIdentity110 = require('../engine/tileIdentity');
+
+    // --- (A) source pins: the mode switch wiring ---
+    ok('X110 A: the bridge broadcasts the override change to the app', bridgeSrc110.includes("broadcastEvent('agent-mode-override', { enabled: next })"));
+    ok('X110 A: the Dart bridge routes the override event with a bool guard', autoBridgeSrc110.includes("case 'agent-mode-override':") && autoBridgeSrc110.includes('onAgentModeOverride'));
+    ok('X110 A: the main screen flips its chips on the override event', mainSrc110.includes('_handleAgentModeOverride') && mainSrc110.includes('setPromptMode(!enabled)'));
+    ok('X110 A: an MCP run switches the mode from its payload BEFORE the prompts land', mainSrc110.includes('generator.setPromptMode(!agentModeFlag)') && mainSrc110.indexOf('generator.setPromptMode(!agentModeFlag)') < mainSrc110.indexOf('generator.setMcpPrompts('));
+
+    // --- (B) source pins: group identity rides driver -> monitor -> assignment ---
+    ok('X110 B: buildAgentTask carries the conversation group key', driverSrc110.includes('agentGroupKey: f.agentGroupKey || null'));
+    ok('X110 B: bulk scene tasks are stamped with the group key', driverSrc110.includes('agentGroupKey: videoId'));
+    ok('X110 B: the monitor passes the sibling identity into tile assignment', flowSrc110.includes('agentGroupKey: t.agentGroupKey || null') && flowSrc110.includes('agentSceneIndex: t.agentSceneIndex || 0'));
+    ok('X110 B: assignTiles has the sibling order-binding pass', tileSrc110.includes('Pass 1.5') && tileSrc110.includes('agentGroupKey'));
+    const bulkSeg110 = driverSrc110.slice(driverSrc110.indexOf('BULK media phase'), driverSrc110.indexOf('return primaryTask;'));
+    ok('X110 B: the bulk phase completes on grid tiles only (no gallery / network signal can trigger its handoff)', bulkSeg110.includes('readGridTiles') && !bulkSeg110.includes('pageGalleryLabels') && !bulkSeg110.includes('netCapture') && !bulkSeg110.includes('capturedVideoUrls'));
+
+    // --- (B) behaviour pins: the AGENTBULK sequence replayed ---
+    const bulkPrompt110 = 'Make 3 short videos that tell one continuous little story about Kiki, a small orange kitten with a white chest, in a sunny village courtyard. Video 1: Kiki chases a rolling red ball across the courtyard. Video 2: Kiki follows the ball into a flower garden and meets a baby duck near a small pond. Video 3: Kiki and the baby duck play together with the red ball as the sun sets. Keep the same kitten in all three videos. Cinematic, photorealistic.';
+    const promptWords110 = tileIdentity110.significantWords(bulkPrompt110);
+    const mkTask110 = (scene, groupKey) => ({
+      key: `vid_bulk${scene > 1 ? `_s${scene}` : ''}`,
+      promptWords: promptWords110,
+      preExistingFingerprints: new Set(),
+      // The birth fingerprints the driver locked at +3s — the
+      // completed tiles carry descriptive titles instead, so
+      // these match NOTHING in the grid (the Pass 1 trap).
+      lockedFingerprint: `birth placeholder title ${scene}`,
+      agentGroupKey: groupKey,
+      agentSceneIndex: scene
+    });
+    const mkTile110 = (idx, title) => ({
+      tileIndex: idx,
+      fingerprint: tileIdentity110.tileFingerprint(title, ''),
+      words: tileIdentity110.significantWords(title)
+    });
+    const tiles110 = [
+      mkTile110(0, 'a small orange kitten chasing a red ball across a sunny courtyard'),
+      mkTile110(1, 'a small orange kitten and a baby duck near a pond in a flower garden'),
+      mkTile110(2, 'a small orange kitten and a baby duck playing with a red ball at sunset')
+    ];
+    const siblings110 = [mkTask110(1, 'vid_bulk'), mkTask110(2, 'vid_bulk'), mkTask110(3, 'vid_bulk')];
+
+    // The bulk log's first seconds: a backend media signal
+    // exists but NO tiles yet — nothing may bind (no handoff
+    // can be built out of a signal).
+    eq('X110 B seq: media signal with no tiles binds nothing', tileIdentity110.assignTiles(siblings110, [], new Set()).size, 0);
+    // Tiles still arriving: the ones present bind in scene
+    // order, the rest stay pending for a later poll.
+    const partial110 = tileIdentity110.assignTiles(siblings110, [tiles110[0]], new Set());
+    eq('X110 B seq: one tile binds exactly one scene', partial110.size, 1);
+    ok('X110 B seq: the first tile goes to scene 1', partial110.get('vid_bulk') === tiles110[0]);
+    // All three tiles present (renamed, descriptive titles):
+    // every sibling binds, scene order == grid order.
+    const full110 = tileIdentity110.assignTiles(siblings110, tiles110, new Set());
+    eq('X110 B seq: all three siblings bind once their tiles exist', full110.size, 3);
+    ok('X110 B seq: scene order follows grid order', full110.get('vid_bulk') === tiles110[0] && full110.get('vid_bulk_s2') === tiles110[1] && full110.get('vid_bulk_s3') === tiles110[2]);
+    // The old deadlock, pinned as the control: the SAME
+    // tasks WITHOUT the group key bind nothing at all —
+    // identical prompt words tie every strict-win claim.
+    const noGroup110 = [mkTask110(1, null), mkTask110(2, null), mkTask110(3, null)];
+    eq('X110 B control: without the group key the identical siblings deadlock (the AGENTBULK failure)', tileIdentity110.assignTiles(noGroup110, tiles110, new Set()).size, 0);
+    // A sibling whose birth fingerprint DID survive still
+    // wins its own tile through Pass 1, and the remaining
+    // siblings order-bind the remaining tiles around it.
+    const survivor110 = [mkTask110(1, 'vid_bulk'), mkTask110(2, 'vid_bulk'), mkTask110(3, 'vid_bulk')];
+    survivor110[1].lockedFingerprint = tiles110[1].fingerprint;
+    const mixed110 = tileIdentity110.assignTiles(survivor110, tiles110, new Set());
+    eq('X110 B control: a surviving birth fingerprint keeps its tile, siblings bind the rest', mixed110.size, 3);
+    ok('X110 B control: the Pass 1 tile stays with its own scene', mixed110.get('vid_bulk_s2') === tiles110[1] && mixed110.get('vid_bulk') === tiles110[0] && mixed110.get('vid_bulk_s3') === tiles110[2]);
+    // History is never order-bound: a pre-existing tile is
+    // skipped and the next new tile takes the scene's slot.
+    const histTasks110 = [mkTask110(1, 'vid_bulk'), mkTask110(2, 'vid_bulk')];
+    histTasks110.forEach(t => t.preExistingFingerprints.add(tiles110[0].fingerprint));
+    const hist110 = tileIdentity110.assignTiles(histTasks110, [tiles110[0], tiles110[1]], new Set());
+    eq('X110 B control: a pre-existing tile is never bound to a sibling', hist110.size, 1);
+    ok('X110 B control: scene 1 takes the first NEW tile instead', hist110.get('vid_bulk') === tiles110[1]);
+    // An externally claimed tile is skipped the same way.
+    const ext110 = tileIdentity110.assignTiles([mkTask110(1, 'vid_bulk'), mkTask110(2, 'vid_bulk')], [tiles110[0], tiles110[1]], new Set([tiles110[0].fingerprint]));
+    eq('X110 B control: an externally claimed tile is skipped in order binding', ext110.size, 1);
+    ok('X110 B control: the unclaimed tile goes to scene 1', ext110.get('vid_bulk') === tiles110[1]);
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

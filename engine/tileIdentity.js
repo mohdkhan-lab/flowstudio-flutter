@@ -115,7 +115,8 @@ function isWeakTextPrompt(promptWords) {
  * Assign tiles to tasks for one monitor poll.
  *
  * tasks: [{ key, promptWords:Set, preExistingFingerprints:Set,
- *           lockedFingerprint:string|null }]
+ *           lockedFingerprint:string|null,
+ *           agentGroupKey:string|null, agentSceneIndex:number }]
  * tiles: [{ tileIndex, fingerprint, words:Set }]
  * claimedFingerprints: Set of fingerprints already bound to tasks that
  * are NOT in this call (e.g. tasks from another worker window sharing
@@ -147,6 +148,50 @@ function assignTiles(tasks, tiles, claimedFingerprints) {
     if (tile) {
       result.set(task.key, tile);
       usedTiles.add(tile.tileIndex);
+    }
+  }
+
+  // Pass 1.5 (v2.48.106, Fix B) — SIBLING ORDER BINDING for
+  // multi-clip Agent conversations. Every scene task of one
+  // conversation carries the SAME prompt text, so their
+  // prompt-word sets are identical: in Pass 2 every tile is a
+  // strong match for every sibling with EQUAL matched counts,
+  // and the strict-win rule (a tie is ambiguous — never guess)
+  // then claims NOTHING, forever (the AGENTBULK live run,
+  // 2026-11-15: three handed-off scene tasks, ten minutes of
+  // "tile not identified", zero saves, while the tiles sat in
+  // the grid generating). Pass 1 alone cannot save them
+  // either — it needs the tile's CURRENT fingerprint to still
+  // equal the birth fingerprint the driver locked, and Flow
+  // renames a tile to its auto descriptive title as it
+  // renders. So siblings bind the way the brief prescribes:
+  // by NEW-TILE APPEARANCE in grid order — the group's tasks,
+  // in scene order, take this poll's new tiles (not in the
+  // shared pre-submit snapshot, not externally claimed, not
+  // already used) in grid order. The monitor locks each
+  // assignment's fingerprint afterwards, so later polls
+  // re-bind through Pass 1 as usual. A group with fewer than
+  // two unbound tasks in this poll does not need the pass —
+  // a lone remaining sibling has no identical rival and the
+  // ordinary passes can claim for it.
+  const siblingGroups = new Map();
+  for (const task of tasks) {
+    if (!task.agentGroupKey || result.has(task.key)) continue;
+    if (!siblingGroups.has(task.agentGroupKey)) siblingGroups.set(task.agentGroupKey, []);
+    siblingGroups.get(task.agentGroupKey).push(task);
+  }
+  for (const group of siblingGroups.values()) {
+    if (group.length < 2) continue;
+    const ordered = group.slice().sort((a, b) => (a.agentSceneIndex || 0) - (b.agentSceneIndex || 0));
+    const freeTiles = tiles
+      .filter(t => !usedTiles.has(t.tileIndex) && !external.has(t.fingerprint))
+      .sort((a, b) => a.tileIndex - b.tileIndex);
+    for (const task of ordered) {
+      const tile = freeTiles.find(t => !(task.preExistingFingerprints && task.preExistingFingerprints.has(t.fingerprint)));
+      if (!tile) break;
+      result.set(task.key, tile);
+      usedTiles.add(tile.tileIndex);
+      freeTiles.splice(freeTiles.indexOf(tile), 1);
     }
   }
 

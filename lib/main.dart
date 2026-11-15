@@ -195,9 +195,26 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
     // one spans four providers, like the Generate button itself).
     AutomationBridge.instance.onMcpUiGenerateRequest =
         _handleMcpUiGenerateRequest;
+    // v2.48.106 (Fix A): when Muse flips the engine's
+    // agent-mode override from chat, the mode chips on THIS
+    // screen flip with it — the screen must never show Bulk
+    // while the engine runs the Agent (owner's live report,
+    // 2026-11-15: "the button does not switch; the prompt is
+    // put into the bulk sections and used from there").
+    AutomationBridge.instance.onAgentModeOverride =
+        _handleAgentModeOverride;
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _runStartupActions();
     });
+  }
+
+  /// v2.48.106 (Fix A): the engine's MCP agent-mode override
+  /// changed — flip this screen's Bulk / Agent Prompt chips to
+  /// match (override ON = Agent Prompt mode, OFF = Bulk mode),
+  /// so what the owner sees is the mode chat runs will use.
+  void _handleAgentModeOverride(bool enabled) {
+    if (!mounted) return;
+    context.read<GeneratorProvider>().setPromptMode(!enabled);
   }
 
   /// v2.32.2: Muse (through the MCP connector) asked for a run to
@@ -242,6 +259,18 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
     }
 
     final generator = context.read<GeneratorProvider>();
+    // v2.48.106 (Fix A): a run that arrives WITH an explicit
+    // agentMode switches the app's own mode button FIRST —
+    // agentMode true lands the prompts in the Agent Prompt
+    // section with the Agent treatment (and startGeneration's
+    // own `agentMode = !_isBulkMode` then agrees with the
+    // engine); agentMode false explicitly returns the screen
+    // to Bulk. An absent field leaves the mode exactly as
+    // the owner left it.
+    final agentModeFlag = data['agentMode'];
+    if (agentModeFlag is bool) {
+      generator.setPromptMode(!agentModeFlag);
+    }
     generator.setMcpPrompts(
       prompts,
       List.generate(prompts.length, clipsAt),

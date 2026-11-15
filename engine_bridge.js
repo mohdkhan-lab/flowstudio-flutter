@@ -174,7 +174,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.105';
+const APP_VERSION = '2.48.106';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -598,6 +598,15 @@ async function startBridge() {
             : `🔌 MCP • Agent-mode override ${next ? 'ON — chat runs will use Flow\u2019s Agent' : 'OFF — chat runs will use the direct route'}.`,
           level: 'info',
         });
+        // v2.48.106 (Fix A): the app UI must SHOW the same mode
+        // the engine will use — the override used to live only
+        // in the engine, so the Bulk / Agent Prompt chips kept
+        // showing Bulk while chat runs went through the Agent
+        // (owner's live report, 2026-11-15). The Dart side
+        // flips its mode chips on this event. A cleared
+        // override (null) carries no boolean — the app then
+        // simply follows its own chips again, untouched here.
+        broadcastEvent('agent-mode-override', { enabled: next });
         return sendJson(200, { ok: true, agentModeOverride: next });
       }
 

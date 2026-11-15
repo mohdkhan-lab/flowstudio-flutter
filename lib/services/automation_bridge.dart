@@ -14,7 +14,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '2.48.105';
+  static const String appVersion = '2.48.106';
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();
@@ -53,6 +53,13 @@ class AutomationBridge {
   // pass; the main screen consumes it by filling the Prompts box
   // and invoking the same Generate handler the button invokes.
   Function(Map<String, dynamic> data)? onMcpUiGenerateRequest;
+  // v2.48.106 (Fix A): the MCP agent-mode override changed in
+  // the engine ('agent-mode-override' — {enabled: true|false};
+  // a cleared override arrives as a non-bool and is ignored).
+  // The main screen consumes it by flipping its Bulk / Agent
+  // Prompt mode chips, so the screen never contradicts the
+  // engine about which mode chat runs will use.
+  Function(bool enabled)? onAgentModeOverride;
   // v2.48.85 (P1 completion): an ENGINE-side run (direct
   // /api/generation/start or redo — e.g. the MCP
   // flowstudio_generate tool) announced itself with a
@@ -467,6 +474,17 @@ class AutomationBridge {
                 // main screen, which fills the Prompts box and runs
                 // its own Generate flow.
                 onMcpUiGenerateRequest?.call(data);
+                break;
+              case 'agent-mode-override':
+                // v2.48.106 (Fix A): the engine's MCP agent-mode
+                // override changed — hand the boolean to the main
+                // screen, which flips its mode chips to match. A
+                // cleared override (enabled not a bool) leaves
+                // the app's own chips exactly as they are.
+                final overrideEnabled = data['enabled'];
+                if (overrideEnabled is bool) {
+                  onAgentModeOverride?.call(overrideEnabled);
+                }
                 break;
               case 'active-browsers':
                 // v2.25.0 (parked browser): which accounts are

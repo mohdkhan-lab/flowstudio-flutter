@@ -449,7 +449,38 @@ function isPanelTextImplausible(text) {
   // logged as an "agent message", and the run burned the full
   // 180s proposal wait against a node that holds no
   // conversation at all.
+  // v2.48.107 (AGENTTEST13, Fix G4): a SETTINGS / INSTRUCTIONS
+  // SURFACE read is not the conversation either. TEST13's
+  // settings surface was never closed after Save, and its
+  // text (724 chars of form labels) sat "plausible" for the
+  // whole 180s wait while the conversation behind it was
+  // never read. A surface signature therefore counts as
+  // implausible here — it feeds the growth re-anchor and the
+  // panel-not-found fast-fail exactly like the chrome rule,
+  // and the wait loop additionally attempts an explicit
+  // surface close (Fix G2) when it sees one.
+  if (panelSurfaceKind(t)) return true;
   return isComposerChromeOnly(t);
+}
+
+/**
+ * v2.48.107 (AGENTTEST13, Fixes G2/G4) — which Agent surface,
+ * if any, a panel text is reading. The settings surface
+ * REPLACES the chat inside the panel (live-DOM verified
+ * 2026-11-15): its signature is the "Agent settings" heading
+ * plus a section anchor ("Video generation default" or
+ * "Confirm before generating") — the same anchors the
+ * surface detector proves. The instructions surface signs
+ * with its heading + the "+ Add instruction" control. Any
+ * other text (a real conversation, a proposal, chrome)
+ * returns null. Pure; fixture-pinned (X109).
+ */
+function panelSurfaceKind(text) {
+  const t = String(text || '').replace(/\s+/g, ' ').trim();
+  if (!t) return null;
+  if (t.includes('Agent settings') && (t.includes('Video generation default') || t.includes('Confirm before generating'))) return 'settings';
+  if (t.includes('Agent instructions') && t.includes('Add instruction')) return 'instructions';
+  return null;
 }
 
 // The composer row's icon ligatures / labels (Material icon
@@ -765,6 +796,14 @@ function agentLine(kind, data) {
     case 'instructions-added': return `[AGENT] agent instructions: added the standing "${d.title || ''}" instruction to this project (toggle on, guideline saved via Done) and verified it reads back.`;
     case 'instructions-failed': return `[AGENT] agent instructions: the standing instruction could not be added/verified (${d.detail || 'unknown'}) — continuing without it; this is never fatal to the run.`;
     case 'instructions-survey': return `[AGENT] instructions survey: ${(Array.isArray(d.entries) ? d.entries : []).join(' | ')}`;
+    case 'settings-closed': return d.ok
+      ? '[AGENT] settings surface closed — chat view restored.'
+      : `[AGENT] settings surface close FAILED — the panel still reads: "${truncateForLog(d.text || '', 300)}" — continuing anyway (the settings were already saved + verified).`;
+    case 'instructions-closed': return d.ok
+      ? '[AGENT] instructions surface closed — chat view restored.'
+      : `[AGENT] instructions surface close FAILED — the panel still reads: "${truncateForLog(d.text || '', 300)}" — continuing anyway.`;
+    case 'instructions-readback': return `[AGENT] instructions verify read-back — surface ${d.root || 'none'}; text (${Number(d.chars) || 0} chars): "${truncateForLog(d.text || '', 800)}"`;
+    case 'wait-surface-close': return `[AGENT] the wait is reading the ${d.kind || 'settings'} surface, not the conversation — closing it and re-anchoring.`;
     case 'media': return '[AGENT] media detected in the project — handing off to the download pipeline.';
     case 'bulk-plan': return `[AGENT] bulk task — this one conversation is asked for ${Number(d.clips) || 1} clips; expected total ${Number(d.total) || 0} credits (${Number(d.clips) || 1} × ${Number(d.perClip) || 0} per clip). A combined quote is approved only at or under that total, with the run's model.`;
     case 'clips-progress': return `[AGENT] bulk media: ${Number(d.have) || 0} of ${Number(d.want) || 0} clips are in the project grid so far…`;
@@ -1229,7 +1268,56 @@ function pagePermissionState(selectors) {
       return 0;
     });
   } catch (e) {}
-  if (!groups.length) return { present: false, enabled: false, options: [], promptLocked: false, groupText: '', groupCount: 0, enabledCount: 0 };
+  if (!groups.length) return { present: false, enabled: false, options: [], promptLocked: false, groupText: '', groupCount: 0, enabledCount: 0, surfaceGroupCount: 0 };
+  // v2.48.107 (AGENTTEST13, Fix G2): a radiogroup inside a
+  // SETTINGS or INSTRUCTIONS surface subtree is NOT a
+  // proposal — the generic [role="radiogroup"] selector also
+  // matches the settings form's own native radio groups
+  // (Confirm / aspect / outputs in two sections), and in
+  // TEST13 those groups read "present + enabled" for the
+  // whole 180s wait, masking the real state (no conversation
+  // proposal at all). A group is in-surface when it is
+  // CONTAINED in a surface root — the surface identified by
+  // its heading signature, exactly as the surface detectors
+  // find it (the stashed root, else the SMALLEST carrier of
+  // the anchors). Containment, not an ancestor walk: the
+  // surface lives inside the same panel container as the
+  // conversation, so a shared ancestor can carry the
+  // signature while holding a real proposal group as the
+  // surface's SIBLING (the X101 geometry) — only the
+  // surface's own subtree is scoped out. In-surface groups
+  // are counted (surfaceGroupCount, so the heartbeat can
+  // say WHY nothing counts) but never chosen, never
+  // clicked, never settled on.
+  const surfaceRoots = [];
+  const findSurfaceRoot = (stashEl, test) => {
+    try { if (stashEl && document.contains(stashEl)) return stashEl; } catch (e) {}
+    let best = null;
+    let bestLen = Infinity;
+    try {
+      const pool = Array.from(document.querySelectorAll('div, section, aside, form, [role="dialog"], [role="menu"]'));
+      for (const el of pool) {
+        const t = norm(el.innerText || '');
+        if (!t || t.length > 8000 || t.length >= bestLen) continue;
+        if (test(t)) { best = el; bestLen = t.length; }
+      }
+    } catch (e) {}
+    return best;
+  };
+  try {
+    const sRoot = findSurfaceRoot(document.__fsAgentSettings || null, t => t.includes('Agent settings') && (t.includes('Confirm before generating') || t.includes('Video generation default')));
+    if (sRoot) surfaceRoots.push(sRoot);
+  } catch (e) {}
+  try {
+    const iRoot = findSurfaceRoot(document.__fsAgentInstructions || null, t => t.includes('Agent instructions') && t.includes('Add instruction'));
+    if (iRoot) surfaceRoots.push(iRoot);
+  } catch (e) {}
+  const inSurface = (el) => surfaceRoots.some(r => r === el || (r.contains && r.contains(el)));
+  const scopedGroups = groups.filter(g => !inSurface(g));
+  const surfaceGroupCount = groups.length - scopedGroups.length;
+  if (!scopedGroups.length) {
+    return { present: false, enabled: false, options: [], promptLocked: false, groupText: '', groupCount: groups.length, enabledCount: 0, surfaceGroupCount };
+  }
   const stateOf = (group) => {
     // v2.48.99: the text window is WIDER — up to 14 hops and
     // ~4000 chars, keeping the WIDEST costing-bearing ancestor
@@ -1272,7 +1360,7 @@ function pagePermissionState(selectors) {
       (el.querySelector && el.querySelector('input[disabled]'))));
     return { enabled: !groupDisabled && anyEnabled, options, promptLocked, groupText };
   };
-  const states = groups.map(stateOf);
+  const states = scopedGroups.map(stateOf);
   let chosen = -1;
   for (let i = 0; i < states.length; i++) { if (states[i].enabled) chosen = i; }
   if (chosen < 0) chosen = states.length - 1;
@@ -1284,7 +1372,8 @@ function pagePermissionState(selectors) {
     promptLocked: st.promptLocked,
     groupText: st.groupText,
     groupCount: groups.length,
-    enabledCount: states.filter(x => x.enabled).length
+    enabledCount: states.filter(x => x.enabled).length,
+    surfaceGroupCount
   };
 }
 
@@ -1314,6 +1403,40 @@ function pageClickPermissionOption(selectors, wanted) {
       return 0;
     });
   } catch (e) {}
+  // v2.48.107 (Fix G2): the click lands in the same scoped
+  // group the state read chose — a radiogroup CONTAINED in a
+  // settings / instructions surface subtree (the surface
+  // root identified by its heading signature, exactly as
+  // pagePermissionState scopes it) is never clicked: its
+  // "options" are form values, not a proposal's Permission
+  // options. (The signature test uses a case-sensitive
+  // normaliser — this function's own norm lowercases.)
+  const normRaw = s => String(s || '').replace(/\s+/g, ' ').trim();
+  const surfaceRoots = [];
+  const findSurfaceRoot = (stashEl, test) => {
+    try { if (stashEl && document.contains(stashEl)) return stashEl; } catch (e) {}
+    let best = null;
+    let bestLen = Infinity;
+    try {
+      const pool = Array.from(document.querySelectorAll('div, section, aside, form, [role="dialog"], [role="menu"]'));
+      for (const el of pool) {
+        const t = normRaw(el.innerText || '');
+        if (!t || t.length > 8000 || t.length >= bestLen) continue;
+        if (test(t)) { best = el; bestLen = t.length; }
+      }
+    } catch (e) {}
+    return best;
+  };
+  try {
+    const sRoot = findSurfaceRoot(document.__fsAgentSettings || null, t => t.includes('Agent settings') && (t.includes('Confirm before generating') || t.includes('Video generation default')));
+    if (sRoot) surfaceRoots.push(sRoot);
+  } catch (e) {}
+  try {
+    const iRoot = findSurfaceRoot(document.__fsAgentInstructions || null, t => t.includes('Agent instructions') && t.includes('Add instruction'));
+    if (iRoot) surfaceRoots.push(iRoot);
+  } catch (e) {}
+  const inSurface = (el) => surfaceRoots.some(r => r === el || (r.contains && r.contains(el)));
+  const scopedGroups = groups.filter(g => !inSurface(g));
   const isEnabled = (g) => {
     if (g.getAttribute('aria-disabled') === 'true' || g.hasAttribute('disabled')) return false;
     const els = [];
@@ -1324,8 +1447,8 @@ function pageClickPermissionOption(selectors, wanted) {
       (el.querySelector && el.querySelector('input[disabled]'))));
   };
   let group = null;
-  for (const g of groups) { if (isEnabled(g)) group = g; }
-  if (!group) group = groups.length ? groups[groups.length - 1] : null;
+  for (const g of scopedGroups) { if (isEnabled(g)) group = g; }
+  if (!group) group = scopedGroups.length ? scopedGroups[scopedGroups.length - 1] : null;
   if (!group) return null;
   const optionEls = [];
   for (const sel of selectors.radioOption) {
@@ -1955,6 +2078,50 @@ function pageSaveAgentSettings(selectors) {
 }
 
 /**
+ * v2.48.107 (AGENTTEST13, Fix G1) — CLOSE the settings
+ * surface: click the back arrow in its header (the button
+ * whose ligature text is exactly 'arrow_back', or whose
+ * aria-label/title says Back). The surface REPLACES the chat
+ * inside the panel (live-DOM verified), so leaving it open
+ * after Save leaves the driver reading the form instead of
+ * the conversation — TEST13's whole proposal wait did
+ * exactly that. The root is the stashed surface, else the
+ * smallest carrier of the surface anchors (the detector's
+ * own scan). Returns { found, clicked, via }; the caller
+ * falls back to the tune icon (a toggle) and VERIFIES the
+ * chat view afterwards — a click alone is not proof.
+ */
+function pageCloseAgentSettingsSurface(selectors) {
+  const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+  let root = null;
+  try {
+    const st = document.__fsAgentSettings || null;
+    if (st && document.contains(st)) root = st;
+  } catch (e) {}
+  if (!root) {
+    try {
+      const pool = Array.from(document.querySelectorAll('div, section, aside, form, [role="dialog"], [role="menu"]'));
+      let bestLen = Infinity;
+      for (const el of pool) {
+        const t = norm(el.innerText || '');
+        if (!t || t.length > 8000 || t.length >= bestLen) continue;
+        if (t.includes('Agent settings') && (t.includes('Confirm before generating') || t.includes('Video generation default'))) { root = el; bestLen = t.length; }
+      }
+    } catch (e) {}
+  }
+  if (!root) return { found: false, clicked: false, via: null };
+  try { document.__fsAgentSettings = root; } catch (e) {}
+  let btns = [];
+  try { btns = Array.from(root.querySelectorAll('button, [role="button"]')); } catch (e) { btns = []; }
+  const back = btns.find(b => norm(b.innerText || '') === 'arrow_back')
+    || btns.find(b => /back/i.test(String((b.getAttribute && (b.getAttribute('aria-label') || b.getAttribute('title'))) || '')));
+  if (back) {
+    try { back.click(); return { found: true, clicked: true, via: 'arrow_back' }; } catch (e) {}
+  }
+  return { found: true, clicked: false, via: null };
+}
+
+/**
  * v2.48.104 — click the composer's AGENT INSTRUCTIONS icon
  * (the FIRST of the three buttons shown while Agent is on;
  * the owner's screenshots: instructions, settings, enter).
@@ -2095,7 +2262,7 @@ function pageReadAgentInstructions(selectors) {
       }
     } catch (e) {}
   }
-  if (!root) return { present: false, text: '', values: [] };
+  if (!root) return { present: false, text: '', values: [], rootDesc: null };
   try { document.__fsAgentInstructions = root; } catch (e) {}
   // v2.48.106 (Fix F5): an instruction card's title and
   // guideline live in input/textarea .value properties —
@@ -2124,7 +2291,13 @@ function pageReadAgentInstructions(selectors) {
   } catch (e) {}
   const visible = norm(root.innerText || '');
   const text = norm(`${visible} ${values.join(' ')}`).slice(0, 4000);
-  return { present: true, text, values };
+  // v2.48.107 (Fix G3): the root descriptor rides the read —
+  // TEST13's verify read-back was "" with NO evidence of what
+  // was actually read (a stale subtree? an empty list? no
+  // surface at all?). The descriptor names the root and its
+  // sizes so the next empty read is diagnosable from the log.
+  const rootDesc = `<${String(root.tagName || '?').toLowerCase()}> instructions-root · visible text ${visible.length} chars · ${values.length} field value(s)`;
+  return { present: true, text, values, rootDesc };
 }
 
 /**
@@ -2259,6 +2432,50 @@ function pageClickInstructionsDone(selectors) {
   try { const st = document.__fsAgentInstructions; if (st && document.contains(st) && tryRoot(st)) return true; } catch (e) {}
   try { if (tryRoot(document.body)) return true; } catch (e) {}
   return false;
+}
+
+/**
+ * v2.48.107 (AGENTTEST13, Fix G1b) — CLOSE the instructions
+ * surface: its own affordances are the back arrow in its
+ * header (ligature 'arrow_back') or the "Done" button pinned
+ * at its bottom (live-DOM verified). The root is the stashed
+ * surface, else the smallest carrier of its anchors.
+ * Returns { found, clicked, via }; the caller verifies the
+ * chat view afterwards, exactly like the settings close.
+ */
+function pageCloseAgentInstructionsSurface(selectors) {
+  const norm = s => String(s || '').replace(/\s+/g, ' ').trim();
+  let root = null;
+  try {
+    const st = document.__fsAgentInstructions || null;
+    if (st && document.contains(st)) root = st;
+  } catch (e) {}
+  if (!root) {
+    try {
+      const pool = Array.from(document.querySelectorAll('div, section, aside, form, [role="dialog"], [role="menu"]'));
+      let bestLen = Infinity;
+      for (const el of pool) {
+        const t = norm(el.innerText || '');
+        if (!t || t.length > 6000 || t.length >= bestLen) continue;
+        if (t.includes('Agent instructions') && t.includes('Add instruction')) { root = el; bestLen = t.length; }
+      }
+    } catch (e) {}
+  }
+  if (!root) return { found: false, clicked: false, via: null };
+  try { document.__fsAgentInstructions = root; } catch (e) {}
+  let btns = [];
+  try { btns = Array.from(root.querySelectorAll('button, [role="button"]')); } catch (e) { btns = []; }
+  const back = btns.find(b => norm(b.innerText || '') === 'arrow_back')
+    || btns.find(b => /back/i.test(String((b.getAttribute && (b.getAttribute('aria-label') || b.getAttribute('title'))) || '')));
+  if (back) {
+    try { back.click(); return { found: true, clicked: true, via: 'arrow_back' }; } catch (e) {}
+  }
+  const wanted = (selectors && selectors.instructionsDoneText) || 'Done';
+  const doneBtn = btns.find(b => norm(b.innerText || '') === wanted && !b.disabled && b.getAttribute('aria-disabled') !== 'true');
+  if (doneBtn) {
+    try { doneBtn.click(); return { found: true, clicked: true, via: 'done' }; } catch (e) {}
+  }
+  return { found: true, clicked: false, via: null };
 }
 
 /**
@@ -2729,6 +2946,86 @@ function pageSurveySettingsRegion(selectors) {
 // ---------------------------------------------------------------------------
 
 /**
+ * v2.48.107 (AGENTTEST13, Fix G1) — close the SETTINGS
+ * surface and VERIFY the chat view is restored. The click
+ * path is the surface header's back arrow; when no arrow is
+ * found the composer tune icon is re-clicked (it toggles the
+ * surface). Verification is a FRESH state read, never the
+ * click: the surface must no longer be detected, or a fresh
+ * panel read must carry no settings signature (the surface
+ * may stay DOM-mounted but hidden — innerText then reads
+ * the chat again, which is the state that matters). One log
+ * line either way; NEVER fatal and never throws — by the
+ * time this runs the settings are already saved + verified.
+ */
+async function closeAgentSettingsSurface(engine, log) {
+  try {
+    let clicked = false;
+    try {
+      const r = await engine.page.evaluate(pageCloseAgentSettingsSurface, AGENT_SELECTORS);
+      clicked = !!(r && r.clicked);
+    } catch (e) {}
+    if (!clicked) {
+      try { await engine.page.evaluate(pageClickComposerTuneIcon, AGENT_SELECTORS); } catch (e) {}
+    }
+    await sleep(600);
+    let surfaceGone = false;
+    try {
+      const s = await engine.page.evaluate(pageAgentSettingsSurface, AGENT_SELECTORS);
+      surfaceGone = !(s && s.present);
+    } catch (e) {}
+    let panelText = '';
+    try {
+      const re = await engine.page.evaluate(pageAnchorAgentPanel, AGENT_SELECTORS);
+      if (re && typeof re.text === 'string') panelText = re.text;
+    } catch (e) {}
+    const ok = surfaceGone || panelSurfaceKind(panelText) !== 'settings';
+    log('settings-closed', ok ? { ok: true } : { ok: false, text: panelText }, ok ? undefined : 'warn');
+    return ok;
+  } catch (e) {
+    try { log('settings-closed', { ok: false, text: '' }, 'warn'); } catch (e2) {}
+    return false;
+  }
+}
+
+/**
+ * v2.48.107 (AGENTTEST13, Fix G1b) — the instructions twin
+ * of the settings close: the surface's back arrow or its
+ * Done button (pageClickInstructionsDone is the fallback
+ * click), then the same fresh-read verification against the
+ * instructions signature. Never fatal, never throws.
+ */
+async function closeAgentInstructionsSurface(engine, log) {
+  try {
+    let clicked = false;
+    try {
+      const r = await engine.page.evaluate(pageCloseAgentInstructionsSurface, AGENT_SELECTORS);
+      clicked = !!(r && r.clicked);
+    } catch (e) {}
+    if (!clicked) {
+      try { await engine.page.evaluate(pageClickInstructionsDone, AGENT_SELECTORS); } catch (e) {}
+    }
+    await sleep(500);
+    let surfaceGone = false;
+    try {
+      const s = await engine.page.evaluate(pageAgentInstructionsSurface, AGENT_SELECTORS);
+      surfaceGone = !(s && s.present);
+    } catch (e) {}
+    let panelText = '';
+    try {
+      const re = await engine.page.evaluate(pageAnchorAgentPanel, AGENT_SELECTORS);
+      if (re && typeof re.text === 'string') panelText = re.text;
+    } catch (e) {}
+    const ok = surfaceGone || panelSurfaceKind(panelText) !== 'instructions';
+    log('instructions-closed', ok ? { ok: true } : { ok: false, text: panelText }, ok ? undefined : 'warn');
+    return ok;
+  } catch (e) {
+    try { log('instructions-closed', { ok: false, text: '' }, 'warn'); } catch (e2) {}
+    return false;
+  }
+}
+
+/**
  * Align the project's per-project Agent settings — Confirm
  * before generating = Always (Never is never set), the run's
  * model mapped into the Agent's own labels, the run's aspect
@@ -2796,6 +3093,11 @@ async function alignAgentSettings(engine, settings, log, args) {
   if (!desired.aspect) {
     log('settings-skip', { detail: `the run's aspect "${settings.aspectRatio || ''}" is not 16:9 or 9:16 — the project's Agent aspect default is left as-is.` });
   }
+  // v2.48.107 (Fix G1): once the surface has been opened,
+  // EVERY exit of this function closes it again (the finish
+  // wrapper below, and the catch) — TEST13 left it open and
+  // the whole run read the form instead of the conversation.
+  let settingsSurfaceOpened = false;
   try {
     // v2.48.99: ONE re-anchor attempt before the settings
     // surface is opened. The composer anchor missed at send
@@ -2871,6 +3173,17 @@ async function alignAgentSettings(engine, settings, log, args) {
       };
     }
     log('settings-opened', { via: openedVia });
+    settingsSurfaceOpened = true;
+    // v2.48.107 (Fix G1): the exit wrapper — close the
+    // surface (back arrow, tune fallback) and verify the
+    // chat view is restored BEFORE the result travels on.
+    // Never fatal: the settings are saved + verified by
+    // then, and the verify-reopen path above has already
+    // had its chance to re-open and re-close via this exit.
+    const finish = async (res) => {
+      await closeAgentSettingsSurface(engine, log);
+      return res;
+    };
     // v2.48.102 (Fix F): the settings-surface survey is
     // captured WHILE THE SURFACE IS OPEN — the helper is
     // defined here, the first capture happens at the first
@@ -2981,7 +3294,7 @@ async function alignAgentSettings(engine, settings, log, args) {
     const saved = await engine.page.evaluate(pageSaveAgentSettings, AGENT_SELECTORS);
     if (!saved) {
       log('settings-unaligned', { detail: 'the settings Save button was not found' });
-      return { aligned: false, outcome: 'mismatch', field: 'save', readBack: readBackOf(state), detail: 'the settings Save button was not found' };
+      return finish({ aligned: false, outcome: 'mismatch', field: 'save', readBack: readBackOf(state), detail: 'the settings Save button was not found' });
     }
     await sleep(700);
     // Verify by RE-READING the surface (reopening it first if
@@ -3019,7 +3332,7 @@ async function alignAgentSettings(engine, settings, log, args) {
         'outputs x1'
       ].filter(Boolean).join(', ');
       log('settings-aligned', { detail });
-      return { aligned: true, outcome: 'aligned', readBack: readBackOf(after) };
+      return finish({ aligned: true, outcome: 'aligned', readBack: readBackOf(after) });
     }
     let mismatchDetail = mismatch
       ? `the settings field '${mismatch.field}' did not take the aligned value (wanted '${mismatch.want}', reads '${mismatch.got === null || mismatch.got === undefined ? 'unreadable' : mismatch.got}')`
@@ -3043,10 +3356,16 @@ async function alignAgentSettings(engine, settings, log, args) {
       mismatchDetail += ` | settings surface survey: ${surveyText.length > 360 ? `${surveyText.substring(0, 360)}…` : surveyText}`;
     }
     log('settings-unaligned', { detail: mismatchDetail });
-    return { aligned: false, outcome: 'mismatch', field: mismatch ? mismatch.field : null, readBack: readBackOf(after), detail: mismatchDetail };
+    return finish({ aligned: false, outcome: 'mismatch', field: mismatch ? mismatch.field : null, readBack: readBackOf(after), detail: mismatchDetail });
   } catch (e) {
     const errorDetail = (e && e.message) ? e.message : 'error while operating the settings surface';
     log('settings-unaligned', { detail: errorDetail });
+    // v2.48.107 (Fix G1): an error mid-alignment closes the
+    // surface too, when it was opened — the next phase must
+    // never inherit a form where the chat should be.
+    if (settingsSurfaceOpened) {
+      try { await closeAgentSettingsSurface(engine, log); } catch (e2) {}
+    }
     return { aligned: false, outcome: 'error', readBack: readBackOf(null), detail: errorDetail };
   }
 }
@@ -3146,9 +3465,16 @@ async function ensureAgentInstructions(engine, log, args) {
       log('instructions-failed', { detail });
       return { status: 'failed', detail };
     }
+    // v2.48.107 (Fix G1b): the surface is open from here on —
+    // EVERY exit below closes it and verifies the chat view
+    // is restored before returning, so the send that follows
+    // never inherits a form where the conversation should be
+    // (the settings surface did exactly that damage in
+    // TEST13).
     if (instructionTitleMatches(await readBack(), title)) {
       await done();
       log('instructions-present', { title });
+      await closeAgentInstructionsSurface(engine, log);
       return { status: 'present' };
     }
     let addClicked = false;
@@ -3156,6 +3482,7 @@ async function ensureAgentInstructions(engine, log, args) {
     if (!addClicked) {
       const detail = 'the "+ Add instruction" control was not found on the instructions surface';
       log('instructions-failed', { detail });
+      await closeAgentInstructionsSurface(engine, log);
       return { status: 'failed', detail };
     }
     await sleep(400);
@@ -3165,6 +3492,7 @@ async function ensureAgentInstructions(engine, log, args) {
       await done();
       const detail = `the instruction form could not be filled (title ${fill && fill.titleSet ? 'set' : 'unset'}, guideline ${fill && fill.bodySet ? 'set' : 'unset'})`;
       log('instructions-failed', { detail });
+      await closeAgentInstructionsSurface(engine, log);
       return { status: 'failed', detail: 'the instruction form could not be filled' };
     }
     await done();
@@ -3172,23 +3500,38 @@ async function ensureAgentInstructions(engine, log, args) {
     // detection (the list re-renders after Done; a stale stash
     // can read back an empty pre-save subtree), matched over
     // the read's text + field values.
-    try { await engine.page.evaluate(pageAgentInstructionsSurface, AGENT_SELECTORS); } catch (e) {}
+    // v2.48.107 (Fix G3): the verify RE-OPENS the surface
+    // fresh (the composer-row article button) before reading —
+    // TEST13's read-back was "" taken from whatever subtree
+    // the post-Done state left behind, with no evidence of
+    // what was read. An empty or unopenable verify now logs
+    // the surface descriptor + its full text (below), so the
+    // next failure is diagnosable from the log alone.
+    const reopened = await openSurface();
     let back = await readBack();
-    if (!instructionTitleMatches(back, title) && (await openSurface())) {
+    if (!instructionTitleMatches(back, title)) {
       try { await engine.page.evaluate(pageAgentInstructionsSurface, AGENT_SELECTORS); } catch (e) {}
       back = await readBack();
     }
     if (instructionTitleMatches(back, title)) {
       log('instructions-added', { title });
       await done();
+      await closeAgentInstructionsSurface(engine, log);
       return { status: 'added' };
     }
+    log('instructions-readback', {
+      root: back.rootDesc || (reopened ? 'surface re-opened, no readable root' : 'surface could not be re-opened'),
+      chars: (back.text || '').length,
+      text: back.text || ''
+    }, 'warn');
     const detail = `the instruction was filled and saved but does not read back on the instructions surface (read-back: "${truncateForLog(back.text || '', 800)}")`;
     log('instructions-failed', { detail });
+    await closeAgentInstructionsSurface(engine, log);
     return { status: 'failed', detail: 'the added instruction did not read back' };
   } catch (e) {
     const detail = (e && e.message) || 'error while operating the instructions surface';
     try { log('instructions-failed', { detail }); } catch (e2) {}
+    try { await closeAgentInstructionsSurface(engine, log); } catch (e2) {}
     return { status: 'failed', detail: 'error while operating the instructions surface' };
   }
 }
@@ -3498,6 +3841,12 @@ async function submitViaAgentInner(engine, args, noteProposal) {
   let sentAt = Date.now();
   const panelGuardMs = a.panelGuardMs || PANEL_GUARD_MS;
   let panelGuardFired = false;
+  // v2.48.107 (Fix G2/G4): the wait gets ONE surface-close
+  // attempt per send round — a wait that finds itself reading
+  // a settings/instructions surface closes it and re-anchors
+  // instead of sitting on the form for the whole window
+  // (TEST13). Reset at every re-send, like the panel guard.
+  let surfaceCloseAttempted = false;
   // v2.48.106 (Fix F1): growth-based re-anchor — while a send
   // is outstanding and the anchored text stays implausible
   // (composer chrome), the conversation may have rendered
@@ -3573,6 +3922,27 @@ async function submitViaAgentInner(engine, args, noteProposal) {
     } catch (e) {}
     if (isPanelTextImplausible(text) && Date.now() - lastGrowthReanchorAt >= (a.anchorGrowthMs || 6000)) {
       lastGrowthReanchorAt = Date.now();
+      try {
+        const re = await engine.page.evaluate(pageAnchorAgentPanel, AGENT_SELECTORS);
+        if (re && re.found && typeof re.text === 'string' && re.text !== text) text = re.text;
+      } catch (e) {}
+    }
+    // v2.48.107 (Fixes G2/G4): the anchored text carries a
+    // SETTINGS / INSTRUCTIONS surface signature — the wait is
+    // reading a form, not the conversation (TEST13: the
+    // settings surface was never closed after alignment, and
+    // every heartbeat for 180s showed its text). Attempt the
+    // explicit close ONCE per send round, then re-anchor and
+    // adopt whatever the panel reads now. The signature also
+    // counts as implausible (isPanelTextImplausible), so a
+    // surface that will not close feeds the panel-not-found
+    // fast-fail instead of a blind full-length wait.
+    const surfKind = panelSurfaceKind(text);
+    if (surfKind && !surfaceCloseAttempted) {
+      surfaceCloseAttempted = true;
+      log('wait-surface-close', { kind: surfKind }, 'warn');
+      if (surfKind === 'settings') await closeAgentSettingsSurface(engine, log);
+      else await closeAgentInstructionsSurface(engine, log);
       try {
         const re = await engine.page.evaluate(pageAnchorAgentPanel, AGENT_SELECTORS);
         if (re && re.found && typeof re.text === 'string' && re.text !== text) text = re.text;
@@ -3778,6 +4148,7 @@ async function submitViaAgentInner(engine, args, noteProposal) {
             roundStart = Date.now();
             sentAt = Date.now();
             panelGuardFired = false;
+            surfaceCloseAttempted = false;
             // The answer to the re-sent instruction is a NEW
             // proposal appearance: the Reject settled the old
             // group (the settle wait above saw it disable), so
@@ -3815,6 +4186,7 @@ async function submitViaAgentInner(engine, args, noteProposal) {
               roundStart = Date.now();
               sentAt = Date.now();
               panelGuardFired = false;
+              surfaceCloseAttempted = false;
               // Settled by the Reject above — a new appearance
               // may follow, even with an identical signature.
               liveGroupGapSeen = true;
@@ -3871,7 +4243,14 @@ async function submitViaAgentInner(engine, args, noteProposal) {
       // while the real state (the only group being read was
       // the settled one) stayed invisible.
       let waitWhy = null;
-      if (perm && perm.present && !perm.enabled) {
+      // v2.48.107 (Fix G2): the heartbeat DISTINGUISHES a
+      // group that only exists inside a settings/instructions
+      // surface (ignored by the scoped poll — TEST13's
+      // heartbeats called those "present" for 180s) from a
+      // group in the conversation.
+      if (perm && !perm.present && perm.surfaceGroupCount) {
+        waitWhy = 'the only radiogroup(s) are inside the settings/instructions surface — ignored, not a proposal';
+      } else if (perm && perm.present && !perm.enabled) {
         waitWhy = 'group present but settled/disabled — no answerable proposal yet';
       } else if (perm && perm.present && perm.enabled && !latest) {
         waitWhy = 'group present, no costing sentence yet';
@@ -3881,7 +4260,7 @@ async function submitViaAgentInner(engine, args, noteProposal) {
       log('waiting', {
         elapsedSec: Math.round((Date.now() - roundStart) / 1000),
         tail: lastPanelText,
-        group: (perm && perm.present) ? 'present' : 'absent',
+        group: (perm && perm.present) ? 'present' : ((perm && perm.surfaceGroupCount) ? 'surface-only' : 'absent'),
         why: waitWhy
       });
     }
@@ -4263,6 +4642,12 @@ module.exports = {
   agentLine,
   buildAgentTask,
   pageAgentSettingsSurface,
+  // v2.48.107 (Fixes G1/G1b/G2/G4): the surface-signature
+  // classifier and the two surface closers — exported for
+  // the X109 fixtures.
+  panelSurfaceKind,
+  pageCloseAgentSettingsSurface,
+  pageCloseAgentInstructionsSurface,
   // v2.48.106 (Fixes F1/F3/F4): the panel anchor + pruned
   // read, the send-landing verifier and the section-scoped
   // settings clicker — exported for the X108 fixtures.

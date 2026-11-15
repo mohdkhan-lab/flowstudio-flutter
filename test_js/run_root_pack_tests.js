@@ -12638,6 +12638,536 @@ async function main() {
     }
   }
 
+  // =====================================================================
+  // X109 (v2.48.107, source only) — AGENTTEST13 FIX ROUND 2
+  // (G1/G1b/G2/G3/G4): TEST13 (.106 pack, live 2026-11-15
+  // 18:25–18:29) proved settings-first (read-back verified,
+  // first time ever) and send verification — and STILL failed
+  // agent-proposal-timeout: the settings surface was never
+  // closed after Save (no close step existed; the design
+  // assumed Save closes it), so the anchor locked onto the
+  // surface and every heartbeat read its 724 chars of form
+  // text while the conversation was never seen; the
+  // document-wide proposal-group poll reported the SETTINGS
+  // FORM's own radiogroups as "present" the whole wait; the
+  // standing instruction's verify read-back was "" with no
+  // evidence. The fixes pinned below: (a) alignment ENDS with
+  // the settings surface explicitly closed (back arrow) and
+  // the chat view verified; (b) radiogroups inside a
+  // settings/instructions surface subtree are NOT proposals
+  // (scoped poll + clicker, surfaceGroupCount reported);
+  // (c) a wait reading a surface signature attempts ONE close
+  // + re-anchor, and the surface text counts as implausible
+  // (fast-fail, never an 180s blind wait, never logged as an
+  // agent message); (d) instructions verify re-opens the
+  // surface FRESH and reads card titles from input .value —
+  // an empty read logs the surface descriptor + full text.
+  // =====================================================================
+  {
+    const fs109 = require('fs');
+    const path109 = require('path');
+    const driver109 = require('../engine/agentDriver');
+    const read109 = (rel) => fs109.readFileSync(path109.join(__dirname, '..', rel), 'utf8');
+    const driverSrc109 = read109('engine/agentDriver.js');
+
+    // --- source pins ---
+    ok('X109 source: the settings surface has an explicit closer (back arrow)', driverSrc109.includes('pageCloseAgentSettingsSurface') && driverSrc109.includes("=== 'arrow_back'"));
+    ok('X109 source: the instructions surface has an explicit closer', driverSrc109.includes('pageCloseAgentInstructionsSurface'));
+    ok('X109 source: the driver verifies the chat view after closing', driverSrc109.includes('closeAgentSettingsSurface') && driverSrc109.includes('closeAgentInstructionsSurface') && driverSrc109.includes('settings surface closed — chat view restored'));
+    ok('X109 source: the proposal poll scopes out surface groups and reports them', driverSrc109.includes('surfaceGroupCount') && driverSrc109.includes('surfaceRoots') && driverSrc109.includes('inSurface'));
+    ok('X109 source: a surface signature counts as not-the-conversation in the wait', driverSrc109.includes('panelSurfaceKind') && driverSrc109.includes('wait-surface-close'));
+    ok('X109 source: the heartbeat can name a surface-only group', driverSrc109.includes("'surface-only'"));
+
+    // --- mini-DOM 109: the X108 engine, renamed ---
+    const splitTop109 = (str, sep) => {
+      const out = []; let cur = ''; let br = 0; let q = false;
+      for (const ch of String(str)) {
+        if (q) { cur += ch; if (ch === '"') q = false; continue; }
+        if (ch === '"') { q = true; cur += ch; continue; }
+        if (ch === '[') br++;
+        if (ch === ']') br--;
+        if (ch === sep && br === 0) { if (cur.trim()) out.push(cur.trim()); cur = ''; continue; }
+        cur += ch;
+      }
+      if (cur.trim()) out.push(cur.trim());
+      return out;
+    };
+    const parseCompound109 = (src) => {
+      const c = { tag: null, classes: [], attrs: [] };
+      let rest = src;
+      const tagM = rest.match(/^(\*|[a-zA-Z][a-zA-Z0-9-]*)/);
+      if (tagM) { c.tag = tagM[1] === '*' ? null : tagM[1].toLowerCase(); rest = rest.slice(tagM[1].length); }
+      while (rest.length) {
+        if (rest[0] === '.') { const m = rest.match(/^\.([a-zA-Z0-9_-]+)/); c.classes.push(m[1]); rest = rest.slice(m[0].length); }
+        else if (rest[0] === '[') {
+          const end = rest.indexOf(']');
+          const body = rest.slice(1, end);
+          const m = body.match(/^([a-zA-Z0-9_-]+)(\*?=)?\s*(?:"([^"]*)")?\s*(i)?$/);
+          c.attrs.push({ name: m[1], op: m[2] || null, value: m[3] !== undefined ? m[3] : null, ci: !!m[4] });
+          rest = rest.slice(end + 1);
+        } else if (rest.startsWith(':checked')) { c.attrs.push({ name: 'checked', op: 'pseudo', value: null, ci: false }); rest = rest.slice(8); }
+        else { rest = rest.slice(1); }
+      }
+      return c;
+    };
+    const matchCompound109 = (el, c) => {
+      if (c.tag && String(el.tagName || '').toLowerCase() !== c.tag) return false;
+      const classes = String(el.className || '').split(/\s+/).filter(Boolean);
+      for (const cl of c.classes) if (!classes.includes(cl)) return false;
+      for (const a of c.attrs) {
+        if (a.op === 'pseudo') { if (!(a.name === 'checked' && el.checked === true)) return false; continue; }
+        if (a.name === 'disabled' && !a.op) { if (!(el.hasAttribute('disabled') || el.disabled === true)) return false; continue; }
+        const v = el.getAttribute(a.name);
+        if (!a.op) { if (v === null) return false; continue; }
+        if (v === null) return false;
+        const hay = a.ci ? v.toLowerCase() : v;
+        const needle = a.ci ? String(a.value).toLowerCase() : String(a.value);
+        if (a.op === '=' && hay !== needle) return false;
+        if (a.op === '*=' && !hay.includes(needle)) return false;
+      }
+      return true;
+    };
+    const descendants109 = (el) => {
+      const out = [];
+      const walk = (n) => { for (const c of n.children) { out.push(c); walk(c); } };
+      walk(el);
+      return out;
+    };
+    const queryAll109 = (rootEl, sel, includeSelf) => {
+      const groups = splitTop109(sel, ',').map(g => splitTop109(g, ' ').map(parseCompound109)).filter(g => g.length);
+      const universe = includeSelf ? [rootEl, ...descendants109(rootEl)] : descendants109(rootEl);
+      const matchesGroup = (el, compounds) => {
+        if (!matchCompound109(el, compounds[compounds.length - 1])) return false;
+        let idx = compounds.length - 2;
+        let n = el.parentElement;
+        const stopAt = rootEl.parentElement;
+        while (idx >= 0 && n && n !== stopAt) {
+          if (matchCompound109(n, compounds[idx])) idx--;
+          n = n.parentElement;
+        }
+        return idx < 0;
+      };
+      return universe.filter(el => groups.some(g => matchesGroup(el, g)));
+    };
+    const makeEl109 = (tag, opts) => {
+      const o = opts || {};
+      const el = {
+        tagName: String(tag || 'div').toUpperCase(),
+        children: [],
+        parentElement: null,
+        className: o.className || '',
+        disabled: !!o.disabled,
+        checked: !!o.checked,
+        value: o.value !== undefined ? o.value : undefined,
+        _text: o.text || '',
+        _attrs: {},
+        _rect: o.rect || { width: 100, height: 20, top: 0 },
+        _onClick: o.onClick || null,
+        getAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name) ? this._attrs[name] : null; },
+        setAttribute(name, v) { this._attrs[name] = String(v); if (name === 'class') this.className = String(v); },
+        hasAttribute(name) { return Object.prototype.hasOwnProperty.call(this._attrs, name); },
+        removeAttribute(name) { delete this._attrs[name]; },
+        appendChild(child) { child.parentElement = this; this.children.push(child); return child; },
+        remove() { if (this.parentElement) { const i = this.parentElement.children.indexOf(this); if (i >= 0) this.parentElement.children.splice(i, 1); this.parentElement = null; } },
+        contains(other) { let n = other; while (n) { if (n === this) return true; n = n.parentElement; } return false; },
+        focus() { this._focused = true; },
+        click() { this._clicks = (this._clicks || 0) + 1; if (this._onClick) this._onClick(this); },
+        scrollIntoView() {},
+        getBoundingClientRect() { return { width: this._rect.width, height: this._rect.height, top: this._rect.top, bottom: this._rect.top + this._rect.height, left: 0, right: this._rect.width }; },
+        checkVisibility() { return true; },
+        querySelector(sel2) { return queryAll109(this, sel2, false)[0] || null; },
+        querySelectorAll(sel2) { return queryAll109(this, sel2, false); },
+        cloneNode(deep) {
+          const c = makeEl109(this.tagName, { className: this.className, text: this._text, rect: this._rect, value: this.value });
+          c.checked = this.checked; c.disabled = this.disabled;
+          for (const k of Object.keys(this._attrs)) c._attrs[k] = this._attrs[k];
+          if (deep) for (const ch of this.children) c.appendChild(ch.cloneNode(true));
+          return c;
+        }
+      };
+      if (o.className) el._attrs.class = o.className;
+      if (o.attrs) for (const k of Object.keys(o.attrs)) el.setAttribute(k, o.attrs[k]);
+      Object.defineProperty(el, 'innerText', { get() { const parts = []; if (this._text) parts.push(this._text); for (const c of this.children) { const t = c.innerText; if (t) parts.push(t); } return parts.join(' '); } });
+      Object.defineProperty(el, 'textContent', { get() { return this.innerText; } });
+      Object.defineProperty(el, 'isContentEditable', { get() { return this.getAttribute('contenteditable') === 'true'; } });
+      return el;
+    };
+    const makeDocument109 = (bodyChildren) => {
+      const html = makeEl109('html');
+      const body = makeEl109('body');
+      html.appendChild(body);
+      (bodyChildren || []).forEach(c => body.appendChild(c));
+      return {
+        documentElement: html,
+        body,
+        __fsAgentPanel: null,
+        __fsAgentSettings: null,
+        __fsAgentInstructions: null,
+        __fsAgentSentProbe: '',
+        querySelector(sel) { return queryAll109(html, sel, true)[0] || null; },
+        querySelectorAll(sel) { return queryAll109(html, sel, true); },
+        contains(el) { return !!el && (el === html || html.contains(el)); }
+      };
+    };
+    const evaluateWithDom109 = (doc, fn, ...args) => {
+      const prevDoc = global.document;
+      const prevWin = global.window;
+      global.document = doc;
+      global.window = { document: doc };
+      try { return fn(...args); } finally {
+        if (prevDoc === undefined) delete global.document; else global.document = prevDoc;
+        if (prevWin === undefined) delete global.window; else global.window = prevWin;
+      }
+    };
+
+    // --- pure pins: the surface signature + the heartbeat ---
+    {
+      const SETTINGS_TAIL109 = 'home Nov 15 - 18:25 more_vert search filter_list add help settings_2 PRO dashboard All media Characters movie Scenes folder Library apps_spark_2 Tools add Create tool delete Bin left_panel_open Expand arrow_back Agent settings Settings for the agent within this project. Confirm before generating Always Agent will ask for confirmation before generating media. Never Agent will generate media and spend credits automatically. Image generation default 16:9 4:3 1:1 3:4 9:16 x1 x2 x3 x4 🍌 Nano Banana 2.1 arrow_drop_down Video generation default 16:9 9:16 x1 x2 x3 x4 Omni 1.1 Flash arrow_drop_down Save What do you want to create? add article_spark tune arrow_forward';
+      eq('X109 pure: the TEST13 settings tail is a SETTINGS surface read', driver109.panelSurfaceKind(SETTINGS_TAIL109), 'settings');
+      eq('X109 pure: an instructions surface read is recognised', driver109.panelSurfaceKind('Agent instructions FlowStudio Run Rules + Add instruction Done'), 'instructions');
+      eq('X109 pure: a real conversation is NOT a surface', driver109.panelSurfaceKind('Untitled session — I can generate that video for you with Omni 1.1 Flash costing 7 credits. Permission options Approve Reject'), null);
+      eq('X109 pure: the bare composer chrome is NOT a surface', driver109.panelSurfaceKind('What do you want to create? expand_content add Agent article_spark tune arrow_forward'), null);
+      ok('X109 pure (G4): the TEST13 settings tail counts as IMPLAUSIBLE (not the conversation)', driver109.isPanelTextImplausible(SETTINGS_TAIL109));
+      const w = driver109.agentLine('waiting', { elapsedSec: 30, group: 'surface-only', tail: 'x', why: 'the only radiogroup(s) are inside the settings/instructions surface — ignored, not a proposal' });
+      ok('X109 pure: the heartbeat names a surface-only group as such', w.includes('proposalGroup=surface-only') && w.includes('ignored, not a proposal'));
+      const closed = driver109.agentLine('settings-closed', { ok: true });
+      ok('X109 pure: the settings-closed line is the brief wording', closed.includes('settings surface closed — chat view restored'));
+    }
+
+    // --- (a) G1: a settings surface that STAYS OPEN after
+    // Save (the TEST13 shape) — alignment must end with the
+    // surface closed and the chat view verified ---
+    {
+      const clicks109 = [];
+      let backClicked109 = false;
+      const radioGroup109 = () => ({ radios: [] });
+      const radioRow109 = (group, label, checked) => {
+        const row = makeEl109('div');
+        const radio = makeEl109('span', { attrs: { role: 'radio', 'aria-checked': checked ? 'true' : 'false' } });
+        radio._onClick = () => { clicks109.push(label); for (const r of group.radios) r.setAttribute('aria-checked', r === radio ? 'true' : 'false'); };
+        row.appendChild(radio);
+        row.appendChild(makeEl109('span', { text: label }));
+        group.radios.push(radio);
+        return row;
+      };
+      const checkedLabel109 = (group) => {
+        const r = group.radios.find(x => x.getAttribute('aria-checked') === 'true');
+        return r ? r.parentElement.innerText : null;
+      };
+      const surface = makeEl109('div');
+      const header = makeEl109('div');
+      const backBtn = makeEl109('button', { text: 'arrow_back', onClick: () => { backClicked109 = true; surface.remove(); } });
+      header.appendChild(backBtn);
+      header.appendChild(makeEl109('span', { text: 'Agent settings' }));
+      surface.appendChild(header);
+      const confirmSec = makeEl109('section');
+      confirmSec.appendChild(makeEl109('div', { text: 'Confirm before generating' }));
+      const gConfirm = radioGroup109();
+      confirmSec.appendChild(radioRow109(gConfirm, 'Always', false));
+      confirmSec.appendChild(radioRow109(gConfirm, 'Never', true));
+      surface.appendChild(confirmSec);
+      const imgSec = makeEl109('section');
+      imgSec.appendChild(makeEl109('div', { text: 'Image generation default' }));
+      const gImgAspect = radioGroup109();
+      imgSec.appendChild(radioRow109(gImgAspect, '16:9', true));
+      imgSec.appendChild(radioRow109(gImgAspect, '9:16', false));
+      const gImgOut = radioGroup109();
+      for (const o of ['x1', 'x2', 'x3', 'x4']) imgSec.appendChild(radioRow109(gImgOut, o, o === 'x2'));
+      imgSec.appendChild(makeEl109('button', { text: '🍌 Nano Banana 2.1' }));
+      surface.appendChild(imgSec);
+      const vidSec = makeEl109('section');
+      vidSec.appendChild(makeEl109('div', { text: 'Video generation default' }));
+      const gVidAspect = radioGroup109();
+      vidSec.appendChild(radioRow109(gVidAspect, '16:9', true));
+      vidSec.appendChild(radioRow109(gVidAspect, '9:16', false));
+      const gVidOut = radioGroup109();
+      for (const o of ['x1', 'x2', 'x3', 'x4']) vidSec.appendChild(radioRow109(gVidOut, o, o === 'x2'));
+      const vidModelBtn = makeEl109('button', { text: 'Veo 3.1 - Fast' });
+      vidSec.appendChild(vidModelBtn);
+      surface.appendChild(vidSec);
+      // Save does NOT close the surface in this fixture — the
+      // TEST13 shape (the surface stays mounted/open after
+      // Save; only the explicit back-arrow close removes it).
+      surface.appendChild(makeEl109('button', { text: 'Save' }));
+      const doc = makeDocument109([surface]);
+      doc.__fsAgentSettings = surface;
+      vidModelBtn._onClick = () => {
+        const portal = makeEl109('div');
+        const opt1 = makeEl109('button', { text: 'Omni 1.1 Flash — Leaving Dec 5' });
+        opt1._onClick = () => { vidModelBtn._text = 'Omni 1.1 Flash'; portal.remove(); };
+        const opt2 = makeEl109('button', { text: 'Veo 3.1 - Fast' });
+        opt2._onClick = () => { vidModelBtn._text = 'Veo 3.1 - Fast'; portal.remove(); };
+        portal.appendChild(opt1);
+        portal.appendChild(opt2);
+        doc.body.appendChild(portal);
+      };
+      const alignLogs109 = [];
+      const engine109a = {
+        isStopping: false,
+        page: {
+          evaluate: async (fn, ...rest) => {
+            if (fn && fn.name && fn.name.startsWith('pageScroll')) return { found: true, scrolled: false };
+            return evaluateWithDom109(doc, fn, ...rest);
+          },
+          keyboard: { press: async () => {}, type: async () => {} },
+          target: () => ({ createCDPSession: async () => ({ send: async () => {} }) })
+        }
+      };
+      const alignRes = await driver109.alignAgentSettings(engine109a, { model: 'Omni Flash', aspectRatio: '9:16' }, (kind, data) => { alignLogs109.push(driver109.agentLine(kind, data)); }, { settingsOpenWaitMs: 5, settingsSurfaceWaitMs: 60, settingsSurfacePollMs: 5 });
+      ok('X109 (a) the aligner still sets + saves + verifies on a stays-open surface', alignRes && alignRes.aligned === true);
+      eq('X109 (a) after align: Confirm = Always', checkedLabel109(gConfirm), 'Always');
+      eq('X109 (a) after align: Video aspect = 9:16', checkedLabel109(gVidAspect), '9:16');
+      eq('X109 (a) after align: Video outputs = x1', checkedLabel109(gVidOut), 'x1');
+      ok('X109 (a) G1: the back arrow was clicked to close the surface', backClicked109 === true);
+      ok('X109 (a) G1: the surface is GONE from the document at the end of alignment', doc.contains(surface) === false);
+      ok('X109 (a) G1: the close + chat-view verification is logged', alignLogs109.some(l => l.includes('settings surface closed — chat view restored')));
+      eq('X109 (a) section-scoping intact: the Image outputs were never touched', checkedLabel109(gImgOut), 'x2');
+    }
+
+    // --- (b) G2: radiogroups that live ONLY inside a
+    // settings surface are not a proposal ---
+    {
+      const mkRadioGroup109 = (labels, clicks, tag) => {
+        const g = makeEl109('div', { attrs: { role: 'radiogroup' } });
+        for (const label of labels) {
+          g.appendChild(makeEl109('div', { attrs: { role: 'radio' }, text: label, onClick: () => { clicks.push(`${tag}:${label}`); } }));
+        }
+        return g;
+      };
+      const buildSettingsSurface109 = (clicks) => {
+        const surface = makeEl109('div');
+        surface.appendChild(makeEl109('div', { text: 'Agent settings' }));
+        const confirmSec = makeEl109('section');
+        confirmSec.appendChild(makeEl109('div', { text: 'Confirm before generating' }));
+        confirmSec.appendChild(mkRadioGroup109(['Always', 'Never'], clicks, 'confirm'));
+        surface.appendChild(confirmSec);
+        const vidSec = makeEl109('section');
+        vidSec.appendChild(makeEl109('div', { text: 'Video generation default' }));
+        vidSec.appendChild(mkRadioGroup109(['16:9', '9:16'], clicks, 'aspect'));
+        surface.appendChild(vidSec);
+        surface.appendChild(makeEl109('button', { text: 'Save' }));
+        return surface;
+      };
+      {
+        const clicks = [];
+        const doc = makeDocument109([buildSettingsSurface109(clicks)]);
+        const st = evaluateWithDom109(doc, driver109.pagePermissionState, driver109.AGENT_SELECTORS);
+        eq('X109 (b) surface-only groups: NO group counts as a proposal', st.present, false);
+        eq('X109 (b) surface-only groups: nothing is enabled-in-conversation', st.enabled, false);
+        eq('X109 (b) surface-only groups: both groups are counted as surface groups', st.surfaceGroupCount, 2);
+        eq('X109 (b) surface-only groups: the total group count still reports all groups', st.groupCount, 2);
+        const clicked = evaluateWithDom109(doc, driver109.pageClickPermissionOption, driver109.AGENT_SELECTORS, 'Always');
+        eq('X109 (b) surface-only groups: the clicker finds nothing to click', clicked, null);
+        eq('X109 (b) surface-only groups: no surface radio was clicked', JSON.stringify(clicks), JSON.stringify([]));
+      }
+      {
+        const clicks = [];
+        const surface = buildSettingsSurface109(clicks);
+        const aside = makeEl109('aside');
+        const wrap = makeEl109('div');
+        wrap.appendChild(makeEl109('div', { text: 'I can generate that video for you with Omni 1.1 Flash costing 7 credits.' }));
+        const convoGroup = makeEl109('div', { attrs: { role: 'radiogroup', 'aria-label': 'Permission options' } });
+        for (const label of ['Approve', 'Always approve in project', 'Reject']) {
+          convoGroup.appendChild(makeEl109('div', { attrs: { role: 'radio' }, text: label, onClick: () => { clicks.push(`convo:${label}`); } }));
+        }
+        wrap.appendChild(convoGroup);
+        aside.appendChild(wrap);
+        // The page-level ancestors (body/html) aggregate the
+        // whole app's text — modelled faithfully with a large
+        // filler subtree, so they exceed the surface-size cap
+        // in the ancestor walk exactly as the real page does.
+        const filler = makeEl109('div', { text: 'project grid filler '.repeat(500) });
+        const doc = makeDocument109([surface, aside, filler]);
+        const st = evaluateWithDom109(doc, driver109.pagePermissionState, driver109.AGENT_SELECTORS);
+        eq('X109 (b) mixed page: the conversation group counts as the proposal', st.present, true);
+        eq('X109 (b) mixed page: the conversation group is the enabled one', st.enabled, true);
+        eq('X109 (b) mixed page: the surface groups are still counted separately', st.surfaceGroupCount, 2);
+        eq('X109 (b) mixed page: total groups = 3', st.groupCount, 3);
+        ok('X109 (b) mixed page: the group text is the conversation proposal', String(st.groupText).includes('costing 7 credits'));
+        const clicked = evaluateWithDom109(doc, driver109.pageClickPermissionOption, driver109.AGENT_SELECTORS, 'Approve');
+        eq('X109 (b) mixed page: the click reports Approve', clicked, 'Approve');
+        eq('X109 (b) mixed page: the click landed in the CONVERSATION group only', JSON.stringify(clicks), JSON.stringify(['convo:Approve']));
+      }
+    }
+
+    // --- (c) G2/G4 in the full run: the wait reads the
+    // SETTINGS surface (TEST13's exact tail) — one close
+    // attempt + re-anchor is logged, the surface text is
+    // never logged as an agent message, and the run fails
+    // FAST (panel-not-found) instead of burning the wait ---
+    {
+      const SETTINGS_TAIL109 = 'arrow_back Agent settings Settings for the agent within this project. Confirm before generating Always Agent will ask for confirmation before generating media. Never Agent will generate media and spend credits automatically. Image generation default 16:9 4:3 1:1 3:4 9:16 x1 x2 x3 x4 Nano Banana 2.1 Video generation default 16:9 9:16 x1 x2 x3 x4 Omni 1.1 Flash Save What do you want to create? add article_spark tune arrow_forward';
+      const state = {
+        settingsSurfaceOpen: false,
+        settingsState: { confirm: 'Always', model: 'Omni 1.1 Flash', aspect: '9:16', outputs: 'x1' },
+        typed: [],
+        inWait: false,
+        waitCloseCalls: 0,
+        instructionsSurfaceOpen: false,
+        instructionTitles: ['FlowStudio Run Rules'],
+        formOpen: false,
+        filledInstruction: null
+      };
+      const logs = [];
+      const engine = {
+        isStopping: false,
+        captureArmed: false,
+        currentAccount: { name: 'Account', credits: 1000 },
+        currentDownloadDir: '/tmp/mock-out',
+        currentSettings: {},
+        logs,
+        log: (line) => { logs.push(String(line)); },
+        onVideoStarted: () => {},
+        dismissAnyBlockingOverlays: async () => {},
+        checkCreditsState: async () => 'OK',
+        getRequiredCredits: () => 7,
+        insertNativeText: async (t) => { state.typed.push(String(t)); },
+        currentProjectUrl: () => 'https://flow.example/project',
+        registerBackendTask: () => {},
+        _startApiPoll: () => {},
+        netCapture: { beginSubmission: () => {} },
+        page: {
+          keyboard: { press: async () => {}, type: async (t) => { state.typed.push(String(t)); } },
+          target: () => ({ createCDPSession: async () => ({ send: async (method, params) => { if (method === 'Input.insertText' && params && params.text) state.typed.push(String(params.text)); } }) }),
+          evaluate: async (fn, ...rest) => {
+            const name = fn && fn.name ? fn.name : '';
+            switch (name) {
+              case 'pageFindAgentToggle': return { found: true, on: true };
+              case 'pageClickAgentToggle': return true;
+              case 'pageReadAgentPanelText': return SETTINGS_TAIL109;
+              case 'pageAnchorAgentPanel': return { found: true, depth: 14, textLength: SETTINGS_TAIL109.length, containsComposer: true, text: SETTINGS_TAIL109 };
+              case 'pageSurveyAgentDom': return [];
+              case 'pagePermissionState': return { present: false, enabled: false, options: [], promptLocked: false, groupText: '', groupCount: 2, enabledCount: 0, surfaceGroupCount: 2 };
+              case 'pageClickPermissionOption': return rest[1];
+              case 'pageFocusAgentInput': return true;
+              case 'pageNoteAgentSent': return true;
+              case 'pageVerifyAgentSend': state.inWait = true; return { landed: true, bubbleSeen: false, composerCleared: true, thinking: false, composerText: '', composerFound: true };
+              case 'pageClickAgentSend': return true;
+              case 'pageCloseAgentSettingsSurface': if (state.inWait) state.waitCloseCalls++; return { found: true, clicked: true, via: 'arrow_back' };
+              case 'pageCloseAgentInstructionsSurface': return { found: false, clicked: false, via: null };
+              case 'pageGridTilesDetailed': return [];
+              case 'pageGridFingerprints': return [];
+              case 'pageGalleryLabels': return [];
+              case 'pageAgentSettingsSurface': return state.settingsSurfaceOpen ? { present: true, via: 'text' } : { present: false, via: null };
+              case 'pageAgentSettingsPresent': return state.settingsSurfaceOpen;
+              case 'pageReadAgentSettings': return state.settingsSurfaceOpen ? { present: true, ...state.settingsState } : { present: false, confirm: null, model: null, aspect: null, outputs: null };
+              case 'pageClickComposerTuneIcon': state.settingsSurfaceOpen = true; return true;
+              case 'pageClickComposerSettingsIcon': state.settingsSurfaceOpen = true; return true;
+              case 'pageClickComposerToolbarLastIcon': state.settingsSurfaceOpen = true; return true;
+              case 'pageClickSettingsText': return state.settingsSurfaceOpen;
+              case 'pageClickSettingsOption': return false;
+              case 'pageSaveAgentSettings': if (state.settingsSurfaceOpen) { state.settingsSurfaceOpen = false; return true; } return false;
+              case 'pageSurveySettingsSurface': return [];
+              case 'pageSurveySettingsRegion': return [];
+              case 'pageClickComposerInstructionsIcon': state.instructionsSurfaceOpen = true; return true;
+              case 'pageAgentInstructionsSurface': return state.instructionsSurfaceOpen ? { present: true, via: 'text' } : { present: false, via: null };
+              case 'pageReadAgentInstructions': return { present: state.instructionsSurfaceOpen, text: state.instructionsSurfaceOpen ? ('Agent instructions ' + state.instructionTitles.join(' · ') + ' + Add instruction Done') : '', values: state.instructionsSurfaceOpen ? state.instructionTitles.slice() : [] };
+              case 'pageClickAddInstruction': if (state.instructionsSurfaceOpen) { state.formOpen = true; return true; } return false;
+              case 'pageFillAgentInstruction': if (state.formOpen) { state.filledInstruction = rest[1]; return { titleSet: true, bodySet: true, toggle: true }; } return { titleSet: false, bodySet: false, toggle: null };
+              case 'pageClickInstructionsDone': if (state.formOpen && state.filledInstruction) { state.instructionTitles.push(state.filledInstruction.title); state.formOpen = false; } state.instructionsSurfaceOpen = false; return true;
+              case 'pageSurveyInstructionsSurface': return [];
+              default: return { count: 0, labels: [] };
+            }
+          }
+        }
+      };
+      const res = await driver109.submitViaAgent(engine, {
+        promptText: 'Make a short video of a golden puppy chasing a blue butterfly in a flower garden, sunny day', promptIndex: 0, totalPrompts: 1,
+        settings: { model: 'Omni Flash', quality: '360p', duration: '10', aspectRatio: '9:16' },
+        videoModelTier: 'omni-flash', useAgentMode: true,
+        settingsOpenWaitMs: 5, settingsSurfaceWaitMs: 30, settingsSurfacePollMs: 5,
+        chatPollMs: 5, panelGuardMs: 30, heartbeatMs: 100000,
+        sendVerifyMs: 40, proposalWaitMs: 5000, anchorRetryMs: 50, anchorRetryPollMs: 5
+      });
+      eq('X109 (c) a wait stuck on the settings surface fails the run', res.status, 'AGENT_FAILED');
+      ok('X109 (c) the failure is the panel-not-found FAST fail, not the 180s proposal timeout', String(res.reason || '').includes('agent-panel-not-found') && !String(res.reason || '').includes('agent-proposal-timeout'));
+      eq('X109 (c) exactly ONE surface-close attempt was made during the wait', state.waitCloseCalls, 1);
+      ok('X109 (c) the close attempt + re-anchor is logged', logs.some(l => l.includes('not the conversation') && l.includes('closing it and re-anchoring')));
+      ok('X109 (c) the surface text was NEVER logged as an agent message', !logs.some(l => l.includes('agent message') && l.includes('Agent settings')));
+    }
+
+    // --- (d) G1b/G3: instructions — Done, FRESH reopen,
+    // title read from the input .value; an empty verify logs
+    // the surface descriptor + text ---
+    {
+      const buildInstructionsWorld109 = (opts = {}) => {
+        const saved = (opts.savedTitles || []).map(t => ({ title: t, body: 'Always use the video model, aspect ratio and output count saved in this project.' }));
+        const surface = makeEl109('div');
+        const setKids = (el, kids) => {
+          for (const c of el.children) c.parentElement = null;
+          el.children = [];
+          kids.forEach(k => el.appendChild(k));
+        };
+        const showList = () => {
+          const kids = [makeEl109('div', { text: 'Agent instructions' })];
+          for (const card of saved) {
+            const cardEl = makeEl109('div');
+            cardEl.appendChild(makeEl109('input', { value: card.title, attrs: { placeholder: 'Instruction title' } }));
+            cardEl.appendChild(makeEl109('textarea', { value: card.body, attrs: { placeholder: 'Create a guideline for your agent' } }));
+            kids.push(cardEl);
+          }
+          kids.push(makeEl109('button', { text: '+ Add instruction', onClick: () => showForm() }));
+          kids.push(makeEl109('button', { text: 'Done', onClick: () => { surface.remove(); } }));
+          setKids(surface, kids);
+        };
+        const showForm = () => {
+          const titleInput = makeEl109('input', { value: '', attrs: { placeholder: 'Instruction title' } });
+          const bodyInput = makeEl109('textarea', { value: '', attrs: { placeholder: 'Create a guideline for your agent' } });
+          const doneBtn = makeEl109('button', {
+            text: 'Done',
+            onClick: () => {
+              if (!opts.dropSave && titleInput.value) saved.push({ title: titleInput.value, body: bodyInput.value });
+              showList();
+            }
+          });
+          setKids(surface, [makeEl109('div', { text: 'Agent instructions' }), titleInput, bodyInput, doneBtn]);
+        };
+        const panel = makeEl109('div');
+        panel.appendChild(makeEl109('div', { className: 'ProseMirror', attrs: { contenteditable: 'true', 'aria-label': 'What do you want to create?' } }));
+        panel.appendChild(makeEl109('button', {
+          text: 'article_spark',
+          onClick: () => { if (!doc.contains(surface)) { doc.body.appendChild(surface); showList(); } }
+        }));
+        const doc = makeDocument109([panel]);
+        doc.__fsAgentPanel = panel;
+        const logs = [];
+        const engine = {
+          isStopping: false,
+          page: {
+            evaluate: async (fn, ...rest) => evaluateWithDom109(doc, fn, ...rest),
+            keyboard: { press: async () => {}, type: async () => {} },
+            target: () => ({ createCDPSession: async () => ({ send: async () => {} }) })
+          }
+        };
+        const log = (kind, data) => { logs.push(driver109.agentLine(kind, data)); };
+        return { doc, surface, engine, log, logs, saved };
+      };
+      const instrArgs109 = { settingsOpenWaitMs: 5, settingsSurfaceWaitMs: 80, settingsSurfacePollMs: 5 };
+      {
+        const w = buildInstructionsWorld109();
+        const res = await driver109.ensureAgentInstructions(w.engine, w.log, instrArgs109);
+        eq('X109 (d) add + fresh-reopen verify: the instruction is added', res.status, 'added');
+        eq('X109 (d) the card was saved with the standing title', w.saved.length, 1);
+        ok('X109 (d) G1b: the instructions surface is closed at the end', w.doc.contains(w.surface) === false);
+        ok('X109 (d) G1b: the close + chat-view verification is logged', w.logs.some(l => l.includes('instructions surface closed — chat view restored')));
+      }
+      {
+        const w = buildInstructionsWorld109({ savedTitles: ['FlowStudio Run Rules'] });
+        const res = await driver109.ensureAgentInstructions(w.engine, w.log, instrArgs109);
+        eq('X109 (d) an already-present instruction is left exactly as it is', res.status, 'present');
+        eq('X109 (d) present path: no duplicate was added', w.saved.length, 1);
+        ok('X109 (d) present path: the surface is closed at the end too', w.doc.contains(w.surface) === false);
+      }
+      {
+        const w = buildInstructionsWorld109({ dropSave: true });
+        const res = await driver109.ensureAgentInstructions(w.engine, w.log, instrArgs109);
+        eq('X109 (d) a save that never lands reads back empty and fails (never fatal)', res.status, 'failed');
+        ok('X109 (d) G3: the empty verify logs the surface descriptor + text', w.logs.some(l => l.includes('instructions verify read-back') && l.includes('instructions-root')));
+        ok('X109 (d) G3: the failure path still closes the surface', w.doc.contains(w.surface) === false);
+      }
+    }
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

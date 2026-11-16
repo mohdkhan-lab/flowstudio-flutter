@@ -22,6 +22,7 @@ const downloadFetch = require('./downloadFetch');
 const { describeUrlShape, formatUrlShape } = require('./urlShape');
 const blobHarvest = require('./blobHarvest');
 const downloadRouteOrder = require('./downloadRouteOrder');
+const failureStage = require('./failureStage');
 const streamFirst = require('./streamFirst');
 const editorEnhance = require('./editorEnhance');
 const resolutionMemory = require('./resolutionMemory');
@@ -4263,8 +4264,20 @@ class FlowAutomationEngine {
     // when the tile's own prompt text STRONGLY matches this prompt;
     // otherwise stay unbound and let the monitor's scored assignment
     // (which compares all tasks against all tiles) decide.
+    // v2.48.109 (F2): multi-prompt runs SKIP birth binding.
+    // The rival-blind strong-match poll can lock a SIBLING's
+    // tile when prompts share one template (Gopal Pilot,
+    // 2026-11-16: prompts 2 and 3 locked prompt 4's tile at
+    // birth, and the monitor's fingerprint pass then trusted
+    // the lock for the whole run). The monitor's Pass 1.5
+    // sibling order-binding (groupKey/groupIndex, stamped in
+    // waitForAccountTasks) binds batch siblings instead —
+    // rival-aware, in prompt order. Solo runs keep birth
+    // binding: with no sibling in flight there is nothing
+    // to steal, and the task still needs its tile promptly.
     const promptWordsForBind = tileIdentity.significantWords(promptText || '');
     let lockedTileFingerprint = null;
+    if (totalPrompts <= 1) {
     try {
       for (let poll = 0; poll < 6 && !lockedTileFingerprint; poll++) {
         const fps = await this.page.evaluate(() => {
@@ -4282,6 +4295,7 @@ class FlowAutomationEngine {
         if (!lockedTileFingerprint) await sleep(2500);
       }
     } catch (e) {}
+    }
     // v2.48.57 (PROJECT-TRUTH change 1): tile link hote
     // hi is task ke project ka URL pakdo — video SIRF
     // isi project me milegi, aur recovery ko yahi pata
@@ -12713,6 +12727,13 @@ class FlowAutomationEngine {
       // ka khulna asal stream ko wire par laata hai);
       // tile-menu sab se aakhri fallback hai. Poora
       // diagnosis downloadRouteOrder.js me hai.
+      // v2.48.109 (TILE-MENU ONLY — OWNER ORDER
+      // 2026-11-16): tartib ab SIRF ['tile-menu'] hai.
+      // Editor-harvest aur stream-first kram se bahar —
+      // editor khulna hi queue ko atkata tha (Gopal
+      // Pilot, 2026-11-16). Loop neeche wahi array par
+      // chalta hai; baaki raaston ke branch code me
+      // rehte hain lekin kabhi nahi chalte.
       for (const route of (task.downloadRouteOrder || [])) {
         if (task.mediaSaved || this.isStopping) break;
         if (route === 'stream-first') {
@@ -12778,7 +12799,10 @@ class FlowAutomationEngine {
         }
       }
       // EMAANDAR FAIL: is ke baad koi rasta nahi bacha.
-      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: neither the stream-first capture, the editor route nor the tile-menu download produced this video's file. The prompt was NOT resubmitted — the task parks for recovery, which retries the same routes.`, 'warn');
+      // v2.48.109: tartib SIRF tile-menu hai — backend
+      // pre-step ko bhi koi bandhi link nahi mili aur
+      // tile-menu download file nahi la saka.
+      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: neither the backend pre-step nor the tile-menu download produced this video's file. The prompt was NOT resubmitted — the task parks for recovery, which retries the tile-menu download.`, 'warn');
       return finishVideoAttempt({ ok: false, attempts });
     }
 
@@ -13067,6 +13091,16 @@ class FlowAutomationEngine {
     const pendingTasks = accountTasks.filter(t => !t.downloaded);
     if (pendingTasks.length === 0) return;
 
+    // v2.48.109 (F2): this monitor window's direct-batch key —
+    // every task in this window's accountTasks shares it, so
+    // assignTiles Pass 1.5 order-binds direct multi-prompt
+    // siblings (template-identical prompts) the way it already
+    // binds agent scene siblings. A fresh key per window is
+    // safe: bound tasks re-bind through Pass 1 by fingerprint,
+    // and unbound siblings regroup under the new key in the
+    // same prompt order.
+    this._directBatchKey = `direct-${Date.now()}-${Math.floor(Math.random() * 1e6)}`;
+
     // v2.4.0: remember the window — _recoveryScanForTask reads it to
     // decide whether a weak-text task is this account's ONLY
     // in-flight task (the order/timing fallback's fence).
@@ -13113,13 +13147,21 @@ class FlowAutomationEngine {
     const stackedCapSec = maxWaitSec + (recoveryWindowMs / 1000) + 600;
     const absoluteCapSec = Math.min(stackedCapSec, 1200);
     let lastReportedPercentage = {};
-    // v1.5.0: when a task ends in failure, free its tile claim so a
-    // sibling task is never starved by a dead binding.
-    const releaseTileClaim = (task) => {
-      if (task && task.lockedTileFingerprint && this.claimedTileFingerprints) {
-        this.claimedTileFingerprints.delete(task.lockedTileFingerprint);
-      }
-    };
+    // v2.48.109 (F2): tile claims are NEVER released mid-run
+    // any more. The old releaseTileClaim freed a consumed tile
+    // when its task settled, so a second sibling could claim
+    // the same tile in a later poll (Gopal: prompts 2 and 3
+    // both saved prompt 4's video). A bound task re-binds its
+    // own tile through Pass 1 by locked fingerprint, and its
+    // download-retry re-finds it the same way — the claim set
+    // only ever shrinks when the browser closes (close path
+    // clears it). No release call remains in the monitor.
+    //
+    // v2.48.109 (F3): failureStage helper — a task that bound
+    // a tile is a download-stage failure (see
+    // engine/failureStage.js); the monitor's fail paths below
+    // stamp it so the pool parks the task for a download-only
+    // retry instead of regenerating it on another account.
     // v1.1: monitor errors used to be swallowed by `catch { break; }`,
     // which turned any persistent page error into a silent infinite
     // "Running…" from the pool's point of view. Count consecutive errors;
@@ -13191,7 +13233,9 @@ class FlowAutomationEngine {
             t.completed = true;
             t.downloaded = true;
             t.failed = true;
-            releaseTileClaim(t);
+            // v2.48.109 (F3): a bound tile means the video may
+            // exist — download-stage, never a re-generation.
+            { const s = failureStage.downloadFailureStage(t); if (s) t.failureStage = s; }
             stallWatch.clearStall(t);
             this.onTaskFailed(t, wasInRecovery
               ? `Generation tile for this prompt could not be identified even after ${stallWatch.formatDuration(recoveryWindowMs / 1000)} of in-project recovery search (dropped or rejected by Flow)`
@@ -13472,7 +13516,15 @@ class FlowAutomationEngine {
             // makes the scored strict-win pass a permanent
             // tie among siblings).
             agentGroupKey: t.agentGroupKey || null,
-            agentSceneIndex: t.agentSceneIndex || 0
+            agentSceneIndex: t.agentSceneIndex || 0,
+            // v2.48.109 (F2): direct multi-prompt siblings share
+            // this window's batch key + their run slot, so
+            // assignTiles Pass 1.5 order-binds them (template
+            // prompts defeat the scored strict-win pass — Gopal).
+            // Agent tasks keep their own group fields (groupKey
+            // null there); a lone task gets no group key.
+            groupKey: t.agentGroupKey ? null : (accountTasks.length > 1 ? this._directBatchKey : null),
+            groupIndex: t.agentGroupKey ? null : (typeof t.promptIndex === 'number' ? t.promptIndex : 0)
           };
         });
         const tileAssignments = tileIdentity.assignTiles(taskViews, tileDescriptors, this.claimedTileFingerprints);
@@ -13507,7 +13559,11 @@ class FlowAutomationEngine {
             task.completed = true;
             task.downloaded = true;
             task.failed = true;
-            releaseTileClaim(task);
+            // v2.48.109 (F3): the watchdog fires after the render
+            // may have finished — a bound tile is download-stage,
+            // never a re-generation (the reason itself says the
+            // video may still exist in the Flow project).
+            { const s = failureStage.downloadFailureStage(task); if (s) task.failureStage = s; }
             stallWatch.clearStall(task);
             const capReason = `Generation watchdog: this prompt was still unfinished ${stallWatch.formatDuration(elapsedSec)} after it was submitted — past the absolute per-task limit of ${stallWatch.formatDuration(absoluteCapSec)}. It has been marked failed so the queue can end; the video may still exist in the Flow project.`;
             this.log(`[Prompt #${task.promptIndex + 1}] ${capReason}`, 'warn');
@@ -13529,7 +13585,10 @@ class FlowAutomationEngine {
             task.completed = true;
             task.downloaded = true;
             task.failed = true;
-            releaseTileClaim(task);
+            // v2.48.109 (F2/F3): no claim release (claims never
+            // release mid-run now); no download stage — a policy
+            // refusal is not a video, and its prompt-level reason
+            // must keep failing instead of parking for a download.
             this.onTaskFailed(task, `Google Safety Filter: ${modalViolation}`);
             this.log(`[Prompt #${task.promptIndex + 1}] A Google safety policy message came up: "${modalViolation}" — this prompt will not move ahead; the queue is moving on.`, 'warn');
             this.onVideoCompleted({
@@ -13664,7 +13723,10 @@ class FlowAutomationEngine {
               task.completed = true;
               task.downloaded = true;
               task.failed = true;
-              releaseTileClaim(task);
+              // v2.48.109 (F3): the tile IS present in the project
+              // (frozen render) — download-stage, never a
+              // re-generation.
+              { const s = failureStage.downloadFailureStage(task); if (s) task.failureStage = s; }
               stallWatch.clearStall(task);
               renderProgressWatch.clearProgress(task);
               this.log(`[Prompt #${task.promptIndex + 1}] ${frozenReason}`, 'warn');
@@ -13745,7 +13807,12 @@ class FlowAutomationEngine {
               task.completed = true;
               task.downloaded = true;
               task.failed = true;
-              releaseTileClaim(task);
+              // v2.48.109 (F3): a bound tile means the video may
+              // exist even though the recovery scan could not
+              // confirm it — download-stage, never a re-generation.
+              // (The download-retry re-scans the same project;
+              // a truly gone tile fails as 'lost-render'.)
+              { const s = failureStage.downloadFailureStage(task); if (s) task.failureStage = s; }
               stallWatch.clearStall(task);
               this.onTaskFailed(task, `Generation tile for this prompt could not be identified even after ${stallWatch.formatDuration(recoveryWindowMs / 1000)} of in-project recovery search (dropped or rejected by Flow)`);
               this.onVideoCompleted({
@@ -13810,7 +13877,10 @@ class FlowAutomationEngine {
               task.completed = true;
               task.downloaded = true;
               task.failed = true;
-              releaseTileClaim(task);
+              // v2.48.109 (F2/F3): no claim release; no download
+              // stage — a refused/failed tile is not a video, and
+              // the prompt-level reason must keep its failover
+              // classification (policy = never retried).
               // v2.9.0: wajah ka dayra tile tak bandha hai —
               //  · refusal jumla sabit hua (failureKind 'safety') to
               //    wajah wahi ASAL jumla hai (label ke saath, taaki
@@ -14054,7 +14124,10 @@ class FlowAutomationEngine {
                 // retry me ja kar charon prompts dobara fire kar deta
                 // tha — owner ke credits do baar kate the.)
                 task.failureStage = 'download';
-                releaseTileClaim(task);
+                // v2.48.109 (F2): the claim is NOT released — the
+                // download-retry re-binds this tile through the
+                // task's locked fingerprint, and a released claim
+                // is how a sibling stole the tile (Gopal).
                 this.onTaskFailed(task, 'Download failed: the video had been generated on Flow, but no download route could save its file — only the download will be retried; the prompt will NOT be submitted again');
                 this.onVideoCompleted({
                   id: task.videoId,
@@ -14101,7 +14174,10 @@ class FlowAutomationEngine {
             t.completed = true;
             t.downloaded = true;
             t.failed = true;
-            releaseTileClaim(t);
+            // v2.48.109 (F3): a monitor error must not turn a
+            // generated video into a re-generation — a bound
+            // tile is download-stage.
+            { const s = failureStage.downloadFailureStage(t); if (s) t.failureStage = s; }
             this.onTaskFailed(t, `Render monitor error: ${e.message}`);
             this.onVideoCompleted({
               id: t.videoId,

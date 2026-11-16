@@ -360,14 +360,18 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   // v2.48.76 (TILE-MENU FIRST — OWNER REVISION
   // 2026-11-10): pehli koshish ab tile ke 3-dots menu
   // ka Download hai; editor-harvest fallback hai.
-  eq('MAINPAGE first route is stream-first', firstRoute(), 'stream-first');
-  eq('MAINPAGE order starts with stream-first', DOWNLOAD_ROUTE_ORDER[0], 'stream-first');
-  eq('MAINPAGE order ends with tile-menu', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'tile-menu'); // v2.48.107: the menu is the LAST fallback
-  eq('MAINPAGE route count', DOWNLOAD_ROUTE_ORDER.length, 3);
+  // v2.48.109 (TILE-MENU ONLY — OWNER ORDER
+  // 2026-11-16): tartib ab SIRF tile-menu hai — editor
+  // khulna hi baaki prompts ko atkata tha (Gopal Pilot).
+  eq('MAINPAGE first route is tile-menu (v2.48.109)', firstRoute(), 'tile-menu');
+  eq('MAINPAGE order starts with tile-menu (v2.48.109)', DOWNLOAD_ROUTE_ORDER[0], 'tile-menu');
+  eq('MAINPAGE order ends with tile-menu', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'tile-menu'); // v2.48.109: the menu is the ONLY route
+  eq('MAINPAGE route count (v2.48.109)', DOWNLOAD_ROUTE_ORDER.length, 1);
   ok('MAINPAGE order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
   // Banned raaste — menu/viewer/backend/headless, aur
   // v2.48.73 se mainpage/grid bhi — tartib me kahin nahi:
-  for (const banned of ['mainpage-harvest', 'grid-replay', 'headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'backend-fetch-retry', 'tile-readiness', 'tile-src-fast', 'tile-src', 'quick-check', 'server-first', 'zero-click']) {
+  // v2.48.109 se stream-first aur editor-harvest bhi.
+  for (const banned of ['stream-first', 'editor-harvest', 'mainpage-harvest', 'grid-replay', 'headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'backend-fetch-retry', 'tile-readiness', 'tile-src-fast', 'tile-src', 'quick-check', 'server-first', 'zero-click']) {
     ok(`MAINPAGE order has no ${banned}`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
   }
   // Bahar hue raaston ka code repo me ab bhi load hota
@@ -384,16 +388,19 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   // v2.48.76: fallback sirf editor-harvest tha.
   // v2.48.83 (STREAM-FIRST): pehla rasta ab stream-first
   // hai, is liye fallback = tile-menu + editor-harvest.
+  // v2.48.109 (TILE-MENU ONLY): tartib me ek hi rasta
+  // hai, is liye fallback KHALI hai — koi dusra rasta
+  // bacha hi nahi.
   const fb = fallbackRouteOrder();
   eq('MAINPAGE fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
-  eq('MAINPAGE fallback count is two', fb.length, 2);
-  ok('MAINPAGE fallback is exactly editor-harvest then tile-menu', fb.length === 2 && fb[0] === 'editor-harvest' && fb[1] === 'tile-menu'); // v2.48.107 order
+  eq('MAINPAGE fallback count is zero (v2.48.109)', fb.length, 0);
+  ok('MAINPAGE fallback is empty — tile-menu is the only route (v2.48.109)', fb.length === 0);
   ok('MAINPAGE fallback has no stream-first', !fb.includes('stream-first'));
   ok('MAINPAGE fallback has no headless-harvest', !fb.includes('headless-harvest'));
   ok('MAINPAGE fallback has no mainpage-harvest', !fb.includes('mainpage-harvest'));
   ok('MAINPAGE fallback has no grid-replay', !fb.includes('grid-replay'));
   eq('MAINPAGE fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
-  eq('MAINPAGE fallback list is exactly editor-harvest + tile-menu', JSON.stringify(fb), JSON.stringify(['editor-harvest', 'tile-menu'])); // v2.48.107 order
+  eq('MAINPAGE fallback list is empty (v2.48.109)', JSON.stringify(fb), JSON.stringify([]));
 }
 
 // --- v2.48.28 (SERVER-FIRST): flow-content URL matcher ---

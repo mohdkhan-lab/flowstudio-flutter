@@ -70,6 +70,7 @@ const {
 const { WorkerPool } = require('./engine/workerPool');
 const { projectIdOfUrl, selectParkedRows } = require('./engine/project-recovery');
 const settingsTruth = require('./engine/settingsTruth');
+const mcpUiPickup = require('./engine/mcpUiPickup');
 const browserMode = require('./engine/browserMode');
 const promptParser = require('./engine/promptParser');
 const historyOrigin = require('./engine/historyOrigin');
@@ -213,7 +214,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.108';
+const APP_VERSION = '2.48.109';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -227,6 +228,13 @@ let activeWorkerPool = null;
 // ignored, so a stale stash can never hijack a later manual run.
 let pendingMcpUiAgentMode = null;
 const MCP_UI_AGENT_MODE_TTL_MS = 180000;
+// v2.48.109 (F4 — START LOUDLY OR FAIL LOUDLY): the pending
+// pickup for an MCP in-app run — { count, tag, at, resolve,
+// watchdog }. /api/generation/start-ui arms it, then waits
+// PICKUP_CONFIRM_WAIT_MS for the app's follow-up start to
+// confirm it; the 60s watchdog logs the loud Activity error
+// if the follow-up never arrives (see engine/mcpUiPickup.js).
+let pendingMcpUiPickup = null;
 // v2.33.0: the composition of the most recent run ({ taskIds,
 // downloadFolder, settings }), captured through the pool's
 // onRunStart. The missing-scene redo route reads it to compute
@@ -1533,12 +1541,68 @@ async function startBridge() {
             quality: dbService.getSetting('default_quality', '')
           });
         } catch (e) { settingsHint = {}; }
+        // v2.48.109 (F5 — PER-RUN PARAMS WIN): the caller
+        // may pass model/duration/aspectRatio/quality for
+        // THIS run only. They ride as runSettings — a
+        // one-shot override the app applies without ever
+        // persisting, so the stored defaults (e.g. 9:16
+        // for Shorts) survive a 16:9 run untouched. The
+        // resolved settings (explicit > DB default >
+        // fallback) are what the run will actually use,
+        // and ride the answer so the caller can see them.
+        const runSettings = {};
+        for (const k of ['model', 'duration', 'aspectRatio', 'quality']) {
+          if (typeof body[k] === 'string' && body[k].trim()) runSettings[k] = body[k].trim();
+        }
+        let resolvedSettings = settingsHint;
+        try {
+          resolvedSettings = settingsTruth.effectiveRunSettings({
+            default_model: dbService.getSetting('default_model', ''),
+            default_duration: dbService.getSetting('default_duration', ''),
+            default_aspect_ratio: dbService.getSetting('default_aspect', ''),
+            default_quality: dbService.getSetting('default_quality', '')
+          }, runSettings, { model: 'Omni Flash', duration: '4s', aspectRatio: '9:16', quality: '720p' });
+        } catch (e) { resolvedSettings = settingsHint; }
         broadcastEvent('automation-log', {
           message: `🔌 MCP • Muse started a run from the app screen (${prompts.length} prompts)`,
           level: 'info',
         });
-        broadcastEvent('mcp-ui-generate-request', { prompts, tag, project, skipFirstTaskDownload, settings: settingsHint, agentMode: uiRunAgentMode, agentClips: agentClipsList });
-        return sendJson(200, { ok: true, started: true, prompts: prompts.length, agentMode: uiRunAgentMode, agentClips: agentClipsList });
+        // v2.48.109 (F4 — START LOUDLY OR FAIL LOUDLY): arm
+        // the pickup record, then WAIT for the app's
+        // follow-up /api/generation/start before answering.
+        // started:true used to be returned the moment the
+        // SSE event was broadcast — even when the app then
+        // refused the run and nothing ever started (Gopal
+        // solo runs S13/S7B/S13W, 2026-11-16). Past the
+        // confirm window the answer is started:false with
+        // a plain reason; the 60s watchdog below still
+        // leaves the loud Activity error if the follow-up
+        // never arrives at all.
+        const pickupAt = Date.now();
+        let pickupResolve;
+        const pickupPromise = new Promise((resolve) => { pickupResolve = resolve; });
+        const pickupWatchdog = setTimeout(() => {
+          if (pendingMcpUiPickup && pendingMcpUiPickup.at === pickupAt) {
+            const missed = { count: pendingMcpUiPickup.count, tag: pendingMcpUiPickup.tag };
+            pendingMcpUiPickup = null;
+            const msg = mcpUiPickup.pickupMissedMessage(missed);
+            console.error(`[FlowStudio Engine] ${msg}`);
+            try { recordActivity({ message: msg, category: 'generation', level: 'error' }); } catch (e) {}
+            try { broadcastEvent('automation-log', { message: msg, level: 'error' }); } catch (e) {}
+          }
+        }, mcpUiPickup.PICKUP_WATCHDOG_MS);
+        if (typeof pickupWatchdog.unref === 'function') pickupWatchdog.unref();
+        pendingMcpUiPickup = { count: prompts.length, tag, at: pickupAt, resolve: pickupResolve, watchdog: pickupWatchdog };
+        broadcastEvent('mcp-ui-generate-request', { prompts, tag, project, skipFirstTaskDownload, settings: settingsHint, runSettings, agentMode: uiRunAgentMode, agentClips: agentClipsList });
+        const pickupConfirmed = await Promise.race([
+          pickupPromise,
+          new Promise((resolve) => setTimeout(() => resolve(false), mcpUiPickup.PICKUP_CONFIRM_WAIT_MS))
+        ]);
+        if (pickupConfirmed) {
+          clearTimeout(pickupWatchdog);
+          return sendJson(200, { ok: true, started: true, pickupConfirmed: true, prompts: prompts.length, agentMode: uiRunAgentMode, agentClips: agentClipsList, resolvedSettings });
+        }
+        return sendJson(200, { ok: true, started: false, pickupConfirmed: false, prompts: prompts.length, agentMode: uiRunAgentMode, agentClips: agentClipsList, resolvedSettings, error: 'The FlowStudio app did not start this run within 15 seconds — the prompts were sent to the app screen but no generation began. No credits were spent. Check the app: a run may still be active in Progress, or the app screen may not be on the main screen.' });
       }
 
       if (pathname === '/api/generation/start' && req.method === 'POST') {
@@ -1776,6 +1840,16 @@ async function startBridge() {
             message: `🔌 MCP • This run\u2019s Agent mode: ${resolvedRunAgentMode ? 'ON (Flow\u2019s Agent)' : 'OFF (direct route)'} — decided by ${agentModeSource === 'mcp-param' ? 'the chat call\u2019s own choice' : agentModeSource === 'mcp-override' ? 'the stored chat override' : 'the chat in-app request'}.`,
             level: 'info',
           });
+        }
+        // v2.48.109 (F4): this start CONFIRMS a pending MCP
+        // in-app pickup (same count+tag match as the stash
+        // above) — the waiting start-ui answer resolves
+        // started:true and the 60s watchdog stands down.
+        if (pendingMcpUiPickup && mcpUiPickup.pickupMatches(pendingMcpUiPickup, { count: formattedPrompts.length, tag: config.tag || '', at: Date.now() })) {
+          const resolvePickup = pendingMcpUiPickup.resolve;
+          try { clearTimeout(pendingMcpUiPickup.watchdog); } catch (e) {}
+          pendingMcpUiPickup = null;
+          try { if (typeof resolvePickup === 'function') resolvePickup(true); } catch (e) {}
         }
 
         const settings = {

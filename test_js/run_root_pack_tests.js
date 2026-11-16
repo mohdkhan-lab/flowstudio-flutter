@@ -495,14 +495,25 @@ async function main() {
     // editor-harvest → tile-menu hai — stream-first ki
     // passive khidki ke baad editor khulta hai (playback
     // trigger), tile-menu sab se aakhri fallback.
-    eq('MP-ORDER order is exactly stream-first then editor-harvest then tile-menu (v2.48.107)', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['stream-first', 'editor-harvest', 'tile-menu']));
-    for (const banned of ['mainpage-harvest', 'grid-replay', 'headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'tile-src', 'quick-check']) {
+    // v2.48.109 (TILE-MENU ONLY — OWNER ORDER
+    // 2026-11-16): tartib ab SIRF tile-menu hai — editor
+    // khulna hi baaki prompts ko atkata tha (Gopal Pilot),
+    // is liye editor-harvest aur stream-first kram se
+    // bahar; un ka code repo me rehta hai lekin automatic
+    // pipeline unhe kabhi nahi chhuta.
+    eq('MP-ORDER order is exactly tile-menu only (v2.48.109)', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['tile-menu']));
+    for (const banned of ['stream-first', 'editor-harvest', 'mainpage-harvest', 'grid-replay', 'headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'tile-src', 'quick-check']) {
       ok(`MP-ORDER ${banned} is absent from the order`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
     }
     // Kram se bahar hue raaston ka code ab bhi load
     // hota hai — sirf aazmaya nahi jata.
     eq('MP-ORDER mainpage route code still loads', typeof FlowAutomationEngine.prototype._tryMainpageHarvest, 'function');
     eq('MP-ORDER grid-replay route code still loads', typeof FlowAutomationEngine.prototype._tryGridReplay, 'function');
+    // v2.48.109: editor-harvest aur stream-first ka code
+    // bhi rehta hai (kram se bahar, kabhi aazmaya nahi
+    // jata) — order se nikalna unhe delete karna nahi.
+    eq('MP-ORDER editor-harvest route code still loads', typeof FlowAutomationEngine.prototype._tryEditorHarvest, 'function');
+    eq('MP-ORDER stream-first route code still loads', typeof FlowAutomationEngine.prototype._tryStreamFirstDownload, 'function');
     // googlevideo pehchan
     ok('MP googlevideo matcher accepts a real playback url', isGooglevideoPlaybackUrl(GV_URL));
     eq('MP googlevideo matcher rejects the flow-content host', isGooglevideoPlaybackUrl(FC_FRESH), false);
@@ -772,16 +783,19 @@ async function main() {
     // editor-harvest hai; dono haar jayein tab hi
     // emaandar fail. ('native-menu' tile-menu route ka
     // andar ka qadam hai — route nahi.)
-    eq('MP-FAIL the task route order is stream-first then editor-harvest then tile-menu (v2.48.107)', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['stream-first', 'editor-harvest', 'tile-menu']));
+    // v2.48.109 (TILE-MENU ONLY): kram ab SIRF tile-menu
+    // hai — editor-harvest aur stream-first kabhi
+    // aazmaye hi nahi jate, chahe tile-menu haar jaye.
+    eq('MP-FAIL the task route order is tile-menu only (v2.48.109)', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['tile-menu']));
     ok('MP-FAIL attempts carry tile-menu', res.attempts.some(a => a.strategy === 'tile-menu'));
-    ok('MP-FAIL attempts carry editor-harvest', res.attempts.some(a => a.strategy === 'editor-harvest'));
-    eq('MP-FAIL editor-harvest is attempted before the tile-menu fallback (v2.48.107)', (() => { const s = res.attempts.map(a => a.strategy); return s.indexOf('editor-harvest') >= 0 && s.indexOf('tile-menu') > s.indexOf('editor-harvest'); })(), true);
+    ok('MP-FAIL attempts carry no editor-harvest (v2.48.109)', !res.attempts.some(a => a.strategy === 'editor-harvest'));
+    ok('MP-FAIL attempts carry no stream-first (v2.48.109)', !res.attempts.some(a => a.strategy === 'stream-first'));
     ok('MP-FAIL attempts carry no mainpage-harvest (v2.48.73)', !res.attempts.some(a => a.strategy === 'mainpage-harvest'));
     ok('MP-FAIL attempts carry no grid-replay (v2.48.73)', !res.attempts.some(a => a.strategy === 'grid-replay'));
     ok('MP-FAIL attempts carry no headless-harvest (v2.48.72)', !res.attempts.some(a => a.strategy === 'headless-harvest'));
     ok('MP-FAIL attempts carry no banned strategy', !res.attempts.some(a => ['replay-context', 'direct-viewer', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-src', 'tile-src-fast', 'quick-check'].includes(a.strategy)));
     ok('MP-FAIL the honest-fail line was logged', logs.some(m => m.includes('Download failed honestly')));
-    ok('MP-FAIL the honest-fail line names all three routes', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the stream-first capture, the editor route nor the tile-menu download')));
+    ok('MP-FAIL the honest-fail line names the tile-menu-only order (v2.48.109)', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the backend pre-step nor the tile-menu download')));
     ok('MP-FAIL no bg flag anywhere in the log', !logs.some(m => m.includes('bg=')));
   }
   {
@@ -1650,16 +1664,21 @@ async function main() {
     // andar ka qadam 'native-menu' attempt bhi aata
     // hai), editor fallback dusra; headless/mainpage/
     // grid ab bhi cascade se bahar hain.
+    // v2.48.109 (TILE-MENU ONLY): cascade ab SIRF
+    // tile-menu hai — editor-harvest aur stream-first
+    // kabhi nahi chalte, chahe tile-menu haar jaye.
     const routeSeq = seq.filter(s => ['stream-first', 'tile-menu', 'editor-harvest'].includes(s));
-    eq('EH-FALL stream-first ran first in the cascade, then editor-harvest, tile-menu last (v2.48.107)', JSON.stringify(routeSeq), JSON.stringify(['stream-first', 'editor-harvest', 'tile-menu']));
+    eq('EH-FALL only the tile-menu route ran in the cascade (v2.48.109)', JSON.stringify(routeSeq), JSON.stringify(['tile-menu']));
     ok('EH-FALL headless-harvest did NOT run in the cascade', seq.indexOf('headless-harvest') === -1);
     ok('EH-FALL the task route order has no headless-harvest', !task.downloadRouteOrder.includes('headless-harvest'));
     ok('EH-FALL mainpage-harvest did NOT run in the cascade (v2.48.73)', seq.indexOf('mainpage-harvest') === -1);
     ok('EH-FALL grid-replay did NOT run in the cascade (v2.48.73)', seq.indexOf('grid-replay') === -1);
-    ok('EH-FALL attempts stay inside the stream-first + tile-menu + editor family', seq.every(s => ['native-menu', 'stream-first', 'tile-menu', 'editor-harvest'].includes(s)));
-    ok('HH-FALL the honest-fail line names all three routes (v2.48.83)', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the stream-first capture, the editor route nor the tile-menu download')));
+    ok('EH-FALL editor-harvest did NOT run in the cascade (v2.48.109)', seq.indexOf('editor-harvest') === -1);
+    ok('EH-FALL stream-first did NOT run in the cascade (v2.48.109)', seq.indexOf('stream-first') === -1);
+    ok('EH-FALL attempts stay inside the tile-menu family (v2.48.109)', seq.every(s => ['native-menu', 'tile-menu'].includes(s)));
+    ok('HH-FALL the honest-fail line names the tile-menu-only order (v2.48.109)', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the backend pre-step nor the tile-menu download')));
     eq('HH-FALL the probe still ran only once across rounds', st.probeCount, 1);
-    eq('HH-FALL the task route order is stream-first then editor-harvest then tile-menu (v2.48.107)', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['stream-first', 'editor-harvest', 'tile-menu']));
+    eq('HH-FALL the task route order is tile-menu only (v2.48.109)', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['tile-menu']));
   }
   {
     // (h) v2.48.45 — LAUNCH DIAGNOSTICS + CLONE HARDENING.
@@ -5711,11 +5730,14 @@ async function main() {
 
     // ---------- C: tile-menu first + poison ----------
     eq('X76C the shipped tile-menu file-wait bound is 20s', TILE_MENU_FILE_WAIT_MS, 20000);
-    eq('X76C the route order is stream-first then editor-harvest then tile-menu (v2.48.107)', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['stream-first', 'editor-harvest', 'tile-menu']));
+    eq('X76C the route order is tile-menu only (v2.48.109)', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['tile-menu']));
     {
       const loopStart = faSrc.indexOf('for (const route of (task.downloadRouteOrder');
       const loopSlice = faSrc.slice(loopStart, loopStart + 5200);
-      ok('X76C the dispatch loop carries all three route branches (the ARRAY order decides execution — v2.48.107)', loopSlice.indexOf("route === 'stream-first'") >= 0 && loopSlice.indexOf("route === 'tile-menu'") >= 0 && loopSlice.indexOf("route === 'editor-harvest'") >= 0);
+      // v2.48.109: the branch code stays (unreachable from the
+      // automatic pipeline) — the ARRAY order decides what
+      // actually runs, and it holds only tile-menu now.
+      ok('X76C the dispatch loop still carries the retired route branches as code (the ARRAY order decides execution — v2.48.109)', loopSlice.indexOf("route === 'stream-first'") >= 0 && loopSlice.indexOf("route === 'tile-menu'") >= 0 && loopSlice.indexOf("route === 'editor-harvest'") >= 0);
     }
     ok('X76C tile-menu runs the menu form only (editor form skipped, bound passed)', faSrc.includes('skipEditorForm: true') && faSrc.includes('menuAwaitTimeoutMs: TILE_MENU_FILE_WAIT_MS'));
     ok('X76C the tile-menu route exists', typeof FlowAutomationEngine.prototype._tryTileMenuDownload, 'function');
@@ -5734,9 +5756,10 @@ async function main() {
       ok('X76C the win is logged as via=tile-menu with its own gap', logsT.some(m => /\[ROOT\] via=tile-menu gap=\d/.test(m)));
     }
     {
-      // Orchestrator tartib: tile-menu haar jaye to
-      // editor-harvest fallback usi round me chalta hai;
-      // tile-menu jeet jaye to editor kabhi nahi chalta.
+      // Orchestrator tartib (v2.48.109): SIRF tile-menu
+      // chalta hai — editor-harvest fallback ab kram me
+      // hai hi nahi; tile-menu haar jaye to attempt
+      // emaandar fail hota hai, editor kabhi nahi khulta.
       const orderC = [];
       const engO = new FlowAutomationEngine({ onLog: () => {} });
       engO.page = fakePage('x76-order');
@@ -5745,8 +5768,8 @@ async function main() {
       engO._tryEditorHarvest = async () => { orderC.push('editor-harvest'); };
       const taskO = { promptIndex: 0, captureKey: 'k-x76-order', videoId: 'k-x76-order', startTime: Date.now(), renderCompletedAt: Date.now() };
       const resO = await engO._downloadTaskMediaInner(taskO, '/tmp', { duration: '10s' }, 0);
-      eq('X76C the orchestrator runs editor-harvest before the tile-menu fallback (v2.48.107)', orderC.join(','), 'editor-harvest,tile-menu');
-      eq('X76C the orchestrator honest-fails when both routes fail', resO.ok, false);
+      eq('X76C the orchestrator runs tile-menu only — no editor fallback (v2.48.109)', orderC.join(','), 'tile-menu');
+      eq('X76C the orchestrator honest-fails when the tile-menu route fails', resO.ok, false);
 
       const engW = new FlowAutomationEngine({ onLog: () => {} });
       engW.page = fakePage('x76-order-win');
@@ -5758,7 +5781,7 @@ async function main() {
       const resW = await engW._downloadTaskMediaInner(taskW, '/tmp', { duration: '10s' }, 0);
       eq('X76C a tile-menu win completes the attempt', resW.ok, true);
       eq('X76C the winning strategy is tile-menu', resW.strategy, 'tile-menu');
-      eq('X76C the editor ran first and did not save before the tile-menu fallback won (v2.48.107)', editorRan, true);
+      eq('X76C the editor never runs when tile-menu wins (v2.48.109)', editorRan, false);
     }
     {
       // Zeher: pehla saboot hi aakhri — URL dobara na
@@ -6822,17 +6845,33 @@ async function main() {
       eng._tryTileMenuDownload = async () => { tileRan = true; return false; };
       eng._tryEditorHarvest = async () => { editorRan = true; };
       const task = { promptIndex: 0, captureKey: 'k-x82-win', videoId: 'k-x82-win', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
-      const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
-      eq('X82B the attempt completes via the stream', res.ok, true);
-      eq('X82B the winning strategy is stream-first', res.strategy, 'stream-first');
-      eq('X82B the save point was reached with the stream-first route name', savedArgs && savedArgs.route, 'stream-first');
+      // v2.48.109: the stream-first METHOD still claims and
+      // saves when called directly (code retained) — it is
+      // only out of the AUTOMATIC sequence now.
+      const attB = [];
+      const directWin = await eng._tryStreamFirstDownload(task, '/tmp', { duration: '10s' }, attB);
+      eq('X82B the stream-first method still saves its claimed stream directly', directWin, true);
+      eq('X82B the direct save carries the stream-first route name', savedArgs && savedArgs.route, 'stream-first');
       eq('X82B the saved bytes are the claimed stream address', savedArgs && savedArgs.url, GV82);
-      eq('X82B the tile-menu route never ran', tileRan, false);
-      eq('X82B the editor route never ran', editorRan, false);
-      ok('X82B the win is logged as via=stream-first with its own gap', logs.some(m => /\[ROOT\] via=stream-first gap=\d/.test(m)));
+      // The automatic attempt, though, runs ONLY tile-menu:
+      // the stream sits in the capture book and is never
+      // touched by the pipeline any more.
+      const task2 = { promptIndex: 0, captureKey: 'k-x82-win', videoId: 'k-x82-win', startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+      tileRan = false;
+      editorRan = false;
+      savedArgs = null;
+      const res = await eng._downloadTaskMediaInner(task2, '/tmp', { duration: '10s' }, 0);
+      eq('X82B the automatic attempt does not complete via the stream any more (v2.48.109)', res.ok, false);
+      eq('X82B the tile-menu route ran instead', tileRan, true);
+      eq('X82B the editor route never ran in the automatic attempt', editorRan, false);
+      eq('X82B the stream was not saved by the automatic attempt', savedArgs, null);
+      ok('X82B the direct win is logged as via=stream-first with its own gap', logs.some(m => /\[ROOT\] via=stream-first gap=\d/.test(m)));
     }
 
     // ---------- C: koi stream nahi — bandha intezaar, phir fallback (brief ii) ----------
+    // v2.48.109: the automatic attempt runs ONLY tile-menu
+    // now, so no stream-first wait happens inside it — the
+    // wait bound is pinned on the DIRECT method call below.
     {
       const eng = new FlowAutomationEngine({ onLog: () => {} }, { streamFirstWaitMs: 400 });
       eng.page = fakePage('x82-none');
@@ -6840,12 +6879,15 @@ async function main() {
       eng._tryTileMenuDownload = async (t, f, s, attempts) => { attempts.push({ strategy: 'tile-menu', ok: false, note: 'stub' }); return false; };
       eng._tryEditorHarvest = async (t, f, s, attempts) => { attempts.push({ strategy: 'editor-harvest', ok: false, note: 'stub' }); };
       const task = { promptIndex: 0, captureKey: 'k-x82-none', videoId: 'k-x82-none', startTime: Date.now(), renderCompletedAt: Date.now() };
-      const startedAt = Date.now();
       const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
-      const elapsed = Date.now() - startedAt;
       eq('X82C with no stream the attempt still fails honestly', res.ok, false);
-      ok('X82C the stream-first wait honored its bound before falling back', elapsed >= 350);
-      eq('X82C the fallback order is stream-first, editor-harvest, tile-menu (v2.48.107)', res.attempts.map(a => a.strategy).join(','), 'stream-first,editor-harvest,tile-menu');
+      eq('X82C the automatic attempt tried only tile-menu (v2.48.109)', res.attempts.map(a => a.strategy).join(','), 'tile-menu');
+      const startedAt = Date.now();
+      const attC = [];
+      const directNone = await eng._tryStreamFirstDownload(task, '/tmp', { duration: '10s' }, attC);
+      const elapsed = Date.now() - startedAt;
+      eq('X82C the direct stream-first call still refuses with no stream', directNone, false);
+      ok('X82C the direct stream-first wait honored its bound', elapsed >= 350);
     }
 
     // ---------- D: sirf preview stream — dawa nahi (brief iii) ----------
@@ -13297,8 +13339,12 @@ async function main() {
   // X111 (v2.48.107) — ROUND 4: (A) download speed — the
   // stream-first route never won because nothing triggers
   // playback at render-complete; the editor open IS the
-  // trigger, so the order is now stream-first →
+  // trigger, so the order was stream-first →
   // editor-harvest → tile-menu (menu = last fallback).
+  // v2.48.109 (TILE-MENU ONLY — OWNER ORDER 2026-11-16):
+  // the editor open stalled the rest of the queue (Gopal
+  // Pilot), so the automatic sequence is now ['tile-menu']
+  // ONLY — editor-harvest and stream-first never run.
   // (B) the sequence check counts bulk <TAG>-S1..SN scene
   // files instead of false-flagging INCOMPLETE. (C) an
   // Agent retry on a degraded Flow page re-enters the SAME
@@ -13321,7 +13367,13 @@ async function main() {
     const bridgeSrc111 = read111('engine_bridge.js');
     const mcpSrc111 = read111('mcp_server.js');
 
-    // --- (A) behaviour: editor/stream before ANY menu interaction ---
+    // --- (A) behaviour: tile-menu ONLY — the editor/stream
+    // routes are never attempted, even when they would win ---
+    // v2.48.109 (TILE-MENU ONLY — OWNER ORDER 2026-11-16):
+    // the editor open stalled the rest of the queue (Gopal
+    // Pilot), so the automatic sequence is ['tile-menu']
+    // and nothing else; the retired routes' code stays in
+    // the repo but the pipeline never calls it.
     {
       const order = [];
       const eng = new FlowAutomationEngine({ onLog: () => {} });
@@ -13329,17 +13381,18 @@ async function main() {
       eng._readTileMediaState = async () => null;
       eng._tryStreamFirstDownload = async (t, f, s, attempts) => { order.push('stream-first'); attempts.push({ strategy: 'stream-first', ok: false, note: 'stub' }); return false; };
       eng._tryEditorHarvest = async (t, f, s, attempts) => { order.push('editor-harvest'); t.mediaSaved = true; attempts.push({ strategy: 'editor-harvest', ok: true }); return true; };
-      eng._tryTileMenuDownload = async (t, f, s, attempts) => { order.push('tile-menu'); attempts.push({ strategy: 'tile-menu', ok: true }); return true; };
+      eng._tryTileMenuDownload = async (t, f, s, attempts) => { order.push('tile-menu'); t.mediaSaved = true; attempts.push({ strategy: 'tile-menu', ok: true }); return true; };
       const task = { promptIndex: 0, captureKey: 'k-x111-a', videoId: 'k-x111-a', startTime: Date.now(), renderCompletedAt: Date.now() };
       const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
-      eq('X111 A: with an openable tile the editor route is attempted before any menu interaction', order.join(','), 'stream-first,editor-harvest');
-      eq('X111 A: the editor win completes the attempt', res.ok, true);
-      eq('X111 A: the winning strategy is editor-harvest', res.strategy, 'editor-harvest');
-      ok('X111 A: the tile-menu fallback never ran after the editor win', !order.includes('tile-menu'));
+      eq('X111 A: only the tile-menu route is attempted even when the editor would win (v2.48.109)', order.join(','), 'tile-menu');
+      eq('X111 A: the tile-menu win completes the attempt', res.ok, true);
+      eq('X111 A: the winning strategy is tile-menu', res.strategy, 'tile-menu');
+      ok('X111 A: the editor route never ran', !order.includes('editor-harvest'));
+      ok('X111 A: the stream-first route never ran', !order.includes('stream-first'));
     }
     {
-      // (A) behaviour: the stream capture fails → the menu
-      // fallback still saves (existing behaviour preserved).
+      // (A) behaviour: the tile-menu route is the only
+      // route — when it saves, the attempt is done.
       const order = [];
       const eng = new FlowAutomationEngine({ onLog: () => {} });
       eng.page = fakePage('x111-a-menu');
@@ -13349,12 +13402,12 @@ async function main() {
       eng._tryTileMenuDownload = async (t, f, s, attempts) => { order.push('tile-menu'); t.mediaSaved = true; attempts.push({ strategy: 'tile-menu', ok: true }); return true; };
       const task = { promptIndex: 0, captureKey: 'k-x111-a2', videoId: 'k-x111-a2', startTime: Date.now(), renderCompletedAt: Date.now() };
       const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
-      eq('X111 A: when the stream routes fail the order is stream-first, editor-harvest, tile-menu', order.join(','), 'stream-first,editor-harvest,tile-menu');
-      eq('X111 A: the menu fallback still saves', res.ok, true);
-      eq('X111 A: the winning strategy is the tile-menu fallback', res.strategy, 'tile-menu');
+      eq('X111 A: the order is tile-menu only (v2.48.109)', order.join(','), 'tile-menu');
+      eq('X111 A: the menu save completes the attempt', res.ok, true);
+      eq('X111 A: the winning strategy is tile-menu', res.strategy, 'tile-menu');
     }
-    ok('X111 A source: the diagnosis is recorded in the route-order module', orderSrc111.includes('v2.48.107') && orderSrc111.includes('PLAYBACK'));
-    ok('X111 A source: the honest-fail line still states the prompt was NOT resubmitted (sacred rule)', flowSrc111.includes("Download failed honestly: neither the stream-first capture, the editor route nor the tile-menu download produced this video's file. The prompt was NOT resubmitted"));
+    ok('X111 A source: the tile-menu-only order is recorded in the route-order module', orderSrc111.includes('v2.48.109') && orderSrc111.includes('TILE-MENU ONLY'));
+    ok('X111 A source: the honest-fail line still states the prompt was NOT resubmitted (sacred rule)', flowSrc111.includes("Download failed honestly: neither the backend pre-step nor the tile-menu download produced this video's file. The prompt was NOT resubmitted"));
 
     // --- (B) sequence check counts bulk scene files ---
     {
@@ -13589,6 +13642,114 @@ async function main() {
     ok('X112 source: the pure pick refuses a stream claimed by another key', read112('engine/streamFirst.js').includes('e.claimedKey'));
     ok('X112 source: saveGuard itself is untouched by the fix', !read112('engine/saveGuard.js').includes('sibling-duplicate'));
     ok('X112 source: the pool still stamps one shared taskId on bulk siblings (the reason the guard key exists)', read112('engine/workerPool.js').includes('extra.taskId = nextTask.id'));
+  }
+
+  // =====================================================================
+  // X113 (v2.48.109) — "SAFE DOWNLOAD + BINDING + FORMAT":
+  // (F1) automatic download route is tile-menu ONLY — the
+  // editor open stalled the rest of the queue (Gopal Pilot,
+  // 2026-11-16, owner order). (F2) the .108 guard-key /
+  // Pass 1.5 sibling order-binding now covers ordinary
+  // DIRECT multi-prompt runs too (template prompts 2 and
+  // 3 both saved prompt 4's video). (F3) a task that ever
+  // bound a tile is a download-stage failure — never a
+  // re-generation (266 credits spent vs 217 expected).
+  // (F4) an MCP in-app run answers started:true only once
+  // the app's follow-up start confirms the pickup, else a
+  // loud Activity error (solo runs S13/S7B/S13W vanished).
+  // (F5) per-run model/duration/aspectRatio/quality win
+  // over stored defaults (a 16:9 run came out 9:16).
+  // =====================================================================
+  {
+    const fs113 = require('fs');
+    const path113 = require('path');
+    const read113 = (rel) => fs113.readFileSync(path113.join(__dirname, '..', rel), 'utf8');
+    const flowSrc113 = read113('engine/flowAutomation.js');
+    const orderSrc113 = read113('engine/downloadRouteOrder.js');
+    const bridgeSrc113 = read113('engine_bridge.js');
+    const mcpSrc113 = read113('mcp_server.js');
+    const mainSrc113 = read113('lib/main.dart');
+    const providerSrc113 = read113('lib/providers/generator_provider.dart');
+    const { assignTiles, significantWords } = require('../engine/tileIdentity');
+    const { downloadFailureStage } = require('../engine/failureStage');
+    const mcpUiPickup113 = require('../engine/mcpUiPickup');
+    const { effectiveRunSettings } = require('../engine/settingsTruth');
+    const { DOWNLOAD_ROUTE_ORDER: order113 } = require('../engine/downloadRouteOrder');
+
+    // --- F1: tile-menu only ---
+    eq('X113 F1: the automatic route order is exactly tile-menu', JSON.stringify(order113), JSON.stringify(['tile-menu']));
+    ok('X113 F1 source: the order module records the owner order', orderSrc113.includes('v2.48.109') && orderSrc113.includes('TILE-MENU ONLY'));
+    ok('X113 F1 source: stream-first and editor-harvest are out of the order', !order113.includes('stream-first') && !order113.includes('editor-harvest'));
+
+    // --- F2: direct multi-prompt siblings order-bind ---
+    {
+      // Teeno prompts ek hi template se — Pass 2 ka scored
+      // strict-win in me farq nahi kar sakta (Gopal: prompts
+      // 2 aur 3 ne prompt 4 ki video save kar li thi).
+      const words = significantWords('Photorealistic cinematic video scene haveli courtyard grey monsoon day young man throws books muddy puddle');
+      const tiles = [0, 1, 2].map((i) => ({ tileIndex: i, fingerprint: `fp-direct-${i}`, words: significantWords('Photorealistic cinematic video scene haveli courtyard grey monsoon day young man throws books muddy puddle') }));
+      const tasks = [0, 1, 2].map((i) => ({
+        key: `direct-${i}`, promptWords: words, preExistingFingerprints: new Set(),
+        lockedFingerprint: null, agentGroupKey: null, agentSceneIndex: 0,
+        groupKey: 'direct-batch-1', groupIndex: i
+      }));
+      const bound = assignTiles(tasks, tiles, new Set());
+      eq('X113 F2: three direct siblings bind three distinct tiles', bound.size, 3);
+      eq('X113 F2: sibling 0 takes the first tile in grid order', bound.get('direct-0') && bound.get('direct-0').tileIndex, 0);
+      eq('X113 F2: sibling 1 takes the second tile in grid order', bound.get('direct-1') && bound.get('direct-1').tileIndex, 1);
+      eq('X113 F2: sibling 2 takes the third tile in grid order', bound.get('direct-2') && bound.get('direct-2').tileIndex, 2);
+      // Control: akela task (group me ek hi) Pass 1.5 ko
+      // chhoo hi nahi — scored Pass 2 use bandhta hai.
+      const soloWords = significantWords('golden puppy red ball green meadow sunset');
+      const soloTiles = [{ tileIndex: 0, fingerprint: 'fp-solo-0', words: significantWords('golden puppy red ball green meadow sunset') }];
+      const solo = assignTiles([{ key: 'solo', promptWords: soloWords, preExistingFingerprints: new Set(), lockedFingerprint: null, agentGroupKey: null, agentSceneIndex: 0, groupKey: 'direct-batch-2', groupIndex: 0 }], soloTiles, new Set());
+      eq('X113 F2 control: a lone task still binds by score', solo.get('solo') && solo.get('solo').tileIndex, 0);
+    }
+    ok('X113 F2 source: the monitor stamps the direct batch key + run slot', flowSrc113.includes('groupKey: t.agentGroupKey ? null') && flowSrc113.includes('this._directBatchKey'));
+    ok('X113 F2 source: multi-prompt runs skip rival-blind birth binding', flowSrc113.includes('if (totalPrompts <= 1)'));
+    ok('X113 F2 source: tile claims are never released mid-run', !flowSrc113.includes('releaseTileClaim('));
+    ok('X113 F2 source: the order pass reads groupKey first, agent fields second', read113('engine/tileIdentity.js').includes('task.groupKey || task.agentGroupKey'));
+
+    // --- F3: bound tile = download-stage, never re-generation ---
+    eq('X113 F3: a locked tile is a download-stage failure', downloadFailureStage({ lockedTileFingerprint: 'fp-1' }), 'download');
+    eq('X113 F3: a recorded video URL is a download-stage failure', downloadFailureStage({ completedVideoUrl: 'https://flow-content.google/video/x' }), 'download');
+    eq('X113 F3: no tile bound means a genuine generation failure', downloadFailureStage({}), null);
+    eq('X113 F3: a null task means no stage', downloadFailureStage(null), null);
+    eq('X113 F3: an explicitly unbound tile means no stage', downloadFailureStage({ lockedTileFingerprint: null }), null);
+    ok('X113 F3 source: the monitor stamps the stage on its fail paths', flowSrc113.includes('failureStage.downloadFailureStage(t)') && flowSrc113.includes('failureStage.downloadFailureStage(task)'));
+    ok('X113 F3 source: the pool parks download-stage tasks for a download-only retry', read113('engine/workerPool.js').includes("opts.stage === 'download'"));
+
+    // --- F4: pickup confirmation ---
+    eq('X113 F4: a matching follow-up start confirms the pickup', mcpUiPickup113.pickupMatches({ count: 3, tag: 'GOPAL-S13', at: 1000 }, { count: 3, tag: 'GOPAL-S13', at: 2000 }), true);
+    eq('X113 F4: a different prompt count does not confirm', mcpUiPickup113.pickupMatches({ count: 3, tag: 'GOPAL-S13', at: 1000 }, { count: 1, tag: 'GOPAL-S13', at: 2000 }), false);
+    eq('X113 F4: a different tag does not confirm', mcpUiPickup113.pickupMatches({ count: 3, tag: 'GOPAL-S13', at: 1000 }, { count: 3, tag: 'OTHER', at: 2000 }), false);
+    eq('X113 F4: an untagged pending pickup matches any tag', mcpUiPickup113.pickupMatches({ count: 2, tag: '', at: 1000 }, { count: 2, tag: 'ANYTHING', at: 2000 }), true);
+    eq('X113 F4: a stale pending pickup never matches', mcpUiPickup113.pickupMatches({ count: 3, tag: 'GOPAL-S13', at: 1000 }, { count: 3, tag: 'GOPAL-S13', at: 1000 + mcpUiPickup113.PICKUP_TTL_MS + 1 }), false);
+    eq('X113 F4: the confirm window is 15s', mcpUiPickup113.PICKUP_CONFIRM_WAIT_MS, 15000);
+    eq('X113 F4: the loud-failure watchdog is 60s', mcpUiPickup113.PICKUP_WATCHDOG_MS, 60000);
+    ok('X113 F4: the missed-pickup message names the miss plainly', mcpUiPickup113.pickupMissedMessage({ count: 1, tag: 'GOPAL-S13' }).includes('accepted but never started') && mcpUiPickup113.pickupMissedMessage({ count: 1, tag: 'GOPAL-S13' }).includes('GOPAL-S13') && mcpUiPickup113.pickupMissedMessage({ count: 1, tag: 'GOPAL-S13' }).includes('60 seconds'));
+    ok('X113 F4 source: the bridge arms a pending pickup on start-ui', bridgeSrc113.includes('pendingMcpUiPickup') && bridgeSrc113.includes('pickupPromise'));
+    ok('X113 F4 source: the bridge answers started only on confirmation', bridgeSrc113.includes('pickupConfirmed: true'));
+    ok('X113 F4 source: the follow-up start confirms the pickup', bridgeSrc113.includes('mcpUiPickup.pickupMatches(pendingMcpUiPickup'));
+    ok('X113 F4 source: the app screen logs a refused MCP run loudly', mainSrc113.includes('MCP run was NOT started'));
+
+    // --- F5: per-run parameters win ---
+    {
+      const db = { default_model: 'Omni Flash', default_duration: '4s', default_aspect_ratio: '9:16', default_quality: '720p' };
+      const fb = { model: 'Omni Flash', duration: '4s', aspectRatio: '9:16', quality: '720p' };
+      eq('X113 F5: an explicit 16:9 beats the stored 9:16 default', effectiveRunSettings(db, { aspectRatio: '16:9' }, fb).aspectRatio, '16:9');
+      eq('X113 F5: an explicit model beats the stored default', effectiveRunSettings(db, { model: 'Veo 3.1 Fast' }, fb).model, 'Veo 3.1 Fast');
+      eq('X113 F5: an explicit duration beats the stored default', effectiveRunSettings(db, { duration: '10s' }, fb).duration, '10s');
+      eq('X113 F5: with no explicit value the stored default stands', effectiveRunSettings(db, {}, fb).aspectRatio, '9:16');
+      eq('X113 F5: with neither, the hardcoded fallback stands', effectiveRunSettings({}, {}, fb).aspectRatio, '9:16');
+    }
+    ok('X113 F5 source: the in-app tool accepts per-run parameters', (() => { const i = mcpSrc113.indexOf("name: 'flowstudio_generate_in_app'"); const seg = mcpSrc113.slice(i, i + 4000); return seg.includes("aspectRatio: { type: 'string'") && seg.includes("duration: { type: 'string'"); })());
+    ok('X113 F5 source: the in-app tool forwards the per-run parameters', (() => { const i = mcpSrc113.indexOf("name: 'flowstudio_generate_in_app'"); const seg = mcpSrc113.slice(i, i + 6000); return seg.includes("for (const k of ['model', 'duration', 'aspectRatio', 'quality'])"); })());
+    ok('X113 F5 source: the bridge builds a one-shot runSettings from the call', bridgeSrc113.includes('const runSettings = {}') && bridgeSrc113.includes('runSettings, agentMode: uiRunAgentMode'));
+    ok('X113 F5 source: the bridge reports the resolved settings in the answer', bridgeSrc113.includes('resolvedSettings'));
+    ok('X113 F5 source: the app arms the one-shot override from runSettings', mainSrc113.includes("data['runSettings']") && mainSrc113.includes('armRunSettingsOverrideOnce(override)'));
+    ok('X113 F5 source: the provider applies the override without persisting it', providerSrc113.includes('armRunSettingsOverrideOnce') && providerSrc113.includes("runSettingsOverride?['aspectRatio']"));
+    ok('X113 F5 source: saveGuard carries no .109 change', !read113('engine/saveGuard.js').includes('v2.48.109'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

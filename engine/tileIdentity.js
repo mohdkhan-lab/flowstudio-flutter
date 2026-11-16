@@ -116,7 +116,14 @@ function isWeakTextPrompt(promptWords) {
  *
  * tasks: [{ key, promptWords:Set, preExistingFingerprints:Set,
  *           lockedFingerprint:string|null,
- *           agentGroupKey:string|null, agentSceneIndex:number }]
+ *           agentGroupKey:string|null, agentSceneIndex:number,
+ *           groupKey:string|null, groupIndex:number }]
+ *   groupKey/groupIndex (v2.48.109, F2) — the general form of
+ *   agentGroupKey/agentSceneIndex: any multi-prompt run's
+ *   siblings share one group key and take tiles in group
+ *   order. Agent tasks keep passing agentGroupKey /
+ *   agentSceneIndex; the pass below reads groupKey first,
+ *   then the agent fields, so both spellings work.
  * tiles: [{ tileIndex, fingerprint, words:Set }]
  * claimedFingerprints: Set of fingerprints already bound to tasks that
  * are NOT in this call (e.g. tasks from another worker window sharing
@@ -174,15 +181,26 @@ function assignTiles(tasks, tiles, claimedFingerprints) {
   // two unbound tasks in this poll does not need the pass —
   // a lone remaining sibling has no identical rival and the
   // ordinary passes can claim for it.
+  // v2.48.109 (F2): the same pass now covers ordinary
+  // DIRECT multi-prompt runs — template-built prompts share
+  // most of their significant words, so Pass 2's scored
+  // strict-win can crown a sibling on a tile (Gopal Pilot,
+  // 2026-11-16: prompts 2 and 3 both saved prompt 4's
+  // video, prompt 16's files both held prompt 1's video).
+  // Direct siblings carry groupKey (the monitor window's
+  // batch key) + groupIndex (the prompt's run slot); agent
+  // tasks keep agentGroupKey/agentSceneIndex. The pass
+  // reads groupKey first, agentGroupKey second.
   const siblingGroups = new Map();
   for (const task of tasks) {
-    if (!task.agentGroupKey || result.has(task.key)) continue;
-    if (!siblingGroups.has(task.agentGroupKey)) siblingGroups.set(task.agentGroupKey, []);
-    siblingGroups.get(task.agentGroupKey).push(task);
+    const gk = task.groupKey || task.agentGroupKey;
+    if (!gk || result.has(task.key)) continue;
+    if (!siblingGroups.has(gk)) siblingGroups.set(gk, []);
+    siblingGroups.get(gk).push(task);
   }
   for (const group of siblingGroups.values()) {
     if (group.length < 2) continue;
-    const ordered = group.slice().sort((a, b) => (a.agentSceneIndex || 0) - (b.agentSceneIndex || 0));
+    const ordered = group.slice().sort((a, b) => ((a.groupIndex ?? a.agentSceneIndex ?? 0) - (b.groupIndex ?? b.agentSceneIndex ?? 0)));
     const freeTiles = tiles
       .filter(t => !usedTiles.has(t.tileIndex) && !external.has(t.fingerprint))
       .sort((a, b) => a.tileIndex - b.tileIndex);

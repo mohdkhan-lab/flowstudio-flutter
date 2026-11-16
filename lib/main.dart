@@ -237,7 +237,7 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
   /// The request's agentClips list (Bulk Mode, parallel to the
   /// prompts; a bare number applies to all) rides along per
   /// prompt.
-  void _handleMcpUiGenerateRequest(Map<String, dynamic> data) {
+  Future<void> _handleMcpUiGenerateRequest(Map<String, dynamic> data) async {
     if (!mounted) return;
     final raw = data['prompts'];
     final prompts = raw is List
@@ -312,6 +312,20 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
       final quality = pushed['quality']?.toString().trim() ?? '';
       if (quality.isNotEmpty) settings.updateQuality(quality);
     }
+    // v2.48.109 (F5 — PER-RUN PARAMS WIN): the bridge also
+    // sends this run's own explicit settings (runSettings) —
+    // they apply to THIS run only, as a one-shot override
+    // that is never persisted, so the stored defaults (e.g.
+    // 9:16 for Shorts) survive a 16:9 run untouched.
+    final runSettings = data['runSettings'];
+    if (runSettings is Map) {
+      final override = <String, String>{};
+      for (final k in const ['model', 'duration', 'aspectRatio', 'quality']) {
+        final v = runSettings[k]?.toString().trim() ?? '';
+        if (v.isNotEmpty) override[k] = v;
+      }
+      if (override.isNotEmpty) generator.armRunSettingsOverrideOnce(override);
+    }
     // v2.48.83 (P1 — progress visibility): a run started
     // from MCP must SAY so. Mark its source for the
     // Progress cards and leave an Activity line naming
@@ -323,11 +337,26 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
       'MCP (flowstudio_generate_in_app): ${prompts.length} prompt(s) received — this run was started from MCP; watch it in Progress.',
       level: LogLevel.info,
     );
-    generator.startGeneration(
+    // v2.48.109 (F4 — START LOUDLY OR FAIL LOUDLY): the
+    // bridge now waits for this run to actually start, but
+    // the app screen must say so too when the start is
+    // refused — startGeneration's guards (a run already in
+    // progress, no ticked account) only log a warning, and
+    // the MCP caller used to hear started:true anyway.
+    // A run that is still idle after the call never started.
+    final wasBusy = generator.state != GenerationState.idle;
+    await generator.startGeneration(
       accounts: context.read<AccountsProvider>(),
       activity: context.read<ActivityProvider>(),
       settings: context.read<SettingsProvider>(),
     );
+    if (!mounted) return;
+    if (generator.state == GenerationState.idle) {
+      context.read<ActivityProvider>().addLog(
+        'MCP run was NOT started — ${wasBusy ? 'a run is still active in the app; stop it before starting another' : 'the app refused the start (see the warning above)'} — no file was made and no credits were spent.',
+        level: LogLevel.error,
+      );
+    }
   }
 
   // v2.29.0 (F4): the two startup Settings toggles, for real —

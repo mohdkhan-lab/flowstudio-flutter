@@ -207,11 +207,30 @@
 //      fallback hai — editor bhi haar jaye tab hi.
 // Download fail ho to prompt dobara KABHI submit nahi
 // hota (sacred rule barkarar).
+//
+// v2.48.109 (TILE-MENU ONLY — OWNER ORDER 2026-11-16):
+// Gopal Pilot batch (2026-11-16) me editor-harvest ne
+// baaki prompts ko atka diya — editor khulte hi queue
+// ruk jati hai ("jab ye editor ko open karta hai to us
+// ke chakkar me baaki ki prompt atak jati ha"). Owner
+// ka hukm: download SIRF tile ke 3-dots menu se, ek-ek
+// karke; video bante hi turant download. Is liye tartib
+// ab EK hi qadam hai:
+//   1. 'tile-menu' — ⋮ menu ka Download, ek-ek karke.
+// 'stream-first' aur 'editor-harvest' kram se BAHAR
+// hain — un ka code repo me rehta hai, lekin automatic
+// pipeline (downloadTaskMediaInner ka route loop —
+// in ki wahid caller) unhe kabhi nahi chhuta. Backend
+// pre-step (task ki apni pehle se bandhi backend link
+// se turant fetch — koi UI nahi khulta, queue nahi
+// atakti) tartib ka hissa NAHI hai aur barkarar hai:
+// wo route sequence se PEHLE chalta hai, sirf tab jab
+// is task ki apni backend link pehle se bandhi ho.
+// Download fail ho to prompt dobara KABHI submit nahi
+// hota (sacred rule barkarar).
 // ---------------------------------------------------------------------------
 
 const DOWNLOAD_ROUTE_ORDER = Object.freeze([
-  'stream-first',
-  'editor-harvest',
   'tile-menu'
 ]);
 

@@ -97,6 +97,26 @@ class GeneratorProvider with ChangeNotifier {
   void markNextRunSource(String source) {
     _pendingRunSource = source;
   }
+  // v2.48.109 (F5 — PER-RUN PARAMS WIN): one-shot run
+  // settings override — per-run model/duration/aspectRatio/
+  // quality from an MCP in-app request. Armed ONLY by that
+  // handler, consumed (captured + cleared) by the very next
+  // startGeneration call, with the same discipline as the
+  // skip flag above — so it can never leak into a later
+  // manual run. NEVER persisted: the stored defaults
+  // (e.g. 9:16 for Shorts) survive a 16:9 run untouched.
+  Map<String, String>? _runSettingsOverrideOnce;
+
+  /// v2.48.109: arm the one-shot per-run settings override
+  /// for the next run started from this provider.
+  void armRunSettingsOverrideOnce(Map<String, String> values) {
+    final clean = <String, String>{};
+    for (final k in const ['model', 'duration', 'aspectRatio', 'quality']) {
+      final v = values[k]?.trim() ?? '';
+      if (v.isNotEmpty) clean[k] = v;
+    }
+    _runSettingsOverrideOnce = clean.isEmpty ? null : clean;
+  }
   // v2.27.0: real completion times of THIS session, for the Activity
   // stats line ("Today: M videos · Spent today: C credits").
   final List<DateTime> _completionTimes = [];
@@ -1261,6 +1281,12 @@ class GeneratorProvider with ChangeNotifier {
     // same capture-and-clear discipline as the skip flag.
     final runSource = _pendingRunSource;
     _pendingRunSource = null;
+    // v2.48.109 (F5): the one-shot per-run settings
+    // override rides the same discipline — captured and
+    // cleared FIRST, so an armed override is spent by
+    // this call whatever happens next.
+    final runSettingsOverride = _runSettingsOverrideOnce;
+    _runSettingsOverrideOnce = null;
     // v2.30.3: re-entry guard. The Generate button stays enabled
     // while paused, and a second start used to re-submit EVERY
     // prompt (including finished ones) to the engine. A run must
@@ -1342,13 +1368,17 @@ class GeneratorProvider with ChangeNotifier {
           .toList(),
       downloadFolder: settings.settings.outputDirectory,
       parallelBrowsers: settings.settings.parallelBrowsers,
-      duration: settings.settings.duration,
-      aspectRatio: settings.settings.aspectRatio,
-      quality: settings.settings.quality,
+      // v2.48.109 (F5): a per-run override wins over the
+      // stored settings for THIS run only — the bridge
+      // resolves explicit > DB default > fallback, and
+      // the pill gate verifies the panel before credits.
+      duration: runSettingsOverride?['duration'] ?? settings.settings.duration,
+      aspectRatio: runSettingsOverride?['aspectRatio'] ?? settings.settings.aspectRatio,
+      quality: runSettingsOverride?['quality'] ?? settings.settings.quality,
       downloadMode: settings.settings.downloadMode,
       tag: _selectedTag == 'None' ? '' : _selectedTag,
       accountIds: tickedIds,
-      model: settings.settings.model,
+      model: runSettingsOverride?['model'] ?? settings.settings.model,
       namingPattern: settings.settings.namingPattern,
       project: _projectName.trim(),
       skipFirstTaskDownload: skipFirstTaskDownload,

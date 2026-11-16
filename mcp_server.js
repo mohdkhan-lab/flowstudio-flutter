@@ -25,7 +25,7 @@ const { usableCreditsTotal, storedCreditsTotal } = require('./engine/usableCredi
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.48.108';
+const SERVER_VERSION = '2.48.109';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -326,6 +326,17 @@ const TOOLS = [
       type: 'object',
       properties: {
         prompts: { type: 'array', items: { type: 'string' }, description: 'One prompt per video' },
+        // v2.48.109 (F5 — PER-RUN PARAMS WIN): model/duration/
+        // aspectRatio/quality ride this run only — the bridge
+        // applies them as a one-shot override, so a 16:9 run
+        // no longer silently comes out 9:16 on the stored
+        // default (Gopal Pilot, 2026-11-16: the whole 30-clip
+        // batch came out portrait because these fields were
+        // dropped here and the bridge hint used DB defaults).
+        model: { type: 'string', description: "e.g. 'Omni Flash', 'Omni 1.2 Flash', 'Veo 3.1 Fast'" },
+        duration: { type: 'string', description: "e.g. '4s', '6s', '8s', '10s', '15s'" },
+        aspectRatio: { type: 'string', description: "e.g. '9:16', '16:9', '1:1'" },
+        quality: { type: 'string', description: "e.g. '720p', '1080p'" },
         tag: { type: 'string', description: 'Optional tag — becomes the app\'s selected TAG (used as the file name)' },
         project: { type: 'string', description: 'Optional project name — becomes the app\'s current Project field value before the run starts' },
         agentMode: { type: 'boolean', description: 'Optional: true runs this call through Flow\'s own Agent, false forces the direct route — enforced by the engine over the app\'s Agent Prompt toggle for this run. Beats the flowstudio_set_agent_mode override.' },
@@ -340,6 +351,11 @@ const TOOLS = [
       const body = { prompts };
       if (typeof args.tag === 'string' && args.tag) body.tag = args.tag;
       if (typeof args.project === 'string' && args.project) body.project = args.project;
+      // v2.48.109 (F5): per-run generation parameters ride to
+      // the bridge — see the schema note above.
+      for (const k of ['model', 'duration', 'aspectRatio', 'quality']) {
+        if (typeof args[k] === 'string' && args[k]) body[k] = args[k];
+      }
       if (typeof args.agentMode === 'boolean') body.agentMode = args.agentMode;
       // v2.48.103 (BULK MODE): passed through as-is (number or
       // per-prompt array) — the bridge normalises it against

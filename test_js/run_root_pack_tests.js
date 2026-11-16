@@ -13451,6 +13451,146 @@ async function main() {
     ok('X111 D source: the temp guard warns loudly and remembers the last good folder', bridgeSrc111.includes('OUTPUT FOLDER GUARD') && bridgeSrc111.includes('download_folder_last_good'));
   }
 
+  // =====================================================================
+  // X112 (v2.48.108) — DUPLICATE-CLAIM FIX: FINALBULK ka
+  //   dobara khel (.107 par live, 2026-11-16 13:59–14:00):
+  //   Agent bulk (agentClips=3, ek conversation) me S1 ne
+  //   apna buffer editor/mainpage-harvest se save kiya
+  //   (2,670,863B); S2 ke stream-first ne WAHI capture
+  //   dobara dawa karke byte-identical file save kar di
+  //   (dono md5 eefe352f…). Do jad: (1) stream-first ka
+  //   pick capture kitab ke dawa (claimedKey) ko dekhta
+  //   hi nahi tha; (2) save-point ki .35 hash jaanch
+  //   _taskKey (queue-row taskId) par thi, aur pool har
+  //   sibling par WAHI taskId lagata hai — jaanch ne S2
+  //   ke liye S1 ke bytes ko "apne" samjha. Fix: dawa aur
+  //   jaanch _guardKey par (scene task = taskId + apna
+  //   captureKey), pick me claimedKey darwaza, aur
+  //   inkaar par dono TAG naam wali [ROOT] line.
+  // =====================================================================
+  {
+    const fs112 = require('fs');
+    const path112 = require('path');
+    const os112 = require('os');
+    const { execFileSync: exec112 } = require('child_process');
+    const read112 = (rel) => fs112.readFileSync(path112.join(__dirname, '..', rel), 'utf8');
+    const flowSrc112 = read112('engine/flowAutomation.js');
+    const sf112 = require('../engine/streamFirst');
+    const sg112 = require('../engine/saveGuard');
+
+    // --- pure pick: khaaya hua stream sibling ke liye adrishya ---
+    {
+      const t0 = Date.now() - 1000;
+      const urlX = 'https://flow-content.google/video/x112-scene1';
+      const entryX = { url: urlX, src: 'flow-content', candidate: true, firstSeenAt: t0 + 100, seq: 1, claimedKey: 'k-x112-s1' };
+      const forS2 = { entries: [entryX], ownKey: 'k-x112-s2', ownStart: t0, pendingOrder: [{ key: 'k-x112-s2', start: t0 }], pendingOthers: 0, expectedDurationSec: 10, teacherUrl: null, excludedUrls: new Set() };
+      eq('X112 pure: a stream claimed by a sibling key is never picked', sf112.streamFirstEntryPick(forS2), null);
+      ok('X112 pure: the claiming task itself can still pick its own stream', !!sf112.streamFirstEntryPick({ ...forS2, ownKey: 'k-x112-s1', pendingOrder: [{ key: 'k-x112-s1', start: t0 }] }));
+      ok('X112 pure: an unclaimed entry still binds (no regression)', !!sf112.streamFirstEntryPick({ ...forS2, entries: [{ ...entryX, claimedKey: null }] }));
+    }
+
+    // --- guard-key pehchan (khalis, engine par) ---
+    {
+      const engK = new FlowAutomationEngine({ onLog: () => {} });
+      const gA = { taskId: 'x112-row', captureKey: 'k-x112-s1', videoId: 'k-x112-s1', agentSceneCount: 3, agentSceneIndex: 1 };
+      const gB = { taskId: 'x112-row', captureKey: 'k-x112-s2', videoId: 'k-x112-s2', agentSceneCount: 3, agentSceneIndex: 2 };
+      ok('X112 pure: sibling scene tasks share the task key (the .107 blindness)', engK._taskKey(gA) === engK._taskKey(gB));
+      ok('X112 pure: sibling scene tasks have different guard keys', engK._guardKey(gA) !== engK._guardKey(gB));
+      eq('X112 pure: a scene task guard key is stable for its own retries', engK._guardKey(gA), engK._guardKey({ ...gA }));
+      const gSolo = { taskId: 'x112-solo', captureKey: 'k-x112-solo', videoId: 'k-x112-solo', agentSceneCount: 1, agentSceneIndex: 1 };
+      eq('X112 pure: a non-bulk task keeps the plain task key as its guard key', engK._guardKey(gSolo), engK._taskKey(gSolo));
+    }
+
+    // --- engine replay: FINALBULK ki poori tartib ---
+    const dir112 = fs112.mkdtempSync(path112.join(os112.tmpdir(), 'fs-x112-'));
+    const mkFixture112 = (name, size) => {
+      try {
+        const fx = path112.join(dir112, name);
+        exec112('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', `testsrc2=duration=10:size=${size}:rate=10`, '-c:v', 'libx264', '-pix_fmt', 'yuv420p', fx], { stdio: 'pipe' });
+        const b = fs112.readFileSync(fx);
+        fs112.unlinkSync(fx);
+        return b;
+      } catch (e) { return null; }
+    };
+    const bufX = mkFixture112('fx1.mp4', '640x360');
+    const bufY = mkFixture112('fx2.mp4', '320x180');
+    ok('X112 two distinct real mp4 fixtures were generated', !!bufX && !!bufY && bufX.length > 100000 && sg112.contentHash(bufX) !== sg112.contentHash(bufY));
+    if (bufX && bufY) {
+      const logs112 = [];
+      const eng112 = new FlowAutomationEngine({ onLog: (e) => logs112.push(e.message) });
+      eng112.currentAccount = { name: 'X112 Test' };
+      eng112._downloadHelpers = { verify: { verifySavedFile: () => ({ ok: true, method: 'stub', durationSec: 10, expectedSec: 10, reason: 'ok' }), saveVerifyLine: () => 'save-verify stub' } };
+      const settings112 = { duration: '10s', namingPattern: 'tag' };
+      const urlX = 'https://flow-content.google/video/x112-scene1';
+      const mkScene112 = (i, key) => ({ promptIndex: 0, captureKey: key, videoId: key, taskId: 'x112-row', tag: `FINALBULK-1116-S${i}`, agentSceneIndex: i, agentSceneCount: 3, startTime: Date.now() });
+      const s1 = mkScene112(1, 'k-x112-s1');
+      const s2 = mkScene112(2, 'k-x112-s2');
+      const s3 = mkScene112(3, 'k-x112-s3');
+
+      // S1: harvest + save (FINALBULK ki S1 wali shakal).
+      eq('X112 replay: scene 1 saves its own harvested buffer', await eng112._saveBufferForTask(s1, dir112, settings112, bufX, urlX, 'mainpage-harvest'), true);
+
+      // Dawa ki satah: S1 ka capture dawa S2 ke pick ke
+      // liye wahi entry adrishya kar deta hai — asal
+      // capture kitab ke raaste se.
+      eng112.netCapture.mainpageVideos.push({ url: urlX, src: 'flow-content', candidate: true, firstSeenAt: Date.now() - 100, seq: 1, bytes: bufX.length, bodyBytes: bufX.length, knownTotal: bufX.length, partial: false, contentRange: '', declared: bufX.length, status: 200, contentType: 'video/mp4' });
+      eng112.netCapture.claimMainpageVideo(urlX, { key: 'k-x112-s1', label: '1' });
+      eq('X112 replay: the consumed stream is invisible to scene 2 at the pick', eng112._streamFirstPickNow(s2, 'k-x112-s2', 10, null), null);
+
+      // Phir bhi S2 ko wahi buffer zabardasti diya jaye
+      // to save point inkaar karta hai — file NAHI
+      // likhta, ginati NAHI hoti, line dono TAG naam
+      // leti hai, aur candidate jeetne wale ke naam
+      // dawa-basta ho jata hai.
+      eq('X112 replay: scene 2 cannot save scene 1 bytes', await eng112._saveBufferForTask(s2, dir112, settings112, bufX, urlX, 'stream-first'), false);
+      eq('X112 replay: the refusal reason is duplicate-content', s2._saveRejectedReason, 'duplicate-content');
+      eq('X112 replay: scene 2 is not counted as saved', s2.mediaSaved === true, false);
+      ok('X112 replay: the refusal is logged loudly naming both scene tags', logs112.some(m => m.startsWith('[ROOT] sibling-duplicate refused') && m.includes('FINALBULK-1116-S1') && m.includes('FINALBULK-1116-S2')));
+      eq('X112 replay: the consumed candidate is claimed for the winner against scene 2', eng112._candidateClaimedByOther(s2, urlX), true);
+      eq('X112 replay: the winner is not blocked from its own candidate', eng112._candidateClaimedByOther(s1, urlX), false);
+      eq('X112 replay: still exactly one file on disk after the refused save', fs112.readdirSync(dir112).filter(f => f.endsWith('.mp4')).length, 1);
+
+      // S2 apne baaki raaston se APNI video save karta
+      // hai; S3 bhi apni — aakhir me teenon files alag.
+      eq('X112 replay: scene 2 saves its own different bytes via its remaining routes', await eng112._saveBufferForTask(s2, dir112, settings112, bufY, 'https://flow-content.google/video/x112-scene2', 'editor-harvest'), true);
+      const bufZ = Buffer.from(bufX);
+      bufZ[bufZ.length - 20] ^= 0xff;
+      eq('X112 replay: scene 3 saves its own bytes', await eng112._saveBufferForTask(s3, dir112, settings112, bufZ, 'https://flow-content.google/video/x112-scene3', 'stream-first'), true);
+      const saved112 = fs112.readdirSync(dir112).filter(f => f.endsWith('.mp4')).sort();
+      eq('X112 replay: three scene files were saved', saved112.length, 3);
+      ok('X112 replay: the scene files carry the bulk scene names', saved112.includes('FINALBULK-1116-S1.mp4') && saved112.includes('FINALBULK-1116-S2.mp4') && saved112.includes('FINALBULK-1116-S3.mp4'));
+      const hashes112 = new Set(saved112.map(f => sg112.contentHash(fs112.readFileSync(path112.join(dir112, f)))));
+      eq('X112 replay: no two saved files are identical (the FINALBULK defect)', hashes112.size, 3);
+      eq('X112 replay: scene 2 file holds scene 2 bytes, not scene 1 bytes', sg112.contentHash(fs112.readFileSync(path112.join(dir112, 'FINALBULK-1116-S2.mp4'))), sg112.contentHash(bufY));
+    }
+
+    // --- control: single-task run bilkul waisa hi ---
+    if (bufX) {
+      const dirCtl = fs112.mkdtempSync(path112.join(os112.tmpdir(), 'fs-x112-ctl-'));
+      const engCtl = new FlowAutomationEngine({ onLog: () => {} });
+      engCtl.currentAccount = { name: 'X112 Control' };
+      engCtl._downloadHelpers = { verify: { verifySavedFile: () => ({ ok: true, method: 'stub', durationSec: 10, expectedSec: 10, reason: 'ok' }), saveVerifyLine: () => 'save-verify stub' } };
+      const urlSolo = 'https://flow-content.google/video/x112-solo';
+      const tSolo = { promptIndex: 0, captureKey: 'k-x112-solo', videoId: 'k-x112-solo', taskId: 'x112-solo-row', tag: 'SOLO-1116', agentSceneIndex: 1, agentSceneCount: 1, startTime: Date.now() - 1000, renderCompletedAt: Date.now() - 500 };
+      engCtl.netCapture.mainpageVideos.push({ url: urlSolo, src: 'flow-content', candidate: true, firstSeenAt: Date.now() - 400, seq: 1, bytes: bufX.length, bodyBytes: bufX.length, knownTotal: bufX.length, partial: false, contentRange: '', declared: bufX.length, status: 200, contentType: 'video/mp4' });
+      engCtl.netCapture.claimMainpageVideo(urlSolo, { key: 'k-x112-solo', label: '1' });
+      engCtl.netCapture.mainpageNoteWindow('k-x112-solo', Date.now() - 500);
+      ok('X112 control: a single task can still pick its own claimed stream', !!engCtl._streamFirstPickNow(tSolo, 'k-x112-solo', 10, null));
+      eq('X112 control: a single task saves its own buffer', await engCtl._saveBufferForTask(tSolo, dirCtl, { duration: '10s', namingPattern: 'tag' }, bufX, urlSolo, 'stream-first'), true);
+    }
+
+    // --- source pins ---
+    ok('X112 source: the save-point duplicate check uses the scene-aware guard key', flowSrc112.includes('saveGuard.checkDuplicate(this._runSavedContentHashes, this._guardKey(task), bufHash)'));
+    ok('X112 source: the native finalize duplicate check uses the guard key too', flowSrc112.includes('saveGuard.checkDuplicate(this._runSavedContentHashes, this._guardKey(task), nativeHash)'));
+    ok('X112 source: candidate claims are recorded under the guard key', flowSrc112.includes('const key = this._guardKey(task);'));
+    ok('X112 source: the refusal line names both tags', flowSrc112.includes('sibling-duplicate refused'));
+    ok('X112 source: the stream-first pick consults the capture claim key', flowSrc112.includes('mainpageClaimedKey'));
+    ok('X112 source: the capture book exposes the claiming key on its entries', read112('engine/networkCapture.js').includes('claimedKey: this.mainpageClaimedKey(e.url)'));
+    ok('X112 source: the pure pick refuses a stream claimed by another key', read112('engine/streamFirst.js').includes('e.claimedKey'));
+    ok('X112 source: saveGuard itself is untouched by the fix', !read112('engine/saveGuard.js').includes('sibling-duplicate'));
+    ok('X112 source: the pool still stamps one shared taskId on bulk siblings (the reason the guard key exists)', read112('engine/workerPool.js').includes('extra.taskId = nextTask.id'));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

@@ -1495,6 +1495,15 @@ class FlowAutomationEngine {
     // pakdi jati hai (ZEROCLICK2 cross-task contamination).
     // Hash kabhi log nahi hota — sirf andarooni hisaab hai.
     this._runSavedContentHashes = new Map();
+    // v2.48.108 (DUPLICATE-CLAIM FIX): upar wali kitab ki
+    // saathi fehrist — hash -> use save karne wale task ka
+    // TAG. saveGuard ki registry sirf {key, promptIndex}
+    // rakhti hai; Agent bulk ke teenon scene tasks ka
+    // promptIndex EK hi (0) hota hai, is liye duplicate
+    // inkaar ki [ROOT] line ko dono tasks ke TAG naam
+    // chahiye — wo yahin se aate hain. Kitab _guardKey
+    // wali pehchan ke saath chalti hai (neeche dekho).
+    this._runSavedHashOwners = new Map();
     // v2.48.76 (Item A + C): is run ki do aur kitabein —
     // (1) _runClaimedCandidateUrls: candidate URL -> use
     // dawa karne/jeetne wale task ki key. Ek candidate ek
@@ -4681,6 +4690,70 @@ class FlowAutomationEngine {
   }
 
   /**
+   * v2.48.108 (DUPLICATE-CLAIM FIX — FINALBULK, .107 par
+   * live, 2026-11-16): dawa (claim) aur duplicate-hash
+   * jaanch ki pehchan. _taskKey queue-row ki taskId hai —
+   * aur workerPool Agent bulk ke HAR scene task par WAHI
+   * taskId lagata hai (extra.taskId = nextTask.id), jabke
+   * har scene ka captureKey/videoId ALAG hota hai. Natija
+   * .107 par: S2 ke stream-first ne S1 ke capture hue
+   * buffer ko dobara dawa kiya aur save-point ki .35 wali
+   * hash jaanch ne use apna hi samajh kar guzarne diya —
+   * S1/S2 byte-identical save ho gaye (md5 eefe352f…).
+   * Is liye: multi-clip Agent task (agentSceneCount > 1)
+   * ki guard-pehchan = taskId + us ke apne captureKey/
+   * videoId ka jod — har scene apni jagah ALAG, lekin usi
+   * scene ki retry/race wali dobara koshish ke liye
+   * pehchan WAHI rehti hai (apni save jaiz). Baaki saare
+   * tasks ke liye pehchan _taskKey hi hai — purana
+   * vyavhaar zarra bhi nahi badla.
+   */
+  _guardKey(task) {
+    const base = this._taskKey(task);
+    if (base == null || !task) return base;
+    if (Number(task.agentSceneCount) > 1) {
+      const disc = task.captureKey || task.videoId || (`scene-${task.agentSceneIndex || 1}`);
+      return `${base}::${disc}`;
+    }
+    return base;
+  }
+
+  /**
+   * v2.48.108: ek save hue hash ke malik task ka TAG darj
+   * karo (pehla malik hi rehta hai — registry wali hi
+   * bandish). Duplicate inkaar ki [ROOT] line dono tags
+   * yahin se naam leti hai.
+   */
+  _noteSavedHashOwner(hash, task) {
+    try {
+      if (!hash || !task || !this._runSavedHashOwners) return;
+      if (this._runSavedHashOwners.has(hash)) return;
+      this._runSavedHashOwners.set(hash, {
+        tag: typeof task.tag === 'string' ? task.tag : '',
+        promptIndex: Number.isInteger(task.promptIndex) ? task.promptIndex : -1
+      });
+    } catch (e) {}
+  }
+
+  /** v2.48.108: log ke liye kisi task ka naam — TAG ho to wahi, warna Prompt #n. */
+  _taskTagLabel(task) {
+    if (task && typeof task.tag === 'string' && task.tag) return task.tag;
+    const n = task && Number.isInteger(task.promptIndex) ? task.promptIndex + 1 : 0;
+    return n > 0 ? `Prompt #${n}` : 'unknown task';
+  }
+
+  /** v2.48.108: hash ke darj malik ka naam (naam wali kitab se), warna null. */
+  _savedHashOwnerLabel(hash, fallbackPromptIndex) {
+    try {
+      const o = hash ? this._runSavedHashOwners.get(hash) : null;
+      if (o && o.tag) return o.tag;
+      if (o && Number.isInteger(o.promptIndex) && o.promptIndex >= 0) return `Prompt #${o.promptIndex + 1}`;
+    } catch (e) {}
+    if (Number.isInteger(fallbackPromptIndex) && fallbackPromptIndex >= 0) return `Prompt #${fallbackPromptIndex + 1}`;
+    return 'another task';
+  }
+
+  /**
    * v2.48.76 (Item A): candidate URL ka run-level dawa
    * (claim). Ek candidate (flow-content / googlevideo
    * URL) ek hi task ki video hai; jis task ne use pehle
@@ -4692,7 +4765,12 @@ class FlowAutomationEngine {
   _claimCandidateUrl(task, url) {
     if (!task || !url) return;
     try {
-      const key = this._taskKey(task);
+      // v2.48.108: dawa _guardKey par darj hota hai — Agent
+      // bulk ke sibling scene tasks ek hi taskId rakhte
+      // hain, is liye _taskKey par darj dawa S2 ke liye
+      // "apna" ban jata tha aur S1 ka candidate use
+      // adrishya hi nahi hota tha (FINALBULK ki jad).
+      const key = this._guardKey(task);
       if (key == null) return;
       if (!this._runClaimedCandidateUrls) this._runClaimedCandidateUrls = new Map();
       if (!this._runClaimedCandidateUrls.has(url)) this._runClaimedCandidateUrls.set(url, key);
@@ -4704,7 +4782,7 @@ class FlowAutomationEngine {
     if (!task || !url || !this._runClaimedCandidateUrls) return false;
     const owner = this._runClaimedCandidateUrls.get(url);
     if (owner == null) return false;
-    return String(owner) !== String(this._taskKey(task));
+    return String(owner) !== String(this._guardKey(task));
   }
 
   /**
@@ -5012,9 +5090,20 @@ class FlowAutomationEngine {
       hashReservedHere = false;
     };
     if (bufHash) {
-      const verdict = saveGuard.checkDuplicate(this._runSavedContentHashes, this._taskKey(task), bufHash);
+      // v2.48.108: jaanch _guardKey par hoti hai — Agent
+      // bulk ke siblings ek taskId rakhte hain, is liye
+      // _taskKey wali jaanch S2 ke liye S1 ke bytes ko
+      // "apne" samajh kar guzar gayi thi (FINALBULK).
+      const verdict = saveGuard.checkDuplicate(this._runSavedContentHashes, this._guardKey(task), bufHash);
       if (verdict.duplicate) {
         this.log(`[ROOT] duplicate-save blocked task=${task.promptIndex + 1} hash=${bufHash} already-saved-for=${verdict.otherPromptIndex + 1}`, 'warn');
+        // v2.48.108: zor-daar line — dono tasks ke TAG
+        // naam ke saath, taaki bulk run me foran pata
+        // chale kaunsi scene ki file kis scene ke naam
+        // par dobara aayi thi. File likhi NAHI jati;
+        // ye task apne baaki raaston par apni ASAL
+        // video ki talaash jaari rakhta hai.
+        this.log(`[ROOT] sibling-duplicate refused: the bytes already saved for ${this._savedHashOwnerLabel(bufHash, verdict.otherPromptIndex)} will NOT be saved again as ${this._taskTagLabel(task)} — this task continues with its own remaining routes`, 'warn');
         this.log(`[GUARD] duplicate-content rejected for Prompt #${task.promptIndex + 1} — fetched bytes are identical to Prompt #${verdict.otherPromptIndex + 1}'s saved file`, 'warn');
         task._saveRejectedReason = 'duplicate-content';
         // v2.48.76 (Item A×C): ye candidate jeetne wale
@@ -5032,7 +5121,8 @@ class FlowAutomationEngine {
         return false;
       }
       if (!this._runSavedContentHashes.has(bufHash)) {
-        saveGuard.recordSave(this._runSavedContentHashes, this._taskKey(task), bufHash, task.promptIndex);
+        saveGuard.recordSave(this._runSavedContentHashes, this._guardKey(task), bufHash, task.promptIndex);
+        this._noteSavedHashOwner(bufHash, task);
         hashReservedHere = this._runSavedContentHashes.has(bufHash);
       }
     }
@@ -5099,7 +5189,7 @@ class FlowAutomationEngine {
     // (reservation) se pehle hi ho chuka hota hai — ye
     // bulawa sirf peeche-ka-langar hai (recordSave maujood
     // entry par no-op hai).
-    if (bufHash) saveGuard.recordSave(this._runSavedContentHashes, this._taskKey(task), bufHash, task.promptIndex);
+    if (bufHash) { saveGuard.recordSave(this._runSavedContentHashes, this._guardKey(task), bufHash, task.promptIndex); this._noteSavedHashOwner(bufHash, task); }
     // v2.48.76 (Item A): jeeta hua candidate is task ke
     // naam par dawa-basta hai — koi dusra task use ab
     // bandh hi nahi sakta.
@@ -6185,10 +6275,13 @@ class FlowAutomationEngine {
     if (!isImageMode) {
       try { nativeHash = saveGuard.contentHash(fs.readFileSync(finalSavedFilePath)); } catch (e) { nativeHash = null; }
       if (nativeHash) {
-        const verdict = saveGuard.checkDuplicate(this._runSavedContentHashes, this._taskKey(task), nativeHash);
+        // v2.48.108: yahan bhi _guardKey — browser-download
+        // wala rasta bhi sibling ke bytes ko apna na samjhe.
+        const verdict = saveGuard.checkDuplicate(this._runSavedContentHashes, this._guardKey(task), nativeHash);
         if (verdict.duplicate) {
           try { fs.unlinkSync(finalSavedFilePath); } catch (e) {}
           this.log(`[ROOT] duplicate-save blocked task=${task.promptIndex + 1} hash=${nativeHash} already-saved-for=${verdict.otherPromptIndex + 1}`, 'warn');
+          this.log(`[ROOT] sibling-duplicate refused: the bytes already saved for ${this._savedHashOwnerLabel(nativeHash, verdict.otherPromptIndex)} will NOT be saved again as ${this._taskTagLabel(task)} — this task continues with its own remaining routes`, 'warn');
           this.log(`[GUARD] duplicate-content rejected for Prompt #${task.promptIndex + 1} — fetched bytes are identical to Prompt #${verdict.otherPromptIndex + 1}'s saved file`, 'warn');
           return false;
         }
@@ -6212,7 +6305,7 @@ class FlowAutomationEngine {
     // v2.48.35 (GUARD): browser-download se utri file ki
     // hash-kitab bandhi bhi wahi registry me — taaki baad
     // wale tasks ki jaanch is save ko bhi pehchane.
-    if (nativeHash) saveGuard.recordSave(this._runSavedContentHashes, this._taskKey(task), nativeHash, task.promptIndex);
+    if (nativeHash) { saveGuard.recordSave(this._runSavedContentHashes, this._guardKey(task), nativeHash, task.promptIndex); this._noteSavedHashOwner(nativeHash, task); }
 
     const result = {
       filePath: finalSavedFilePath,
@@ -6679,6 +6772,20 @@ class FlowAutomationEngine {
       if (!e || !e.url) continue;
       let hide = false;
       try { hide = this._urlPoisonedRunWide(e.url) || this._candidateClaimedByOther(task, e.url); } catch (err) { hide = false; }
+      // v2.48.108 (DUPLICATE-CLAIM FIX): capture kitab me
+      // kisi AUR captureKey ke naam dawa hua entry bhi is
+      // task ke liye adrishya hai — FINALBULK me S1 ki
+      // harvest ne apna address captureKey par dawa kar
+      // liya tha, lekin ye fehrist use dekhti hi nahi thi
+      // aur S2 ne wahi buffer dobara dawa kar liya.
+      // (Khalis pick bhi ab yahi usool khud lagata hai —
+      // streamFirstEntryPick ka claimedKey darwaza.)
+      if (!hide) {
+        try {
+          const ck = (cap && typeof cap.mainpageClaimedKey === 'function') ? cap.mainpageClaimedKey(e.url) : null;
+          if (ck && String(ck) !== String(key)) hide = true;
+        } catch (err) {}
+      }
       if (hide) excluded.add(e.url);
     }
     let pendingOrder = [];
@@ -7105,6 +7212,14 @@ class FlowAutomationEngine {
       // v2.48.76 (Item A): dusre task ke dawa wala
       // candidate is task ki binding ke liye adrishya.
       if (this._candidateClaimedByOther(task, entry.url)) continue;
+      // v2.48.108: capture kitab me kisi AUR captureKey
+      // ke naam dawa hua candidate bhi pesh nahi hota —
+      // khaaya hua (consumed) stream dobara kisi ko
+      // bandhta hi nahi, kisi bhi raaste par.
+      try {
+        const ck = (typeof this.netCapture.mainpageClaimedKey === 'function') ? this.netCapture.mainpageClaimedKey(entry.url) : null;
+        if (ck && String(ck) !== String(key)) continue;
+      } catch (e) {}
       let pendingOrder = [];
       let pendingOthers = 0;
       try {

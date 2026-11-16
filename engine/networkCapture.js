@@ -2653,7 +2653,15 @@ class NetworkCapture {
       return this.mainpageVideos.map(e => ({
         ...e,
         firstSeenAt: Number.isFinite(e.firstSeenAt) ? e.firstSeenAt : e.at,
-        claimedBy: this.mainpageClaimedByLabel(e.url) || e.claimedBy || null
+        claimedBy: this.mainpageClaimedByLabel(e.url) || e.claimedBy || null,
+        // v2.48.108 (DUPLICATE-CLAIM FIX): dawa karne wale
+        // task ki captureKey bhi — claimedBy sirf log-label
+        // (Prompt #n) hai jo Agent bulk ke teenon scenes
+        // ke liye EK hi hota hai; asal pehchan key hai, aur
+        // stream-first ka khalis pick (streamFirstEntryPick)
+        // usi par faisla karta hai ke entry pehle hi kisi
+        // aur task ke naam khaayi ja chuki hai.
+        claimedKey: this.mainpageClaimedKey(e.url) || null
       }));
     } catch (e) { return []; }
   }

@@ -130,6 +130,10 @@ function streamDurationMatches(dur, expectedSec) {
  *     upar; chhote preview wahan hi ruk jate hain);
  *   - teacher ka address kabhi nahi; excluded (zeher /
  *     dusre ke dawa wala) kabhi nahi;
+ *   - v2.48.108: entry kisi AUR captureKey par dawa/
+ *     khaayi ja chuki ho (entry.claimedKey maujood aur
+ *     ownKey se alag) to kabhi nahi — khaaya hua stream
+ *     dobara dawa nahi hota;
  *   - googlevideo ho to itag 18/22 (poori file wala
  *     encode) AUR dur expected ke aas-paas;
  *     flow-content ho to itag/dur ki shart nahi (us ki
@@ -157,6 +161,17 @@ function streamFirstEntryPick(input) {
     if (e.candidate !== true) continue;
     if (teacherUrl && e.url === teacherUrl) continue;
     if (excluded.has(e.url)) continue;
+    // v2.48.108 (DUPLICATE-CLAIM FIX — FINALBULK): entry
+    // capture kitab me kisi AUR task ki captureKey par
+    // pehle hi dawa/khaayi ja chuki ho to wo is task ki
+    // ho hi nahi sakti — chahe bandhan ka hisaab use
+    // kataar me is ki jagah par hi kyun na rakhe. .107
+    // tak ye darwaza tha hi nahi: S2 ne S1 ke harvest
+    // kiye hue buffer ko 'seen on the wire' keh kar
+    // dobara dawa kiya aur byte-identical file save ho
+    // gayi. Apni hi key par dawa hua entry jaiz hai
+    // (usi task ki retry usi stream par laut sakti hai).
+    if (e.claimedKey != null && e.claimedKey !== '' && String(e.claimedKey) !== String(o.ownKey)) continue;
     if (e.src === 'googlevideo') {
       const info = streamUrlInfo(e.url);
       if (!info) continue;

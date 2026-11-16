@@ -791,6 +791,9 @@ function agentLine(kind, data) {
       return `[AGENT] settings-first: model=${show(d.model)}, aspect=${show(d.aspect)}, outputs=${show(d.outputs)}, confirm=${show(d.confirm)}${d.ok ? ' — read-back verified.' : ' — read-back NOT verified; continuing (the chat pin + quote guard remain the safety net).'}`;
     }
     case 'settings-first-record': return agentDoctor.settingsFirstLine(d);
+    case 'degraded-detected': return `[AGENT] degraded page detected — the settings read-back is all 'unreadable' and the Agent panel reads only ${Number(d.chars) || 0} chars (a half-rendered page, not the conversation). Re-entering the SAME project once to recover before anything is sent.`;
+    case 'degraded-recovery': return `[AGENT] degraded-page recovery: re-entered the same project (${d.url || 'same URL'}) and the Agent panel is healthy again — retrying the settings alignment on the fresh page.`;
+    case 'degraded-recovery-failed': return `[AGENT] degraded-page recovery did not restore a healthy panel (${d.detail || 'the panel stayed implausible'}) — continuing with the existing flow; nothing was approved and no credits were spent.`;
     case 'settings-answer': return `[AGENT] the Agent asked about the run's settings before proposing — answered ONCE from the saved project settings: "${truncateForLog(d.text, 160)}" Any further question is waited through, never improvised.`;
     case 'instructions-present': return `[AGENT] agent instructions: the standing "${d.title || ''}" instruction is already present in this project — left exactly as it is.`;
     case 'instructions-added': return `[AGENT] agent instructions: added the standing "${d.title || ''}" instruction to this project (toggle on, guideline saved via Done) and verified it reads back.`;
@@ -3412,6 +3415,92 @@ async function runSettingsFirst(engine, settings, log, args) {
   return res;
 }
 
+/** Bounded wait for the Agent panel to render after a project re-entry. */
+const DEGRADED_RECOVER_WAIT_MS = 20000;
+/** Panel poll while the re-entered project renders. */
+const DEGRADED_RECOVER_POLL_MS = 500;
+
+/**
+ * v2.48.107 (Fix C) — the DEGRADED-PAGE signature (khalis):
+ * the settings read-back is ALL FOUR values unreadable AND
+ * the Agent panel text is implausible (near-empty / chrome /
+ * a surface read — isPanelTextImplausible). Either half
+ * alone is NOT degraded: an unreadable read-back on a
+ * healthy, fully-rendered conversation is the aligner's own
+ * problem (its existing retries own it), and a small panel
+ * with readable settings is just a quiet project.
+ */
+function settingsOutcomeDegraded(readBack, panelText) {
+  const rb = readBack && typeof readBack === 'object' ? readBack : null;
+  if (!rb) return false;
+  const fields = ['confirm', 'model', 'aspect', 'outputs'];
+  const allUnreadable = fields.every(f => rb[f] === null || rb[f] === undefined);
+  if (!allUnreadable) return false;
+  return isPanelTextImplausible(panelText);
+}
+
+/**
+ * v2.48.107 (Fix C) — DEGRADED-PAGE RECOVERY. Live evidence
+ * (AGENTBULK's first run, retry try 2/3, 2026-11-15
+ * 20:22–20:26): the retry inherited a half-rendered Flow
+ * page (panel anchor depth 10, ~80 chars of panel text);
+ * the settings alignment read all four values 'unreadable'
+ * twice, the panel anchor then vanished entirely, and the
+ * run burned its whole proposal wait and parked — 0 credits
+ * lost, but the retry was wasted on a page that was never
+ * going to recover by being re-read.
+ *
+ * Recovery = re-enter the SAME project ONCE (navigate the
+ * worker page back to the run's own project URL — never a
+ * new project, never another project's URL) and wait,
+ * bounded, for the Agent panel to anchor with plausible
+ * text. Returns true when a healthy panel is anchored.
+ * The caller retries the settings alignment + send on the
+ * fresh page; when this returns false the run continues
+ * into its existing fast-fails and parks with the existing
+ * reason — recovery is attempted exactly once per run
+ * (the caller guards it), never in a loop.
+ */
+async function recoverAgentProjectPage(engine, log, args) {
+  const a = args || {};
+  const page = engine && engine.page;
+  if (!page || typeof page.goto !== 'function') return false;
+  let url = '';
+  try { url = (typeof engine.currentProjectUrl === 'function' && engine.currentProjectUrl()) || ''; } catch (e) { url = ''; }
+  if (!url && typeof page.url === 'function') {
+    try { url = page.url() || ''; } catch (e) { url = ''; }
+  }
+  // Sirf is run ke APNE Flow project par wapas — koi aur
+  // URL kabhi navigate nahi hoti.
+  if (!/^https:\/\/flow\.google\.com\/project\//.test(String(url || ''))) {
+    log('degraded-recovery-failed', { detail: 'the run\'s own project URL is not known, so the page could not be re-entered' });
+    return false;
+  }
+  try {
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: 30000 });
+  } catch (e) {
+    try { await page.reload({ waitUntil: 'domcontentloaded', timeout: 30000 }); } catch (e2) {
+      log('degraded-recovery-failed', { detail: 're-entering the project page failed' });
+      return false;
+    }
+  }
+  const waitMs = a.degradedRecoverWaitMs !== undefined ? a.degradedRecoverWaitMs : DEGRADED_RECOVER_WAIT_MS;
+  const pollMs = a.degradedRecoverPollMs || DEGRADED_RECOVER_POLL_MS;
+  const deadline = Date.now() + Math.max(0, waitMs);
+  for (;;) {
+    let anchor = null;
+    try { anchor = await page.evaluate(pageAnchorAgentPanel, AGENT_SELECTORS); } catch (e) { anchor = null; }
+    if (anchor && anchor.found && typeof anchor.text === 'string' && !isPanelTextImplausible(anchor.text)) {
+      log('degraded-recovery', { url });
+      return true;
+    }
+    if (Date.now() >= deadline) break;
+    await sleep(Math.min(pollMs, Math.max(1, deadline - Date.now())));
+  }
+  log('degraded-recovery-failed', { detail: 'the panel stayed implausible after re-entering the project' });
+  return false;
+}
+
 /**
  * v2.48.104 — the standing instruction, once per project:
  * open the Agent instructions surface (the FIRST composer-row
@@ -3711,20 +3800,52 @@ async function submitViaAgentInner(engine, args, noteProposal) {
   // proved settings alone do not bind the Agent's proposal).
   // The outcome lands in the Agent Doctor (lastSettingsFirst)
   // so it can be checked from chat after the run.
-  const settingsFirstRes = await runSettingsFirst(engine, settings, log, a);
-  const instructionsRes = await ensureAgentInstructions(engine, log, a);
-  const sfReadBack = (settingsFirstRes && settingsFirstRes.readBack) || { confirm: null, model: null, aspect: null, outputs: null };
-  const sfEntry = {
-    at: new Date().toISOString(),
-    model: sfReadBack.model,
-    aspect: sfReadBack.aspect,
-    outputs: sfReadBack.outputs,
-    confirm: sfReadBack.confirm,
-    readBackOk: !!(settingsFirstRes && settingsFirstRes.aligned),
-    instruction: instructionsRes && instructionsRes.status ? instructionsRes.status : 'failed'
+  let settingsFirstRes = await runSettingsFirst(engine, settings, log, a);
+  let instructionsRes = await ensureAgentInstructions(engine, log, a);
+  const recordSettingsFirst = () => {
+    const sfReadBack = (settingsFirstRes && settingsFirstRes.readBack) || { confirm: null, model: null, aspect: null, outputs: null };
+    const sfEntry = {
+      at: new Date().toISOString(),
+      model: sfReadBack.model,
+      aspect: sfReadBack.aspect,
+      outputs: sfReadBack.outputs,
+      confirm: sfReadBack.confirm,
+      readBackOk: !!(settingsFirstRes && settingsFirstRes.aligned),
+      instruction: instructionsRes && instructionsRes.status ? instructionsRes.status : 'failed'
+    };
+    try { agentDoctor.recordSettingsFirst(sfEntry); } catch (e) {}
+    log('settings-first-record', sfEntry);
   };
-  try { agentDoctor.recordSettingsFirst(sfEntry); } catch (e) {}
-  log('settings-first-record', sfEntry);
+  recordSettingsFirst();
+
+  // v2.48.107 (Fix C): DEGRADED-PAGE RECOVERY — when the
+  // settings alignment could not read ANY value AND the
+  // panel itself is implausibly small, the Flow page is
+  // half-rendered (AGENTBULK's retry, 2026-11-15 20:22):
+  // re-reading it will never heal it. Re-enter the SAME
+  // project ONCE and retry the settings alignment (and the
+  // instructions) on the fresh page, then continue into
+  // the send below. Recovery failing changes nothing else:
+  // the run proceeds into its existing fast-fails and
+  // parks with the existing reason, quote guard untouched.
+  if (!settingsFirstRes || !settingsFirstRes.aligned) {
+    let panelText = '';
+    try {
+      const anch = await engine.page.evaluate(pageAnchorAgentPanel, AGENT_SELECTORS);
+      if (anch && typeof anch.text === 'string') panelText = anch.text;
+    } catch (e) {}
+    if (settingsOutcomeDegraded(settingsFirstRes && settingsFirstRes.readBack, panelText)
+      && !a.__fsDegradedRecoveryTried) {
+      a.__fsDegradedRecoveryTried = true;
+      log('degraded-detected', { chars: panelText.replace(/\s+/g, ' ').trim().length });
+      const recovered = await recoverAgentProjectPage(engine, log, a);
+      if (recovered) {
+        settingsFirstRes = await runSettingsFirst(engine, settings, log, a);
+        instructionsRes = await ensureAgentInstructions(engine, log, a);
+        recordSettingsFirst();
+      }
+    }
+  }
 
   // 3. Send the pinned instruction as ONE chat message.
   // v2.48.106 (Fix F3): a send is VERIFIED — before TEST12 a
@@ -4696,6 +4817,11 @@ module.exports = {
   pageSurveyInstructionsSurface,
   alignAgentSettings,
   runSettingsFirst,
+  // v2.48.107 (Fix C): the degraded-page signature + the
+  // one-shot same-project recovery — fixture-pinned (X111).
+  settingsOutcomeDegraded,
+  recoverAgentProjectPage,
+  DEGRADED_RECOVER_WAIT_MS,
   ensureAgentInstructions,
   submitViaAgent
 };

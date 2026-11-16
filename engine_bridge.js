@@ -2,6 +2,7 @@ const http = require('http');
 const https = require('https');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const { exec } = require('child_process');
 
 // Environment setup - Persist data in user's AppData directory so all accounts, cookies, and database are kept
@@ -77,6 +78,44 @@ const sequenceReport = require('./engine/sequenceReport');
 const { duplicateQueueEntryLogLine } = require('./engine/queueDedupe');
 const { recordActivity, getActivityStore } = require('./engine/activityStore');
 const agentDoctor = require('./engine/agentDoctor');
+const outputFolderGuard = require('./engine/outputFolderGuard');
+
+// v2.48.107 (Fix D): the EFFECTIVE output base folder — the
+// folder the engine will actually save into. The stored base
+// (download_base_folder, falling back to download_folder) is
+// passed through the temp guard: a leftover smoke/temp folder
+// (the 2026-11-12 incident) never wins silently — the last
+// known good folder (or Downloads) takes its place and the
+// caller logs the swap loudly. Every reader that must name
+// "where saves go" (status, settings, generation start, the
+// output endpoints) resolves through here.
+function effectiveOutputBase() {
+  return outputFolderGuard.resolveOutputFolder({
+    stored: dbService.getSetting('download_base_folder', '') || dbService.getSetting('download_folder', ''),
+    lastGood: dbService.getSetting('download_folder_last_good', ''),
+    homeDir: os.homedir(),
+    dataDir: process.env.FLOW_LITE_DATA_DIR || '',
+    tmpRoots: [os.tmpdir()],
+  });
+}
+
+// v2.48.107 (Fix D): the guard's exemption roots for the direct
+// isTempLikeFolder checks below. The app's own data dir is always
+// exempt (a legitimate save tree). When the data dir ITSELF lives
+// inside a temp root, this process is a throwaway sandbox (the
+// project smoke harness runs its whole data dir under os.tmpdir())
+// — there is no real install to protect and swapping to the user's
+// real Downloads would leak test files there — so the whole temp
+// root is exempt and the guard stands down.
+function guardExemptRoots() {
+  const dd = process.env.FLOW_LITE_DATA_DIR || '';
+  if (dd && outputFolderGuard.isTempLikeFolder(dd, [os.tmpdir()])) return [os.tmpdir()];
+  return [dd];
+}
+
+function outputFolderGuardWarning(resolved, storedRaw) {
+  return `⚠️ OUTPUT FOLDER GUARD: the saved output folder "${storedRaw}" is inside a temporary/smoke folder — videos would silently save there and could be deleted by the system. Saving into "${resolved.folder}" instead (the last known good folder / Downloads). Set the output folder in Settings to fix this permanently.`;
+}
 const agentRules = require('./engine/agentRules');
 const mcp = require('./mcp_server');
 const { ensureBridgePort } = require('./engine/portTakeover');
@@ -174,7 +213,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.106';
+const APP_VERSION = '2.48.107';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -344,6 +383,23 @@ async function startBridge() {
     console.log(doctorLine);
     try { recordActivity({ message: doctorLine, category: 'system', level: 'info' }); } catch (e) {}
     try { broadcastEvent('automation-log', { message: doctorLine, level: 'info' }); } catch (e) {}
+  } catch (e) {}
+
+  // v2.48.107 (Fix D): TEMP GUARD at engine start — a stored
+  // output folder inside a temp/smoke folder (the 2026-11-12
+  // incident: every save silently went to a leftover
+  // fs-smoke folder) is announced LOUDLY here and in the
+  // Activity, and every save resolves to the fallback
+  // instead (effectiveOutputBase). Never blocks startup.
+  try {
+    const storedBase = dbService.getSetting('download_base_folder', '') || dbService.getSetting('download_folder', '');
+    const resolvedBase = effectiveOutputBase();
+    if (resolvedBase.tempDetected) {
+      const warn = outputFolderGuardWarning(resolvedBase, storedBase);
+      console.warn(`[FlowStudio Engine] ${warn}`);
+      try { recordActivity({ message: warn, category: 'system', level: 'warning' }); } catch (e) {}
+      try { broadcastEvent('automation-log', { message: warn, level: 'warning' }); } catch (e) {}
+    }
   } catch (e) {}
 
   try {
@@ -569,7 +625,12 @@ async function startBridge() {
     try {
       // 2. Health & Status
       if (pathname === '/api/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, version: APP_VERSION, workers: activeWorkerPool ? 1 : 0 });
+        // v2.48.107 (Fix D): status also reports the EFFECTIVE
+        // output folder (post temp-guard) — the folder saves
+        // will actually land in.
+        let effOut = '';
+        try { effOut = effectiveOutputBase().folder; } catch (e) { effOut = ''; }
+        return sendJson(200, { ok: true, version: APP_VERSION, workers: activeWorkerPool ? 1 : 0, outputFolder: effOut });
       }
 
       // 2b. Agent Doctor: the loaded agent files' fingerprints
@@ -640,7 +701,12 @@ async function startBridge() {
         for (const k of keys) {
           settings[k] = dbService.getSetting(k, null);
         }
-        return sendJson(200, { ok: true, settings });
+        // v2.48.107 (Fix D): alongside the stored values, the
+        // EFFECTIVE output folder (post temp-guard) — what
+        // the engine will actually save into.
+        let effOut = '';
+        try { effOut = effectiveOutputBase().folder; } catch (e) { effOut = ''; }
+        return sendJson(200, { ok: true, settings, effective_output_folder: effOut });
       }
 
       if (pathname === '/api/settings' && req.method === 'POST') {
@@ -649,6 +715,19 @@ async function startBridge() {
           for (const [k, v] of Object.entries(body.settings)) {
             dbService.setSetting(k, v);
           }
+          // v2.48.107 (Fix D): a folder written through this
+          // route (the app UI or MCP) that is NOT temp-like
+          // becomes the last known good folder — the temp
+          // guard's fallback memory.
+          try {
+            for (const fk of ['download_base_folder', 'download_folder']) {
+              const fv = body.settings[fk];
+              if (typeof fv === 'string' && fv.trim() && path.isAbsolute(fv)
+                && !outputFolderGuard.isTempLikeFolder(fv, [os.tmpdir()], guardExemptRoots())) {
+                dbService.setSetting('download_folder_last_good', fv);
+              }
+            }
+          } catch (e) {}
         } else if (body.key) {
           dbService.setSetting(body.key, body.value);
         }
@@ -1180,14 +1259,25 @@ async function startBridge() {
       // the app's folder. Generation start now PERSISTS the folder
       // it actually saves into (see /api/generation/start), so this
       // resolver always names the folder the last run used.
-      const outputDir = () => dbService.getSetting('download_folder', path.join(process.env.FLOW_LITE_DATA_DIR, 'downloads'));
+      // v2.48.107 (Fix D): both resolvers pass through the
+      // TEMP GUARD — a stored folder inside a temp/smoke
+      // folder resolves to the effective fallback, so the
+      // output endpoints enumerate the folder saves really
+      // land in, never the temp trap.
+      const outputDir = () => {
+        const raw = dbService.getSetting('download_folder', path.join(process.env.FLOW_LITE_DATA_DIR, 'downloads'));
+        return outputFolderGuard.isTempLikeFolder(raw, [os.tmpdir()], guardExemptRoots()) ? effectiveOutputBase().folder : raw;
+      };
       // (Fix list 2026-10-27, item 1): the BASE output folder — the
       // root of the output tree. 'download_folder' moves into the
       // latest run's project subfolder (see /api/generation/start),
       // so the base is recorded separately on every start; installs
       // that predate the key fall back to the current folder, which
       // is exactly what History listed before projects existed.
-      const outputBaseDir = () => dbService.getSetting('download_base_folder', '') || outputDir();
+      const outputBaseDir = () => {
+        const raw = dbService.getSetting('download_base_folder', '') || outputDir();
+        return outputFolderGuard.isTempLikeFolder(raw, [os.tmpdir()], guardExemptRoots()) ? effectiveOutputBase().folder : raw;
+      };
       const VIDEO_EXTS = new Set(['.mp4', '.mov', '.webm']);
 
       // (Fix list 2026-10-27, item 1): resolve a caller-supplied
@@ -1457,7 +1547,30 @@ async function startBridge() {
           return sendJson(400, { ok: false, error: 'A generation run is already active' });
         }
 
-        const downloadDir = config.downloadFolder || dbService.getSetting('download_folder', path.join(process.env.FLOW_LITE_DATA_DIR, 'downloads'));
+        // v2.48.107 (Fix D): TEMP GUARD at save time — if the
+        // folder this run would save into (the app's sent
+        // folder or the stored setting) is inside a
+        // temp/smoke folder, the run does NOT silently save
+        // there: a loud warning is logged and the effective
+        // fallback (last known good / Downloads) is used. A
+        // healthy folder is remembered as the last known good.
+        const rawDownloadDir = config.downloadFolder || dbService.getSetting('download_folder', path.join(process.env.FLOW_LITE_DATA_DIR, 'downloads'));
+        const guardedDir = outputFolderGuard.resolveOutputFolder({
+          stored: rawDownloadDir,
+          lastGood: dbService.getSetting('download_folder_last_good', ''),
+          homeDir: os.homedir(),
+          dataDir: process.env.FLOW_LITE_DATA_DIR || '',
+          tmpRoots: [os.tmpdir()],
+        });
+        const downloadDir = guardedDir.folder;
+        if (guardedDir.tempDetected) {
+          const warn = outputFolderGuardWarning(guardedDir, rawDownloadDir);
+          console.warn(`[FlowStudio Engine] ${warn}`);
+          try { recordActivity({ message: warn, category: 'system', level: 'warning' }); } catch (e) {}
+          try { broadcastEvent('automation-log', { message: warn, level: 'warning' }); } catch (e) {}
+        } else {
+          try { dbService.setSetting('download_folder_last_good', downloadDir); } catch (e) {}
+        }
         // v2.33.0 (project folders): a run may carry a project name —
         // its downloads then land in that project's own subfolder of
         // the output folder, never mixed with the general downloads.

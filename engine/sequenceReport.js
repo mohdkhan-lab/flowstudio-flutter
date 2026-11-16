@@ -40,9 +40,26 @@ function displayTag(row) {
   return `scene${String(idx + 1).padStart(3, '0')}`;
 }
 
-function buildSequenceReport(rows, { exists, namingMode = 'tag', hashOf } = {}) {
+function buildSequenceReport(rows, { exists, namingMode = 'tag', hashOf, agentClipsByIndex } = {}) {
   const existsFn = typeof exists === 'function' ? exists : () => false;
   const hashFn = typeof hashOf === 'function' ? hashOf : null;
+  // v2.48.107 (Fix B): an Agent BULK task (agentClips N>1) is
+  // ONE queue row whose scenes save as <TAG>-S1.mp4 …
+  // <TAG>-SN.mp4 (the suffix rides the tag itself — see
+  // workerPool's submit path). The pre-.107 check compared
+  // the row's one file against the plain <TAG> name and
+  // reported "0 of 1 scene(s) saved — saved under a different
+  // name … INCOMPLETE" even when ALL N scenes were on disk
+  // (AGENTBULK 2026-11-15 20:21, AGENTBULK2 22:07:43). The
+  // caller (workerPool) passes the run's agentClips map by
+  // prompt_index; a bulk row now expands to its N scene
+  // entries, each counted on its own expected file.
+  const clipsMap = (agentClipsByIndex && typeof agentClipsByIndex === 'object') ? agentClipsByIndex : {};
+  const clipsFor = (row) => {
+    const raw = clipsMap[row ? row.prompt_index : undefined];
+    const c = Math.floor(Number(raw));
+    return Number.isFinite(c) && c >= 2 ? c : 1;
+  };
   // v2.48.78 (Item B): ek hi task row (ek hi id)
   // fehrist me do baar aa jaye to wo EK hi scene
   // hai — do missing kabhi nahi. (2026-11-10: ek
@@ -75,11 +92,58 @@ function buildSequenceReport(rows, { exists, namingMode = 'tag', hashOf } = {}) 
         : row.status === 'cancelled'
           ? 'The task had been cancelled'
           : 'The task has not completed yet (pending/running)';
-      missing.push({ ...base, reason });
+      // v2.48.107 (Fix B): a bulk row that never completed is
+      // missing ALL of its scenes — one entry per scene index
+      // (selectMissingItems/planRedo dedupe by task id, so the
+      // redo still recreates the task exactly once).
+      const clips = clipsFor(row);
+      if (clips > 1 && namingMode === 'tag') {
+        for (let i = 1; i <= clips; i++) {
+          missing.push({ ...base, tag: `${tag}-S${i}`, reason });
+        }
+      } else {
+        missing.push({ ...base, reason });
+      }
       continue;
     }
 
     const filePath = typeof row.file_path === 'string' ? row.file_path : '';
+    // v2.48.107 (Fix B): a completed BULK row counts its N
+    // scene files, not the plain tag name. The scenes live
+    // in the same folder as the row's recorded file; each
+    // scene counts present on its exact <TAG>-S<i> name (or
+    // the app's own dedupe-suffix variant of it, the same
+    // family rule the single-scene check applies below) and
+    // missing — named by its scene tag — only when genuinely
+    // absent. Without a recorded file path the scenes cannot
+    // be located, and the row falls through to the plain
+    // file-not-found entry below.
+    const clips = clipsFor(row);
+    if (clips > 1 && namingMode === 'tag' && filePath) {
+      const dir = path.dirname(filePath);
+      const ext = path.extname(filePath).replace(/^\./, '') || 'mp4';
+      const esc = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      const actual = path.basename(filePath);
+      for (let i = 1; i <= clips; i++) {
+        const sceneTag = `${tag}-S${i}`;
+        const sceneBase = { ...base, tag: sceneTag };
+        const expected = path.join(dir, `${sceneTag}.${ext}`);
+        if (existsFn(expected)) {
+          present.push({ ...sceneBase, filePath: expected, fileName: `${sceneTag}.${ext}` });
+          continue;
+        }
+        const family = new RegExp(`^${esc(sceneTag)}-\\d+\\.${esc(ext)}$`);
+        if (family.test(actual) && existsFn(filePath)) {
+          present.push({ ...sceneBase, filePath, fileName: actual, suffixNote: true });
+          continue;
+        }
+        missing.push({
+          ...sceneBase,
+          reason: `Scene ${i} of ${clips} of the bulk task was not found on disk (expected ${sceneTag}.${ext}) — it will have to be generated again`
+        });
+      }
+      continue;
+    }
     if (!filePath || !existsFn(filePath)) {
       missing.push({
         ...base,
@@ -148,14 +212,18 @@ function buildSequenceReport(rows, { exists, namingMode = 'tag', hashOf } = {}) 
     }
   }
 
+  // v2.48.107 (Fix B): the total counts SCENE entries — a
+  // bulk row contributes its N scenes, every other row
+  // exactly one (identical to list.length for non-bulk runs).
+  const totalScenes = present.length + missing.length + wrongName.length;
   return {
-    total: list.length,
+    total: totalScenes,
     presentCount: present.length,
     present,
     missing,
     wrongName,
     duplicateContent,
-    complete: list.length > 0 && missing.length === 0 && wrongName.length === 0 && duplicateContent.length === 0
+    complete: totalScenes > 0 && missing.length === 0 && wrongName.length === 0 && duplicateContent.length === 0
   };
 }
 

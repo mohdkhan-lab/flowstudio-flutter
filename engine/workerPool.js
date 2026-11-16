@@ -2975,6 +2975,10 @@ class WorkerPool {
         }
         const report = sequenceReport.buildSequenceReport(allRows, {
           exists: (p) => fs.existsSync(p),
+          // v2.48.107 (Fix B): the run's Agent bulk map — a
+          // bulk row's scenes (<TAG>-S1..SN) are counted as
+          // the scenes they are, not as one wrong-named file.
+          agentClipsByIndex: this.agentClipsByIndex || {},
           // v2.48.35 (GUARD): byte-identical jodiyon ki jaanch
           // ke liye asal file ka hash — hash khud kabhi log
           // nahi hota, sirf jodi ki khabar jati hai.

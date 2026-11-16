@@ -491,7 +491,11 @@ async function main() {
     // 2026-11-10): tartib ab tile-menu (3-dots Download,
     // pehli koshish) phir editor-harvest (fallback);
     // mainpage/grid/headless kram se bahar hi rehte hain.
-    eq('MP-ORDER order is exactly stream-first then tile-menu then editor-harvest', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
+    // v2.48.107 (Fix A): tartib ab stream-first →
+    // editor-harvest → tile-menu hai — stream-first ki
+    // passive khidki ke baad editor khulta hai (playback
+    // trigger), tile-menu sab se aakhri fallback.
+    eq('MP-ORDER order is exactly stream-first then editor-harvest then tile-menu (v2.48.107)', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['stream-first', 'editor-harvest', 'tile-menu']));
     for (const banned of ['mainpage-harvest', 'grid-replay', 'headless-harvest', 'replay-context', 'direct-viewer', 'native-menu', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-readiness', 'tile-src', 'quick-check']) {
       ok(`MP-ORDER ${banned} is absent from the order`, !DOWNLOAD_ROUTE_ORDER.includes(banned));
     }
@@ -768,16 +772,16 @@ async function main() {
     // editor-harvest hai; dono haar jayein tab hi
     // emaandar fail. ('native-menu' tile-menu route ka
     // andar ka qadam hai — route nahi.)
-    eq('MP-FAIL the task route order is stream-first then tile-menu then editor-harvest', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
+    eq('MP-FAIL the task route order is stream-first then editor-harvest then tile-menu (v2.48.107)', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['stream-first', 'editor-harvest', 'tile-menu']));
     ok('MP-FAIL attempts carry tile-menu', res.attempts.some(a => a.strategy === 'tile-menu'));
     ok('MP-FAIL attempts carry editor-harvest', res.attempts.some(a => a.strategy === 'editor-harvest'));
-    eq('MP-FAIL tile-menu is attempted before editor-harvest', (() => { const s = res.attempts.map(a => a.strategy); return s.indexOf('tile-menu') >= 0 && s.indexOf('editor-harvest') > s.indexOf('tile-menu'); })(), true);
+    eq('MP-FAIL editor-harvest is attempted before the tile-menu fallback (v2.48.107)', (() => { const s = res.attempts.map(a => a.strategy); return s.indexOf('editor-harvest') >= 0 && s.indexOf('tile-menu') > s.indexOf('editor-harvest'); })(), true);
     ok('MP-FAIL attempts carry no mainpage-harvest (v2.48.73)', !res.attempts.some(a => a.strategy === 'mainpage-harvest'));
     ok('MP-FAIL attempts carry no grid-replay (v2.48.73)', !res.attempts.some(a => a.strategy === 'grid-replay'));
     ok('MP-FAIL attempts carry no headless-harvest (v2.48.72)', !res.attempts.some(a => a.strategy === 'headless-harvest'));
     ok('MP-FAIL attempts carry no banned strategy', !res.attempts.some(a => ['replay-context', 'direct-viewer', 'native-editor', 'blob-harvest', 'backend-fetch', 'backend-order', 'tile-src', 'tile-src-fast', 'quick-check'].includes(a.strategy)));
     ok('MP-FAIL the honest-fail line was logged', logs.some(m => m.includes('Download failed honestly')));
-    ok('MP-FAIL the honest-fail line names all three routes', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the stream-first capture, the tile-menu download nor the editor route')));
+    ok('MP-FAIL the honest-fail line names all three routes', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the stream-first capture, the editor route nor the tile-menu download')));
     ok('MP-FAIL no bg flag anywhere in the log', !logs.some(m => m.includes('bg=')));
   }
   {
@@ -1647,15 +1651,15 @@ async function main() {
     // hai), editor fallback dusra; headless/mainpage/
     // grid ab bhi cascade se bahar hain.
     const routeSeq = seq.filter(s => ['stream-first', 'tile-menu', 'editor-harvest'].includes(s));
-    eq('EH-FALL stream-first ran first in the cascade, then tile-menu, editor-harvest last (v2.48.83)', JSON.stringify(routeSeq), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
+    eq('EH-FALL stream-first ran first in the cascade, then editor-harvest, tile-menu last (v2.48.107)', JSON.stringify(routeSeq), JSON.stringify(['stream-first', 'editor-harvest', 'tile-menu']));
     ok('EH-FALL headless-harvest did NOT run in the cascade', seq.indexOf('headless-harvest') === -1);
     ok('EH-FALL the task route order has no headless-harvest', !task.downloadRouteOrder.includes('headless-harvest'));
     ok('EH-FALL mainpage-harvest did NOT run in the cascade (v2.48.73)', seq.indexOf('mainpage-harvest') === -1);
     ok('EH-FALL grid-replay did NOT run in the cascade (v2.48.73)', seq.indexOf('grid-replay') === -1);
     ok('EH-FALL attempts stay inside the stream-first + tile-menu + editor family', seq.every(s => ['native-menu', 'stream-first', 'tile-menu', 'editor-harvest'].includes(s)));
-    ok('HH-FALL the honest-fail line names all three routes (v2.48.83)', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the stream-first capture, the tile-menu download nor the editor route')));
+    ok('HH-FALL the honest-fail line names all three routes (v2.48.83)', logs.some(m => m.includes('Download failed honestly') && m.includes('neither the stream-first capture, the editor route nor the tile-menu download')));
     eq('HH-FALL the probe still ran only once across rounds', st.probeCount, 1);
-    eq('HH-FALL the task route order is stream-first then tile-menu then editor-harvest', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
+    eq('HH-FALL the task route order is stream-first then editor-harvest then tile-menu (v2.48.107)', JSON.stringify(task.downloadRouteOrder), JSON.stringify(['stream-first', 'editor-harvest', 'tile-menu']));
   }
   {
     // (h) v2.48.45 — LAUNCH DIAGNOSTICS + CLONE HARDENING.
@@ -5707,11 +5711,11 @@ async function main() {
 
     // ---------- C: tile-menu first + poison ----------
     eq('X76C the shipped tile-menu file-wait bound is 20s', TILE_MENU_FILE_WAIT_MS, 20000);
-    eq('X76C the route order is stream-first then tile-menu then editor-harvest (v2.48.83)', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['stream-first', 'tile-menu', 'editor-harvest']));
+    eq('X76C the route order is stream-first then editor-harvest then tile-menu (v2.48.107)', JSON.stringify(DOWNLOAD_ROUTE_ORDER), JSON.stringify(['stream-first', 'editor-harvest', 'tile-menu']));
     {
       const loopStart = faSrc.indexOf('for (const route of (task.downloadRouteOrder');
       const loopSlice = faSrc.slice(loopStart, loopStart + 5200);
-      ok('X76C the dispatch tries stream-first before tile-menu before editor-harvest (v2.48.83)', loopSlice.indexOf("route === 'stream-first'") >= 0 && loopSlice.indexOf("route === 'tile-menu'") > loopSlice.indexOf("route === 'stream-first'") && loopSlice.indexOf("route === 'editor-harvest'") > loopSlice.indexOf("route === 'tile-menu'"));
+      ok('X76C the dispatch loop carries all three route branches (the ARRAY order decides execution — v2.48.107)', loopSlice.indexOf("route === 'stream-first'") >= 0 && loopSlice.indexOf("route === 'tile-menu'") >= 0 && loopSlice.indexOf("route === 'editor-harvest'") >= 0);
     }
     ok('X76C tile-menu runs the menu form only (editor form skipped, bound passed)', faSrc.includes('skipEditorForm: true') && faSrc.includes('menuAwaitTimeoutMs: TILE_MENU_FILE_WAIT_MS'));
     ok('X76C the tile-menu route exists', typeof FlowAutomationEngine.prototype._tryTileMenuDownload, 'function');
@@ -5741,7 +5745,7 @@ async function main() {
       engO._tryEditorHarvest = async () => { orderC.push('editor-harvest'); };
       const taskO = { promptIndex: 0, captureKey: 'k-x76-order', videoId: 'k-x76-order', startTime: Date.now(), renderCompletedAt: Date.now() };
       const resO = await engO._downloadTaskMediaInner(taskO, '/tmp', { duration: '10s' }, 0);
-      eq('X76C the orchestrator runs tile-menu before the editor fallback', orderC.join(','), 'tile-menu,editor-harvest');
+      eq('X76C the orchestrator runs editor-harvest before the tile-menu fallback (v2.48.107)', orderC.join(','), 'editor-harvest,tile-menu');
       eq('X76C the orchestrator honest-fails when both routes fail', resO.ok, false);
 
       const engW = new FlowAutomationEngine({ onLog: () => {} });
@@ -5754,7 +5758,7 @@ async function main() {
       const resW = await engW._downloadTaskMediaInner(taskW, '/tmp', { duration: '10s' }, 0);
       eq('X76C a tile-menu win completes the attempt', resW.ok, true);
       eq('X76C the winning strategy is tile-menu', resW.strategy, 'tile-menu');
-      eq('X76C the editor fallback never runs after a tile-menu win', editorRan, false);
+      eq('X76C the editor ran first and did not save before the tile-menu fallback won (v2.48.107)', editorRan, true);
     }
     {
       // Zeher: pehla saboot hi aakhri — URL dobara na
@@ -6841,7 +6845,7 @@ async function main() {
       const elapsed = Date.now() - startedAt;
       eq('X82C with no stream the attempt still fails honestly', res.ok, false);
       ok('X82C the stream-first wait honored its bound before falling back', elapsed >= 350);
-      eq('X82C the fallback order is stream-first, tile-menu, editor-harvest', res.attempts.map(a => a.strategy).join(','), 'stream-first,tile-menu,editor-harvest');
+      eq('X82C the fallback order is stream-first, editor-harvest, tile-menu (v2.48.107)', res.attempts.map(a => a.strategy).join(','), 'stream-first,editor-harvest,tile-menu');
     }
 
     // ---------- D: sirf preview stream — dawa nahi (brief iii) ----------
@@ -11782,8 +11786,8 @@ async function main() {
     ok('X107 rules: a content question is NOT a settings question', !rules107.looksLikeSettingsQuestion('Quick question: should the ball be red or blue?'));
     ok('X107 rules: a proposal is NEVER a settings question', !rules107.looksLikeSettingsQuestion('I can generate that with Omni 1.1 Flash costing 7 credits. Which model should I use?'));
     ok('X107 rules: a plan statement is NOT a settings question', !rules107.looksLikeSettingsQuestion('I will use the 720p setting from your project for this video.'));
-    ok('X107 source: the driver runs settings-first BEFORE the first send', driverSrc107.indexOf('const settingsFirstRes = await runSettingsFirst(engine, settings, log, a);') > -1 && driverSrc107.indexOf('const settingsFirstRes = await runSettingsFirst(engine, settings, log, a);') < driverSrc107.indexOf('const sentFirst = await sendChat(instructionText)'));
-    ok('X107 source: the instructions ensure also runs before the first send', driverSrc107.indexOf('const instructionsRes = await ensureAgentInstructions(engine, log, a);') > -1 && driverSrc107.indexOf('const instructionsRes = await ensureAgentInstructions(engine, log, a);') < driverSrc107.indexOf('const sentFirst = await sendChat(instructionText)'));
+    ok('X107 source: the driver runs settings-first BEFORE the first send', driverSrc107.indexOf('let settingsFirstRes = await runSettingsFirst(engine, settings, log, a);') > -1 && driverSrc107.indexOf('let settingsFirstRes = await runSettingsFirst(engine, settings, log, a);') < driverSrc107.indexOf('const sentFirst = await sendChat(instructionText)')); // v2.48.107: let (the degraded-page recovery may re-run it) — order unchanged
+    ok('X107 source: the instructions ensure also runs before the first send', driverSrc107.indexOf('let instructionsRes = await ensureAgentInstructions(engine, log, a);') > -1 && driverSrc107.indexOf('let instructionsRes = await ensureAgentInstructions(engine, log, a);') < driverSrc107.indexOf('const sentFirst = await sendChat(instructionText)')); // v2.48.107: let (same recovery re-run) — order unchanged
     ok('X107 source: the conversation loop consults the settings-question rule', driverSrc107.includes('agentRules.looksLikeSettingsQuestion(text)') && driverSrc107.includes('agentRules.settingsAnswerText(settings)'));
     ok('X107 source: the doctor records and exposes lastSettingsFirst', doctorSrc107.includes('recordSettingsFirst') && doctorSrc107.includes('lastSettingsFirst: getLastSettingsFirst()'));
     ok('X107 source: the rules carry the standing instruction constants', rulesSrc107.includes("AGENT_INSTRUCTION_TITLE = 'FlowStudio Run Rules'"));
@@ -13287,6 +13291,164 @@ async function main() {
     const ext110 = tileIdentity110.assignTiles([mkTask110(1, 'vid_bulk'), mkTask110(2, 'vid_bulk')], [tiles110[0], tiles110[1]], new Set([tiles110[0].fingerprint]));
     eq('X110 B control: an externally claimed tile is skipped in order binding', ext110.size, 1);
     ok('X110 B control: the unclaimed tile goes to scene 1', ext110.get('vid_bulk') === tiles110[1]);
+  }
+
+  // =====================================================================
+  // X111 (v2.48.107) — ROUND 4: (A) download speed — the
+  // stream-first route never won because nothing triggers
+  // playback at render-complete; the editor open IS the
+  // trigger, so the order is now stream-first →
+  // editor-harvest → tile-menu (menu = last fallback).
+  // (B) the sequence check counts bulk <TAG>-S1..SN scene
+  // files instead of false-flagging INCOMPLETE. (C) an
+  // Agent retry on a degraded Flow page re-enters the SAME
+  // project once and retries before parking. (D) MCP
+  // update_settings persists download_base_folder /
+  // download_folder, and a temp-folder guard stops silent
+  // saves into Temp/fs-smoke folders.
+  // =====================================================================
+  {
+    const fs111 = require('fs');
+    const path111 = require('path');
+    const read111 = (rel) => fs111.readFileSync(path111.join(__dirname, '..', rel), 'utf8');
+    const flowSrc111 = read111('engine/flowAutomation.js');
+    const orderSrc111 = read111('engine/downloadRouteOrder.js');
+    const driver111 = require('../engine/agentDriver');
+    const driverSrc111 = read111('engine/agentDriver.js');
+    const seq111 = require('../engine/sequenceReport');
+    const poolSrc111 = read111('engine/workerPool.js');
+    const guard111 = require('../engine/outputFolderGuard');
+    const bridgeSrc111 = read111('engine_bridge.js');
+    const mcpSrc111 = read111('mcp_server.js');
+
+    // --- (A) behaviour: editor/stream before ANY menu interaction ---
+    {
+      const order = [];
+      const eng = new FlowAutomationEngine({ onLog: () => {} });
+      eng.page = fakePage('x111-a-editor');
+      eng._readTileMediaState = async () => null;
+      eng._tryStreamFirstDownload = async (t, f, s, attempts) => { order.push('stream-first'); attempts.push({ strategy: 'stream-first', ok: false, note: 'stub' }); return false; };
+      eng._tryEditorHarvest = async (t, f, s, attempts) => { order.push('editor-harvest'); t.mediaSaved = true; attempts.push({ strategy: 'editor-harvest', ok: true }); return true; };
+      eng._tryTileMenuDownload = async (t, f, s, attempts) => { order.push('tile-menu'); attempts.push({ strategy: 'tile-menu', ok: true }); return true; };
+      const task = { promptIndex: 0, captureKey: 'k-x111-a', videoId: 'k-x111-a', startTime: Date.now(), renderCompletedAt: Date.now() };
+      const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
+      eq('X111 A: with an openable tile the editor route is attempted before any menu interaction', order.join(','), 'stream-first,editor-harvest');
+      eq('X111 A: the editor win completes the attempt', res.ok, true);
+      eq('X111 A: the winning strategy is editor-harvest', res.strategy, 'editor-harvest');
+      ok('X111 A: the tile-menu fallback never ran after the editor win', !order.includes('tile-menu'));
+    }
+    {
+      // (A) behaviour: the stream capture fails → the menu
+      // fallback still saves (existing behaviour preserved).
+      const order = [];
+      const eng = new FlowAutomationEngine({ onLog: () => {} });
+      eng.page = fakePage('x111-a-menu');
+      eng._readTileMediaState = async () => null;
+      eng._tryStreamFirstDownload = async (t, f, s, attempts) => { order.push('stream-first'); attempts.push({ strategy: 'stream-first', ok: false, note: 'stub' }); return false; };
+      eng._tryEditorHarvest = async (t, f, s, attempts) => { order.push('editor-harvest'); attempts.push({ strategy: 'editor-harvest', ok: false, note: 'stub' }); return false; };
+      eng._tryTileMenuDownload = async (t, f, s, attempts) => { order.push('tile-menu'); t.mediaSaved = true; attempts.push({ strategy: 'tile-menu', ok: true }); return true; };
+      const task = { promptIndex: 0, captureKey: 'k-x111-a2', videoId: 'k-x111-a2', startTime: Date.now(), renderCompletedAt: Date.now() };
+      const res = await eng._downloadTaskMediaInner(task, '/tmp', { duration: '10s' }, 0);
+      eq('X111 A: when the stream routes fail the order is stream-first, editor-harvest, tile-menu', order.join(','), 'stream-first,editor-harvest,tile-menu');
+      eq('X111 A: the menu fallback still saves', res.ok, true);
+      eq('X111 A: the winning strategy is the tile-menu fallback', res.strategy, 'tile-menu');
+    }
+    ok('X111 A source: the diagnosis is recorded in the route-order module', orderSrc111.includes('v2.48.107') && orderSrc111.includes('PLAYBACK'));
+    ok('X111 A source: the honest-fail line still states the prompt was NOT resubmitted (sacred rule)', flowSrc111.includes("Download failed honestly: neither the stream-first capture, the editor route nor the tile-menu download produced this video's file. The prompt was NOT resubmitted"));
+
+    // --- (B) sequence check counts bulk scene files ---
+    {
+      const files = new Set(['/dl/AGENTBULK2-1115-S1.mp4', '/dl/AGENTBULK2-1115-S2.mp4', '/dl/AGENTBULK2-1115-S3.mp4']);
+      const row = { id: 't-x111-b', prompt_index: 0, prompt_tag: 'AGENTBULK2-1115', prompt_text: 'kiki story', status: 'completed', file_path: '/dl/AGENTBULK2-1115-S1.mp4' };
+      const rep = seq111.buildSequenceReport([row], { exists: (p) => files.has(p), namingMode: 'tag', agentClipsByIndex: { 0: 3 } });
+      eq('X111 B: a complete bulk run counts all N scenes', rep.total, 3);
+      eq('X111 B: all N scenes are present', rep.presentCount, 3);
+      eq('X111 B: nothing is missing or wrong-named when all scenes saved', rep.missing.length + rep.wrongName.length, 0);
+      eq('X111 B: the report is complete (no false INCOMPLETE)', rep.complete, true);
+      files.delete('/dl/AGENTBULK2-1115-S2.mp4');
+      const rep2 = seq111.buildSequenceReport([row], { exists: (p) => files.has(p), namingMode: 'tag', agentClipsByIndex: { 0: 3 } });
+      eq('X111 B: a partial bulk run counts the scenes that exist', rep2.presentCount, 2);
+      eq('X111 B: only the genuinely missing scene index is flagged', JSON.stringify(rep2.missing.map(m => m.tag)), JSON.stringify(['AGENTBULK2-1115-S2']));
+      eq('X111 B: the redo recreates the bulk task exactly once', seq111.selectMissingItems([row], rep2).length, 1);
+      const repF = seq111.buildSequenceReport([{ ...row, status: 'failed', error_reason: 'boom' }], { exists: () => false, namingMode: 'tag', agentClipsByIndex: { 0: 3 } });
+      eq('X111 B: a failed bulk row is missing all of its scenes', JSON.stringify(repF.missing.map(m => m.tag)), JSON.stringify(['AGENTBULK2-1115-S1', 'AGENTBULK2-1115-S2', 'AGENTBULK2-1115-S3']));
+      const repOld = seq111.buildSequenceReport([row], { exists: (p) => files.has(p), namingMode: 'tag' });
+      eq('X111 B: without the bulk map the single-row behaviour is unchanged', repOld.total, 1);
+    }
+    ok('X111 B source: the pool passes its agentClips map into the sequence check', poolSrc111.includes('agentClipsByIndex: this.agentClipsByIndex'));
+
+    // --- (C) degraded-page recovery ---
+    {
+      const healthyText = 'Agent conversation — I will create that video for you now; it will appear in the project grid when the render finishes rendering.';
+      const allNull = { confirm: null, model: null, aspect: null, outputs: null };
+      eq('X111 C pure: all-unreadable + implausibly small panel is degraded', driver111.settingsOutcomeDegraded(allNull, 'Agent settings'), true);
+      eq('X111 C pure: all-unreadable on a healthy conversation is NOT degraded', driver111.settingsOutcomeDegraded(allNull, healthyText), false);
+      eq('X111 C pure: one readable value is NOT degraded', driver111.settingsOutcomeDegraded({ ...allNull, model: 'Omni 1.1 Flash' }, 'x'), false);
+      eq('X111 C pure: no read-back is NOT degraded', driver111.settingsOutcomeDegraded(null, 'x'), false);
+
+      const mkEngine111 = (healthyAfterGoto) => {
+        const state = { gotos: 0, url: 'https://flow.google.com/project/x111-proj' };
+        const page = {
+          url: () => state.url,
+          goto: async (u) => { state.gotos++; state.url = u; },
+          reload: async () => {},
+          evaluate: async (fn) => {
+            if (fn && fn.name === 'pageAnchorAgentPanel') {
+              return (healthyAfterGoto && state.gotos > 0)
+                ? { found: true, depth: 3, text: healthyText }
+                : { found: false, depth: 0, text: '' };
+            }
+            return null;
+          },
+        };
+        return { state, engine: { page, currentProjectUrl: () => 'https://flow.google.com/project/x111-proj' } };
+      };
+      const logsC = [];
+      const logC = (kind, d) => logsC.push(driver111.agentLine(kind, d || {}));
+      const good = mkEngine111(true);
+      eq('X111 C: recovery re-enters the project and finds a healthy panel', await driver111.recoverAgentProjectPage(good.engine, logC, { degradedRecoverWaitMs: 2000, degradedRecoverPollMs: 10 }), true);
+      eq('X111 C: recovery navigated exactly once, to the SAME project URL', good.state.gotos === 1 && good.state.url === 'https://flow.google.com/project/x111-proj', true);
+      const bad = mkEngine111(false);
+      eq('X111 C: a still-degraded page does not recover', await driver111.recoverAgentProjectPage(bad.engine, logC, { degradedRecoverWaitMs: 60, degradedRecoverPollMs: 10 }), false);
+      eq('X111 C: recovery is attempted once — no loop', bad.state.gotos, 1);
+      const alien = { page: { url: () => 'https://example.com/elsewhere', goto: async () => { throw new Error('must not navigate'); }, evaluate: async () => null }, currentProjectUrl: () => '' };
+      eq('X111 C: an unknown project URL is never navigated anywhere', await driver111.recoverAgentProjectPage(alien, logC, { degradedRecoverWaitMs: 10 }), false);
+    }
+    ok('X111 C source: the run flow calls the recovery once, guarded', driverSrc111.includes('__fsDegradedRecoveryTried') && driverSrc111.includes('await recoverAgentProjectPage(engine, log, a)'));
+    ok('X111 C source: the recovery runs before the send (it sits in the settings-first block)', driverSrc111.indexOf('await recoverAgentProjectPage(engine, log, a)') > driverSrc111.indexOf('recordSettingsFirst();') && driverSrc111.indexOf('await recoverAgentProjectPage(engine, log, a)') < driverSrc111.indexOf('const sendChat = async'));
+
+    // --- (D) output folder: MCP-writable + temp guard ---
+    {
+      eq('X111 D pure: a Windows fs-smoke temp folder is temp-like', guard111.isTempLikeFolder('C:\\Users\\mohda\\AppData\\Local\\Temp\\fs-smoke-9f2\\out', []), true);
+      eq('X111 D pure: /tmp is temp-like', guard111.isTempLikeFolder('/tmp/fs-x/out', []), true);
+      eq('X111 D pure: a plain Downloads folder is not temp-like', guard111.isTempLikeFolder('C:\\Users\\mohda\\Downloads', []), false);
+      eq('X111 D pure: a folder merely starting with temp- is not temp-like', guard111.isTempLikeFolder('D:\\temp-projects\\vids', []), false);
+      eq('X111 D pure: containment in the OS temp root is temp-like', guard111.isTempLikeFolder('/var/tmp-x/out', ['/var/tmp-x']), true);
+      const r1 = guard111.resolveOutputFolder({ stored: 'C:\\Temp\\fs-smoke-x\\out', lastGood: 'D:\\Videos', homeDir: 'C:\\Users\\mohda', dataDir: 'C:\\data', tmpRoots: [] });
+      eq('X111 D pure: a temp base falls back to the last known good folder', r1.folder, 'D:\\Videos');
+      eq('X111 D pure: the temp swap is detected and flagged, never silent', r1.tempDetected === true && r1.fellBack === true, true);
+      const r2 = guard111.resolveOutputFolder({ stored: '/tmp/fs-smoke-1/out', lastGood: '', homeDir: '/home/u', dataDir: '/data', tmpRoots: [] });
+      ok('X111 D pure: without a last-good the fallback is the user Downloads', r2.folder.endsWith('Downloads') && r2.source === 'home-downloads');
+      const r3 = guard111.resolveOutputFolder({ stored: 'D:\\Videos', lastGood: 'E:\\Old', homeDir: '/home/u', dataDir: '/data', tmpRoots: [] });
+      eq('X111 D pure: a normal base is untouched', r3.folder === 'D:\\Videos' && r3.fellBack === false && r3.tempDetected === false, true);
+      // The data-dir exemption: the app's own data tree is a legitimate
+      // save location even when it sits under a temp root (the project
+      // smoke harness runs its whole data dir there on purpose) — without
+      // it the guard would fight the smoke and any data-local save.
+      eq('X111 D pure: a folder inside the app data dir is exempt even under a temp root', guard111.isTempLikeFolder('/tmp/fs-smoke-9/out', ['/tmp'], ['/tmp/fs-smoke-9']), false);
+      const r4 = guard111.resolveOutputFolder({ stored: '/tmp/fs-smoke-9/out', lastGood: '', homeDir: '/home/u', dataDir: '/tmp/fs-smoke-9', tmpRoots: ['/tmp'] });
+      eq('X111 D pure: resolve keeps a data-dir-local folder (source stored, no fallback)', r4.folder === '/tmp/fs-smoke-9/out' && r4.source === 'stored' && r4.fellBack === false && r4.tempDetected === false, true);
+      // Sandbox stand-down: a data dir that itself lives in a temp root
+      // means the whole process is a throwaway sandbox — an output
+      // folder OUTSIDE the data dir but in the same temp tree is then
+      // also left alone (the smoke's out/ sibling), never swapped into
+      // the user's real Downloads.
+      const r5 = guard111.resolveOutputFolder({ stored: '/tmp/fs-smoke-9/out', lastGood: '', homeDir: '/home/u', dataDir: '/tmp/fs-smoke-9/appdata/gfs-lite', tmpRoots: ['/tmp'] });
+      eq('X111 D pure: a sandbox data dir stands the guard down entirely', r5.folder === '/tmp/fs-smoke-9/out' && r5.source === 'stored' && r5.tempDetected === false && r5.fellBack === false, true);
+    }
+    ok('X111 D source: MCP update_settings accepts download_base_folder (the old unknown-key fault)', mcpSrc111.includes("'download_base_folder'") && mcpSrc111.includes('validateFolderSetting'));
+    ok('X111 D source: the bridge resolves + reports the effective output folder', bridgeSrc111.includes('effectiveOutputBase') && bridgeSrc111.includes('effective_output_folder') && bridgeSrc111.includes('outputFolder: effOut'));
+    ok('X111 D source: the temp guard warns loudly and remembers the last good folder', bridgeSrc111.includes('OUTPUT FOLDER GUARD') && bridgeSrc111.includes('download_folder_last_good'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

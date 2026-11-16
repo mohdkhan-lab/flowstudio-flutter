@@ -362,7 +362,7 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   // ka Download hai; editor-harvest fallback hai.
   eq('MAINPAGE first route is stream-first', firstRoute(), 'stream-first');
   eq('MAINPAGE order starts with stream-first', DOWNLOAD_ROUTE_ORDER[0], 'stream-first');
-  eq('MAINPAGE order ends with editor-harvest', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'editor-harvest');
+  eq('MAINPAGE order ends with tile-menu', DOWNLOAD_ROUTE_ORDER[DOWNLOAD_ROUTE_ORDER.length - 1], 'tile-menu'); // v2.48.107: the menu is the LAST fallback
   eq('MAINPAGE route count', DOWNLOAD_ROUTE_ORDER.length, 3);
   ok('MAINPAGE order is frozen', Object.isFrozen(DOWNLOAD_ROUTE_ORDER));
   // Banned raaste — menu/viewer/backend/headless, aur
@@ -387,13 +387,13 @@ eq('planRanges single chunk', planRanges(500, 1).length, 1);
   const fb = fallbackRouteOrder();
   eq('MAINPAGE fallback drops only the head', fb.length, DOWNLOAD_ROUTE_ORDER.length - 1);
   eq('MAINPAGE fallback count is two', fb.length, 2);
-  ok('MAINPAGE fallback is exactly tile-menu then editor-harvest', fb.length === 2 && fb[0] === 'tile-menu' && fb[1] === 'editor-harvest');
+  ok('MAINPAGE fallback is exactly editor-harvest then tile-menu', fb.length === 2 && fb[0] === 'editor-harvest' && fb[1] === 'tile-menu'); // v2.48.107 order
   ok('MAINPAGE fallback has no stream-first', !fb.includes('stream-first'));
   ok('MAINPAGE fallback has no headless-harvest', !fb.includes('headless-harvest'));
   ok('MAINPAGE fallback has no mainpage-harvest', !fb.includes('mainpage-harvest'));
   ok('MAINPAGE fallback has no grid-replay', !fb.includes('grid-replay'));
   eq('MAINPAGE fallback list equals order minus first', JSON.stringify(fb), JSON.stringify(DOWNLOAD_ROUTE_ORDER.slice(1)));
-  eq('MAINPAGE fallback list is exactly tile-menu + editor-harvest', JSON.stringify(fb), JSON.stringify(['tile-menu', 'editor-harvest']));
+  eq('MAINPAGE fallback list is exactly editor-harvest + tile-menu', JSON.stringify(fb), JSON.stringify(['editor-harvest', 'tile-menu'])); // v2.48.107 order
 }
 
 // --- v2.48.28 (SERVER-FIRST): flow-content URL matcher ---

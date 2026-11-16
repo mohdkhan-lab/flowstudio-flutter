@@ -6725,15 +6725,16 @@ class FlowAutomationEngine {
    * Jeet par: '[ROOT] via=stream-first gap=<X>s' —
    * gap ki tareef purani wali hi hai (render-complete
    * → file saved). Hadd me kuch na mile to ye rasta
-   * EMAANDARI se haar manta hai aur tile-menu fallback
-   * chalta hai. Prompt dobara KABHI submit nahi hota.
+   * EMAANDARI se haar manta hai aur editor fallback
+   * chalta hai (v2.48.107: tile-menu ab sab se aakhri
+   * hai). Prompt dobara KABHI submit nahi hota.
    */
   async _tryStreamFirstDownload(task, downloadFolder, settings, attempts) {
     const n = (task.promptIndex || 0) + 1;
     if (task.mediaSaved) return true;
     const cap = this.netCapture;
     if (!cap || typeof cap.mainpageEntries !== 'function') {
-      attempts.push({ strategy: 'stream-first', ok: false, note: 'the network capture book is not available in this session — the tile-menu route runs next' });
+      attempts.push({ strategy: 'stream-first', ok: false, note: 'the network capture book is not available in this session — the editor route runs next' });
       return false;
     }
     const key = task.captureKey || task.videoId || null;
@@ -6759,7 +6760,7 @@ class FlowAutomationEngine {
       return true;
     }
     if (!pick || !pick.url) {
-      attempts.push({ strategy: 'stream-first', ok: false, note: `no claimable full stream appeared on the wire within ${(waitMs / 1000).toFixed(1)}s of the render completing — the tile-menu route runs next` });
+      attempts.push({ strategy: 'stream-first', ok: false, note: `no claimable full stream appeared on the wire within ${(waitMs / 1000).toFixed(1)}s of the render completing — the editor route runs next` });
       return false;
     }
     const url = pick.url;
@@ -6767,11 +6768,11 @@ class FlowAutomationEngine {
     // par lagte hain: zeher-yafta pata dobara NAHI,
     // dusre task ke dawa wala pata is ke liye adrishya.
     if (this._urlPoisonedRunWide(url)) {
-      attempts.push({ strategy: 'stream-first', ok: false, note: 'the stream address that appeared had already returned non-video bytes in this run — it was not used; the tile-menu route runs next' });
+      attempts.push({ strategy: 'stream-first', ok: false, note: 'the stream address that appeared had already returned non-video bytes in this run — it was not used; the editor route runs next' });
       return false;
     }
     if (this._candidateClaimedByOther(task, url)) {
-      attempts.push({ strategy: 'stream-first', ok: false, note: 'the stream that appeared already belongs to another task in this run — the tile-menu route runs next' });
+      attempts.push({ strategy: 'stream-first', ok: false, note: 'the stream that appeared already belongs to another task in this run — the editor route runs next' });
       return false;
     }
     this._claimCandidateUrl(task, url);
@@ -6791,7 +6792,7 @@ class FlowAutomationEngine {
       if (held && held.buffer && held.buffer.length > 0) {
         if (downloadFetch.looksLikeHtmlBuffer(held.buffer) && !downloadFetch.looksLikeVideoBuffer(held.buffer)) {
           this._markUrlPoisonedRunWide(url);
-          attempts.push({ strategy: 'stream-first', ok: false, note: 'the captured stream bytes were an HTML page, not the video — the address was dropped for this run and the tile-menu route runs next' });
+          attempts.push({ strategy: 'stream-first', ok: false, note: 'the captured stream bytes were an HTML page, not the video — the address was dropped for this run and the editor route runs next' });
           return false;
         }
         if (downloadFetch.looksLikeVideoBuffer(held.buffer)) {
@@ -6823,7 +6824,7 @@ class FlowAutomationEngine {
       attempts.push({ strategy: 'stream-first', ok: true, note: 'the full stream the page itself requested right after the render was claimed and saved — no menu click, no editor' });
       return true;
     }
-    attempts.push({ strategy: 'stream-first', ok: false, note: 'the claimed stream could not be turned into this video\'s file — the tile-menu route runs next' });
+    attempts.push({ strategy: 'stream-first', ok: false, note: 'the claimed stream could not be turned into this video\'s file — the editor route runs next' });
     return false;
   }
 
@@ -6841,14 +6842,18 @@ class FlowAutomationEngine {
    * finalize bhi wahi kitab dekhta hai). File ka
    * intezaar TILE_MENU_FILE_WAIT_MS tak bandha hai.
    * Jeet par: '[ROOT] via=tile-menu gap=<X>s'.
+   * v2.48.107 (Fix A): ye rasta ab tartib ka SAB SE
+   * AAKHRI fallback hai (stream-first → editor-harvest →
+   * tile-menu) — is ki baari sirf tab aati hai jab editor
+   * ka khulna bhi asal stream save na kar sake.
    */
   async _tryTileMenuDownload(task, downloadFolder, settings, attempts, tileIndexHint) {
     const n = (task.promptIndex || 0) + 1;
     let tileIndex = null;
     try { tileIndex = await this._resolveTileIndexForTask(task, typeof tileIndexHint === 'number' ? tileIndexHint : task.tileIndex); } catch (e) { tileIndex = null; }
     if (typeof tileIndex !== 'number' || tileIndex < 0) {
-      this.log(`[ROOT] tile-menu skipped prompt=${n} reason=tile-not-found — the editor-harvest fallback will run`, 'warn');
-      attempts.push({ strategy: 'tile-menu', ok: false, note: 'the task\'s tile could not be located on the grid — the editor route runs next' });
+      this.log(`[ROOT] tile-menu skipped prompt=${n} reason=tile-not-found — it was the last fallback, so the task parks for recovery`, 'warn');
+      attempts.push({ strategy: 'tile-menu', ok: false, note: 'the task\'s tile could not be located on the grid — the tile-menu route was the last fallback, so the task parks for recovery' });
       return false;
     }
     let ok = false;
@@ -6864,7 +6869,7 @@ class FlowAutomationEngine {
       attempts.push({ strategy: 'tile-menu', ok: true, note: 'the file came from the tile menu\'s Download item right after the render completed' });
       return true;
     }
-    attempts.push({ strategy: 'tile-menu', ok: false, note: `no completed file within ${Math.round(TILE_MENU_FILE_WAIT_MS / 1000)}s of the tile-menu Download click — the editor route runs next` });
+    attempts.push({ strategy: 'tile-menu', ok: false, note: `no completed file within ${Math.round(TILE_MENU_FILE_WAIT_MS / 1000)}s of the tile-menu Download click — the tile-menu route was the last fallback, so the task parks for recovery` });
     return false;
   }
 
@@ -10556,11 +10561,11 @@ class FlowAutomationEngine {
     };
     const page = this.page;
     if (!page || (typeof page.isClosed === 'function' && page.isClosed())) {
-      return fail('the worker browser page is not available, so this video\'s editor could not open — no other download route runs; the task parks for the bounded editor retry rounds / recovery');
+      return fail('the worker browser page is not available, so this video\'s editor could not open — the tile-menu fallback runs next; if it also fails, the task parks for recovery');
     }
     const cap = this.netCapture;
     if (!cap || typeof cap.harvestForKey !== 'function') {
-      return fail('the network capture book is not available, so the editor playback stream could not be harvested — no other download route runs; the task parks for the bounded editor retry rounds / recovery');
+      return fail('the network capture book is not available, so the editor playback stream could not be harvested — the tile-menu fallback runs next; if it also fails, the task parks for recovery');
     }
     let outcome = false;
     let failNote = null;
@@ -10569,8 +10574,8 @@ class FlowAutomationEngine {
       let editorOpen = false;
       try { editorOpen = await this._headlessOpenTaskEditor(page, task, tileIndexHint); } catch (e) { editorOpen = false; }
       if (!editorOpen) {
-        this.log(`[ROOT] [Prompt #${n}] editor-harvest: this video's editor did not open in the worker browser — no other download route runs; the bounded editor retry rounds / recovery will retry the editor`, 'warn');
-        failNote = 'this video\'s editor did not open in the worker browser — no other download route runs; the task parks for the bounded editor retry rounds / recovery';
+        this.log(`[ROOT] [Prompt #${n}] editor-harvest: this video's editor did not open in the worker browser — the tile-menu fallback runs next; if it also fails, recovery retries the same routes`, 'warn');
+        failNote = 'this video\'s editor did not open in the worker browser — the tile-menu fallback runs next; if it also fails, the task parks for recovery';
       } else {
         this.log(`[ROOT] editor-harvest opened prompt=${n} — watching the editor's own playback stream`, 'info');
         let teacherUrl = null;
@@ -10653,10 +10658,10 @@ class FlowAutomationEngine {
             const r = await saveFromEditor(entry.url, entry.buffer);
             if (r === 'saved') { outcome = win(); settled = true; break; }
             if (r === 'teacher') {
-              failNote = 'the stream captured in this video\'s editor was the previous task\'s file address (teacher) and was not saved — no other download route runs; the task parks for the bounded editor retry rounds / recovery';
+              failNote = 'the stream captured in this video\'s editor was the previous task\'s file address (teacher) and was not saved — the tile-menu fallback runs next; if it also fails, the task parks for recovery';
               settled = true; break;
             }
-            failNote = `the stream captured in this video's editor did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — no other download route runs; the task parks for the bounded editor retry rounds / recovery`;
+            failNote = `the stream captured in this video's editor did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the tile-menu fallback runs next; if it also fails, the task parks for recovery`;
             settled = true; break;
           }
           const candidates = [];
@@ -10718,10 +10723,10 @@ class FlowAutomationEngine {
               const r = await saveFromEditor(candUrl, candBuf);
               if (r === 'saved') { outcome = win(); settled = true; break; }
               if (r === 'teacher') {
-                failNote = 'the stream captured in this video\'s editor was the previous task\'s file address (teacher) and was not saved — no other download route runs; the task parks for the bounded editor retry rounds / recovery';
+                failNote = 'the stream captured in this video\'s editor was the previous task\'s file address (teacher) and was not saved — the tile-menu fallback runs next; if it also fails, the task parks for recovery';
                 settled = true; break;
               }
-              failNote = `the stream captured in this video's editor did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — no other download route runs; the task parks for the bounded editor retry rounds / recovery`;
+              failNote = `the stream captured in this video's editor did not pass the save checks (${task._saveRejectedReason || 'the video verification failed'}) — the tile-menu fallback runs next; if it also fails, the task parks for recovery`;
               settled = true; break;
             }
           }
@@ -10730,8 +10735,8 @@ class FlowAutomationEngine {
           await sleep(300);
         }
         if (!settled && !task.mediaSaved) {
-          this.log(`[ROOT] [Prompt #${n}] editor-harvest: no complete editor stream arrived in the worker browser within ${Math.round(waitMs / 1000)}s — no other download route runs; the bounded editor retry rounds / recovery will retry the editor`, 'warn');
-          failNote = 'the editor opened, but its playback stream did not complete in the worker browser in time — no other download route runs; the task parks for the bounded editor retry rounds / recovery';
+          this.log(`[ROOT] [Prompt #${n}] editor-harvest: no complete editor stream arrived in the worker browser within ${Math.round(waitMs / 1000)}s — the tile-menu fallback runs next; if it also fails, recovery retries the same routes`, 'warn');
+          failNote = 'the editor opened, but its playback stream did not complete in the worker browser in time — the tile-menu fallback runs next; if it also fails, the task parks for recovery';
         }
         if (enhanceUnavailable && task.mediaSaved) {
           // Backend handoff ne is dauraan original save
@@ -10743,7 +10748,7 @@ class FlowAutomationEngine {
         if (task.mediaSaved && !outcome) outcome = true;
       }
     } catch (e) {
-      failNote = 'the editor harvest hit a problem — no other download route runs; the task parks for the bounded editor retry rounds / recovery';
+      failNote = 'the editor harvest hit a problem — the tile-menu fallback runs next; if it also fails, the task parks for recovery';
     } finally {
       // Har surat me page wapas project grid par — agli
       // task/run ki haalat saaf. Wapsi nakam ho to line
@@ -12587,27 +12592,35 @@ class FlowAutomationEngine {
       // hai — pehla qadam wire par aayi asal stream ka
       // dawa hai (koi click nahi); tile-menu aur editor
       // us ke baad wale fallback bilkul waisi hi hain.
+      // v2.48.107 (Fix A): tartib ab ['stream-first',
+      // 'editor-harvest', 'tile-menu'] hai — stream-first
+      // ki passive khidki ke baad EDITOR khulta hai (usi
+      // ka khulna asal stream ko wire par laata hai);
+      // tile-menu sab se aakhri fallback hai. Poora
+      // diagnosis downloadRouteOrder.js me hai.
       for (const route of (task.downloadRouteOrder || [])) {
         if (task.mediaSaved || this.isStopping) break;
         if (route === 'stream-first') {
           // v2.48.83: tartib ka pehla qadam — bandhi
           // hadd tak claimable full stream ka intezaar
           // aur dawa; na mile to loop agle raste
-          // (tile-menu) par jata hai.
+          // (v2.48.107: editor-harvest) par jata hai.
           try {
             await this._tryStreamFirstDownload(task, downloadFolder, settings, attempts);
           } catch (e) {
-            attempts.push({ strategy: 'stream-first', ok: false, note: 'the stream-first route hit a problem — the tile-menu route ran next' });
+            attempts.push({ strategy: 'stream-first', ok: false, note: 'the stream-first route hit a problem — the editor route ran next' });
           }
         } else if (route === 'tile-menu') {
-          // v2.48.76 (Item C): tartib ka pehla qadam —
-          // tile ke 3-dots menu se turant Download;
-          // bandhi hadd me file na aaye to loop agle
-          // raste (editor-harvest) par jata hai.
+          // v2.48.76 (Item C): tile ke 3-dots menu se
+          // turant Download; bandhi hadd me file na aaye
+          // to loop aage jata hai. v2.48.107 (Fix A): ye
+          // tartib ka SAB SE AAKHRI qadam hai — is se
+          // pehle stream-first aur editor-harvest chalte
+          // hain.
           try {
             await this._tryTileMenuDownload(task, downloadFolder, settings, attempts, tileIndexHint);
           } catch (e) {
-            attempts.push({ strategy: 'tile-menu', ok: false, note: 'the tile-menu route hit a problem — the editor route ran next' });
+            attempts.push({ strategy: 'tile-menu', ok: false, note: 'the tile-menu route hit a problem — it was the last fallback, so the task parks for recovery' });
           } finally {
             if (!task.mediaSaved) {
               try { await this._returnToProjectGrid(); } catch (e) {}
@@ -12617,7 +12630,7 @@ class FlowAutomationEngine {
           try {
             await this._tryEditorHarvest(task, downloadFolder, settings, attempts, captureKey, tileIndexHint);
           } catch (e) {
-            attempts.push({ strategy: 'editor-harvest', ok: false, note: 'the editor harvest hit a problem — no other download route runs; the task parks for the bounded editor retry rounds / recovery' });
+            attempts.push({ strategy: 'editor-harvest', ok: false, note: 'the editor harvest hit a problem — the tile-menu fallback runs next' });
           }
         } else if (route === 'mainpage-harvest') {
           try {
@@ -12650,7 +12663,7 @@ class FlowAutomationEngine {
         }
       }
       // EMAANDAR FAIL: is ke baad koi rasta nahi bacha.
-      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: neither the stream-first capture, the tile-menu download nor the editor route produced this video's file. The prompt was NOT resubmitted — the task parks for recovery, which retries the same routes.`, 'warn');
+      this.log(`[ROOT] [Prompt #${n}] Download failed honestly: neither the stream-first capture, the editor route nor the tile-menu download produced this video's file. The prompt was NOT resubmitted — the task parks for recovery, which retries the same routes.`, 'warn');
       return finishVideoAttempt({ ok: false, attempts });
     }
 

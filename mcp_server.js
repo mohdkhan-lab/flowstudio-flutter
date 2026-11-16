@@ -19,11 +19,13 @@
 const http = require('http');
 const crypto = require('crypto');
 const os = require('os');
+const fs = require('fs');
+const path = require('path');
 const { usableCreditsTotal, storedCreditsTotal } = require('./engine/usableCredits');
 
 const MCP_PORT = 48191;
 const BRIDGE_PORT = 48190;
-const SERVER_VERSION = '2.48.106';
+const SERVER_VERSION = '2.48.107';
 
 let mcpServer = null;
 let lastConnectedAt = null; // ms epoch of the last authenticated MCP request
@@ -133,13 +135,39 @@ function publicAccounts(list) {
 // exact list its GET /api/settings returns). flowstudio_update_settings
 // passes through ONLY these keys — the MCP layer adds no other
 // settings surface of its own.
+// v2.48.107 (Fix D): 'download_base_folder' joins the list —
+// its absence here was the 'unknown key' fault that made the
+// output base folder unrepairable from chat on 2026-11-12
+// (the bridge's GET already served it; only the MCP write
+// filter dropped it).
 const SETTING_KEYS = [
   'appearance', 'theme', 'default_model', 'default_duration', 'default_aspect',
-  'default_naming', 'default_quality', 'default_download_mode', 'custom_tags', 'download_folder', 'chrome_path',
+  'default_naming', 'default_quality', 'default_download_mode', 'custom_tags', 'download_folder', 'download_base_folder', 'chrome_path',
   'browser_background', 'show_browsers', 'preview_autoplay', 'auto_verify_start',
   'auto_check_updates', 'social_links', 'live_only_accounts', 'history_cleared', 'headless_generation',
   'account_aliases', 'parallel_browsers', 'mcp_enabled',
 ];
+
+// v2.48.107 (Fix D): the two output-folder keys are validated
+// before anything is written — a folder setting must be a
+// non-empty ABSOLUTE path, and the folder is created when
+// missing, so a chat-side repair lands on a real folder.
+const FOLDER_SETTING_KEYS = ['download_folder', 'download_base_folder'];
+function validateFolderSetting(key, value) {
+  if (typeof value !== 'string' || !value.trim()) {
+    throw new Error(`${key} must be a non-empty absolute path`);
+  }
+  const p = value.trim();
+  if (!path.isAbsolute(p)) {
+    throw new Error(`${key} must be an absolute path (got "${p}")`);
+  }
+  try {
+    fs.mkdirSync(p, { recursive: true });
+  } catch (e) {
+    throw new Error(`${key} could not be created at "${p}": ${e.message}`);
+  }
+  return p;
+}
 
 // The settings store is string-valued (the bridge String()-coerces on
 // write): strings pass through as-is, structured values are stored as
@@ -468,6 +496,14 @@ const TOOLS = [
         }
       }
       if (Object.keys(clean).length === 0) throw new Error('settings must contain at least one known setting key with a value');
+      // v2.48.107 (Fix D): folder keys are validated (and the
+      // folder created) BEFORE the write — an invalid folder
+      // fails the whole update, nothing partial is stored.
+      for (const fk of FOLDER_SETTING_KEYS) {
+        if (Object.prototype.hasOwnProperty.call(clean, fk)) {
+          clean[fk] = validateFolderSetting(fk, clean[fk]);
+        }
+      }
       return bridgeCall('POST', '/api/settings', { settings: clean });
     },
   },

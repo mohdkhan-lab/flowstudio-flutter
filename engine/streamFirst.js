@@ -39,8 +39,12 @@
 // flow-content ummeedwaar) usi pal dawa (claim) hokar
 // aam save point / FAST-DL fetch machinery se save hota
 // hai. Koi click nahi, koi editor nahi, koi mint nahi.
-// Hadd ke andar koi stream na mile to tartib bilkul
-// purani: tile-menu → editor-harvest.
+// Hadd ke andar koi stream na mile to tartib aage
+// badhti hai: editor-harvest → tile-menu (v2.48.107 —
+// pehle tile-menu dusra tha; Fix A ka diagnosis
+// downloadRouteOrder.js me hai: passive khidki me
+// stream is liye nahi aati ke playback trigger hi
+// nahi hota — editor ka khulna wahi trigger hai).
 //
 // Ye file KHALIS hisaab hai (koi capture/engine haalat
 // nahi chhooti) — engine (flowAutomation ka

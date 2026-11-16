@@ -173,12 +173,46 @@
 //      ke liye tareef NAHI badli.
 //   2. 'tile-menu' — .76 wala pehla rasta, ab dusra.
 //   3. 'editor-harvest' — sab se aakhri chaara, hu-bahu.
+//
+// v2.48.107 (STREAM-FIRST DIAGNOSIS + EDITOR SECOND —
+// OWNER ORDER 2026-11-16): .83 ke baad bhi har live save
+// 'via=tile-menu' hi aaya (AGENTBULK2, 2026-11-15:
+// gaps 27.8s / 13.8s / 14.0s) — stream-first kabhi jeeta
+// hi nahi. Code se sabit jad: stream-first ek KHALIS
+// passive intezaar hai — wo sirf us stream ko dawa kar
+// sakta hai jo page pehle hi wire par mang chuka ho,
+// lekin asal full stream (asb 302 → googlevideo itag=18
+// ya flow-content) PLAYBACK se banti hai: tile khulne /
+// chalne par hi page use mangta hai. Render-complete par
+// worker sirf grid dekhta rehta hai — kuch bhi playback
+// trigger nahi karta — is liye bandhi 3s khidki me
+// claimable stream materialise ho hi nahi sakti
+// (AGENTBULK2 me itag=18 ki darkhwast khidki band hone
+// ke BAAD, ~4s par, ya sirf menu click ke mint se aayi).
+// Phir tile-menu ka 12–15s wala ⋮ + resolution naach
+// chalta tha, aur usi ke click se bani stream FAST-DL
+// race se save hoti thi — menu hamesha "jeet-ta" tha
+// kyunki asal trigger wahi tha.
+//   Is liye tartib ab ye hai:
+//   1. 'stream-first' — hu-bahu: stream pehle se wire par
+//      ho (.81 wala saboot) to 0-click me wahi jeetegi;
+//      na ho to bandhi khidki EMAANDARI se haar manti hai.
+//   2. 'editor-harvest' — render-complete ke baad seedha
+//      tile/editor khulta hai; editor ka khulna hi wo
+//      playback trigger hai jo asal stream wire par laata
+//      hai, aur capture usi stream ko save karta hai
+//      (ZEROCLICK6/7 ka sabit bytes-zariya). Koi menu
+//      click nahi.
+//   3. 'tile-menu' — .76 wala rasta ab SAB SE AAKHRI
+//      fallback hai — editor bhi haar jaye tab hi.
+// Download fail ho to prompt dobara KABHI submit nahi
+// hota (sacred rule barkarar).
 // ---------------------------------------------------------------------------
 
 const DOWNLOAD_ROUTE_ORDER = Object.freeze([
   'stream-first',
-  'tile-menu',
-  'editor-harvest'
+  'editor-harvest',
+  'tile-menu'
 ]);
 
 /** Bharri hui copy — tartib ka pehla rasta chhor kar baaki (fallback) raaste. */

@@ -9,8 +9,13 @@
  * Usool:
  *   1. Task ne jo project URL record kiya hai, usi ko hoga recovery.
  *   2. Agar record nahi hai, to dbService.findProjectForTime se
- *      nearest-not-after project.
+ *      usi run ki entry wala project (.116 R3: queue-ghadi
+ *      aur entry-ghadi ek ki gayi hain).
  *   3. Gallery ka date-time wala raasta sirf uske baad.
+ *   4. v2.48.116 (R4): planned project me tile na mile to
+ *      usi account ke usi DIN ke doosre registry projects
+ *      bhi bari bari parkhe jate hain (sweep) — purani
+ *      galat likhai ab dead end nahi rehti.
  *
  * YE FILE PURE LOGIC DETI HAI — koi page/puppeteer nahi chhota.
  * Engine flowAutomation.js me use hota hai.
@@ -89,6 +94,67 @@ function recoveryEntryPlan(recordedUrl, registryRow, targetMs) {
 }
 
 /**
+ * v2.48.116 (R4 — RECOVERY SWEEP): ek parked task ka
+ * tile us ke planned project me na mile to account ke
+ * DOOSRE registry projects me talash ki tartib —
+ * KHALIS faisla, koi DB/page nahi chhoota.
+ *   - sirf wahi projects jo task ke QUEUE wale DIN
+ *     (local calendar day) registry me pehli baar
+ *     dekhe gaye — purane dinon ki kitab is talash se
+ *     bahar hai;
+ *   - planned project khud shamil NAHI (wo pehle hi
+ *     parkha ja chuka hai);
+ *   - tartib: sab se NAYI entry pehle (newest first);
+ *   - had: zyada se zyada RECOVERY_SWEEP_MAX_PROJECTS
+ *     (4) — bulane wale ka cap is se aage nahi badh
+ *     sakta.
+ * Rows dbService ki mapped shakal (projectUrl /
+ * firstSeenAt) me bhi aa sakte hain aur kachi DB
+ * shakal (project_url / first_seen_at) me bhi.
+ */
+const RECOVERY_SWEEP_MAX_PROJECTS = 4;
+
+function recoverySweepCandidates(registryRows, excludeUrl, targetMs, cap) {
+  const t = Number(targetMs) || 0;
+  if (!(t > 0)) return [];
+  const day = new Date(t);
+  const dayStart = new Date(day.getFullYear(), day.getMonth(), day.getDate()).getTime();
+  const dayEnd = dayStart + 24 * 3600 * 1000;
+  const excluded = String(excludeUrl || '').trim();
+  let limit = Math.floor(Number(cap)) || RECOVERY_SWEEP_MAX_PROJECTS;
+  if (limit > RECOVERY_SWEEP_MAX_PROJECTS) limit = RECOVERY_SWEEP_MAX_PROJECTS;
+  if (limit < 0) limit = 0;
+  const seen = new Set();
+  const picked = [];
+  for (const r of (Array.isArray(registryRows) ? registryRows : [])) {
+    if (!r) continue;
+    const url = String(r.projectUrl || r.project_url || '').trim();
+    const seenAt = Number(r.firstSeenAt !== undefined ? r.firstSeenAt : r.first_seen_at) || 0;
+    if (!url || url === excluded || seen.has(url)) continue;
+    if (!(seenAt >= dayStart && seenAt < dayEnd)) continue;
+    seen.add(url);
+    picked.push({
+      projectUrl: url,
+      projectId: String(r.projectId || r.project_id || projectIdOfUrl(url) || ''),
+      firstSeenAt: seenAt,
+      id: Number(r.id) || 0
+    });
+  }
+  picked.sort((a, b) => (b.firstSeenAt - a.firstSeenAt) || (b.id - a.id));
+  return picked.slice(0, limit);
+}
+
+/**
+ * v2.48.116 (R4): sweep ki har koshish ka [ROOT] saboot
+ * — kaunsi task, kaunsa project parkha gaya, tile mila
+ * ya nahi. Project hamesha us ke id se naam leta hai.
+ */
+function recoverySweepLogLine(promptIndex, projectUrl, found) {
+  const id = projectIdOfUrl(projectUrl) || String(projectUrl || '');
+  return `[ROOT] recovery-sweep task=${promptIndex} project=${id} found=${found ? 'yes' : 'no'}`;
+}
+
+/**
  * Same-project recovery: hi project me task mila hai to usi me
  * download continue karo, kisi naya project na kholo.
  */
@@ -147,5 +213,8 @@ module.exports = {
   pickGalleryProject,
   recoveryEntryPlan,
   recoverProject,
-  selectParkedRows
+  selectParkedRows,
+  RECOVERY_SWEEP_MAX_PROJECTS,
+  recoverySweepCandidates,
+  recoverySweepLogLine
 };

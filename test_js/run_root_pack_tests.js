@@ -4647,7 +4647,7 @@ async function main() {
         a1bLast: a1b && a1b.row && a1b.row.lastSeenAt, a1bSource: a1b && a1b.row && a1b.row.source,
         a2New: a2 && a2.isNew, b1New: b1 && b1.isNew, bad: bad,
         listA: listA.length,
-        findBefore: findBefore, findBetween: findBetween && findBetween.projectUrl,
+        findBefore: findBefore && findBefore.projectUrl, findBetween: findBetween && findBetween.projectUrl,
         findAt: findAt && findAt.projectUrl, findLater: findLater && findLater.projectUrl,
         findB: findB && findB.projectUrl, findNone: findNone
       }));
@@ -4670,10 +4670,14 @@ async function main() {
     eq('X60-DB another account inserts its own row', rt && rt.b1New, true);
     eq('X60-DB an empty account key records nothing', rt && rt.bad, null);
     eq('X60-DB the account list holds exactly its two projects', rt && rt.listA, 2);
-    eq('X60-DB a target before every project finds nothing', rt && rt.findBefore, null);
-    eq('X60-DB the closest-not-after project wins', rt && rt.findBetween, 'https://flow.google.com/project/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    // v2.48.116 (R3): ghadiyon ka milan badla — target se
+    // pehle ki entry bhi ab 'usi run ki sab se pehli
+    // entry (>= target-60s)' usool se mil sakti hai;
+    // purana not-after usool Defect A tha (X120 dekho).
+    eq('X60-DB a target just before a project finds that run\'s first entry (.116 R3)', rt && rt.findBefore, 'https://flow.google.com/project/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
+    eq('X60-DB the earliest entry at/after the queue window wins (.116 R3)', rt && rt.findBetween, 'https://flow.google.com/project/aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee');
     eq('X60-DB an exact-time target finds that project', rt && rt.findAt, 'https://flow.google.com/project/11111111-2222-3333-4444-555555555555');
-    eq('X60-DB a later target still finds the latest not-after', rt && rt.findLater, 'https://flow.google.com/project/11111111-2222-3333-4444-555555555555');
+    eq('X60-DB a later target finds the nearest by distance (.116 R3)', rt && rt.findLater, 'https://flow.google.com/project/11111111-2222-3333-4444-555555555555');
     eq('X60-DB the other account finds only its own project', rt && rt.findB, 'https://flow.google.com/project/zzzz-other-account-proj');
     eq('X60-DB an unknown account finds nothing', rt && rt.findNone, null);
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
@@ -14529,6 +14533,11 @@ async function main() {
   //      open with a [ROOT] proof line, re-asserted silently when
   //      the project opens and on every return to the project grid.
   //      A zoom failure warns and continues; it never fails a run.
+  //      [v2.48.116 (Z3): the CDP helper is GONE — the owner meant
+  //      Chrome's own menu Zoom, which only the page keyboard sets
+  //      (Ctrl+0, then Ctrl+'-' down the ladder). The Z1 pins below
+  //      were updated to the keyboard contract in .116; the scale,
+  //      proof line and re-assert points are unchanged.]
   // (Z2) The tile-menu ⋮ hunt scrolls the tile into the viewport
   //      centre and hovers it (~600ms settle) before hunting; the
   //      hunt scope is the tile's own subtree first, then the tile's
@@ -14545,24 +14554,27 @@ async function main() {
     const {
       GENERATION_PAGE_SCALE: scale117,
       browserZoomLogLine: zoomLine117,
-      applyBrowserZoom: applyZoom117,
+      menuZoomKeySequence: zoomSeq117,
+      applyMenuZoom: applyMenuZoom117,
       tileMoreOverlaySource: overlaySrc117,
       tileMenuDumpSource: tileDumpSrc117,
       tileMenuDumpElementLine: tileDumpLine117
     } = require('../engine/flowAutomation');
 
-    // --- Z1: the zoom helper through the CDP seam ---
+    // --- Z1 (as updated by .116 Z3): the zoom helper is the
+    // page's own keyboard — Ctrl+0 reset, then Ctrl+'-' steps ---
     eq('X117 Z1: the generation page scale is 0.5', scale117, 0.5);
     {
-      const calls = [];
-      const send = async (method, params) => { calls.push([method, params]); };
-      eq('X117 Z1: the helper reports success through the seam', await applyZoom117(send), true);
-      eq('X117 Z1: the helper makes exactly one CDP call', calls.length, 1);
-      eq('X117 Z1: the CDP method is Emulation.setPageScaleFactor', calls[0][0], 'Emulation.setPageScaleFactor');
-      eq('X117 Z1: the scale factor sent is 0.5', calls[0][1].pageScaleFactor, 0.5);
-      eq('X117 Z1: a failing seam is a quiet false, never a throw', await applyZoom117(async () => { throw new Error('cdp down'); }), false);
-      eq('X117 Z1: a missing seam is a quiet false', await applyZoom117(null), false);
-      eq('X117 Z1: a bad scale is a quiet false', await applyZoom117(send, 0), false);
+      const pressed = [];
+      const press = async (key) => { pressed.push(key); };
+      eq('X117 Z1: the helper reports success through the seam', await applyMenuZoom117(press, 0.5, { delayMs: 0 }), true);
+      eq('X117 Z1: the sequence is reset + five zoom-out steps (100>90>80>75>67>50)', pressed.join(','), '0,-,-,-,-,-');
+      eq('X117 Z1: the sequence helper agrees', zoomSeq117(0.5).join(','), '0,-,-,-,-,-');
+      eq('X117 Z1: a failing seam is a quiet false, never a throw', await applyMenuZoom117(async () => { throw new Error('keyboard down'); }, 0.5, { delayMs: 0 }), false);
+      eq('X117 Z1: a missing seam is a quiet false', await applyMenuZoom117(null, 0.5, { delayMs: 0 }), false);
+      pressed.length = 0;
+      eq('X117 Z1: a bad scale falls back to the generation scale', await applyMenuZoom117(press, 0, { delayMs: 0 }), true);
+      eq('X117 Z1: the fallback still presses the 50% sequence', pressed.join(','), '0,-,-,-,-,-');
     }
     eq('X117 Z1: the proof line names account, scale and applied',
       zoomLine117('flow.google.com_cookies (12)', 0.5, true),
@@ -14669,6 +14681,16 @@ async function main() {
   //      "usable 94" against the owner's 142 total (43 resting +
   //      5×1 under-cost). Gate math, thresholds and refusal
   //      semantics are byte-for-byte the old ones.
+  // (Z3, v2.48.116 — owner clarification): the owner meant
+  //      Chrome's OWN menu Zoom all along. The launch flag is
+  //      NOT menu zoom (DSF only — dpr read 0.5 while the menu
+  //      still said 100%), so the flag and the CDP page-scale
+  //      are both GONE; the zoom is now set with the page's own
+  //      keyboard (Ctrl+0, then 5 × Ctrl+'-': 100→90→80→75→
+  //      67→50) at the same checkpoints, and the read-back
+  //      verdict is DPR-only under the line form
+  //      'zoom=0.5 dpr=<x> verified|FAILED'. The Z1b pins
+  //      below were updated to this contract in .116.
   // =====================================================================
   {
     const fs118 = require('fs');
@@ -14676,48 +14698,48 @@ async function main() {
     const read118 = (rel) => fs118.readFileSync(path118.join(__dirname, '..', rel), 'utf8');
     const flowSrc118 = read118('engine/flowAutomation.js');
     const poolSrc118 = read118('engine/workerPool.js');
+    const flowMod118 = require('../engine/flowAutomation');
     const {
-      browserZoomLaunchArg: launchArg118,
       zoomReadbackVerified: zoomVerified118,
       browserZoomVerifyLogLine: zoomVerifyLine118
-    } = require('../engine/flowAutomation');
+    } = flowMod118;
     const creditBreakdown118 = require('../engine/creditBreakdown');
 
-    // --- Z1b: the launch flag ---
-    eq('X118 Z1b: the launch arg is the 0.5 device-scale flag', launchArg118(), '--force-device-scale-factor=0.5');
-    eq('X118 Z1b: an explicit scale lands in the flag', launchArg118(0.5), '--force-device-scale-factor=0.5');
-    eq('X118 Z1b: a bad scale falls back to the generation scale', launchArg118(0), '--force-device-scale-factor=0.5');
+    // --- Z3: the device-scale launch flag is GONE ---
+    eq('X118 Z3: the launch-arg helper no longer exists', typeof flowMod118.browserZoomLaunchArg, 'undefined');
+    eq('X118 Z3: the CDP page-scale helper no longer exists', typeof flowMod118.applyBrowserZoom, 'undefined');
     {
       const start = flowSrc118.indexOf('async launchBrowserForAccount(');
       const slice = flowSrc118.slice(start, start + 30000);
-      ok('X118 Z1b source: generation launch args carry the zoom flag', slice.includes('browserZoomLaunchArg(),'));
+      ok('X118 Z3 source: generation launch args carry NO device-scale flag', !slice.includes('force-device-scale-factor') && !slice.includes('browserZoomLaunchArg'));
     }
+    ok('X118 Z3 source: no Emulation page-scale anywhere in the engine', !flowSrc118.includes('Emulation.setPageScaleFactor'));
 
-    // --- Z1b: the CDP secondary never creates/detaches a session ---
+    // --- Z3: the zoom is set by the page's own keyboard ---
     {
       const start = flowSrc118.indexOf('async _applyGenerationZoom(');
       const slice = flowSrc118.slice(start, start + 2600);
-      ok('X118 Z1b source: the zoom secondary uses the page own session', slice.includes('this.cdpSession'));
-      ok('X118 Z1b source: the zoom secondary never creates a session', !slice.includes('createCDPSession'));
-      ok('X118 Z1b source: the zoom secondary never detaches a session', !slice.includes('.detach('));
+      ok('X118 Z3 source: the zoom set runs through applyMenuZoom', slice.includes('applyMenuZoom'));
+      ok('X118 Z3 source: the zoom set uses the page keyboard', slice.includes('this.page.keyboard'));
+      ok('X118 Z3 source: the chords hold Control', slice.includes("kb.down('Control')") && slice.includes("kb.up('Control')"));
     }
 
-    // --- Z1b: the read-back verdict + line forms (fake evaluations) ---
-    eq('X118 Z1b: dpr 0.5 alone verifies', zoomVerified118(0.5, 1), true);
-    eq('X118 Z1b: vv 0.5 alone verifies', zoomVerified118(1.25, 0.5), true);
-    eq('X118 Z1b: neither signal at 0.5 fails', zoomVerified118(1, 1), false);
-    eq('X118 Z1b: missing signals fail honestly', zoomVerified118(null, null), false);
-    eq('X118 Z1b: the verified line carries dpr + vv',
-      zoomVerifyLine118('Acc', 0.5, 0.5, 1),
-      '[ROOT] browser-zoom account=Acc scale=0.5 dpr=0.5 vv=1 verified');
-    eq('X118 Z1b: the vv-only line verifies with dpr n/a',
-      zoomVerifyLine118('Acc', 0.5, null, 0.5),
-      '[ROOT] browser-zoom account=Acc scale=0.5 dpr=n/a vv=0.5 verified');
-    eq('X118 Z1b: the FAILED line carries the real values',
-      zoomVerifyLine118('Acc', 0.5, 1, 1),
-      '[ROOT] browser-zoom account=Acc scale=0.5 dpr=1 vv=1 FAILED');
-    ok('X118 Z1b source: the read-back reads devicePixelRatio', flowSrc118.includes('window.devicePixelRatio'));
-    ok('X118 Z1b source: the read-back reads visualViewport.scale', flowSrc118.includes('window.visualViewport'));
+    // --- Z3: the read-back verdict (DPR-only) + line forms ---
+    eq('X118 Z3: dpr 0.5 verifies', zoomVerified118(0.5), true);
+    eq('X118 Z3: dpr near 0.5 verifies', zoomVerified118(0.53), true);
+    eq('X118 Z3: dpr 1.0 fails (no zoom in effect)', zoomVerified118(1), false);
+    eq('X118 Z3: a missing dpr fails honestly', zoomVerified118(null), false);
+    eq('X118 Z3: the verified line uses the zoom= form',
+      zoomVerifyLine118('Acc', 0.5, 0.5),
+      '[ROOT] browser-zoom account=Acc zoom=0.5 dpr=0.5 verified');
+    eq('X118 Z3: the FAILED line carries the real dpr',
+      zoomVerifyLine118('Acc', 0.5, 1),
+      '[ROOT] browser-zoom account=Acc zoom=0.5 dpr=1 FAILED');
+    eq('X118 Z3: a missing dpr reads n/a and fails',
+      zoomVerifyLine118('Acc', 0.5, null),
+      '[ROOT] browser-zoom account=Acc zoom=0.5 dpr=n/a FAILED');
+    ok('X118 Z3 source: the read-back reads devicePixelRatio', flowSrc118.includes('window.devicePixelRatio'));
+    ok('X118 Z3 source: the verdict call is DPR-only', flowSrc118.includes('zoomReadbackVerified(dpr, GENERATION_PAGE_SCALE)'));
     ok('X118 Z1b source: the read-back runs at both checkpoints', (flowSrc118.match(/await this\._verifyGenerationZoom\(\);/g) || []).length >= 2);
     ok('X118 Z1b source: the one-line guard resets per launch', flowSrc118.includes('this._zoomProofLogged = false;'));
 
@@ -15043,6 +15065,296 @@ async function main() {
       ok('X119 source: the real-mouse reveal lives in the activation step',
         flowSrc119.includes('Number(more.tileBox.w) - 20'));
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // X120 (v2.48.116) — RECOVERY MUST FIND THE PROJECT THE TILE WAS
+  // ACTUALLY MADE IN. Field failure (.115 Resume, 2026-11-17): all 8
+  // parked Gopal prompts reported "not found in project <uuid>" —
+  // recovery navigated correctly but the TARGETS were wrong
+  // (diagnosis: fs-tmp/recovery-project-diagnosis.md).
+  //   R1 birth capture on EVERY successful submit (the solo-only
+  //      gate was on the fingerprint LOCK; the URL capture rode it);
+  //   R2 the row's project_url is write-if-empty from submit data,
+  //      and (re)stamped with the truth at first tile observation —
+  //      a failover attempt with no observed tile never overwrites;
+  //   R3 findProjectForTime compares like with like: earliest entry
+  //      at/after queue-time −60s, else nearest by absolute distance
+  //      (the old not-after rule compared queue time against entry
+  //      time and systematically picked the PREVIOUS run's project);
+  //   R4 recovery sweep: on not-found, up to 4 other same-day
+  //      registry projects for the account, newest first,
+  //      fingerprint search, download-only; a find stamps the row.
+  // ---------------------------------------------------------------------------
+  {
+    const fs120 = require('fs');
+    const path120 = require('path');
+    const flowSrc120 = fs120.readFileSync(path120.join(__dirname, '..', 'engine/flowAutomation.js'), 'utf8');
+    const poolSrc120 = fs120.readFileSync(path120.join(__dirname, '..', 'engine/workerPool.js'), 'utf8');
+    const dbSrc120 = fs120.readFileSync(path120.join(__dirname, '..', 'engine/db.js'), 'utf8');
+    const { recoverySweepCandidates, recoverySweepLogLine, RECOVERY_SWEEP_MAX_PROJECTS } = require('../engine/project-recovery');
+
+    // --- R1: birth capture no longer solo-gated -------------------
+    {
+      const iLock = flowSrc120.indexOf('if (totalPrompts <= 1) {');
+      const iR1 = flowSrc120.indexOf('v2.48.116 (R1)');
+      ok('X120 R1: the fingerprint lock stays solo-gated', iLock > 0);
+      ok('X120 R1: the ungated birth capture exists after the lock block', iR1 > iLock);
+      const r1Slice = flowSrc120.slice(iR1, iR1 + 900);
+      ok('X120 R1: the capture fills only an empty birth value', r1Slice.includes('if (!birthProjectUrl)'));
+      ok('X120 R1: the capture reads the submit-time project URL', r1Slice.includes('birthProjectUrl = this.currentProjectUrl()'));
+      ok('X120 R1: the submitted task carries the birth project', flowSrc120.includes('projectUrl: birthProjectUrl'));
+      ok('X120 R1: the pool prefers the submit-carried project', poolSrc120.includes('submitRes.projectUrl || engine.currentProjectUrl()'));
+      // capture source unit: the URL the capture reads, trimmed to
+      // the project root (fake page, X60-REG wala tarika).
+      const eng120 = new FlowAutomationEngine({ onLog: () => {} }, {});
+      eng120.page = { isClosed: () => false, url: () => 'https://flow.google.com/project/x120-birth-proj/edit/abc123' };
+      eq('X120 R1: the capture source trims to the project root', eng120.currentProjectUrl(), 'https://flow.google.com/project/x120-birth-proj');
+    }
+
+    // --- R2: write-if-empty + observed-truth stamping -------------
+    {
+      ok('X120 R2: the submit stamp is write-if-empty', poolSrc120.includes('dbService.setTaskProjectUrlIfEmpty(nextTask.id, purl)'));
+      ok('X120 R2: db carries the write-if-empty setter', dbSrc120.includes('setTaskProjectUrlIfEmpty(taskId, url)') && dbSrc120.includes("project_url IS NULL OR project_url = ''"));
+      ok('X120 R2: the monitor marks the first tile observation', flowSrc120.includes('if (!task.observedProjectUrl)') && flowSrc120.includes('task.observedProjectUrl = observedUrl'));
+      ok('X120 R2: the pool stamps observed projects after the monitor', poolSrc120.includes('_stampObservedTaskProjects(tasks)') && poolSrc120.includes('dbService.setTaskProjectUrl(t.taskId, t.observedProjectUrl)'));
+      eq('X120 R2: both monitor call sites stamp (drain + main window)', poolSrc120.split('this._stampObservedTaskProjects(').length - 1, 2);
+    }
+    {
+      // asal DB round-trip — alag process, throwaway data dir.
+      const { execFileSync } = require('child_process');
+      const os = require('os');
+      const fsx = require('fs');
+      const pathx = require('path');
+      const tmpDir = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fs-x120-db-'));
+      const dbPath = JSON.stringify(pathx.join(__dirname, '..', 'engine', 'db.js'));
+      const script = `(async () => {
+        const { dbService } = require(${dbPath});
+        await dbService.ensureInit();
+        const A = 'https://flow.google.com/project/x120-attempt-a';
+        const B = 'https://flow.google.com/project/x120-attempt-b';
+        const T = 'https://flow.google.com/project/x120-tile-truth';
+        const rows = dbService.createBatchTasks('b-x120', ['x120 stamp prompt'], {});
+        const id = rows[0].id;
+        dbService.setTaskProjectUrlIfEmpty(id, A);
+        const afterFirst = dbService.getTask(id).project_url || '';
+        dbService.setTaskProjectUrlIfEmpty(id, B);
+        const afterFailover = dbService.getTask(id).project_url || '';
+        dbService.setTaskProjectUrl(id, T);
+        const afterTruth = dbService.getTask(id).project_url || '';
+        dbService.setTaskProjectUrlIfEmpty(id, B);
+        const afterTruthGuard = dbService.getTask(id).project_url || '';
+        console.log(JSON.stringify({ afterFirst, afterFailover, afterTruth, afterTruthGuard }));
+      })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+      let rt = null;
+      try {
+        const out = execFileSync(process.execPath, ['-e', script], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+        rt = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+      } catch (e) { rt = null; }
+      ok('X120 R2-DB the round-trip child ran', !!rt);
+      eq('X120 R2-DB the first submit fills the empty row', rt && rt.afterFirst, 'https://flow.google.com/project/x120-attempt-a');
+      eq('X120 R2-DB a failover submit never overwrites', rt && rt.afterFailover, 'https://flow.google.com/project/x120-attempt-a');
+      eq('X120 R2-DB the tile-observed stamp is the truth and wins', rt && rt.afterTruth, 'https://flow.google.com/project/x120-tile-truth');
+      eq('X120 R2-DB a later submit stamp cannot move the truth', rt && rt.afterTruthGuard, 'https://flow.google.com/project/x120-tile-truth');
+      try { fsx.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+    }
+
+    // --- R3: findProjectForTime on the right clock ----------------
+    {
+      ok('X120 R3: db looks at/after the queue window first', dbSrc120.includes('first_seen_at >= ?') && dbSrc120.includes('ORDER BY first_seen_at ASC, id ASC'));
+      ok('X120 R3: db falls back to nearest by absolute distance', dbSrc120.includes('ABS(first_seen_at - ?)'));
+      const { execFileSync } = require('child_process');
+      const os = require('os');
+      const fsx = require('fs');
+      const pathx = require('path');
+      const tmpDir = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fs-x120-clock-'));
+      const dbPath = JSON.stringify(pathx.join(__dirname, '..', 'engine', 'db.js'));
+      const script = `(async () => {
+        const { dbService } = require(${dbPath});
+        await dbService.ensureInit();
+        const T = Date.parse('2026-11-17T13:41:00Z');
+        const P_OLD = 'https://flow.google.com/project/x120-w8-old';
+        const P_NEW = 'https://flow.google.com/project/x120-w8-new';
+        dbService.recordProjectSeen({ accountKey: 'acc-w8', projectUrl: P_OLD, source: 'fresh-entry', now: T - 19 * 60000 });
+        dbService.recordProjectSeen({ accountKey: 'acc-w8', projectUrl: P_NEW, source: 'fresh-entry', now: T + 30000 });
+        const w8 = dbService.findProjectForTime('acc-w8', T);
+        const P_EDGE = 'https://flow.google.com/project/x120-edge';
+        const P_NEAR = 'https://flow.google.com/project/x120-near';
+        dbService.recordProjectSeen({ accountKey: 'acc-edge', projectUrl: P_NEAR, source: 'fresh-entry', now: T - 30000 });
+        dbService.recordProjectSeen({ accountKey: 'acc-edge', projectUrl: P_EDGE, source: 'fresh-entry', now: T - 60000 });
+        const edge = dbService.findProjectForTime('acc-edge', T);
+        const P_FAR1 = 'https://flow.google.com/project/x120-far1';
+        const P_FAR2 = 'https://flow.google.com/project/x120-far2';
+        dbService.recordProjectSeen({ accountKey: 'acc-far', projectUrl: P_FAR2, source: 'fresh-entry', now: T - 7200000 });
+        dbService.recordProjectSeen({ accountKey: 'acc-far', projectUrl: P_FAR1, source: 'fresh-entry', now: T - 3600000 });
+        const far = dbService.findProjectForTime('acc-far', T);
+        const none = dbService.findProjectForTime('acc-nope', T);
+        const zero = dbService.findProjectForTime('acc-w8', 0);
+        console.log(JSON.stringify({ w8: w8 && w8.projectUrl, edge: edge && edge.projectUrl, far: far && far.projectUrl, none: none, zero: zero }));
+      })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+      let rt = null;
+      try {
+        const out = execFileSync(process.execPath, ['-e', script], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+        rt = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+      } catch (e) { rt = null; }
+      ok('X120 R3-DB the round-trip child ran', !!rt);
+      eq('X120 R3-DB the W8 shape picks this run\'s project, not the previous one', rt && rt.w8, 'https://flow.google.com/project/x120-w8-new');
+      eq('X120 R3-DB an entry exactly at queue-60s wins by the primary rule', rt && rt.edge, 'https://flow.google.com/project/x120-edge');
+      eq('X120 R3-DB with nothing in the window the nearest by distance wins', rt && rt.far, 'https://flow.google.com/project/x120-far1');
+      eq('X120 R3-DB an unknown account finds nothing', rt && rt.none, null);
+      eq('X120 R3-DB a zero target finds nothing', rt && rt.zero, null);
+      try { fsx.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+    }
+
+    // --- R4: sweep candidates + proof line (pure) -----------------
+    {
+      const dayMs = Date.parse('2026-11-17T13:41:00Z');
+      const U = (id) => `https://flow.google.com/project/${id}`;
+      const regRows = [
+        { projectUrl: U('sw-planned'), firstSeenAt: dayMs - 3600000 },
+        { projectUrl: U('sw-yday'), firstSeenAt: dayMs - 86400000 },
+        { projectUrl: U('sw-a'), firstSeenAt: dayMs - 7200000 },
+        { projectUrl: U('sw-b'), firstSeenAt: dayMs - 3600000 },
+        { projectUrl: U('sw-c'), firstSeenAt: dayMs - 1800000 },
+        { projectUrl: U('sw-d'), firstSeenAt: dayMs - 900000 },
+        { projectUrl: U('sw-e'), firstSeenAt: dayMs - 60000 }
+      ];
+      const cands = recoverySweepCandidates(regRows, U('sw-planned'), dayMs);
+      eq('X120 R4 the sweep cap is 4', RECOVERY_SWEEP_MAX_PROJECTS, 4);
+      eq('X120 R4 candidates are capped at 4', cands.length, 4);
+      eq('X120 R4 candidates run newest first, planned and yesterday excluded', cands.map(c => c.projectId).join(','), 'sw-e,sw-d,sw-c,sw-b');
+      eq('X120 R4 a caller cap above 4 is clamped', recoverySweepCandidates(regRows, U('sw-planned'), dayMs, 99).length, 4);
+      eq('X120 R4 a smaller caller cap is honoured', recoverySweepCandidates(regRows, U('sw-planned'), dayMs, 2).map(c => c.projectId).join(','), 'sw-e,sw-d');
+      eq('X120 R4 raw DB rows are accepted', recoverySweepCandidates([{ project_url: U('sw-raw'), first_seen_at: dayMs - 1000 }], '', dayMs).length, 1);
+      eq('X120 R4 duplicate URLs collapse', recoverySweepCandidates([{ projectUrl: U('sw-e'), firstSeenAt: dayMs - 60000 }, { projectUrl: U('sw-e'), firstSeenAt: dayMs - 30000 }], '', dayMs).length, 1);
+      eq('X120 R4 no target time means no sweep', recoverySweepCandidates(regRows, U('sw-planned'), 0).length, 0);
+      eq('X120 R4 the proof line (found)', recoverySweepLogLine(3, U('abc-123'), true), '[ROOT] recovery-sweep task=3 project=abc-123 found=yes');
+      eq('X120 R4 the proof line (not found)', recoverySweepLogLine(3, U('abc-123'), false), '[ROOT] recovery-sweep task=3 project=abc-123 found=no');
+    }
+
+    // --- R4: pool flow — found in the second project --------------
+    {
+      const { WorkerPool } = require('../engine/workerPool');
+      const { dbService } = require('../engine/db');
+      const savedDb120 = {
+        getAccount: dbService.getAccount,
+        setTaskNeedsCheck: dbService.setTaskNeedsCheck,
+        getTask: dbService.getTask,
+        completeTask: dbService.completeTask,
+        findProjectForTime: dbService.findProjectForTime,
+        listProjects: dbService.listProjects,
+        setTaskProjectUrl: dbService.setTaskProjectUrl,
+        getDownloadAttemptCount: dbService.getDownloadAttemptCount
+      };
+      const savedEng120 = {
+        launch: FlowAutomationEngine.prototype.launchBrowserForAccount,
+        open: FlowAutomationEngine.prototype.openFlowStudio,
+        reconcile: FlowAutomationEngine.prototype.reconcileRecoveredTask,
+        close: FlowAutomationEngine.prototype.closeBrowser,
+        sweepFn: FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep,
+        curUrl: FlowAutomationEngine.prototype.currentProjectUrl
+      };
+      const PLANNED = 'https://flow.google.com/project/x120-planned';
+      const C_NEW = 'https://flow.google.com/project/x120-cand-new';
+      const C_OLD = 'https://flow.google.com/project/x120-cand-old';
+      const baseMs = Date.parse('2026-11-17T13:41:00Z');
+      const stampCalls = [];
+      const openUrls = [];
+      let openedUrl = '';
+      let tileProject = C_OLD;
+      dbService.getAccount = (id) => (id === 'acc-x120' ? { id: 'acc-x120', name: 'X120 Acc', googleName: 'X120 Acc' } : null);
+      dbService.setTaskNeedsCheck = () => {};
+      dbService.getTask = () => null;
+      dbService.completeTask = () => {};
+      dbService.findProjectForTime = () => null;
+      dbService.getDownloadAttemptCount = () => 0;
+      dbService.setTaskProjectUrl = (id, url) => { stampCalls.push({ id, url }); };
+      dbService.listProjects = () => ([
+        { accountKey: 'acc-x120', projectUrl: PLANNED, projectId: 'x120-planned', firstSeenAt: baseMs - 3600000, lastSeenAt: baseMs, source: 'fresh-entry' },
+        { accountKey: 'acc-x120', projectUrl: C_OLD, projectId: 'x120-cand-old', firstSeenAt: baseMs + 60000, lastSeenAt: baseMs, source: 'fresh-entry' },
+        { accountKey: 'acc-x120', projectUrl: C_NEW, projectId: 'x120-cand-new', firstSeenAt: baseMs + 120000, lastSeenAt: baseMs, source: 'fresh-entry' }
+      ]);
+      FlowAutomationEngine.prototype.launchBrowserForAccount = async () => true;
+      FlowAutomationEngine.prototype.openFlowStudio = async function (settings) {
+        if (settings && settings.projectUrl) openedUrl = settings.projectUrl;
+        openUrls.push(openedUrl);
+        return 'READY';
+      };
+      FlowAutomationEngine.prototype.currentProjectUrl = function () { return openedUrl; };
+      FlowAutomationEngine.prototype.reconcileRecoveredTask = async function (taskObj) {
+        if (openedUrl === tileProject) {
+          try { this.onTaskCompleted(taskObj, { fileName: 'x120-found.mp4', filePath: '/tmp/x120-found.mp4' }); } catch (e) {}
+          return { found: true, downloaded: true };
+        }
+        return { found: false };
+      };
+      FlowAutomationEngine.prototype.closeBrowser = async () => {};
+      FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = () => {};
+      const logs120 = [];
+      const updates120 = [];
+      const pool120 = new WorkerPool({ onLog: (e) => logs120.push((e && e.message) || ''), onTaskUpdate: (u) => updates120.push(u) });
+      const rowFound = { id: 'x120-r1', assigned_account_id: 'acc-x120', prompt_index: 0, prompt_text: 'x120 sweep prompt', prompt_tag: '', project_url: PLANNED, created_at: '2026-11-17 13:41:00', download_attempts: 0 };
+      await pool120._reconcileNeedsCheck([rowFound], '/tmp', {});
+      eq('X120 R4-POOL the planned project opened first', openUrls[0], PLANNED);
+      eq('X120 R4-POOL the newest candidate was tried first', openUrls[1], C_NEW);
+      eq('X120 R4-POOL the second candidate was tried next', openUrls[2], C_OLD);
+      ok('X120 R4-POOL the sweep logged the miss', logs120.some(m => m.includes('[ROOT] recovery-sweep task=0 project=x120-cand-new found=no')));
+      ok('X120 R4-POOL the sweep logged the find', logs120.some(m => m.includes('[ROOT] recovery-sweep task=0 project=x120-cand-old found=yes')));
+      eq('X120 R4-POOL the find stamped the row with the tile\'s project', JSON.stringify(stampCalls), JSON.stringify([{ id: 'x120-r1', url: C_OLD }]));
+      ok('X120 R4-POOL the found row was saved, not parked', updates120.some(u => u.taskId === 'x120-r1' && u.phase === 'saved'));
+      // not found anywhere: parks, sweep lines for every candidate
+      tileProject = 'https://flow.google.com/project/x120-nowhere';
+      openUrls.length = 0; logs120.length = 0; updates120.length = 0; stampCalls.length = 0;
+      const rowLost = { id: 'x120-r2', assigned_account_id: 'acc-x120', prompt_index: 1, prompt_text: 'x120 lost prompt', prompt_tag: '', project_url: PLANNED, created_at: '2026-11-17 13:41:00', download_attempts: 0 };
+      await pool120._reconcileNeedsCheck([rowLost], '/tmp', {});
+      eq('X120 R4-POOL not-found still tried the planned project plus both candidates', openUrls.length, 3);
+      ok('X120 R4-POOL not-found logged both sweep misses', logs120.some(m => m.includes('recovery-sweep task=1 project=x120-cand-new found=no')) && logs120.some(m => m.includes('recovery-sweep task=1 project=x120-cand-old found=no')));
+      eq('X120 R4-POOL not-found stamped nothing', stampCalls.length, 0);
+      ok('X120 R4-POOL not-found parked the row', updates120.some(u => u.taskId === 'x120-r2' && u.phase === 'parked'));
+      dbService.getAccount = savedDb120.getAccount;
+      dbService.setTaskNeedsCheck = savedDb120.setTaskNeedsCheck;
+      dbService.getTask = savedDb120.getTask;
+      dbService.completeTask = savedDb120.completeTask;
+      dbService.findProjectForTime = savedDb120.findProjectForTime;
+      dbService.listProjects = savedDb120.listProjects;
+      dbService.setTaskProjectUrl = savedDb120.setTaskProjectUrl;
+      dbService.getDownloadAttemptCount = savedDb120.getDownloadAttemptCount;
+      FlowAutomationEngine.prototype.launchBrowserForAccount = savedEng120.launch;
+      FlowAutomationEngine.prototype.openFlowStudio = savedEng120.open;
+      FlowAutomationEngine.prototype.reconcileRecoveredTask = savedEng120.reconcile;
+      FlowAutomationEngine.prototype.closeBrowser = savedEng120.close;
+      FlowAutomationEngine.prototype.scheduleDownloadWatcherSweep = savedEng120.sweepFn;
+      FlowAutomationEngine.prototype.currentProjectUrl = savedEng120.curUrl;
+    }
+
+    // --- Z3: Chrome's OWN menu zoom (owner clarification) ---------
+    {
+      const { menuZoomKeySequence, applyMenuZoom } = require('../engine/flowAutomation');
+      eq('X120 Z3: the 50% sequence is reset + five zoom-out steps', menuZoomKeySequence(0.5).join(','), '0,-,-,-,-,-');
+      eq('X120 Z3: 100% is just the reset', menuZoomKeySequence(1).join(','), '0');
+      eq('X120 Z3: 75% is reset + three steps', menuZoomKeySequence(0.75).join(','), '0,-,-,-');
+      const pressed = [];
+      const okRun = await applyMenuZoom(async (k) => { pressed.push(k); }, 0.5, { delayMs: 0 });
+      eq('X120 Z3: the setter reports success when every chord lands', okRun, true);
+      eq('X120 Z3: the setter pressed the full sequence in order', pressed.join(','), '0,-,-,-,-,-');
+      const failRun = await applyMenuZoom(async () => { throw new Error('no keyboard'); }, 0.5, { delayMs: 0 });
+      eq('X120 Z3: a broken keyboard is an honest false, never a throw', failRun, false);
+      eq('X120 Z3: no press function is an honest false', await applyMenuZoom(null, 0.5, { delayMs: 0 }), false);
+      // wiring: the set runs at both verify checkpoints (project
+      // open + grid return), immediately around the read-back.
+      eq('X120 Z3: the zoom set is asserted at launch + both checkpoints', flowSrc120.split('this._applyGenerationZoom(').length - 1, 3);
+      eq('X120 Z3: the read-back runs at both checkpoints', (flowSrc120.match(/await this\._verifyGenerationZoom\(\);/g) || []).length, 2);
+      const launchStart = flowSrc120.indexOf('async launchBrowserForAccount(');
+      const launchSlice = flowSrc120.slice(launchStart, launchStart + 30000);
+      ok('X120 Z3: launch args hold no device-scale flag (no 0.5 x 0.5 compounding)', !launchSlice.includes('force-device-scale-factor'));
+    }
+
+    // --- Source pins: navigation itself is untouched --------------
+    ok('X120 source: recovery still goes straight to the recorded URL', flowSrc120.includes('await this.page.goto(recordedProjectUrl'));
+    ok('X120 source: the landed project id is still verified', flowSrc120.includes('`/project/${wantId}`'));
+    ok('X120 source: the sweep opens candidates download-only', poolSrc120.includes('projectUrl: cand.projectUrl, downloadOnly: true'));
+    ok('X120 source: the sweep draws candidates from the account registry', poolSrc120.includes('recoverySweepCandidates(dbService.listProjects(accountId)'));
+    ok('X120 source: every sweep try leaves its proof line', poolSrc120.includes('recoverySweepLogLine(row.prompt_index, cand.projectUrl, foundHere)'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

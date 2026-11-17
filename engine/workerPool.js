@@ -25,6 +25,7 @@ const respawnGuardMod = require('./respawnGuard');
 const { createDetachedDrains } = require('./detachedDrains');
 const runPlanner = require('./runPlanner');
 const creditBreakdown = require('./creditBreakdown');
+const { recoverySweepCandidates, recoverySweepLogLine } = require('./project-recovery');
 const https = require('https');
 const resolutionMemory = require('./resolutionMemory');
 const windowStyle = require('./windowStyle');
@@ -358,6 +359,26 @@ class WorkerPool {
   }
 
   /**
+   * v2.48.116 (R2): monitor ke dauran jin tasks ka tile
+   * PEHLI baar asal me dikha, engine ne un par
+   * observedProjectUrl ki mohar laga di hai (tile jis
+   * project me dikha, wahi). Monitor ke baad un mohron
+   * ko rows ke project_url par SACHAI ke tor par stamp
+   * karo — ye likhai submit wali par bhi bhaari hai,
+   * kyunke yahi woh project hai jahan video asal me
+   * hai. Koi khata yahan run ko nahi rokta.
+   */
+  _stampObservedTaskProjects(tasks) {
+    for (const t of (Array.isArray(tasks) ? tasks : [])) {
+      try {
+        if (t && t.taskId && t.observedProjectUrl) {
+          dbService.setTaskProjectUrl(t.taskId, t.observedProjectUrl);
+        }
+      } catch (e) {}
+    }
+  }
+
+  /**
    * v2.48.110 (G4): run a drained account's in-flight window to
    * completion IN THE BACKGROUND — its renders settle and download
    * on their own engine while the owning worker has already moved
@@ -372,6 +393,8 @@ class WorkerPool {
     try {
       await engine.waitForAccountTasks(tasks, downloadFolder, settings, false);
     } catch (e) {}
+    // v2.48.116 (R2): drain ke tasks ki tile-mohren bhi rows par.
+    this._stampObservedTaskProjects(tasks);
     try { if (typeof drainRetries === 'function') await drainRetries(engine); } catch (e) {}
     try { await engine.closeBrowser().catch(() => {}); } catch (e) {}
     try { engine.scheduleDownloadWatcherSweep(); } catch (e) {}
@@ -1093,14 +1116,21 @@ class WorkerPool {
               reason: `Recovering — ${account.name} / ${projectLabel}`
             });
           }
-          let ready = false;
-          if (launched) {
+          // v2.48.116 (R4): planned project kholna ek
+          // bandhe hue amal ki shakal me — sweep kisi
+          // doosre project me chala jaye to row loop isay
+          // dobara bula kar planned project par wapas
+          // aata hai. Bartav bilkul purana hi hai:
+          // downloadOnly hamesha (recovery credit NAHI
+          // kharch karti), recorded/registry par seedha
+          // goto + landed-id ki tasdeeq engine ke andar.
+          const openPlannedProject = async () => {
+            if (!launched) return false;
             // v2.48.57/58/60 ki entry tarteeb bilkul
             // waisi hi — farq sirf itna ke plan ab group
             // loop se PEHLE bana tha (upar groupPlans),
             // taaki UNMAPPED groups par browser khulne
-            // ka sawal hi na uthe. downloadOnly hamesha
-            // (recovery credit NAHI kharch karti).
+            // ka sawal hi na uthe.
             let openSettings;
             if (entryPlan.kind === 'recorded' || entryPlan.kind === 'registry') {
               openSettings = { ...settings, canvasStrategy: 'existing', projectUrl: entryPlan.projectUrl, downloadOnly: true };
@@ -1110,8 +1140,14 @@ class WorkerPool {
               if (gp.targetMs > 0) openSettings.recoveryTargetTime = gp.targetMs;
             }
             const st = await engine.openFlowStudio(openSettings).catch(() => null);
-            ready = (st === 'READY');
-          }
+            return st === 'READY';
+          };
+          let ready = await openPlannedProject();
+          // v2.48.116 (R4): engine is pal planned project
+          // me hai; sweep use doosri jagah le jaye to ye
+          // nishan true ho jata hai aur agli row se pehle
+          // planned project dobara khulta hai.
+          let engineAway = false;
           if (!ready) {
             this.log(`Recovery: [${account.name}]'s Flow project could not be opened, so ${group.length} old tasks will stay pending — press Resume later to check again. Nothing was resubmitted.`, 'warn');
             for (const row of group) {
@@ -1131,6 +1167,25 @@ class WorkerPool {
           // instead of scanning on for minutes.
           if (this.isStopping) break;
           handled.add(row.id);
+          if (engineAway) {
+            // v2.48.116 (R4): pichli row ka sweep engine
+            // ko kisi aur project me chhod gaya tha — is
+            // row ki talash PLANNED project se hi shuru
+            // hogi, is liye pehle wapas wahi kholo. Khul
+            // na paye to ye row bhi parked (project could
+            // not be opened) — talash ghalat project me
+            // chalana is se badtar hai.
+            const back = await openPlannedProject();
+            if (!back) {
+              this.onTaskUpdate({
+                taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text,
+                status: 'recovery', phase: 'parked', accountName: account.name, projectId,
+                reason: 'Parked — the project could not be opened'
+              });
+              continue;
+            }
+            engineAway = false;
+          }
           const taskObj = {
             taskId: row.id,
             promptText: row.prompt_text,
@@ -1144,12 +1199,57 @@ class WorkerPool {
           let res = null;
           try { res = await engine.reconcileRecoveredTask(taskObj, downloadFolder, settings); } catch (e) { res = null; }
           try { dbService.setTaskNeedsCheck(row.id, 0); } catch (e) {}
+          // v2.48.116 (R2/R4): is row ka ASAL project.
+          // Planned me mila ho to wahi sach hai (gallery
+          // se mila ho to engine ki maujooda jagah) aur
+          // row par mohar ban jati hai. Na mila ho to
+          // SWEEP: usi account ke usi DIN ke doosre
+          // registry projects bari bari parkhe jate hain
+          // (zyada se zyada 4, sab se naye pehle,
+          // download-only — koi naya submit ya charge
+          // NAHI). Sweep me mil jaye to row ki
+          // project_url usi project se stamp ho jati
+          // hai — record apne aap theek ho jata hai
+          // (self-healing), aur har koshish ka [ROOT]
+          // recovery-sweep saboot log me rehta hai.
+          let effProjectId = projectId;
+          let effProjectLabel = projectLabel;
+          if (res && res.found) {
+            const truthUrl = entryPlan.projectUrl || engine.currentProjectUrl();
+            if (truthUrl && truthUrl !== String(row.project_url || '')) {
+              try { dbService.setTaskProjectUrl(row.id, truthUrl); } catch (e) {}
+            }
+          } else {
+            let sweepCandidates = [];
+            try {
+              const plannedUrl = entryPlan.projectUrl || engine.currentProjectUrl() || String(row.project_url || '');
+              sweepCandidates = recoverySweepCandidates(dbService.listProjects(accountId), plannedUrl, gp.targetMs || rowCreatedMs(row));
+            } catch (e) { sweepCandidates = []; }
+            for (const cand of sweepCandidates) {
+              if (this.isStopping) break;
+              engineAway = true;
+              let sres = null;
+              const sst = await engine.openFlowStudio({ ...settings, canvasStrategy: 'existing', projectUrl: cand.projectUrl, downloadOnly: true }).catch(() => null);
+              if (sst === 'READY') {
+                try { sres = await engine.reconcileRecoveredTask(taskObj, downloadFolder, settings); } catch (e) { sres = null; }
+              }
+              const foundHere = !!(sres && sres.found);
+              this.log(recoverySweepLogLine(row.prompt_index, cand.projectUrl, foundHere), 'info');
+              if (foundHere) {
+                res = sres;
+                try { dbService.setTaskProjectUrl(row.id, cand.projectUrl); } catch (e) {}
+                effProjectId = cand.projectId || projectIdOfUrl(cand.projectUrl);
+                effProjectLabel = `project ${effProjectId || cand.projectUrl}`;
+                break;
+              }
+            }
+          }
           if (res && res.found && res.downloaded) {
             this.log(`Recovery: Prompt #${row.prompt_index + 1}'s video already existed in [${account.name}]'s Flow project — that same one was downloaded. No credits were deducted again.`, 'success');
             // v2.48.70 (ITEM C): Progress card 'Saved'.
             this.onTaskUpdate({
               taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text,
-              status: 'recovery', phase: 'saved', accountName: account.name, projectId,
+              status: 'recovery', phase: 'saved', accountName: account.name, projectId: effProjectId,
               reason: 'Saved'
             });
           } else if (res && res.found) {
@@ -1169,7 +1269,7 @@ class WorkerPool {
             // v2.48.70 (ITEM C): Progress card + Activity.
             this.onTaskUpdate({
               taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text,
-              status: 'recovery', phase: 'parked', accountName: account.name, projectId,
+              status: 'recovery', phase: 'parked', accountName: account.name, projectId: effProjectId,
               reason: 'Parked — tile found, download did not complete'
             });
             try {
@@ -1179,7 +1279,7 @@ class WorkerPool {
                 stage: 'recovery', taskId: row.id,
                 promptIndex: typeof row.prompt_index === 'number' ? row.prompt_index : null,
                 detail: reason,
-                message: `Recovery: Prompt #${row.prompt_index + 1} parked — tile found in ${projectLabel}, download did not complete`
+                message: `Recovery: Prompt #${row.prompt_index + 1} parked — tile found in ${effProjectLabel}, download did not complete`
               });
             } catch (e) {}
             this.log(`Recovery: Prompt #${row.prompt_index + 1}'s tile was found in the project, but its download did not complete this time. Kept pending (check-only) for a download-only retry on the next Resume — NOT failed, NOT resubmitted.`, 'warn');
@@ -1199,13 +1299,13 @@ class WorkerPool {
             // / registry / date-time) — 'latest project'
             // wala purana andaza khatam, kyunke sweep ab
             // latest project kholti hi nahi.
-            const reason = `End-of-run sweep: no matching video was found in ${projectLabel} on this account (checked ${sweepMode ? 'in the sweep' : 'just now'}), so it stays pending (check-only / parked) for a later Resume. It was NOT failed and NOT re-submitted.`;
+            const reason = `End-of-run sweep: no matching video was found in ${effProjectLabel} on this account (checked ${sweepMode ? 'in the sweep' : 'just now'}), so it stays pending (check-only / parked) for a later Resume. It was NOT failed and NOT re-submitted.`;
             try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
             this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
             this.onTaskUpdate({
               taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text,
-              status: 'recovery', phase: 'parked', accountName: account.name, projectId,
-              reason: `Parked — not found in ${projectLabel}`
+              status: 'recovery', phase: 'parked', accountName: account.name, projectId: effProjectId,
+              reason: `Parked — not found in ${effProjectLabel}`
             });
             try {
               recordActivity({
@@ -1214,10 +1314,10 @@ class WorkerPool {
                 stage: 'recovery', taskId: row.id,
                 promptIndex: typeof row.prompt_index === 'number' ? row.prompt_index : null,
                 detail: reason,
-                message: `Recovery: Prompt #${row.prompt_index + 1} parked — not found in ${projectLabel} (sweep)`
+                message: `Recovery: Prompt #${row.prompt_index + 1} parked — not found in ${effProjectLabel} (sweep)`
               });
             } catch (e) {}
-            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in ${projectLabel} during the sweep. Kept parked (pending, check-only) — NOT failed, NOT resubmitted.`, 'warn');
+            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in ${effProjectLabel} during the sweep. Kept parked (pending, check-only) — NOT failed, NOT resubmitted.`, 'warn');
           } else {
             // v2.48.57 (PROJECT-TRUTH change 4): tile NA
             // milna ab restart mode me bhi FAIL NAHI hai
@@ -1232,14 +1332,14 @@ class WorkerPool {
             // ke explicit Retry raaston ke liye rehta
             // hai (is function ke bahar — unhahe NAHI
             // chhua gaya).
-            const reason = `Recovery check: no matching video was found in ${projectLabel} (the video may live in another of this account's projects — Flow lists projects by their date-time). It was NOT re-submitted and NOT failed — it stays pending (check-only); on the next Resume only its download will be tried again, with no new charge.`;
+            const reason = `Recovery check: no matching video was found in ${effProjectLabel} (the video may live in another of this account's projects — Flow lists projects by their date-time). It was NOT re-submitted and NOT failed — it stays pending (check-only); on the next Resume only its download will be tried again, with no new charge.`;
             try { dbService.setTaskNeedsCheck(row.id, 1); } catch (e) {}
             this.onTaskUpdate({ taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text, status: 'pending', reason });
             // v2.48.70 (ITEM C): Progress card + Activity.
             this.onTaskUpdate({
               taskId: row.id, promptIndex: row.prompt_index, promptText: row.prompt_text,
-              status: 'recovery', phase: 'parked', accountName: account.name, projectId,
-              reason: `Parked — not found in ${projectLabel}`
+              status: 'recovery', phase: 'parked', accountName: account.name, projectId: effProjectId,
+              reason: `Parked — not found in ${effProjectLabel}`
             });
             try {
               recordActivity({
@@ -1248,10 +1348,10 @@ class WorkerPool {
                 stage: 'recovery', taskId: row.id,
                 promptIndex: typeof row.prompt_index === 'number' ? row.prompt_index : null,
                 detail: reason,
-                message: `Recovery: Prompt #${row.prompt_index + 1} parked — not found in ${projectLabel}`
+                message: `Recovery: Prompt #${row.prompt_index + 1} parked — not found in ${effProjectLabel}`
               });
             } catch (e) {}
-            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in ${projectLabel}. Kept pending (check-only) — NOT failed, NOT resubmitted.`, 'warn');
+            this.log(`Recovery: No video matching Prompt #${row.prompt_index + 1} was found in ${effProjectLabel}. Kept pending (check-only) — NOT failed, NOT resubmitted.`, 'warn');
           }
         }
         } // v2.48.70: (account, project) group khatam
@@ -3284,7 +3384,13 @@ class WorkerPool {
                   try {
                     const purl = submitRes.projectUrl || engine.currentProjectUrl();
                     if (purl) {
-                      dbService.setTaskProjectUrl(nextTask.id, purl);
+                      // v2.48.116 (R2): submit-likhai sirf
+                      // KHALI jagah par — failover attempt
+                      // ki value pehle attempt ki pehchan
+                      // ko nahi mitati. Asal mohar tile ke
+                      // pehli baar dikhne par lagti hai
+                      // (_stampObservedTaskProjects).
+                      dbService.setTaskProjectUrlIfEmpty(nextTask.id, purl);
                       // v2.48.60 (PROJECT REGISTRY): yehi
                       // pal is (account, project) jodi ko
                       // registry me bhi darj karta hai —
@@ -3406,6 +3512,9 @@ class WorkerPool {
               const windowTasks = [...activeWorkerTasks];
               try {
                 await engine.waitForAccountTasks(activeWorkerTasks, downloadFolder, settings, taskQueue.size() > 0);
+                // v2.48.116 (R2): is window me tile dikhne
+                // ki mohren rows par stamp karo.
+                this._stampObservedTaskProjects(activeWorkerTasks);
               } catch (waitErr) {
                 // AUDIT FIX #1: a monitor error fails only the tasks still
                 // in this worker's window; the queue continues.

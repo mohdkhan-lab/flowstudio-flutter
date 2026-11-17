@@ -590,6 +590,24 @@ const dbService = {
   },
 
   /**
+   * v2.48.116 (R2): project_url ki LIKHAI sirf khaali
+   * jagah par — submit ke pal ki attempt-wali value
+   * row ki pehli pehchan banti hai, aur kisi baad wale
+   * failover attempt ki submit-likhai use KABHI nahi
+   * mitati (wo attempt tile banaye ya na banaye).
+   * Asal mohar (tile pehli baar dikhne par, ya
+   * recovery me milne par) setTaskProjectUrl se hi
+   * lagti hai — wo is par bhaari hai.
+   */
+  setTaskProjectUrlIfEmpty(taskId, url) {
+    const u = String(url || '');
+    if (u) {
+      run("UPDATE queue_tasks SET project_url = ? WHERE id = ? AND (project_url IS NULL OR project_url = '')", [u, taskId]);
+    }
+    return this.getTask(taskId);
+  },
+
+  /**
    * v2.48.60 (PROJECT REGISTRY): ek (account, project)
    * jodi ko registry me darj karo — pehli baar ho to
    * nayi row (first_seen_at = last_seen_at = now, asal
@@ -635,16 +653,35 @@ const dbService = {
    * wala 'sab se qareeb, baad ka na ho' usool, lekin
    * gallery ki screen-scrape ki jagah apni kitab se.
    * Aisi row na ho (ya account/waqt khali ho) to null.
+   *
+   * v2.48.116 (R3 — CLOCK FIX): purana 'sab se late
+   * not-after' usool do ALAG ghadiyon ko napta tha —
+   * diya gaya waqt task ke QUEUE hone ka hota hai,
+   * jabke first_seen_at project me ENTRY ka (queue ke
+   * kai minute BAAD). Asal generation project is
+   * filter se hamesha bahar reh jata tha aur fallback
+   * pichli run ka same-name project utha leta tha
+   * (Defect A). Naya usool ghadiyon ko ek karta hai:
+   *   1. jin projects ki entry (queue-waqt − 60s) ke
+   *      baad hui, un me sab se PEHLI entry — yahi is
+   *      run ke khulne wala project hota hai;
+   *   2. aisi koi entry na ho to ABS fasle me sab se
+   *      qareeb wali (barabari par pehle wali).
    */
   findProjectForTime(accountKey, epochMs) {
     const key = String(accountKey || '').trim();
     const t = Number(epochMs) || 0;
     if (!key || t <= 0) return null;
-    const row = queryOne(
-      'SELECT * FROM project_registry WHERE account_key = ? AND first_seen_at <= ? ORDER BY first_seen_at DESC, id DESC LIMIT 1',
+    const atOrAfter = queryOne(
+      'SELECT * FROM project_registry WHERE account_key = ? AND first_seen_at >= ? ORDER BY first_seen_at ASC, id ASC LIMIT 1',
+      [key, t - 60000]
+    );
+    if (atOrAfter) return mapProjectRegistryRow(atOrAfter);
+    const nearest = queryOne(
+      'SELECT * FROM project_registry WHERE account_key = ? ORDER BY ABS(first_seen_at - ?) ASC, first_seen_at ASC, id ASC LIMIT 1',
       [key, t]
     );
-    return row ? mapProjectRegistryRow(row) : null;
+    return nearest ? mapProjectRegistryRow(nearest) : null;
   },
 
   /** v2.48.60: registry ki rows — account diya ho to

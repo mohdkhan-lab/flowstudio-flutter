@@ -787,10 +787,12 @@ function settingsClickTargetLine(t) {
  * par ⋮ button nahi mila. Owner ki apni field observation:
  * browser ka zoom 50% ho to Flow ki website theek se
  * dikhti hai (zyada tiles nazar aati hain, tile ke
- * controls haath ki pahunch me rehte hain). Ye scale CDP
- * `Emulation.setPageScaleFactor` se lagta hai — Chrome
- * ki apni zoom setting se alag, profile me kuch save
- * nahi hota.
+ * controls haath ki pahunch me rehte hain).
+ * v2.48.116 (Z3): ye scale ab Chrome ke APNE menu Zoom
+ * ki shakal me lagta hai — page ki keyboard se (neeche
+ * Z3 wala hissa dekho); CDP page-scale (.113) aur
+ * device-scale launch flag (.114) dono menu Zoom nahi
+ * the, is liye dono hata diye gaye hain.
  */
 const GENERATION_PAGE_SCALE = 0.5;
 
@@ -801,40 +803,69 @@ function browserZoomLogLine(accountName, scale, applied) {
 }
 
 /**
- * v2.48.113 (Z1): page scale lagane wala khalis helper —
- * CDP seam (`sendFn`) injectable hai taaki test use jaali
- * seam se parkh sake; asal istemal me sendFn engine ke
- * apne CDP session ki `send` hoti hai. Kabhi throw nahi
- * karta: nakami par false, taaki zoom ki nakami kabhi
- * kisi run ko na roke.
+ * v2.48.116 (Z3 — OWNER CLARIFICATION): owner ka matlab
+ * hamesha Chrome ke APNE menu wala Zoom tha ('— 50% +'
+ * wali patti). .113 ka CDP page-scale aur .114 ka
+ * device-scale launch flag launch flag DONO hi menu
+ * Zoom NAHI hain: flag sirf device scale badalta hai —
+ * read-back me dpr=0.5 dikha, lekin Chrome ke menu me
+ * Zoom 100% hi raha aur owner ko screen par koi zoom
+ * nazar nahi aaya. Asal menu Zoom sirf browser ki apni
+ * keyboard se lagta hai: Ctrl+0 (100% par wapas) ke
+ * baad Ctrl+'-' ke qadam — Chrome ki seedhi
+ * 100 → 90 → 80 → 75 → 67 → 50 hai, yani 50% ke liye
+ * PAANCH qadam. Ye zoom per-host hota hai aur profile
+ * me mehfooz rehta hai.
+ * Neeche ki seedhi Chrome ke zoom qadmon ki hai (sirf
+ * chhote hone ki taraf; reset hamesha pehla qadam hai).
  */
-async function applyBrowserZoom(sendFn, scale = GENERATION_PAGE_SCALE) {
+const CHROME_ZOOM_LADDER = [1, 0.9, 0.8, 0.75, 0.67, 0.5, 0.33, 0.25];
+
+/**
+ * v2.48.116 (Z3): kisi target zoom ke liye keyboard
+ * qadmon ki fehrist — pehla qadam hamesha '0' (Ctrl+0
+ * = 100% reset), phir seedhi par target tak jitne
+ * qadam utne '-'. Khalis faisla; test jaali ghadi se
+ * parkh sakta hai.
+ */
+function menuZoomKeySequence(scale = GENERATION_PAGE_SCALE) {
+  const s = Number(scale);
+  const target = (Number.isFinite(s) && s > 0) ? s : GENERATION_PAGE_SCALE;
+  let steps = 0;
+  for (let i = 1; i < CHROME_ZOOM_LADDER.length; i++) {
+    if (CHROME_ZOOM_LADDER[i] <= target + 0.001) { steps = i; break; }
+    steps = i;
+  }
+  if (target >= 1) steps = 0;
+  const seq = ['0'];
+  for (let i = 0; i < steps; i++) seq.push('-');
+  return seq;
+}
+
+/**
+ * v2.48.116 (Z3): menu zoom lagane wala khalis helper —
+ * `pressFn(key)` ek Ctrl+key chord chalata hai (engine
+ * page.keyboard se deta hai; test jaali seam se). Har
+ * qadam ke baad chhoti si mohlat (Chrome ko zoom lagu
+ * karne ki). Kabhi throw nahi karta: nakami par false,
+ * taaki zoom ki nakami kabhi kisi run ko na roke.
+ */
+async function applyMenuZoom(pressFn, scale = GENERATION_PAGE_SCALE, opts = {}) {
   try {
-    if (typeof sendFn !== 'function') return false;
-    const s = Number(scale);
-    if (!Number.isFinite(s) || s <= 0) return false;
-    await sendFn('Emulation.setPageScaleFactor', { pageScaleFactor: s });
+    if (typeof pressFn !== 'function') return false;
+    const delayMs = Number(opts && opts.delayMs) >= 0 ? Number(opts.delayMs) : 120;
+    const sleepFn = (opts && typeof opts.sleepFn === 'function')
+      ? opts.sleepFn
+      : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+    const seq = menuZoomKeySequence(scale);
+    for (const key of seq) {
+      await pressFn(key);
+      if (delayMs > 0) await sleepFn(delayMs);
+    }
     return true;
   } catch (e) {
     return false;
   }
-}
-
-/**
- * v2.48.114 (Z1b): the PRIMARY zoom mechanism — a Chromium
- * launch flag. The .113 CDP-only route reported 'applied'
- * in the log while the owner, watching the actual browser,
- * saw NO zoom: the scale was set through a CDP session that
- * was created for the call and detached right after, and a
- * page-scale override does not survive its session. The
- * launch flag scales the whole browser instance for its
- * entire lifetime — no session lifetime is involved — so
- * the visible window is zoomed from the first moment.
- */
-function browserZoomLaunchArg(scale = GENERATION_PAGE_SCALE) {
-  const s = Number(scale);
-  const v = (Number.isFinite(s) && s > 0) ? s : GENERATION_PAGE_SCALE;
-  return `--force-device-scale-factor=${v}`;
 }
 
 /** v2.48.114 (Z1b): one read-back value as log text. */
@@ -846,29 +877,31 @@ function zoomValueText(v) {
 }
 
 /**
- * v2.48.114 (Z1b): the read-back verdict — the 0.5 scaling
- * counts as IN EFFECT when either signal shows it: the
- * devicePixelRatio (0.5 on a 1.0-DPR display under the
- * launch flag) or the visualViewport scale (0.5 under the
- * CDP page-scale secondary). Either alone is enough; both
- * missing/wrong is an honest FAILED.
+ * v2.48.114 (Z1b): the read-back verdict.
+ * v2.48.116 (Z3): faisla ab SIRF devicePixelRatio par
+ * hai. Menu Zoom ke saath asal hisaab hai: DSF (ab
+ * hamesha 1.0 — launch flag gaya) × menu zoom (0.5) =
+ * dpr 0.5. visualViewport.scale pinch-zoom ka signal
+ * hai, menu Zoom ka nahi — wo ab gawahi nahi deta.
  */
-function zoomReadbackVerified(dpr, vv, scale = GENERATION_PAGE_SCALE) {
+function zoomReadbackVerified(dpr, scale = GENERATION_PAGE_SCALE) {
   const s = Number(scale);
   if (!Number.isFinite(s) || s <= 0) return false;
-  const near = (v) => {
-    if (v === null || v === undefined) return false;
-    const n = Number(v);
-    return Number.isFinite(n) && Math.abs(n - s) <= 0.06;
-  };
-  return near(dpr) || near(vv);
+  if (dpr === null || dpr === undefined) return false;
+  const n = Number(dpr);
+  return Number.isFinite(n) && Math.abs(n - s) <= 0.06;
 }
 
-/** v2.48.114 (Z1b): the read-back proof as a [ROOT] line. */
-function browserZoomVerifyLogLine(accountName, scale, dpr, vv) {
+/**
+ * v2.48.116 (Z3): the read-back proof as a [ROOT] line —
+ * wahi 'browser-zoom' prefix jo .113/.114 se chala aa
+ * raha hai, lekin ab line MENU zoom ki gawahi deti hai
+ * (zoom=<target> dpr=<asal naap>).
+ */
+function browserZoomVerifyLogLine(accountName, scale, dpr) {
   const name = String(accountName == null ? '' : accountName).replace(/\s+/g, ' ').trim() || '-';
-  const verdict = zoomReadbackVerified(dpr, vv, scale) ? 'verified' : 'FAILED';
-  return `[ROOT] browser-zoom account=${name} scale=${scale} dpr=${zoomValueText(dpr)} vv=${zoomValueText(vv)} ${verdict}`;
+  const verdict = zoomReadbackVerified(dpr, scale) ? 'verified' : 'FAILED';
+  return `[ROOT] browser-zoom account=${name} zoom=${scale} dpr=${zoomValueText(dpr)} ${verdict}`;
 }
 
 /**
@@ -2199,20 +2232,32 @@ class FlowAutomationEngine {
    * par sirf warning — zoom ki nakami kabhi kisi run ko
    * nahi rokti.
    * v2.48.114 (Z1b): ye CDP call ab SECONDARY hai — asal
-   * zoom launch flag (--force-device-scale-factor) se aata
+   * zoom launch flag (device-scale launch flag) se aata
    * hai. Session ka istemal bhi theek kiya gaya: sirf page
    * ki APNI maujooda automation session (this.cdpSession)
    * chalegi; throwaway session bana kar detach karna band
    * (usi detach ke baad .113 ka scale screen par tikta hi
    * nahi tha). Apni session na ho to khamoshi se skip —
    * flag window ko pehle hi cover karta hai.
+   * v2.48.116 (Z3): DONO purane raste khatam — owner ka
+   * matlab Chrome ka apna MENU Zoom tha, aur wo sirf
+   * page ki apni keyboard se lagta hai (Ctrl+0, phir
+   * Ctrl+'-' × 5). Ye amal ab wahi hai: page.keyboard
+   * ke chords, applyMenuZoom ki tartib se. Per-host zoom
+   * profile me mehfooz rehta hai, is liye dobara assert
+   * karna sasta aur mehfooz hai. CDP page-scale aur
+   * launch flag is liye bhi gaye ke dono ek saath hote
+   * to asar 0.5 × 0.5 = 0.25 ho jata.
    */
   async _applyGenerationZoom(logProof = false) {
     try {
       if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return false;
-      const session = (this.cdpSession && typeof this.cdpSession.send === 'function') ? this.cdpSession : null;
-      if (!session) return false;
-      const applied = await applyBrowserZoom((method, params) => session.send(method, params), GENERATION_PAGE_SCALE);
+      const kb = this.page.keyboard;
+      if (!kb || typeof kb.down !== 'function' || typeof kb.press !== 'function' || typeof kb.up !== 'function') return false;
+      const applied = await applyMenuZoom(async (key) => {
+        await kb.down('Control');
+        try { await kb.press(key); } finally { await kb.up('Control'); }
+      }, GENERATION_PAGE_SCALE, { sleepFn: (ms) => sleep(ms) });
       if (logProof) {
         this.log(browserZoomLogLine(this.currentAccount ? this.currentAccount.name : null, GENERATION_PAGE_SCALE, applied), applied ? 'info' : 'warn');
       }
@@ -2224,9 +2269,10 @@ class FlowAutomationEngine {
 
   /**
    * v2.48.114 (Z1b): zoom ka READ-BACK saboot — page ka
-   * asal effective scale padho (devicePixelRatio +
-   * visualViewport.scale) aur [ROOT] line me verified ya
-   * FAILED likho. Ek browser open par sirf EK line
+   * asal effective scale padho aur [ROOT] line me
+   * verified ya FAILED likho (.116 Z3 se naap sirf
+   * devicePixelRatio hai — menu zoom ki gawahi wahi
+   * deta hai). Ek browser open par sirf EK line
    * (this._zoomProofLogged, har launch par reset); baad
    * ke checkpoints (grid wapsi) khamosh rehte hain. Ye
    * line hukum ki nahi, ASAR ki gawahi hai — .113 ki
@@ -2237,16 +2283,18 @@ class FlowAutomationEngine {
     try {
       if (this._zoomProofLogged) return true;
       if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return false;
+      // v2.48.116 (Z3): read-back ab sirf devicePixelRatio
+      // hai — menu zoom 0.5 aur DSF 1.0 ke saath wahi 0.5
+      // padhna chahiye. visualViewport.scale pinch ka
+      // signal tha, menu zoom ka saboot nahi.
       const reading = await this.page.evaluate(() => ({
-        dpr: (typeof window !== 'undefined' && typeof window.devicePixelRatio === 'number') ? window.devicePixelRatio : null,
-        vv: (typeof window !== 'undefined' && window.visualViewport && typeof window.visualViewport.scale === 'number') ? window.visualViewport.scale : null
+        dpr: (typeof window !== 'undefined' && typeof window.devicePixelRatio === 'number') ? window.devicePixelRatio : null
       }));
       const dpr = reading && typeof reading.dpr === 'number' ? reading.dpr : null;
-      const vv = reading && typeof reading.vv === 'number' ? reading.vv : null;
-      const verified = zoomReadbackVerified(dpr, vv, GENERATION_PAGE_SCALE);
+      const verified = zoomReadbackVerified(dpr, GENERATION_PAGE_SCALE);
       this._zoomProofLogged = true;
       this.log(
-        browserZoomVerifyLogLine(this.currentAccount ? this.currentAccount.name : null, GENERATION_PAGE_SCALE, dpr, vv),
+        browserZoomVerifyLogLine(this.currentAccount ? this.currentAccount.name : null, GENERATION_PAGE_SCALE, dpr),
         verified ? 'info' : 'warn'
       );
       return verified;
@@ -2348,12 +2396,13 @@ class FlowAutomationEngine {
       `--user-data-dir=${profilePath}`,
       '--no-first-run',
       '--no-default-browser-check',
-      // v2.48.114 (Z1b — owner order): browser khulte hi
-      // 50% zoom, launch flag se — poori browser zindagi
-      // ke liye persistent, kisi CDP session ki umar se
-      // bandha hua nahi (.113 ka CDP-only rasta screen par
-      // tikta nahi tha).
-      browserZoomLaunchArg(),
+      // v2.48.116 (Z3): yahan .114 ka
+      // device-scale launch flag launch flag tha —
+      // HATA diya gaya. Wo flag Chrome ka menu Zoom
+      // NAHI hai (sirf device scale hai), aur asal menu
+      // zoom (keyboard se, _applyGenerationZoom) ke
+      // saath hota to asar 0.5 × 0.5 = 0.25 ho jata.
+      // DSF ab hamesha 1.0 hai; zoom sirf menu wala hai.
       ...browserMode.launchWindowArgs(plan, gridBounds),
       ...(plan.antiThrottleArgs || []),
       '--disable-session-crashed-bubble',
@@ -5218,6 +5267,24 @@ class FlowAutomationEngine {
     if (lockedTileFingerprint) {
       this.claimedTileFingerprints.add(lockedTileFingerprint);
       this.log(`[Prompt #${promptIndex + 1}] Linked to its render tile (the tile identification/fingerprint matched).`, 'info');
+      birthProjectUrl = this.currentProjectUrl();
+      if (birthProjectUrl) {
+        this.log(`[ROOT] task-project task=${promptIndex} url=${birthProjectUrl}`, 'info');
+      }
+    }
+    // v2.48.116 (R1): tile lock ho ya NA ho — submit
+    // kamyab hua hai (ye rasta sirf wahin aata hai), to
+    // is ATTEMPT ka birth project wahi hai jahan page
+    // is pal khada hai. Pehle ye capture sirf solo
+    // birth-binding ke saath bandha tha (upar wala
+    // totalPrompts<=1 gate), is liye batch runs me
+    // projectUrl hamesha '' rehta tha aur pool ko apni
+    // der se ki hui live reading par girna padta tha —
+    // jo failover ke baad aakhri attempt ka project
+    // utha leti thi, asal tile wala nahi (Defect B).
+    // Fingerprint LOCK apni jagah solo-only hi rehta
+    // hai; sirf URL ki capture har submit par hoti hai.
+    if (!birthProjectUrl) {
       birthProjectUrl = this.currentProjectUrl();
       if (birthProjectUrl) {
         this.log(`[ROOT] task-project task=${promptIndex} url=${birthProjectUrl}`, 'info');
@@ -14890,6 +14957,21 @@ class FlowAutomationEngine {
 
           if (bestTile) {
             this.claimedTileIndices.add(bestTile.tileIndex); // legacy bookkeeping only
+            // v2.48.116 (R2): tile is task ke liye PEHLI
+            // baar dikha — is pal page jis project me hai
+            // wahi is tile ka asal ghar hai. Ye pehchan
+            // task par mohar ki tarah lagti hai (sirf
+            // pehli baar; is run me dobara nahi badalti)
+            // aur pool monitor ke baad isay row ke
+            // project_url par SACHAI ke tor par stamp
+            // karta hai — submit ke pal ki likhai ke
+            // upar bhi, kyunke submit kamyab hona aur
+            // tile ka asal me banna do alag batein hain
+            // (failover wala attempt tile na bhi banaye).
+            if (!task.observedProjectUrl) {
+              const observedUrl = this.currentProjectUrl();
+              if (observedUrl) task.observedProjectUrl = observedUrl;
+            }
             if (bestTile.isGenerating) {
               task.wasObservedGenerating = true;
             }
@@ -15257,4 +15339,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, GENERATION_PAGE_SCALE, browserZoomLogLine, applyBrowserZoom, browserZoomLaunchArg, zoomReadbackVerified, browserZoomVerifyLogLine, tileMoreOverlaySource, tileMenuDumpSource, tileMenuDumpElementLine, tileMoreIdentitySource, tileMoreStateSource, tileMoreActivateSource, menuDownloadActivateSource, tileMenuOpenProbeSource, menuDownloadIdentitySource, tileMenuItemsDumpSource, tileMenuItemsElementLine, tileMenuItemsDumpLines, tileMenuOpenLogLine, tileDownloadClickLogLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, GENERATION_PAGE_SCALE, browserZoomLogLine, menuZoomKeySequence, applyMenuZoom, zoomReadbackVerified, browserZoomVerifyLogLine, tileMoreOverlaySource, tileMenuDumpSource, tileMenuDumpElementLine, tileMoreIdentitySource, tileMoreStateSource, tileMoreActivateSource, menuDownloadActivateSource, tileMenuOpenProbeSource, menuDownloadIdentitySource, tileMenuItemsDumpSource, tileMenuItemsElementLine, tileMenuItemsDumpLines, tileMenuOpenLogLine, tileDownloadClickLogLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };

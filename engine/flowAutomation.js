@@ -14,6 +14,8 @@ const browserMode = require('./browserMode');
 const windowStyle = require('./windowStyle');
 const networkCapture = require('./networkCapture');
 const failureEvidence = require('./failureEvidence');
+const { settingsSignatureOf } = require('./settingsTruth');
+const { interruptibleSleep } = require('./stopWait');
 const { FFmpegService } = require('./ffmpegService');
 const { sanitizeFilePart } = require('./pathSecurity');
 const tagNaming = require('./tagNaming');
@@ -1472,6 +1474,10 @@ class FlowAutomationEngine {
     this.headlessGeneration = !!options.headlessGeneration;
     this.workerId = options.workerId || null;
     this.hasConfiguredSettings = false;
+    // v2.48.110 (G2): the signature of the settings last applied to
+    // the Flow panel — a submit carrying a different signature
+    // (owner changed a setting mid-run) re-configures the panel.
+    this._appliedSettingsSig = null;
     this.claimedTileIndices = new Set();
     // v1.5.0: tile claims are tracked by FINGERPRINT (the tile's
     // normalized prompt aria), never by DOM index — see tileIdentity.js.
@@ -1601,6 +1607,7 @@ class FlowAutomationEngine {
     this.cancelDownloadWatcherSweep();
     // Audit fix #5: a fresh browser launch must always re-apply settings.
     this.hasConfiguredSettings = false;
+    this._appliedSettingsSig = null;
     // v2.48.9: a fresh launch = a fresh session — drop the cached
     // fetch inputs (cookies / user-agent) of the previous account.
     this._cookieHeaderCache = null;
@@ -2002,6 +2009,7 @@ class FlowAutomationEngine {
     // Audit fix #5: settings must be re-applied after every rotation / fresh
     // launch, so the configured flag never survives a browser close.
     this.hasConfiguredSettings = false;
+    this._appliedSettingsSig = null;
     // v2.25.0: no live window survives a close — the next launch
     // re-decides shown/parked from its own plan.
     this.windowShown = false;
@@ -3740,7 +3748,13 @@ class FlowAutomationEngine {
 
     // 1. Configure settings on the first prompt of this browser session
     // (hasConfiguredSettings is reset on every launch/close — audit fix #5).
-    if (!this.hasConfiguredSettings) {
+    // v2.48.110 (G2): ALSO re-configure when the settings SIGNATURE
+    // changed since the last configure — the owner changed a setting
+    // mid-run and the pool refreshed this run's settings object, so a
+    // not-yet-submitted prompt must be made at the NEW values, not
+    // the ones this browser session started with.
+    const settingsSig = settingsSignatureOf(settings);
+    if (!this.hasConfiguredSettings || this._appliedSettingsSig !== settingsSig) {
       const cfgRes = await this.configureGenerationSettings(settings);
       if (cfgRes && Array.isArray(cfgRes.settingsMismatch)) {
         // v2.48.63 (SETTINGS TASDEEQ): pre-fire nakami —
@@ -3749,6 +3763,7 @@ class FlowAutomationEngine {
         return { status: 'SETTINGS_MISMATCH', mismatchFields: cfgRes.settingsMismatch, pillText: cfgRes.pillText || null };
       }
       this.hasConfiguredSettings = true;
+      this._appliedSettingsSig = settingsSig;
     }
 
     await this.ensureAgentModeDisabled();
@@ -13125,7 +13140,11 @@ class FlowAutomationEngine {
     // state lives on each task so it survives across the pool's
     // repeated monitor calls for the same window).
     const stallTimeoutSec = this.stallTimeoutSecOverride || (isImageMode ? 45 : 120);
-    const recoveryWindowMs = (this.recoveryWindowSecOverride || (isImageMode ? 120 : 600)) * 1000;
+    // v2.48.110 (G8): the video tile-search budget is 180s (was
+    // 600s) — a tile that has not appeared in ~3 minutes fails over
+    // (counted in G7's cap) instead of crawling one account for
+    // ~10 minutes per prompt (GOPAL-W2, 2026-11-17).
+    const recoveryWindowMs = (this.recoveryWindowSecOverride || (isImageMode ? 120 : 180)) * 1000;
     // v2.30.3 (no-hang watchdog): an ABSOLUTE per-task cap, counted
     // from the task's own submission time. The deadline + recovery
     // machinery below is generous by design (a paid render gets
@@ -13265,7 +13284,9 @@ class FlowAutomationEngine {
       // v2.48.8: 1-second monitor poll (was 2s) — a finished video
       // is noticed up to a second sooner; the render wait itself
       // is Flow's, this only removes the app's own notice lag.
-      await sleep(1000);
+      // v2.48.110 (G1): stop-aware — a Stop press cuts the poll
+      // short instead of waiting out the slice.
+      await interruptibleSleep(1000, () => this.isStopping);
 
       if (!this.page || this.page.isClosed()) break;
 
@@ -13841,7 +13862,8 @@ class FlowAutomationEngine {
               if (isUnusual && !task.unusualActivityRetried) {
                 task.unusualActivityRetried = true;
                 this.log(`[Prompt #${task.promptIndex + 1}] Google Flow gave an "unusual activity" message — waiting 8 seconds and trying the tile again…`, 'warn');
-                await sleep(8000);
+                // v2.48.110 (G1): stop-aware wait.
+                await interruptibleSleep(8000, () => this.isStopping);
 
                 // v1.7.0: locate by fingerprint-first resolver, and
                 // NEVER fall back to "the first button on the tile" —

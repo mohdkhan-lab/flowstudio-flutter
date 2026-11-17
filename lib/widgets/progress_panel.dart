@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
@@ -26,6 +28,15 @@ class ProgressPanel extends StatelessWidget {
   // scattering at different sizes and baselines.
   static final ButtonStyle _parkedButtonStyle = TextButton.styleFrom(
     minimumSize: const Size(64, 28),
+    padding: const EdgeInsets.symmetric(horizontal: 8),
+    textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
+    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+  );
+
+  // v2.48.110 (G9): the header's "Clear finished" action shares
+  // the parked section's button discipline, sized for the header.
+  static final ButtonStyle _clearFinishedStyle = TextButton.styleFrom(
+    minimumSize: const Size(0, 28),
     padding: const EdgeInsets.symmetric(horizontal: 8),
     textStyle: const TextStyle(fontSize: 11, fontWeight: FontWeight.w600),
     tapTargetSize: MaterialTapTargetSize.shrinkWrap,
@@ -176,6 +187,21 @@ class ProgressPanel extends StatelessWidget {
                   ),
                 ),
               ),
+              // v2.48.110 (G9): Clear finished — removes every
+              // completed/failed entry at once (run list +
+              // adopted external list). Shown only when a
+              // finished entry exists; running entries are
+              // never removed (the provider's finished-only
+              // predicate is the single guard), so it is safe
+              // mid-run.
+              if (generator.hasFinishedProgressItems) ...[
+                const SizedBox(width: 6),
+                TextButton(
+                  style: _clearFinishedStyle,
+                  onPressed: () => generator.clearFinishedProgressItems(),
+                  child: const Text('Clear finished'),
+                ),
+              ],
             ],
           ),
           const SizedBox(height: 10),
@@ -198,7 +224,7 @@ class ProgressPanel extends StatelessWidget {
                           separatorBuilder: (_, _) => const SizedBox(height: 6),
                           itemBuilder: (context, index) {
                             final item = items[index];
-                            return _buildCard(context, item, generator.selectedTag);
+                            return _buildCard(context, item, generator.selectedTag, generator);
                           },
                         )
                       : showExternalMain
@@ -207,7 +233,7 @@ class ProgressPanel extends StatelessWidget {
                               separatorBuilder: (_, _) => const SizedBox(height: 6),
                               itemBuilder: (context, index) {
                                 final item = externalItems[index];
-                                return _buildCard(context, item, generator.externalRunTag);
+                                return _buildCard(context, item, generator.externalRunTag, generator);
                               },
                             )
                           : Center(
@@ -273,7 +299,7 @@ class ProgressPanel extends StatelessWidget {
               itemCount: external.length,
               separatorBuilder: (_, _) => const SizedBox(height: 6),
               itemBuilder: (context, index) {
-                return _buildCard(context, external[index], generator.externalRunTag);
+                return _buildCard(context, external[index], generator.externalRunTag, generator);
               },
             ),
           ),
@@ -483,10 +509,13 @@ class ProgressPanel extends StatelessWidget {
     );
   }
 
-  Widget _buildCard(BuildContext context, PromptItem item, String selectedTag) {
+  Widget _buildCard(BuildContext context, PromptItem item, String selectedTag, GeneratorProvider generator) {
     final isGenerating =
         item.status == PromptStatus.generating || item.status == PromptStatus.downloading;
     final isDone = item.status == PromptStatus.completed;
+    // v2.48.110 (G9): only a FINISHED card (completed/failed)
+    // carries a clear control — a running card never does.
+    final isFinishedCard = GeneratorProvider.isFinishedStatus(item.status);
     final pill = _pillFor(item.status);
     final fileName = _fileNameFor(item, selectedTag);
 
@@ -629,6 +658,14 @@ class ProgressPanel extends StatelessWidget {
                 percentText,
                 style: TextStyle(fontSize: 10, color: AppTheme.textDim),
               ),
+              // v2.48.110 (G10): this video's own time — a live
+              // elapsed timer while it generates, the final total
+              // once it settles. Nothing renders when the item has
+              // no start stamp (no invented times).
+              if (item.startedAt != null) ...[
+                const SizedBox(width: 5),
+                _ElapsedLabel(startedAt: item.startedAt, finishedAt: item.finishedAt),
+              ],
               const Spacer(),
               _barIconButton(
                 icon: Icons.play_arrow,
@@ -656,6 +693,17 @@ class ProgressPanel extends StatelessWidget {
                 dimmed: !isDone,
                 onTap: () => AutomationBridge.instance.openOutputFolder(),
               ),
+              // v2.48.110 (G9): per-entry Clear on FINISHED cards
+              // only — rendered solely for completed/failed items,
+              // so a running card has no clear control at all.
+              if (isFinishedCard) ...[
+                const SizedBox(width: 5),
+                _barIconButton(
+                  icon: Icons.close,
+                  enabled: true,
+                  onTap: () => generator.clearProgressItem(item),
+                ),
+              ],
             ],
           ),
           // v2.30.3: a FAILED card shows WHY. The engine's concrete
@@ -704,6 +752,74 @@ class ProgressPanel extends StatelessWidget {
       padding: EdgeInsets.zero,
       onTap: enabled ? onTap : null,
       child: Icon(icon, size: 14, color: color),
+    );
+  }
+}
+
+// v2.48.110 (G10): short elapsed format — '45s', '2m 14s', '1h 05m'.
+String _formatElapsed(Duration d) {
+  final total = d.inSeconds;
+  if (total < 0) return '';
+  if (total < 60) return '${total}s';
+  if (total < 3600) {
+    return '${total ~/ 60}m ${(total % 60).toString().padLeft(2, '0')}s';
+  }
+  return '${total ~/ 3600}h ${((total % 3600) ~/ 60).toString().padLeft(2, '0')}m';
+}
+
+// v2.48.110 (G10): one card's per-video time. While the video is
+// generating it ticks once a second (its own tiny timer — the
+// panel itself does not rebuild); once finishedAt lands it shows
+// the final total, submission → saved. An item with no start
+// stamp renders nothing at all.
+class _ElapsedLabel extends StatefulWidget {
+  final DateTime? startedAt;
+  final DateTime? finishedAt;
+
+  const _ElapsedLabel({required this.startedAt, required this.finishedAt});
+
+  @override
+  State<_ElapsedLabel> createState() => _ElapsedLabelState();
+}
+
+class _ElapsedLabelState extends State<_ElapsedLabel> {
+  Timer? _timer;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.startedAt != null && widget.finishedAt == null) {
+      _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+        if (mounted) setState(() {});
+      });
+    }
+  }
+
+  @override
+  void didUpdateWidget(covariant _ElapsedLabel oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.finishedAt != null) {
+      _timer?.cancel();
+      _timer = null;
+    }
+  }
+
+  @override
+  void dispose() {
+    _timer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final start = widget.startedAt;
+    if (start == null) return const SizedBox.shrink();
+    final end = widget.finishedAt ?? DateTime.now();
+    final text = _formatElapsed(end.difference(start));
+    if (text.isEmpty) return const SizedBox.shrink();
+    return Text(
+      '· $text',
+      style: TextStyle(fontSize: 10, color: AppTheme.textDim),
     );
   }
 }

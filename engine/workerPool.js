@@ -20,6 +20,9 @@ const sequenceReport = require('./sequenceReport');
 const { duplicateQueueEntryLogLine } = require('./queueDedupe');
 const browserMode = require('./browserMode');
 const agentRules = require('./agentRules');
+const runWatch = require('./runWatch');
+const { createDetachedDrains } = require('./detachedDrains');
+const https = require('https');
 const resolutionMemory = require('./resolutionMemory');
 const windowStyle = require('./windowStyle');
 const { sleepBlocker } = require('./sleepBlocker');
@@ -32,6 +35,25 @@ const { sleepBlocker } = require('./sleepBlocker');
 
 function sleep(ms) {
   return new Promise(resolve => setTimeout(resolve, ms));
+}
+
+// v2.48.110 (G5): the default reachability probe for the run health
+// watch — a lightweight HTTPS request to flow.google.com. ANY HTTP
+// answer (even a 4xx) proves the route is alive; only a network
+// error or a timeout counts as unreachable.
+function defaultNetProbe() {
+  return new Promise((resolve) => {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const req = https.get('https://flow.google.com/', { timeout: 8000 }, (res) => {
+        try { res.resume(); } catch (e) {}
+        finish(true);
+      });
+      req.on('timeout', () => { try { req.destroy(); } catch (e) {} finish(false); });
+      req.on('error', () => finish(false));
+    } catch (e) { finish(false); }
+  });
 }
 
 /**
@@ -106,6 +128,21 @@ class WorkerPool {
     this.agentClipsByIndex = (options.agentClipsByIndex && typeof options.agentClipsByIndex === 'object')
       ? options.agentClipsByIndex
       : null;
+    // v2.48.110 (G2): LIVE SETTINGS provider — a function the bridge
+    // supplies that re-reads the CURRENT stored settings (parallel
+    // count + model/duration/aspect/quality) at any moment. The pool
+    // consults it while a run is live, so a setting the owner changes
+    // mid-run applies to the rest of that run (and, because every run
+    // re-reads, a setting changed after a Stop applies to the next
+    // run — G1). Null (older callers / tests) = start values stand.
+    this.liveSettingsProvider = (typeof options.liveSettingsProvider === 'function')
+      ? options.liveSettingsProvider
+      : null;
+    // v2.48.110 (G5): reachability probe for the run health watch.
+    // Injectable for tests; null = the default flow.google.com probe.
+    this.netProbe = (typeof options.netProbe === 'function') ? options.netProbe : null;
+    this._runWatchTimers = null;
+    this._drainSeq = 0;
     this.onLog = options.onLog || (() => {});
     this.onProgress = options.onProgress || (() => {});
     this.onWorkerUpdate = options.onWorkerUpdate || (() => {});
@@ -206,6 +243,98 @@ class WorkerPool {
       this._emitActiveBrowsers();
     }
     this.log('The queue has been closed (STOPPED).', 'warn');
+  }
+
+  // ------------------------------------------------------------------
+  // v2.48.110 — LIVE SETTINGS (G2), DETACHED DRAIN (G4), HEALTH
+  // PROBE (G5). See engine/runWatch.js for the watch logic itself.
+  // ------------------------------------------------------------------
+
+  /** The current stored settings per the bridge's provider, or null. */
+  _liveSettings() {
+    if (!this.liveSettingsProvider) return null;
+    try {
+      const s = this.liveSettingsProvider();
+      return (s && typeof s === 'object') ? s : null;
+    } catch (e) { return null; }
+  }
+
+  /**
+   * How many workers SHOULD be running right now: the live parallel
+   * setting when a provider exists, else the run's start value.
+   * Always clamped to the app's 1..5 worker range.
+   */
+  _liveParallelTarget() {
+    const live = this._liveSettings();
+    const n = live ? Number(live.parallelBrowsers) : NaN;
+    const target = (Number.isFinite(n) && n > 0) ? Math.floor(n) : this.concurrency;
+    return Math.max(1, Math.min(5, target));
+  }
+
+  /**
+   * Refresh the run's shared settings object from the live store:
+   * model/duration/aspect/quality for NOT-yet-submitted prompts
+   * follow the owner's mid-run change. Submitted prompts keep the
+   * values they were sent with (their settings were already read).
+   * Returns the names of the fields that changed (and logs them).
+   */
+  _refreshLiveRunSettings(settings) {
+    if (!settings || typeof settings !== 'object') return [];
+    const live = this._liveSettings();
+    if (!live) return [];
+    const changed = [];
+    for (const field of ['model', 'duration', 'aspectRatio', 'quality']) {
+      const v = live[field];
+      if (v === undefined || v === null || String(v).trim() === '') continue;
+      if (String(settings[field] || '') !== String(v)) {
+        settings[field] = v;
+        changed.push(field);
+      }
+    }
+    if (changed.length > 0) {
+      this.log(`Settings changed during the run — the rest of the run now uses: ${changed.map(f => `${f} = ${settings[f]}`).join(' · ')} (prompts already submitted keep the values they were sent with).`, 'info');
+    }
+    return changed;
+  }
+
+  /**
+   * v2.48.110 (G4): run a drained account's in-flight window to
+   * completion IN THE BACKGROUND — its renders settle and download
+   * on their own engine while the owning worker has already moved
+   * to another account. The engine stays registered in
+   * activeWorkers (under `key`) so a pool Stop still reaches it;
+   * the account assignment is released only when the drain ends.
+   * NEVER awaited by the worker — the caller tracks the promise
+   * (detachedDrains) so the run end can wait for it.
+   */
+  async _startDetachedDrain({ key, engine, account, tasks, downloadFolder, settings, drainRetries }) {
+    if (key && engine) this.activeWorkers.set(key, engine);
+    try {
+      await engine.waitForAccountTasks(tasks, downloadFolder, settings, false);
+    } catch (e) {}
+    try { if (typeof drainRetries === 'function') await drainRetries(engine); } catch (e) {}
+    try { await engine.closeBrowser().catch(() => {}); } catch (e) {}
+    try { engine.scheduleDownloadWatcherSweep(); } catch (e) {}
+    if (key) this.activeWorkers.delete(key);
+    if (account) {
+      this.assignedAccounts.delete(account.id);
+      this._unregisterActiveBrowser(account.id);
+    }
+    return true;
+  }
+
+  /**
+   * v2.48.110 (G5): one reachability probe, fed into the run health
+   * watch. Any HTTP answer counts as reachable; only a network
+   * error/timeout counts against the connection.
+   */
+  async _probeConnectivityOnce(watch) {
+    let ok = false;
+    try {
+      ok = this.netProbe ? !!(await this.netProbe()) : !!(await defaultNetProbe());
+    } catch (e) { ok = false; }
+    try { if (watch) watch.noteNetResult(ok, Date.now()); } catch (e) {}
+    return ok;
   }
 
   // ------------------------------------------------------------------
@@ -846,12 +975,20 @@ class WorkerPool {
         projectPort: this._projectPort()
       });
 
+      // v2.48.110 (G1): this recovery engine is a LOCAL engine —
+      // it never joined activeWorkers, so pool.stop() could not
+      // reach it and a Stop pressed during recovery was ignored
+      // for the whole scan. Register it for the duration of the
+      // pass (unregistered in the finally below), and check the
+      // stop flag at every group/row boundary.
+      this.activeWorkers.set('recovery-check', engine);
       try {
         // v2.48.70 (ITEM B): browser is account ke liye
         // EK baar launch hota hai; saare openable groups
         // usi me bari bari khulte hain.
         const launched = await engine.launchBrowserForAccount(account, downloadFolder).catch(() => false);
         for (const gp of openablePlans) {
+          if (this.isStopping) break;
           const group = gp.group;
           const entryPlan = gp.entryPlan;
           const projectId = entryPlan.projectUrl ? projectIdOfUrl(entryPlan.projectUrl) : '';
@@ -901,6 +1038,10 @@ class WorkerPool {
           }
 
         for (const row of group) {
+          // v2.48.110 (G1): a Stop pressed mid-recovery leaves the
+          // remaining rows unhandled (still pending + needs_check)
+          // instead of scanning on for minutes.
+          if (this.isStopping) break;
           handled.add(row.id);
           const taskObj = {
             taskId: row.id,
@@ -1031,6 +1172,11 @@ class WorkerPool {
         // v2.31.3: recovery is a run too — arm the 5-minute watcher
         // sweep for this browser (see releaseDownloadWatchers).
         try { engine.scheduleDownloadWatcherSweep(); } catch (e) {}
+        // v2.48.110 (G1): the recovery engine leaves the registry
+        // with its browser — a later Stop must not chase it.
+        if (this.activeWorkers.get('recovery-check') === engine) {
+          this.activeWorkers.delete('recovery-check');
+        }
       }
     }
     return handled;
@@ -1405,6 +1551,17 @@ class WorkerPool {
       // failed, and the run's total. The terminal words 'Completed' /
       // 'Stopped' / 'NoAccounts' are unchanged — the renderer keys
       // its end-of-run behaviour off them.
+      // v2.48.110 (G5 + G8): the run health watch — fed by every
+      // task state change below (noteTaskActive / noteTaskSettled /
+      // heartbeats / completions) and by the connectivity probe
+      // timer that starts with the workers. It answers: has the
+      // internet been lost, or has this run made NO progress for
+      // 5 minutes? Either verdict stops the run loudly (see the
+      // supervisor block where the workers are spawned).
+      const runWatchdog = runWatch.createRunWatch();
+      const noteWatchProgress = () => {
+        try { runWatchdog.noteProgress(Date.now()); } catch (e) {}
+      };
       const runStats = { total: pendingTasks.length, active: 0, done: 0, failed: 0 };
       const emitRunStatus = () => {
         // v2.7.0 (FIX 4): status ke saath ginati bhi bhejo — Generate
@@ -1430,9 +1587,11 @@ class WorkerPool {
         if (!id || activeTaskIds.has(id)) return;
         activeTaskIds.add(id);
         runStats.active = activeTaskIds.size;
+        noteWatchProgress();
       };
       const noteTaskSettled = (id, outcome) => {
         if (!id) return;
+        noteWatchProgress();
         if (activeTaskIds.delete(id)) runStats.active = activeTaskIds.size;
         if ((outcome === 'done' || outcome === 'failed') && !settledTaskIds.has(id)) {
           settledTaskIds.add(id);
@@ -1739,6 +1898,11 @@ class WorkerPool {
         {
           const kind = (failover.classifyFailure(reason) || {}).kind;
           const stageByKind = { generation: 'generation', download: 'download', credits: 'credits', 'need-login': 'login', cooldown: 'cooldown', 'prompt-policy': 'policy' };
+          // v2.48.110 (G7): the attempt counters ride the final
+          // failure record — total submissions across all accounts
+          // against the hard cap of 3, plus the distinct count.
+          const totalAttempts = failoverTracker.totalAttempts(rowTask.id);
+          const distinctTries = failoverTracker.tries(rowTask.id);
           recordActivity({
             category: 'errors', level: 'error', accountId: accountId || null, accountName: accountName || null,
             stage: stageByKind[kind] || 'generation',
@@ -1747,9 +1911,10 @@ class WorkerPool {
             reason,
             detail: kind === 'prompt-policy'
               ? `Prompt #${rowTask.prompt_index + 1} was stopped by Google's safety policy. This fault is from the prompt's side — the same will happen on every account, so credits were NOT wasted by trying other accounts. Change the prompt and send it again. Reason for stopping: ${reason}`
-              : `Prompt #${rowTask.prompt_index + 1} finally failed — all allowed tries (other accounts + same-account retry) are over, or no usable account is left. Last reason: ${reason}. This task can be retried from History.`,
+              : `Prompt #${rowTask.prompt_index + 1} finally failed — all allowed tries (other accounts + same-account retry) are over, or no usable account is left. Attempts used: ${totalAttempts} of ${failover.MAX_TOTAL_ATTEMPTS} total (on ${distinctTries} distinct account(s)). Last reason: ${reason}. This task can be retried from History.`,
             message: `Task FAIL: Prompt #${rowTask.prompt_index + 1} — ${reason}`
           });
+          this.log(`[ROOT] task #${rowTask.prompt_index + 1} settled FAILED (${kind || 'unknown'}) after ${totalAttempts} total attempt(s) (cap ${failover.MAX_TOTAL_ATTEMPTS}) on ${distinctTries} distinct account(s)`, 'error');
         }
         noteTaskSettled(rowTask.id, 'failed');
         return 'failed';
@@ -1938,6 +2103,38 @@ class WorkerPool {
         }
       };
 
+      // v2.48.110 (G6): download retries run DETACHED — a worker
+      // no longer sits idle inside its monitor window while a
+      // download retry crawls; submissions continue and the retry
+      // proceeds in the background. One drain per engine at a
+      // time (a second call while one is running is a no-op — the
+      // running drain's loop picks up fresh entries); every drain
+      // is tracked so the end of the run can wait for them all
+      // before the final download pass.
+      const detachedDrains = createDetachedDrains();
+      const retryDrainsInFlight = new Map(); // engine -> promise
+      const startDetachedDownloadRetries = (engine) => {
+        if (!engine || retryDrainsInFlight.has(engine)) return;
+        const p = (async () => {
+          try {
+            for (let pass = 0; pass < 10; pass++) {
+              const before = deferredDownloadRetries.filter(e => e.owner === engine).length;
+              if (before === 0) break;
+              await processDownloadRetries(engine);
+              const after = deferredDownloadRetries.filter(e => e.owner === engine).length;
+              // Entries the guards deliberately left (wrong
+              // account by then / a fetch still in flight) wait
+              // for the next window or the final pass — do not
+              // spin on them here.
+              if (after === 0 || after >= before) break;
+            }
+          } catch (e) {}
+        })();
+        retryDrainsInFlight.set(engine, p);
+        detachedDrains.add(p);
+        p.finally(() => { if (retryDrainsInFlight.get(engine) === p) retryDrainsInFlight.delete(engine); });
+      };
+
       // v1.1 freeze fix: accounts that cannot launch / open the studio in
       // this run are remembered here (shared across workers) together with
       // the concrete reason, so no worker ever retries them in a tight
@@ -1960,7 +2157,7 @@ class WorkerPool {
           }
         : null;
 
-      const runWorker = async (workerIndex) => {
+      const runWorker = async (workerIndex, workerControl) => {
         const workerId = `worker_${workerIndex + 1}`;
         // WORKER-SCOPE task reference (audit fix #1): the error handler
         // below must always be able to see the task it was processing.
@@ -1981,15 +2178,26 @@ class WorkerPool {
         // bound to; the next search starts after it.
         let lastBoundAccountId = null;
 
-        const engine = new FlowAutomationEngine({
+        // v2.48.110 (G4): engines are built by a FACTORY. When an
+        // account runs dry mid-window, the worker hands its engine
+        // (browser + in-flight renders) to a background drain and
+        // continues on a FRESH engine at once — so the callbacks
+        // below read their account from their OWN engine's context
+        // (engCtx), never from the worker's current account: a
+        // detached drain keeps reporting, deferring and failing
+        // over against the account its videos belong to.
+        const makeEngine = () => {
+          const engCtx = { account: null };
+          let eng;
+          eng = new FlowAutomationEngine({
           onLog: (data) => {
-            this.onLog({ ...data, workerId, message: `[Worker #${workerIndex + 1}${workerAccount ? ` (${workerAccount.name})` : ''}]: ${data.message}` });
+            this.onLog({ ...data, workerId, message: `[Worker #${workerIndex + 1}${engCtx.account ? ` (${engCtx.account.name})` : ''}]: ${data.message}` });
           },
           onProgress: (p) => {
-            this.onWorkerUpdate({ workerId, workerIndex, accountName: workerAccount ? workerAccount.name : '', ...p });
+            this.onWorkerUpdate({ workerId, workerIndex, accountName: engCtx.account ? engCtx.account.name : '', ...p });
           },
           onVideoStarted: (data) => {
-            this.onVideoStarted({ ...data, workerId, accountName: workerAccount ? workerAccount.name : '' });
+            this.onVideoStarted({ ...data, workerId, accountName: engCtx.account ? engCtx.account.name : '' });
             // Map engine video events back to the queue task. v1.9.0:
             // prefer THIS worker's current task — a multi-batch resume
             // can hold several tasks with the same prompt_index, and a
@@ -2000,7 +2208,7 @@ class WorkerPool {
             const t = (currentTask && currentTask.prompt_index === idx)
               ? currentTask
               : pendingTasks.find(pt => pt.prompt_index === idx);
-            if (t) this.onTaskUpdate({ taskId: t.id, promptIndex: idx, promptText: t.prompt_text, tag: t.prompt_tag || '', status: 'generating', accountName: workerAccount ? workerAccount.name : '' });
+            if (t) this.onTaskUpdate({ taskId: t.id, promptIndex: idx, promptText: t.prompt_text, tag: t.prompt_tag || '', status: 'generating', accountName: engCtx.account ? engCtx.account.name : '' });
           },
           onVideoProgress: (data) => {
             this.onVideoProgress({ ...data, workerId });
@@ -2010,9 +2218,11 @@ class WorkerPool {
             // the Progress card can show what this video actually
             // cost (it hardcoded "7 credits" before). requiredCredits
             // is the runQueue-scope cost for these settings.
-            this.onVideoCompleted({ ...data, workerId, accountName: workerAccount ? workerAccount.name : '', creditsUsed: requiredCredits });
+            this.onVideoCompleted({ ...data, workerId, accountName: engCtx.account ? engCtx.account.name : '', creditsUsed: requiredCredits });
           },
           onTaskCompleted: (task, result) => {
+            // v2.48.110 (G8): a saved file IS run progress.
+            noteWatchProgress();
             try {
               dbService.completeTask(task.taskId, result);
             } catch (e) {}
@@ -2024,13 +2234,13 @@ class WorkerPool {
             noteTaskSettled(task.taskId, 'done');
             recordActivity({
               category: 'generation', level: 'success',
-              accountId: workerAccount ? workerAccount.id : null,
-              accountName: workerAccount ? workerAccount.name : null,
+              accountId: engCtx.account ? engCtx.account.id : null,
+              accountName: engCtx.account ? engCtx.account.name : null,
               stage: 'download',
               taskId: task.taskId || null,
               promptIndex: typeof task.promptIndex === 'number' ? task.promptIndex : null,
               detail: `Prompt #${(task.promptIndex || 0) + 1}'s video was generated and also downloaded. File: ${result.fileName}${result.filePath ? ` · Save location: ${result.filePath}` : ''}${result.fileSizeMb ? ` · Size: ${result.fileSizeMb}` : ''}${task._backendFetchMs ? ` · Download took ${(task._backendFetchMs / 1000).toFixed(1)}s` : ''}`,
-              message: `Download complete: ${result.fileName}${task.tag ? ` · Tag ${task.tag}` : ''} · Prompt #${(task.promptIndex || 0) + 1}${workerAccount ? ` · ${workerAccount.name}` : ''}`
+              message: `Download complete: ${result.fileName}${task.tag ? ` · Tag ${task.tag}` : ''} · Prompt #${(task.promptIndex || 0) + 1}${engCtx.account ? ` · ${engCtx.account.name}` : ''}`
             });
             this.onTaskUpdate({
               taskId: task.taskId,
@@ -2054,10 +2264,10 @@ class WorkerPool {
             // credit-charging resubmit.
             const rowTask = pendingTasks.find(pt => pt.id === task.taskId)
               || { id: task.taskId, prompt_index: task.promptIndex, prompt_text: task.promptText };
-            const outcome = failTaskOrFailover(rowTask, reason, workerAccount ? workerAccount.id : null, workerAccount ? workerAccount.name : '', {
+            const outcome = failTaskOrFailover(rowTask, reason, engCtx.account ? engCtx.account.id : null, engCtx.account ? engCtx.account.name : '', {
               stage: task.failureStage || null,
               engineTask: task,
-              engine
+              engine: eng
             });
             if (outcome === 'failed') {
               this.onTaskUpdate({
@@ -2081,9 +2291,9 @@ class WorkerPool {
             enqueueDownloadPipeline({
               rowTask,
               engineTask: task,
-              owner: engine,
-              accountId: workerAccount ? workerAccount.id : null,
-              accountName: workerAccount ? workerAccount.name : '',
+              owner: eng,
+              accountId: engCtx.account ? engCtx.account.id : null,
+              accountName: engCtx.account ? engCtx.account.name : '',
               downloadFolder,
               settings,
               extra: extra || {}
@@ -2099,6 +2309,9 @@ class WorkerPool {
             noteTaskSettled(rowTask.id, 'moved');
           },
           onTaskHeartbeat: (task, info) => {
+            // v2.48.110 (G8): a tile state change IS run progress —
+            // it feeds the stuck watchdog.
+            noteWatchProgress();
             // v2.4.0: the task's tile STATE changed (absent ->
             // generating / absent-active …). Activity gets the story
             // with its stage; the 'failed' transition is narrated by
@@ -2109,8 +2322,8 @@ class WorkerPool {
             const stageByState = { generating: 'render', 'absent-active': 'render-wait', absent: 'render-wait' };
             recordActivity({
               category: 'generation', level: state === 'generating' ? 'info' : 'warn',
-              accountId: workerAccount ? workerAccount.id : null,
-              accountName: workerAccount ? workerAccount.name : ((info && info.accountName) || null),
+              accountId: engCtx.account ? engCtx.account.id : null,
+              accountName: engCtx.account ? engCtx.account.name : ((info && info.accountName) || null),
               stage: stageByState[state] || 'render-wait',
               taskId: task.taskId || null,
               promptIndex: typeof task.promptIndex === 'number' ? task.promptIndex : null,
@@ -2128,11 +2341,11 @@ class WorkerPool {
             // v2.1.0: a submitted render's tile is missing and in-run
             // stall recovery has begun (engine/stallWatch.js). Record
             // the full story so the owner can see WHY nothing failed.
-            const accName = workerAccount ? workerAccount.name : ((info && info.accountName) || '');
+            const accName = engCtx.account ? engCtx.account.name : ((info && info.accountName) || '');
             const windowMin = info && info.recoveryWindowSec ? Math.max(1, Math.round(info.recoveryWindowSec / 60)) : 10;
             recordActivity({
               category: 'generation', level: 'warn',
-              accountId: workerAccount ? workerAccount.id : null,
+              accountId: engCtx.account ? engCtx.account.id : null,
               accountName: accName || null,
               stage: 'render-wait',
               taskId: task.taskId || null,
@@ -2149,7 +2362,7 @@ class WorkerPool {
             // and the plain possible causes — including the honest
             // background-mode note, since a throttled off-screen
             // window was the prime suspect in the owner's freeze.
-            const accName = workerAccount ? workerAccount.name : ((info && info.accountName) || '');
+            const accName = engCtx.account ? engCtx.account.name : ((info && info.accountName) || '');
             const frozenFor = stallWatch.formatDuration((info && info.stuckForSec) || 0);
             const pctNote = info && info.lastPct
               ? `Progress has been stuck at ${info.lastPct}`
@@ -2159,7 +2372,7 @@ class WorkerPool {
               : 'Possible reason: the render is slow / in a queue from Flow\'s side — in such a state it usually gets made just by waiting. If it stays stuck for long, there may be heavy load on Flow, or that prompt\'s render may have got stuck.';
             recordActivity({
               category: 'generation', level: 'warn',
-              accountId: workerAccount ? workerAccount.id : null,
+              accountId: engCtx.account ? engCtx.account.id : null,
               accountName: accName || null,
               stage: 'render-stall',
               taskId: task.taskId || null,
@@ -2180,8 +2393,8 @@ class WorkerPool {
               : (info && info.via === 'currentSrc' ? 'confirmed from the tile\'s currentSrc' : 'bound by sequence order');
             recordActivity({
               category: 'generation', level: 'info',
-              accountId: workerAccount ? workerAccount.id : null,
-              accountName: workerAccount ? workerAccount.name : null,
+              accountId: engCtx.account ? engCtx.account.id : null,
+              accountName: engCtx.account ? engCtx.account.name : null,
               stage: 'download',
               taskId: task.taskId || null,
               promptIndex: typeof task.promptIndex === 'number' ? task.promptIndex : null,
@@ -2209,6 +2422,10 @@ class WorkerPool {
           // karta hai (record sirf panel-dump saboot par).
           resolutionMemoryKv: dbService
         });
+          eng._poolCtx = engCtx;
+          return eng;
+        };
+        let engine = makeEngine();
 
         this.activeWorkers.set(workerId, engine);
 
@@ -2217,6 +2434,17 @@ class WorkerPool {
           const maxBurstConcurrency = Math.min(4, Math.max(1, Number(settings.burstConcurrency) || 4));
 
           while ((taskQueue.size() > 0 || activeWorkerTasks.length > 0) && !this.isStopping) {
+            // v2.48.110 (G2): wind-down — the parallel-workers
+            // setting was LOWERED mid-run; an idle worker retires
+            // at this boundary instead of binding another account.
+            // A worker with videos in flight never retires early:
+            // its window drains first (the check requires an
+            // empty window), exactly like a rotation.
+            if (workerControl && workerControl.retireRequests > 0 && activeWorkerTasks.length === 0) {
+              workerControl.retireRequests--;
+              this.log(`Worker #${workerIndex + 1}: the parallel-workers setting was lowered during the run — this worker is retiring; the remaining worker(s) carry the queue.`, 'info');
+              break;
+            }
             while (this.isPaused && !this.isStopping) {
               await sleep(1000);
             }
@@ -2237,6 +2465,11 @@ class WorkerPool {
                 } else {
                   this.assignedAccounts.add(workerAccount.id);
                   lastBoundAccountId = workerAccount.id;
+                  // v2.48.110 (G4): the engine's own context learns
+                  // its account at bind time — its callbacks report
+                  // against this account even if the worker later
+                  // moves on and this engine becomes a drain.
+                  if (engine) engine._poolCtx.account = workerAccount;
                 }
               }
 
@@ -2402,6 +2635,12 @@ class WorkerPool {
                 // box. The result vocabulary is the same, so
                 // every branch below — and the whole download
                 // pipeline behind SUBMITTED — works unchanged.
+                // v2.48.110 (G2): LIVE SETTINGS at every pickup —
+                // if the owner changed model/duration/aspect/
+                // quality mid-run, THIS not-yet-submitted prompt
+                // follows the new values (the engine re-configures
+                // its panel when the settings signature changes).
+                this._refreshLiveRunSettings(settings);
                 // v2.48.103 (BULK MODE): the task's agentClips
                 // (the bridge's per-run map, keyed by prompt
                 // index) rides a per-task CLONE of the run
@@ -2439,6 +2678,36 @@ class WorkerPool {
                   try { dbService.updateTaskProgress(nextTask.id, 'pending'); } catch (e) {}
                   this.onTaskUpdate({ taskId: nextTask.id, promptIndex: currentIdx, promptText: nextTask.prompt_text, status: 'pending' });
                   noteTaskSettled(nextTask.id, 'moved');
+                  // v2.48.110 (G4): INSTANT failover — when more
+                  // prompts are waiting, the drained account's
+                  // in-flight window is DETACHED into the
+                  // background (its renders finish and download
+                  // there, on their own engine) and this worker
+                  // moves to the next account NOW on a fresh
+                  // engine. Submission on the new account never
+                  // waits for the old account's downloads. The
+                  // old wait-for-the-window behaviour remains
+                  // only when nothing is left to submit.
+                  if (activeWorkerTasks.length > 0 && taskQueue.size() > 0 && !this.isStopping) {
+                    const drainEngine = engine;
+                    const drainAccount = workerAccount;
+                    const drainTasks = activeWorkerTasks.splice(0, activeWorkerTasks.length);
+                    const drainKey = `${workerId}-drain-${++this._drainSeq}`;
+                    engine = makeEngine();
+                    this.activeWorkers.set(workerId, engine);
+                    workerAccount = null;
+                    detachedDrains.add(this._startDetachedDrain({
+                      key: drainKey,
+                      engine: drainEngine,
+                      account: drainAccount,
+                      tasks: drainTasks,
+                      downloadFolder,
+                      settings,
+                      drainRetries: (e) => processDownloadRetries(e)
+                    }));
+                    this.log(`Worker #${workerIndex + 1}: [${drainAccount ? drainAccount.name : 'account'}] cannot run Prompt #${currentIdx + 1} (${submitRes.status}) — moving to another account RIGHT NOW. Its ${drainTasks.length} generating video(s) keep finishing in the background and will download there; no prompt waits for them.`, 'warn');
+                    break;
+                  }
                   this.log(`Worker #${workerIndex + 1}: [${workerAccount.name}] cannot run Prompt #${currentIdx + 1} (${submitRes.status}). The prompt has been put back in the queue; as soon as this account's generating videos are downloaded, it will go to another account.`, 'warn');
                   accountBlocked = true;
                   break;
@@ -2488,6 +2757,12 @@ class WorkerPool {
                 if (submitRes.status === 'VIOLATION') {
                   // Prompt-level rejection — failover kabhi nahi (har
                   // account par yahi hoga; credits barbaad honge).
+                  // v2.48.110 (G7): the prompt WAS fired, so this
+                  // refusal consumes one of the task's 3 total
+                  // attempts like any other failure — recorded
+                  // here because the SUBMITTED branch (the usual
+                  // recording point) never runs for a refusal.
+                  if (workerAccount) failoverTracker.recordTry(nextTask.id, workerAccount.id);
                   try { dbService.failTask(nextTask.id, submitRes.reason || 'Safety / Policy Violation'); } catch (e) {}
                   recordActivity({
                     category: 'errors', level: 'error', accountId: workerAccount ? workerAccount.id : null, accountName: workerAccount ? workerAccount.name : null,
@@ -2754,7 +3029,12 @@ class WorkerPool {
               // SIRF-download dobara koshish — browser abhi isi account
               // par khula hai aur bani hui tiles project me maujood
               // hain. Koi submit nahi, koi credit nahi.
-              await processDownloadRetries(engine);
+              // v2.48.110 (G6): DETACHED — the retry runs in the
+              // background; this worker goes straight back to
+              // submitting. Submission is never gated on a download
+              // finishing (the run end still waits for every
+              // detached retry before the final pass).
+              startDetachedDownloadRetries(engine);
 
               // Cooldown rotation: if a task in this window failed with
               // Google "Unusual Activity" and the window has drained, park
@@ -2829,11 +3109,89 @@ class WorkerPool {
         }
       };
 
+      // v2.48.110 (G2 + G5 + G8): workers are SUPERVISED, not
+      // fire-and-forget. The supervisor re-reads the live parallel
+      // setting every cycle: when it rises, new workers spawn and
+      // take queued prompts; when it falls, idle workers retire at
+      // their next boundary (workerControl.retireRequests). The
+      // health watch runs alongside: a connectivity probe every
+      // 15s feeds the watch, and every 5s the watch is evaluated —
+      // internet lost (G5) or 5 minutes with no progress (G8)
+      // stops the run loudly via the normal stop path, whose
+      // run-end handling keeps mid-generation prompts pending +
+      // needs_check (resumable, never failed for a network cut).
       const workerPromises = [];
-      for (let i = 0; i < actualWorkersCount; i++) {
-        workerPromises.push(runWorker(i));
+      const liveWorkerIdx = new Set();
+      let nextWorkerIndex = 0;
+      const workerControl = { retireRequests: 0 };
+      const spawnWorker = () => {
+        const idx = nextWorkerIndex++;
+        liveWorkerIdx.add(idx);
+        const p = Promise.resolve()
+          .then(() => runWorker(idx, workerControl))
+          .catch(() => {})
+          .finally(() => { liveWorkerIdx.delete(idx); });
+        workerPromises.push(p);
+      };
+      for (let i = 0; i < actualWorkersCount; i++) spawnWorker();
+
+      runWatchdog.start(Date.now());
+      let watchTripped = false;
+      const tripRun = (verdict) => {
+        if (verdict.type === 'net-lost') {
+          const msg = `Internet connection lost — the run was stopped because this PC could not reach Flow (${verdict.consecutiveFailures} failed reachability check(s) in a row). Prompts that were mid-generation were NOT failed: they stay pending and will be checked in Flow first on the next Resume, so no credits are spent twice. Check the internet connection, then press Resume.`;
+          this.log(msg, 'error');
+          try {
+            recordActivity({ category: 'system', level: 'error', stage: 'connectivity', message: 'Internet connection lost — the run was stopped. Mid-generation prompts were NOT failed; they stay pending/resumable for the next Resume.' });
+          } catch (e) {}
+        } else {
+          let stuckName = 'a prompt';
+          const oldestActiveId = activeTaskIds.values().next().value;
+          const stuckRow = oldestActiveId ? pendingTasks.find(t => t.id === oldestActiveId) : null;
+          if (stuckRow) stuckName = `Prompt #${(stuckRow.prompt_index || 0) + 1}`;
+          const stuckStage = (deferredDownloadRetries.length > 0 || downloadPipeline.length > 0) ? 'download' : 'generation';
+          const msg = `Run stuck — no progress for 5 minutes (nothing saved, no prompt changed state), so the watchdog stopped the run. Stuck at: ${stuckName} (${stuckStage} stage). Mid-generation prompts stay pending/resumable — press Resume to continue.`;
+          this.log(msg, 'error');
+          try {
+            recordActivity({ category: 'system', level: 'error', stage: 'watchdog', message: `Run stopped by the 5-minute stuck watchdog — stuck at ${stuckName} (${stuckStage} stage). No prompt was failed by the watchdog.` });
+          } catch (e) {}
+        }
+        // Detached: stop() itself waits for this queue to settle.
+        this.stop().catch(() => {});
+      };
+      const probeTimer = setInterval(() => { this._probeConnectivityOnce(runWatchdog).catch(() => {}); }, 15000);
+      const watchTimer = setInterval(() => {
+        if (watchTripped || this.isStopping) return;
+        let verdict = { type: 'none' };
+        try { verdict = runWatchdog.evaluate(Date.now()); } catch (e) {}
+        if (verdict.type !== 'none') {
+          watchTripped = true;
+          tripRun(verdict);
+        }
+      }, 5000);
+      if (probeTimer.unref) probeTimer.unref();
+      if (watchTimer.unref) watchTimer.unref();
+      this._runWatchTimers = { probeTimer, watchTimer };
+      try {
+        while (liveWorkerIdx.size > 0) {
+          const target = Math.min(this._liveParallelTarget(), pool.length);
+          while (liveWorkerIdx.size < target && taskQueue.size() > 0 && !this.isStopping) {
+            spawnWorker();
+          }
+          workerControl.retireRequests = Math.max(0, liveWorkerIdx.size - target);
+          await sleep(400);
+        }
+      } finally {
+        clearInterval(probeTimer);
+        clearInterval(watchTimer);
+        this._runWatchTimers = null;
       }
       await Promise.all(workerPromises);
+      // v2.48.110 (G6 + G4): every detached background job — the
+      // per-window download retries and any drained-account
+      // windows — settles before the final download pass judges
+      // what is left.
+      await detachedDrains.drainAll();
       // v2.48.3: Drain any remaining downloads in the sequential background pipeline
       await drainDownloadPipeline();
 

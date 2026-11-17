@@ -35,6 +35,18 @@
 
 const MAX_ACCOUNT_TRIES = 3;
 
+// v2.48.110 (G7 — HARD TOTAL CAP, owner's order): the distinct-account
+// budget above was never the whole story — the v2.1.0 same-account
+// retry could add up to 3 MORE submissions on one account, so a prompt
+// could be fired ~7–9 times in total. The owner capped the TOTAL:
+// at most 3 generation attempts per prompt across ALL accounts,
+// failovers and same-account retries included. A policy/violation
+// failure consumes an attempt like any other (it is recorded at
+// submit time, before the verdict exists). Once the total is spent,
+// no move of either kind is allowed — the prompt ends with its final
+// reason, never a silent requeue past the cap.
+const MAX_TOTAL_ATTEMPTS = 3;
+
 // v2.48.0 (deep-audit fix #7): an UNCLASSIFIED failure (no pattern
 // matched — we honestly do not know what went wrong) gets a smaller
 // budget than a known account-level failure: the first try plus ONE
@@ -115,6 +127,20 @@ function createFailoverTracker(maxTries = MAX_ACCOUNT_TRIES) {
     },
 
     /**
+     * v2.48.110 (G7): TOTAL submissions of this task across ALL
+     * accounts — the number the owner's hard cap of 3 applies to.
+     */
+    totalAttempts(taskId) {
+      if (!taskId) return 0;
+      const prefix = `${taskId}|`;
+      let total = 0;
+      for (const [key, count] of attemptsByTaskAccount) {
+        if (key.startsWith(prefix)) total += count;
+      }
+      return total;
+    },
+
+    /**
      * May this task be re-fired on the SAME account it just failed on?
      * Only when the failure is account-level (never policy/stopped),
      * the task still has overall account budget, and this account has
@@ -126,6 +152,9 @@ function createFailoverTracker(maxTries = MAX_ACCOUNT_TRIES) {
       const cls = classifyFailure(reason);
       if (!cls.eligible) return { ok: false, kind: cls.kind };
       if (!this.hasTried(taskId, accountId)) return { ok: false, kind: cls.kind };
+      // v2.48.110 (G7): the TOTAL cap binds same-account retries too —
+      // 3 submissions overall, however they were distributed.
+      if (this.totalAttempts(taskId) >= MAX_TOTAL_ATTEMPTS) return { ok: false, kind: cls.kind };
       const capPerAccount = Math.max(1, Number(maxSameAccountAttempts) || 3);
       if (this.attempts(taskId, accountId) >= capPerAccount) return { ok: false, kind: cls.kind };
       return { ok: true, kind: cls.kind };
@@ -176,15 +205,19 @@ function createFailoverTracker(maxTries = MAX_ACCOUNT_TRIES) {
     canFailover(taskId, reason) {
       const cls = classifyFailure(reason);
       const tries = this.tries(taskId);
+      const totalAttempts = this.totalAttempts(taskId);
       // v2.48.0: unknown (unclassified) failures get the smaller cap.
       const effectiveCap = cls.known === false ? Math.min(cap, UNKNOWN_MAX_ACCOUNT_TRIES) : cap;
-      if (!cls.eligible) return { ok: false, kind: cls.kind, tries, maxTries: effectiveCap };
-      if (tries >= effectiveCap) return { ok: false, kind: cls.kind, tries, maxTries: effectiveCap };
-      return { ok: true, kind: cls.kind, tries, maxTries: effectiveCap };
+      if (!cls.eligible) return { ok: false, kind: cls.kind, tries, maxTries: effectiveCap, totalAttempts, maxTotalAttempts: MAX_TOTAL_ATTEMPTS };
+      if (tries >= effectiveCap) return { ok: false, kind: cls.kind, tries, maxTries: effectiveCap, totalAttempts, maxTotalAttempts: MAX_TOTAL_ATTEMPTS };
+      // v2.48.110 (G7): the hard TOTAL cap — distinct accounts left in
+      // the budget do not matter once 3 submissions have happened.
+      if (totalAttempts >= MAX_TOTAL_ATTEMPTS) return { ok: false, kind: cls.kind, tries, maxTries: effectiveCap, totalAttempts, maxTotalAttempts: MAX_TOTAL_ATTEMPTS };
+      return { ok: true, kind: cls.kind, tries, maxTries: effectiveCap, totalAttempts, maxTotalAttempts: MAX_TOTAL_ATTEMPTS };
     },
 
     get maxTries() { return cap; }
   };
 }
 
-module.exports = { MAX_ACCOUNT_TRIES, UNKNOWN_MAX_ACCOUNT_TRIES, classifyFailure, createFailoverTracker };
+module.exports = { MAX_ACCOUNT_TRIES, UNKNOWN_MAX_ACCOUNT_TRIES, MAX_TOTAL_ATTEMPTS, classifyFailure, createFailoverTracker };

@@ -317,10 +317,27 @@ class _SidebarAccountsState extends State<SidebarAccounts> {
                                         // v2.46.6 (Sample 5): box 11,
                                         // font 9 (sab text ek size).
                                         height: 13,
+                                        // v2.48.110 (G3): the sub-line is
+                                        // BOUNDED to the block's width and
+                                        // ellipsized. Its content flips
+                                        // while checks run ('Checking…' →
+                                        // 'N credits' → a long failure
+                                        // reason); unbounded, each flip
+                                        // changed the FittedBox child's
+                                        // intrinsic width, so the whole
+                                        // block rescaled and re-centred —
+                                        // the sliding/shrinking text in
+                                        // the owner's screenshot. Bounded,
+                                        // the block's scale is set by the
+                                        // name alone, which never changes
+                                        // during a check, and the status
+                                        // text stays inside its own slot.
+                                        width: 76,
                                         child: Text(
                                           _subLineOf(acc),
                                           maxLines: 1,
                                           softWrap: false,
+                                          overflow: TextOverflow.ellipsis,
                                           style: TextStyle(
                                             fontSize: 12,
                                             // v2.48.89 (owner): the

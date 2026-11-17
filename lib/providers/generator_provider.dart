@@ -204,10 +204,12 @@ class GeneratorProvider with ChangeNotifier {
       if (failed) {
         item.status = PromptStatus.failed;
         item.error = err ?? statusStr;
+        _stampFinished(item);
       } else {
         item.status = PromptStatus.completed;
         item.progress = 1.0;
         item.localFilePath = data['filePath']?.toString();
+        _stampFinished(item);
         _completionTimes.add(DateTime.now());
         _refreshEngineStats();
       }
@@ -337,6 +339,7 @@ class GeneratorProvider with ChangeNotifier {
           item.status = PromptStatus.completed;
           item.progress = 1.0;
           item.error = null;
+          _stampFinished(item);
           final fp = data['filePath']?.toString();
           if (fp != null && fp.isNotEmpty) item.localFilePath = fp;
           final fn = data['fileName']?.toString();
@@ -362,6 +365,9 @@ class GeneratorProvider with ChangeNotifier {
           notifyListeners();
         }
       } else if (statusStr == 'generating') {
+        // v2.48.110 (G10): the engine picked this prompt up —
+        // its per-video clock starts here.
+        _stampStarted(item);
         final accName = data['accountName']?.toString();
         if (accName != null && accName.isNotEmpty) {
           item.accountName = accName;
@@ -384,6 +390,7 @@ class GeneratorProvider with ChangeNotifier {
             (external && item.status == PromptStatus.queued)) {
           item.status = PromptStatus.failed;
           item.error = data['reason']?.toString() ?? 'Generation failed';
+          _stampFinished(item);
           // Notification Center: the card settled failed here —
           // notify once; a later video-completed for the same item
           // sees the failed status and stays silent. Adopted
@@ -415,6 +422,12 @@ class GeneratorProvider with ChangeNotifier {
       // after its task-id / index attempts).
       final item = _matchTaskItem(data) ?? _matchExternalItem(data);
       if (item == null) return;
+      // v2.48.110 (G10): a live progress signal also proves the
+      // pickup happened, if the task update was missed.
+      if (item.status == PromptStatus.generating ||
+          item.status == PromptStatus.downloading) {
+        _stampStarted(item);
+      }
       var changed = false;
       final accName = data['accountName']?.toString();
       if (accName != null && accName.isNotEmpty && item.accountName != accName) {
@@ -526,6 +539,7 @@ class GeneratorProvider with ChangeNotifier {
           item.status == PromptStatus.downloading) {
         item.status = PromptStatus.failed;
         item.error ??= reason;
+        _stampFinished(item);
         newlyFailed.add(item);
       }
     }
@@ -790,6 +804,10 @@ class GeneratorProvider with ChangeNotifier {
         own.status = PromptStatus.queued;
         own.error = null;
         own.progress = 0;
+        // v2.48.110 (G10): re-queued for a new attempt — the
+        // old attempt's clock is cleared with its outcome.
+        own.startedAt = null;
+        own.finishedAt = null;
         own.source = kind == 'redo' ? 'Redo' : source;
         continue;
       }
@@ -861,10 +879,12 @@ class GeneratorProvider with ChangeNotifier {
     if (failed) {
       item.status = PromptStatus.failed;
       item.error = err ?? statusStr;
+      _stampFinished(item);
     } else {
       item.status = PromptStatus.completed;
       item.progress = 1.0;
       item.localFilePath = data['filePath']?.toString();
+      _stampFinished(item);
       _completionTimes.add(DateTime.now());
       _refreshEngineStats();
     }
@@ -882,6 +902,7 @@ class GeneratorProvider with ChangeNotifier {
       if (_externalItemOpen(item)) {
         item.status = PromptStatus.failed;
         item.error ??= reason;
+        _stampFinished(item);
         changed = true;
       }
     }
@@ -1029,6 +1050,72 @@ class GeneratorProvider with ChangeNotifier {
       _recoveryItems.remove(item);
       notifyListeners();
     }
+  }
+
+  // ------------------------------------------------------------------
+  // v2.48.110 (G9 + G10): Progress-entry clearing + per-video timing.
+  // ------------------------------------------------------------------
+
+  /// A Progress entry is FINISHED only when it completed or
+  /// failed. Generating / downloading / queued / pending /
+  /// recovering / parked entries are live work and are NEVER
+  /// removable — this is the single definition both clear
+  /// actions below use, so a running entry cannot be cleared
+  /// by either route.
+  static bool isFinishedStatus(PromptStatus status) =>
+      status == PromptStatus.completed || status == PromptStatus.failed;
+
+  bool get hasFinishedProgressItems =>
+      _items.any((i) => isFinishedStatus(i.status)) ||
+      _externalItems.any((i) => isFinishedStatus(i.status));
+
+  /// G9: Clear on ONE finished Progress entry (its card's ✕).
+  /// A running entry is refused here even if a stale card asks.
+  void clearProgressItem(PromptItem item) {
+    if (!isFinishedStatus(item.status)) return;
+    if (_items.remove(item)) {
+      notifyListeners();
+      return;
+    }
+    if (_externalItems.remove(item)) {
+      final id = item.taskId;
+      if (id != null) _externalByTaskId.remove(id);
+      notifyListeners();
+    }
+  }
+
+  /// G9: "Clear finished" — every completed/failed entry goes
+  /// at once, from the run list and the adopted external list.
+  /// Running entries are untouched by construction (the
+  /// predicate above), so this is safe to press mid-run.
+  void clearFinishedProgressItems() {
+    final before = _items.length + _externalItems.length;
+    _items.removeWhere((i) => isFinishedStatus(i.status));
+    _externalItems.removeWhere((i) {
+      if (!isFinishedStatus(i.status)) return false;
+      final id = i.taskId;
+      if (id != null) _externalByTaskId.remove(id);
+      return true;
+    });
+    if (_items.length + _externalItems.length != before) {
+      notifyListeners();
+    }
+  }
+
+  /// G10: the item's generation START stamp — set once, at its
+  /// first generating signal (the engine's real pickup moment);
+  /// a failover re-pickup does not restart the clock, because
+  /// the video's total time spans its moves.
+  void _stampStarted(PromptItem item) {
+    item.startedAt ??= DateTime.now();
+  }
+
+  /// G10: the item's FINISH stamp — its file saved (or its
+  /// failure landed). Re-stamped if a later event settles it
+  /// again (a download-retry success after a failure is the
+  /// video's true finish).
+  void _stampFinished(PromptItem item) {
+    item.finishedAt = DateTime.now();
   }
 
   /// Clear All: every parked record goes, the same
@@ -1463,6 +1550,7 @@ class GeneratorProvider with ChangeNotifier {
           item.status == PromptStatus.downloading) {
         item.status = PromptStatus.failed;
         item.error = 'Stopped by user';
+        _stampFinished(item);
       }
     }
     _state = GenerationState.idle;
@@ -1518,6 +1606,10 @@ class GeneratorProvider with ChangeNotifier {
         item.status = PromptStatus.generating;
         item.error = null;
         item.progress = 0;
+        // v2.48.110 (G10): a redo is a NEW attempt — its clock
+        // restarts (the generating update re-stamps the start).
+        item.startedAt = null;
+        item.finishedAt = null;
         // v2.48.83 (P1): the card says this pass is a redo.
         item.source = 'Redo';
       }

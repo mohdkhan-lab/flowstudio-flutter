@@ -13752,6 +13752,271 @@ async function main() {
     ok('X113 F5 source: saveGuard carries no .109 change', !read113('engine/saveGuard.js').includes('v2.48.109'));
   }
 
+  // =====================================================================
+  // X114 (v2.48.110) — "CONTROL + FLOW":
+  // (G1) Stop interrupts long waits; the check-only recovery
+  // engine joins activeWorkers so Stop reaches it.
+  // (G2) Mid-run setting changes are live: the pool re-reads the
+  // stored settings at every pickup, the supervisor spawns/retires
+  // workers with the parallel count, and the engine re-configures
+  // its panel when the settings signature changes.
+  // (G3) The accounts sub-line is bounded + ellipsized, so check
+  // flips can no longer rescale the row's text block.
+  // (G4) LOW_CREDITS with prompts waiting DETACHES the drained
+  // account's window into a background drain and rotates at once.
+  // (G5) A run health watch (engine/runWatch.js): 3 failed probes
+  // or 60s of probe silence = internet lost; the pool probes
+  // flow.google.com every 15s and stops the run loudly.
+  // (G6) Download retries run detached — submissions never wait
+  // for a download; the run end still drains them all.
+  // (G7) HARD CAP: 3 total generation attempts per prompt across
+  // all accounts (failover + same-account retries + violations
+  // included); download rounds stay capped at 3 per channel.
+  // (G8) 5-minute stuck watchdog (same watch module, fake clock);
+  // the single tile search drops 600s -> 180s.
+  // (G9) Progress: per-entry Clear on finished cards + a
+  // "Clear finished" header action; running entries are never
+  // removable (one finished-only predicate guards both).
+  // (G10) Progress cards show per-video time: live elapsed while
+  // generating, final total when settled; no stamp = no time.
+  // =====================================================================
+  {
+    const fs114 = require('fs');
+    const path114 = require('path');
+    const read114 = (rel) => fs114.readFileSync(path114.join(__dirname, '..', rel), 'utf8');
+    const poolSrc114 = read114('engine/workerPool.js');
+    const flowSrc114 = read114('engine/flowAutomation.js');
+    const bridgeSrc114 = read114('engine_bridge.js');
+    const sidebarSrc114 = read114('lib/widgets/sidebar_accounts.dart');
+    const providerSrc114 = read114('lib/providers/generator_provider.dart');
+    const panelSrc114 = read114('lib/widgets/progress_panel.dart');
+    const promptItemSrc114 = read114('lib/models/prompt_item.dart');
+    const { interruptibleSleep } = require('../engine/stopWait');
+    const runWatch114 = require('../engine/runWatch');
+    const { createDetachedDrains } = require('../engine/detachedDrains');
+    const failover114 = require('../engine/failover');
+    const { settingsSignatureOf } = require('../engine/settingsTruth');
+    const { roundCapForChannel } = require('../engine/downloadFetch');
+    const { WorkerPool: WP114 } = require('../engine/workerPool');
+
+    // --- G1: a stop signal interrupts a simulated long wait ---
+    {
+      let stopFlag = false;
+      const t0 = Date.now();
+      setTimeout(() => { stopFlag = true; }, 250);
+      const completed = await interruptibleSleep(10000, () => stopFlag);
+      const elapsed = Date.now() - t0;
+      eq('X114 G1: the interrupted wait reports it did NOT complete', completed, false);
+      ok('X114 G1: the stop cut a 10s wait to under 3s', elapsed < 3000);
+      const full = await interruptibleSleep(300, () => false);
+      eq('X114 G1: an unstopped wait completes fully', full, true);
+    }
+    ok('X114 G1 source: the recovery engine joins activeWorkers during reconcile', poolSrc114.includes("this.activeWorkers.set('recovery-check', engine)"));
+    ok('X114 G1 source: the recovery engine leaves the registry in its finally', poolSrc114.includes("this.activeWorkers.get('recovery-check') === engine"));
+    ok('X114 G1 source: reconcile checks the stop flag at row boundaries', poolSrc114.includes('if (this.isStopping) break;'));
+    ok('X114 G1 source: the monitor poll is stop-aware', flowSrc114.includes('await interruptibleSleep(1000, () => this.isStopping)'));
+    ok('X114 G1 source: the unusual-activity wait is stop-aware', flowSrc114.includes('await interruptibleSleep(8000, () => this.isStopping)'));
+
+    // --- G2: live settings ---
+    eq('X114 G2: identical settings share a signature', settingsSignatureOf({ type: 'Video', model: 'Omni Flash', duration: '10s', aspectRatio: '16:9', quality: '360p' }), settingsSignatureOf({ type: 'Video', model: 'Omni Flash', duration: '10s', aspectRatio: '16:9', quality: '360p' }));
+    ok('X114 G2: a changed duration changes the signature', settingsSignatureOf({ model: 'Omni Flash', duration: '10s' }) !== settingsSignatureOf({ model: 'Omni Flash', duration: '4s' }));
+    ok('X114 G2: a partial settings object never aliases a fuller one', settingsSignatureOf({ model: 'Omni Flash' }) !== settingsSignatureOf({ model: 'Omni Flash', duration: '10s' }));
+    {
+      let liveParallel = 4;
+      const pool = new WP114({ onLog: () => {}, concurrency: 1, liveSettingsProvider: () => ({ parallelBrowsers: liveParallel }) });
+      eq('X114 G2: the pool target follows the LIVE parallel setting (1 -> 4)', pool._liveParallelTarget(), 4);
+      liveParallel = 2;
+      eq('X114 G2: the target re-reads on every call (4 -> 2)', pool._liveParallelTarget(), 2);
+      liveParallel = 99;
+      eq('X114 G2: the target is clamped to the 5-worker range', pool._liveParallelTarget(), 5);
+      const poolNoLive = new WP114({ onLog: () => {}, concurrency: 3 });
+      eq('X114 G2: with no provider the start value stands', poolNoLive._liveParallelTarget(), 3);
+      const runSettings = { model: 'Omni Flash', duration: '4s', aspectRatio: '9:16', quality: '360p' };
+      const poolRefresh = new WP114({ onLog: () => {}, liveSettingsProvider: () => ({ model: 'Veo 3.1 Fast', duration: '', aspectRatio: '16:9' }) });
+      const changed = poolRefresh._refreshLiveRunSettings(runSettings);
+      eq('X114 G2: a mid-run model change lands on the run settings', runSettings.model, 'Veo 3.1 Fast');
+      eq('X114 G2: a mid-run aspect change lands too', runSettings.aspectRatio, '16:9');
+      eq('X114 G2: an empty live value never overwrites', runSettings.duration, '4s');
+      ok('X114 G2: the changed list names exactly the changed fields', changed.includes('model') && changed.includes('aspectRatio') && !changed.includes('duration'));
+    }
+    ok('X114 G2 source: the supervisor spawns up to the live target', poolSrc114.includes('liveWorkerIdx.size < target && taskQueue.size() > 0'));
+    ok('X114 G2 source: workers retire when the target falls', poolSrc114.includes('workerControl.retireRequests > 0 && activeWorkerTasks.length === 0'));
+    ok('X114 G2 source: every pickup refreshes the run settings', poolSrc114.includes('this._refreshLiveRunSettings(settings);'));
+    ok('X114 G2 source: the engine re-configures on a signature change', flowSrc114.includes('this._appliedSettingsSig !== settingsSig'));
+    ok('X114 G2 source: the bridge supplies the live settings provider', bridgeSrc114.includes('liveSettingsProvider: () => ({'));
+
+    // --- G3: bounded sub-line (Dart source pins) ---
+    {
+      const i = sidebarSrc114.indexOf('_subLineOf(acc),');
+      const seg = i >= 0 ? sidebarSrc114.slice(Math.max(0, i - 1600), i + 400) : '';
+      ok('X114 G3: the sub-line slot is width-bounded', seg.includes('width: 76'));
+      ok('X114 G3: the sub-line ellipsizes inside its slot', seg.includes('overflow: TextOverflow.ellipsis'));
+    }
+
+    // --- G4: detached drain behaviour ---
+    {
+      const pool = new WP114({ onLog: () => {} });
+      pool.assignedAccounts.add('acc-drain');
+      let releaseWait = null;
+      let closedFlag = false;
+      let retriesRan = false;
+      const order = [];
+      const fakeEngine = {
+        waitForAccountTasks: () => new Promise((res) => { releaseWait = res; }),
+        closeBrowser: async () => { closedFlag = true; order.push('close'); },
+        scheduleDownloadWatcherSweep: () => {}
+      };
+      const drainP = pool._startDetachedDrain({
+        key: 'worker_1-drain-1', engine: fakeEngine, account: { id: 'acc-drain' },
+        tasks: [{ id: 't1' }], downloadFolder: '/tmp', settings: {},
+        drainRetries: async () => { retriesRan = true; order.push('retries'); }
+      });
+      ok('X114 G4: the drain engine is registered for Stop while detached', pool.activeWorkers.has('worker_1-drain-1'));
+      ok('X114 G4: the drained account stays assigned while its window drains', pool.assignedAccounts.has('acc-drain'));
+      eq('X114 G4: the browser is NOT closed while the window is still draining', closedFlag, false);
+      releaseWait();
+      await drainP;
+      ok('X114 G4: download retries ran in the drain before the browser closed', retriesRan && order.indexOf('retries') < order.indexOf('close'));
+      eq('X114 G4: the drain engine leaves the registry when done', pool.activeWorkers.has('worker_1-drain-1'), false);
+      eq('X114 G4: the account assignment is released when the drain ends', pool.assignedAccounts.has('acc-drain'), false);
+    }
+    ok('X114 G4 source: engines come from a per-worker factory', poolSrc114.includes('const makeEngine = () => {'));
+    ok('X114 G4 source: callbacks read their own engine context', poolSrc114.includes('engCtx.account'));
+    ok('X114 G4 source: LOW_CREDITS detaches when prompts are waiting', poolSrc114.includes('detachedDrains.add(this._startDetachedDrain({'));
+    ok('X114 G4 source: the rotate-now line says it plainly', poolSrc114.includes('moving to another account RIGHT NOW'));
+
+    // --- G5: connectivity watch ---
+    {
+      const w = runWatch114.createRunWatch();
+      w.start(0);
+      w.noteNetResult(false, 1000);
+      w.noteNetResult(false, 2000);
+      eq('X114 G5: two failed probes do not trip yet', w.evaluate(3000).type, 'none');
+      w.noteNetResult(false, 3000);
+      const v = w.evaluate(4000);
+      eq('X114 G5: three consecutive failed probes trip net-lost', v.type, 'net-lost');
+      eq('X114 G5: the verdict counts the failures', v.consecutiveFailures, 3);
+      const w2 = runWatch114.createRunWatch();
+      w2.start(0);
+      w2.noteNetResult(false, 1000);
+      w2.noteNetResult(false, 2000);
+      w2.noteNetResult(true, 3000);
+      w2.noteNetResult(false, 4000);
+      w2.noteNetResult(false, 5000);
+      eq('X114 G5: a success resets the consecutive count', w2.evaluate(6000).type, 'none');
+      const w3 = runWatch114.createRunWatch();
+      w3.start(0);
+      eq('X114 G5: 59s of probe silence does not trip', w3.evaluate(59999).type, 'none');
+      eq('X114 G5: 60s of total probe silence trips net-lost', w3.evaluate(60000).type, 'net-lost');
+    }
+    {
+      const watch = runWatch114.createRunWatch();
+      watch.start(Date.now());
+      const poolBad = new WP114({ onLog: () => {}, netProbe: async () => false });
+      eq('X114 G5: a failed probe reports unreachable', await poolBad._probeConnectivityOnce(watch), false);
+      eq('X114 G5: the failed probe feeds the watch', watch.consecutiveNetFailures, 1);
+      const poolGood = new WP114({ onLog: () => {}, netProbe: async () => true });
+      eq('X114 G5: a good probe reports reachable', await poolGood._probeConnectivityOnce(watch), true);
+      eq('X114 G5: a good probe resets the watch count', watch.consecutiveNetFailures, 0);
+    }
+    ok('X114 G5 source: the run probes on a 15s timer', poolSrc114.includes('}, 15000);'));
+    ok('X114 G5 source: the stop names the internet connection in Activity', poolSrc114.includes("stage: 'connectivity'") && poolSrc114.includes('Internet connection lost — the run was stopped'));
+
+    // --- G6: detached download retries ---
+    {
+      const drains = createDetachedDrains();
+      let release = null;
+      drains.add(new Promise((res) => { release = res; }));
+      eq('X114 G6: a slow download is tracked as pending', drains.size(), 1);
+      const drainP = drains.drainAll();
+      release();
+      await drainP;
+      eq('X114 G6: drainAll waits for the slow download to settle', drains.size(), 0);
+      const drains2 = createDetachedDrains();
+      drains2.add(new Promise(() => {}));
+      eq('X114 G6: drainAll with a timeout reports what is still pending', await drains2.drainAll(50), 1);
+    }
+    ok('X114 G6 source: the worker window starts retries detached', poolSrc114.includes('startDetachedDownloadRetries(engine);'));
+    ok('X114 G6 source: the run end drains every detached job', poolSrc114.includes('await detachedDrains.drainAll();'));
+
+    // --- G7: hard total cap of 3 ---
+    {
+      const tr = failover114.createFailoverTracker();
+      tr.recordTry('task-g7', 'acc-1');
+      eq('X114 G7: the first submission counts toward the total', tr.totalAttempts('task-g7'), 1);
+      tr.recordTry('task-g7', 'acc-1');
+      eq('X114 G7: a same-account retry counts toward the total too', tr.totalAttempts('task-g7'), 2);
+      eq('X114 G7: distinct tries stay 1 while the total is 2', tr.tries('task-g7'), 1);
+      tr.recordTry('task-g7', 'acc-2');
+      eq('X114 G7: the total reaches the cap at 3', tr.totalAttempts('task-g7'), 3);
+      eq('X114 G7: at total 3 no failover remains (even with accounts left)', tr.canFailover('task-g7', 'render timed out').ok, false);
+      eq('X114 G7: at total 3 no same-account retry remains', tr.canSameAccountRetry('task-g7', 'acc-2', 'render timed out').ok, false);
+      const tr2 = failover114.createFailoverTracker();
+      tr2.recordTry('task-g7b', 'acc-1');
+      tr2.recordTry('task-g7b', 'acc-2');
+      eq('X114 G7: two distinct tries still leave room under the total cap', tr2.canFailover('task-g7b', 'render timed out').ok, true);
+      eq('X114 G7: the exported total cap is 3', failover114.MAX_TOTAL_ATTEMPTS, 3);
+      eq('X114 G7: the verdict reports the total attempts', tr.canFailover('task-g7', 'render timed out').totalAttempts, 3);
+    }
+    eq('X114 G7: download rounds are capped at 3 (monitor)', roundCapForChannel('monitor'), 3);
+    eq('X114 G7: download rounds are capped at 3 (drain)', roundCapForChannel('drain'), 3);
+    {
+      const i = poolSrc114.indexOf("submitRes.status === 'VIOLATION'");
+      const seg = i >= 0 ? poolSrc114.slice(i, i + 1200) : '';
+      ok('X114 G7 source: a VIOLATION consumes an attempt (recorded in its branch)', seg.includes('failoverTracker.recordTry'));
+    }
+    ok('X114 G7 source: the final-fail record carries the attempt counters', poolSrc114.includes('settled FAILED') && poolSrc114.includes('totalAttempts'));
+
+    // --- G8: stuck watchdog + tile-search cap ---
+    {
+      // The connection stays HEALTHY throughout (probe successes
+      // every 30s of fake time) — only progress stops. (With no
+      // probe results at all, the G5 silence rule would rightly
+      // call it net-lost long before the stuck budget.)
+      const feedOk = (w, upto) => { for (let t = 30000; t <= upto; t += 30000) w.noteNetResult(true, t); };
+      const w = runWatch114.createRunWatch();
+      w.start(0);
+      w.noteProgress(0);
+      feedOk(w, 270000);
+      eq('X114 G8: 4m59s without progress does not trip', w.evaluate(299999).type, 'none');
+      const v = w.evaluate(300000);
+      eq('X114 G8: 5 minutes without progress trips stuck', v.type, 'stuck');
+      eq('X114 G8: the stuck verdict reports the idle time', v.idleMs, 300000);
+      const w2 = runWatch114.createRunWatch();
+      w2.start(0);
+      w2.noteProgress(200000);
+      feedOk(w2, 480000);
+      eq('X114 G8: fresh progress restarts the stuck clock', w2.evaluate(499999).type, 'none');
+      eq('X114 G8: the restarted clock trips 5 min after the last progress', w2.evaluate(500000).type, 'stuck');
+      w2.noteProgress(600000);
+      eq('X114 G8: a tripped verdict latches (late progress does not un-trip)', w2.evaluate(600001).type, 'stuck');
+      eq('X114 G8: the stuck budget is 5 minutes', runWatch114.STUCK_AFTER_MS, 300000);
+    }
+    ok('X114 G8 source: the video tile search is capped at 180s', flowSrc114.includes('isImageMode ? 120 : 180'));
+    ok('X114 G8 source: the watchdog stop names the stuck prompt + stage', poolSrc114.includes("stage: 'watchdog'") && poolSrc114.includes('5-minute stuck watchdog'));
+    ok('X114 G8 source: heartbeats feed the watch as progress', poolSrc114.includes('noteWatchProgress();'));
+
+    // --- G9: Progress clearing (Dart source pins) ---
+    ok('X114 G9: one finished-only predicate exists', providerSrc114.includes('static bool isFinishedStatus(PromptStatus status)'));
+    ok('X114 G9: the predicate is exactly completed-or-failed', providerSrc114.includes('status == PromptStatus.completed || status == PromptStatus.failed'));
+    ok('X114 G9: per-entry clear refuses a running entry', providerSrc114.includes('if (!isFinishedStatus(item.status)) return;'));
+    ok('X114 G9: clear-finished removes by the same predicate', providerSrc114.includes('_items.removeWhere((i) => isFinishedStatus(i.status))'));
+    ok('X114 G9: clear-finished covers the external list too', providerSrc114.includes('_externalItems.removeWhere((i) {'));
+    ok('X114 G9: the header shows Clear finished only when finished entries exist', panelSrc114.includes('if (generator.hasFinishedProgressItems)') && panelSrc114.includes("const Text('Clear finished')"));
+    ok('X114 G9: the card clear control is finished-only', panelSrc114.includes('final isFinishedCard = GeneratorProvider.isFinishedStatus(item.status);') && panelSrc114.includes('if (isFinishedCard) ...['));
+    ok('X114 G9: the card clear control calls the guarded provider method', panelSrc114.includes('generator.clearProgressItem(item)'));
+
+    // --- G10: per-video time (Dart source pins) ---
+    ok('X114 G10: the item carries start + finish stamps', promptItemSrc114.includes('DateTime? startedAt;') && promptItemSrc114.includes('DateTime? finishedAt;'));
+    ok('X114 G10: the start stamp is set-once at pickup', providerSrc114.includes('item.startedAt ??= DateTime.now();'));
+    ok('X114 G10: the generating update stamps the start', providerSrc114.includes('_stampStarted(item);'));
+    ok('X114 G10: completions stamp the finish', providerSrc114.includes('_stampFinished(item);'));
+    ok('X114 G10: a redo clears the old clock', providerSrc114.includes('item.startedAt = null;'));
+    ok('X114 G10: the card renders time only with a start stamp', panelSrc114.includes('if (item.startedAt != null)'));
+    ok('X114 G10: the elapsed label ticks live while generating', panelSrc114.includes('Timer.periodic(const Duration(seconds: 1)') && panelSrc114.includes('class _ElapsedLabel'));
+    ok('X114 G10: the elapsed format helper exists', panelSrc114.includes('String _formatElapsed(Duration d)'));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

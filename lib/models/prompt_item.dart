@@ -51,6 +51,14 @@ class PromptItem {
   // Null when the engine did not report one — the card then shows no
   // credit figure at all instead of an invented one.
   int? creditsUsed;
+  // v2.48.110 (G10): per-video timing for the Progress card —
+  // startedAt is stamped when the engine's task update first says
+  // this prompt is generating (its real pickup/submission moment),
+  // finishedAt when its completion/failure lands. Both are honest
+  // event stamps: an item that never started keeps startedAt null
+  // and the card shows NO time rather than an invented one.
+  DateTime? startedAt;
+  DateTime? finishedAt;
   // v2.48.103 (BULK MODE): how many clips this item's ONE Agent
   // conversation is asked to make (Agent mode only). Set from an
   // MCP in-app run's per-prompt agentClips; 1 = one clip per

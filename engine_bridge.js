@@ -214,7 +214,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.109';
+const APP_VERSION = '2.48.110';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -458,6 +458,17 @@ async function startBridge() {
       // ({ promptIndex: clips }) — the start route fills it
       // while formatting prompts, before runQueue runs.
       agentClipsByIndex: (agentClipsByIndex && typeof agentClipsByIndex === 'object') ? agentClipsByIndex : null,
+      // v2.48.110 (G2): LIVE SETTINGS provider — the pool re-reads
+      // the stored settings (the same DB keys the app UI writes)
+      // at every pickup, so a setting changed mid-run — parallel
+      // browsers above all — applies to the rest of the run.
+      liveSettingsProvider: () => ({
+        parallelBrowsers: Number(dbService.getSetting('parallel_browsers', '')) || null,
+        model: dbService.getSetting('default_model', '') || null,
+        duration: dbService.getSetting('default_duration', '') || null,
+        aspectRatio: dbService.getSetting('default_aspect', '') || null,
+        quality: dbService.getSetting('default_quality', '') || null
+      }),
       // v2.28.0: the engine's log() passes ONE OBJECT
       // ({ message, type, timestamp, ...extra }) — the old wiring
       // treated it as (msg, type) strings, so the whole object

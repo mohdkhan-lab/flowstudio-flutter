@@ -74,4 +74,21 @@ function effectiveRunSettings(db, explicit, fallbacks) {
   };
 }
 
-module.exports = { SETTINGS_FIELDS, uiGenerateSettingsHint, effectiveRunSettings };
+/**
+ * v2.48.110 (G2): a stable signature of the settings an engine
+ * actually applies to the Flow panel (type + the four fields).
+ * The engine remembers the signature it last configured; when a
+ * later submit carries a DIFFERENT signature — because the owner
+ * changed a setting mid-run and the pool refreshed the run's
+ * settings object — the panel is re-configured before that submit
+ * instead of silently generating at the old values. Absent fields
+ * sign as empty, so a partial settings object can never alias a
+ * fuller one.
+ */
+function settingsSignatureOf(settings) {
+  const s = settings && typeof settings === 'object' ? settings : {};
+  const part = (v) => (v === undefined || v === null ? '' : String(v).trim());
+  return [part(s.type || 'Video'), part(s.model), part(s.duration), part(s.aspectRatio), part(s.quality)].join('|');
+}
+
+module.exports = { SETTINGS_FIELDS, uiGenerateSettingsHint, effectiveRunSettings, settingsSignatureOf };

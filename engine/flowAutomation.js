@@ -31,6 +31,8 @@ const editorEnhance = require('./editorEnhance');
 const resolutionMemory = require('./resolutionMemory');
 const flowContent = require('./flowContent');
 const downloadEventMatch = require('./downloadEventMatch');
+const zoomPolicy = require('./zoomPolicy');
+const downloadGrace = require('./downloadGrace');
 const mintWindow = require('./mintWindow');
 const mintReplay = require('./mintReplay');
 const saveGuard = require('./saveGuard');
@@ -2434,16 +2436,111 @@ class FlowAutomationEngine {
       // hai — menu zoom 0.5 aur DSF 1.0 ke saath wahi 0.5
       // padhna chahiye. visualViewport.scale pinch ka
       // signal tha, menu zoom ka saboot nahi.
-      const reading = await this.page.evaluate(() => ({
-        dpr: (typeof window !== 'undefined' && typeof window.devicePixelRatio === 'number') ? window.devicePixelRatio : null
-      }));
-      const dpr = reading && typeof reading.dpr === 'number' ? reading.dpr : null;
+      const dpr = await this._readDevicePixelRatio();
       const verified = zoomReadbackVerified(dpr, GENERATION_PAGE_SCALE);
       this._zoomProofLogged = true;
       this.log(
         browserZoomVerifyLogLine(this.currentAccount ? this.currentAccount.name : null, GENERATION_PAGE_SCALE, dpr),
         verified ? 'info' : 'warn'
       );
+      return verified;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.118 (F1): page ka asal devicePixelRatio padho —
+   * zoom ke har read-back ki wahid jagah. Page band ho ya
+   * naap na mile to null (saboot nahi). Kabhi throw nahi.
+   */
+  async _readDevicePixelRatio() {
+    try {
+      if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return null;
+      const reading = await this.page.evaluate(() => ({
+        dpr: (typeof window !== 'undefined' && typeof window.devicePixelRatio === 'number') ? window.devicePixelRatio : null
+      }));
+      return reading && typeof reading.dpr === 'number' ? reading.dpr : null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  /**
+   * v2.48.118 (F1 — W10 field failure): zoom ki BINDING
+   * koshish. .116/.117 me zoom launch ke ~5s baad, page
+   * load hote hue lagta tha — keystrokes gum, log me
+   * 'dpr=1 FAILED', aur dobara koshish kabhi nahi hoti
+   * thi; owner ko browser 100% par milta raha. Ab ye
+   * amal Flow workspace ke TAYYAR hone ke baad chalta
+   * hai (prompt box dikhai dene ke baad): keyboard zoom
+   * lagao, dpr padho, '[ROOT] browser-zoom ... attempt=
+   * <n>' line likho; dpr ~0.5 (0.48–0.52) na ho to
+   * settled pal (800ms) ke baad dobara — kul 3 koshishein
+   * (faisla zoomPolicy.nextZoomAction ka hai). Kamyabi
+   * par purani 'scale=0.5 applied' line attempt number
+   * ke saath bhi aati hai. Nakami par run NAHI rukta —
+   * zoom kabhi generation ko block nahi karta.
+   */
+  async _ensureGenerationZoom() {
+    try {
+      if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return false;
+      this._zoomEnsuredOnce = true;
+      const accountName = this.currentAccount ? this.currentAccount.name : null;
+      while (!this.isStopping) {
+        this._zoomAttempts = (this._zoomAttempts || 0) + 1;
+        const attempt = this._zoomAttempts;
+        await this._applyGenerationZoom(false);
+        const dpr = await this._readDevicePixelRatio();
+        const verified = zoomPolicy.zoomDprInBand(dpr, GENERATION_PAGE_SCALE);
+        this.log(
+          zoomPolicy.zoomAttemptLogLine(accountName, attempt, dpr, GENERATION_PAGE_SCALE),
+          verified ? 'info' : 'warn'
+        );
+        if (verified) {
+          this._zoomVerifiedOk = true;
+          this.log(`${browserZoomLogLine(accountName, GENERATION_PAGE_SCALE, true)} attempt=${attempt}`, 'info');
+          return true;
+        }
+        if (zoomPolicy.nextZoomAction(attempt, dpr, GENERATION_PAGE_SCALE) !== 'retry') break;
+        await sleep(zoomPolicy.ZOOM_RETRY_DELAY_MS);
+      }
+      this._zoomVerifiedOk = false;
+      return false;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.118 (F1): project grid me daakhil hone par EK
+   * aur mauqa — sirf tab jab workspace-ready wali binding
+   * koshish ho chuki ho aur nakam rahi ho (navigation
+   * focus reset kar sakti hai), aur ye grid wali koshish
+   * pehle na hui ho (faisla zoomPolicy.shouldReapplyZoom
+   * ka hai). Natija attempt line me darj hota hai. Run
+   * kabhi nahi rukta.
+   */
+  async _reassertZoomIfUnverified() {
+    try {
+      const due = zoomPolicy.shouldReapplyZoom({
+        ensuredOnce: !!this._zoomEnsuredOnce,
+        verified: !!this._zoomVerifiedOk,
+        reasserted: !!this._zoomGridReassertDone
+      });
+      if (!due) return false;
+      this._zoomGridReassertDone = true;
+      if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return false;
+      this._zoomAttempts = (this._zoomAttempts || 0) + 1;
+      const attempt = this._zoomAttempts;
+      await this._applyGenerationZoom(false);
+      const dpr = await this._readDevicePixelRatio();
+      const verified = zoomPolicy.zoomDprInBand(dpr, GENERATION_PAGE_SCALE);
+      this.log(
+        zoomPolicy.zoomAttemptLogLine(this.currentAccount ? this.currentAccount.name : null, attempt, dpr, GENERATION_PAGE_SCALE),
+        verified ? 'info' : 'warn'
+      );
+      if (verified) this._zoomVerifiedOk = true;
       return verified;
     } catch (e) {
       return false;
@@ -2462,6 +2559,14 @@ class FlowAutomationEngine {
     // v2.48.114 (Z1b): naya browser = zoom read-back ki
     // nayi ek line (purani browser ki line nayi par nahi).
     this._zoomProofLogged = false;
+    // v2.48.118 (F1): naya browser = zoom ki nayi kitab —
+    // koshishon ki ginti, workspace-ready ke baad ki
+    // binding koshish hui ya nahi, natija, aur grid par
+    // ek-mauqa-wali koshish hui ya nahi, sab taaza.
+    this._zoomAttempts = 0;
+    this._zoomVerifiedOk = false;
+    this._zoomEnsuredOnce = false;
+    this._zoomGridReassertDone = false;
     // v2.48.9: a fresh launch = a fresh session — drop the cached
     // fetch inputs (cookies / user-agent) of the previous account.
     this._cookieHeaderCache = null;
@@ -3473,6 +3578,15 @@ class FlowAutomationEngine {
       await this.page.waitForSelector('.ProseMirror, div[contenteditable="true"], div[role="textbox"], textarea', { timeout: 30000 });
       this.log('The Flow workspace is ready — prompts can be sent.', 'success');
     } catch (e) {}
+
+    // v2.48.118 (F1): zoom ki BINDING koshish AB hai —
+    // workspace tayyar hai, page settled hai, keystrokes
+    // ke gum hone ki gunjaish sab se kam. Launch/project-
+    // open par lagi koshishein W10 me load hote page par
+    // zaya gayi thin (dpr=1 FAILED, retry kabhi nahi).
+    // Nakami par bhi prep aage badhti hai — zoom kabhi
+    // generation ko nahi rokta.
+    try { await this._ensureGenerationZoom(); } catch (e) {}
 
     // v2.48.106 (Fix F6): the prep's Agent-chip disable is
     // skipped for Agent-mode runs — AGENTTEST12's log showed
@@ -7026,6 +7140,11 @@ class FlowAutomationEngine {
         // hai (ek browser, ek line); na aayi ho to yahin
         // banti hai.
         try { await this._verifyGenerationZoom(); } catch (e) {}
+        // v2.48.118 (F1): workspace-ready wali binding
+        // koshish nakam rahi ho to grid par wapsi par EK
+        // aur mauqa (navigation focus reset kar sakti
+        // hai) — us ke baad nahi.
+        try { await this._reassertZoomIfUnverified(); } catch (e) {}
       }
       return ok;
     };
@@ -7390,6 +7509,70 @@ class FlowAutomationEngine {
     }
     this.log('The resolution menu did not appear — the download may have started directly; waiting for the file…', 'warn');
     return { found: false, clickedAt: 0 };
+  }
+
+  /**
+   * v2.48.118 (F2 — W10 field failure): EMAANDAR FAIL
+   * verdict se pehle ki 10-second MOHLAT. Prompt #1 ke
+   * run me verdict ke ~1.6s baad browser ki apni blob
+   * download mukammal hui aur file save ho gayi thi —
+   * verdict ek in-flight download se race kar raha tha.
+   * Ab: verdict se pehle har 500ms par (E1-DL event par
+   * neend foran toot-ti hai — _dlSleep) ye dekho:
+   *   - task kisi in-flight raste se save ho gaya ho
+   *     (mediaSaved), ya
+   *   - is attempt ke baad shuru hua is task ka browser
+   *     download E1-DL kitab me mukammal darj ho
+   *     (faisla downloadGrace.decideGrace ka hai).
+   * Event mile aur save abhi na hua ho to file ko AAM
+   * browser-download save raste (_nativeAwaitAndSave)
+   * se uthao — usi ki rename/verify/duplicate-guard
+   * kitab chalegi; watch snapshot se mile hue naam ko
+   * bahar karna zaroori hai warna rasta use 'purani
+   * file' samajh kar chhod dega (downloadGrace.
+   * snapshotExcluding). Kuch na aaye to mohlat khatam —
+   * verdict bilkul pehle jaisa likha jayega. Prompt
+   * dobara KABHI submit nahi hota; mohlat sirf is task
+   * ki hai, dusre workers apna kaam karte rehte hain.
+   */
+  async _downloadGraceWait(task, downloadFolder, settings, attempts) {
+    const graceStart = Date.now();
+    const label = task && Number.isFinite(task.promptIndex) ? task.promptIndex : '-';
+    const sinceMs = (task && task._downloadAttemptStartedAt) || graceStart;
+    let prep = null;
+    try { prep = await this._nativePrepareWatch(downloadFolder); } catch (e) { prep = null; }
+    while (!this.isStopping) {
+      const decision = downloadGrace.decideGrace(this._dlEventState, {
+        startedAtMs: sinceMs,
+        mediaSaved: !!(task && task.mediaSaved),
+        expectedName: '',
+        claimedBytes: 0
+      }, Date.now(), graceStart);
+      if (decision.action === 'saved') {
+        if (!(task && task.mediaSaved) && decision.match && prep) {
+          try {
+            downloadGrace.snapshotExcluding(prep.existingFilesByFolder, decision.match.suggestedFilename);
+            await this._nativeAwaitAndSave(task, prep, sinceMs, 8000, downloadFolder, settings);
+          } catch (e) {}
+        }
+        if (task && task.mediaSaved) {
+          attempts.push({ strategy: 'download-grace', ok: true, note: 'the in-flight browser download landed inside the grace window and was saved' });
+          this.log(downloadGrace.downloadGraceLogLine(label, decision.waitedMs, 'saved'), 'info');
+          return true;
+        }
+        // Event is task ka tha lekin aam save rasta file
+        // na utha saka — mohlat ka maksad poora, verdict
+        // apni jagah par jayega.
+        this.log(downloadGrace.downloadGraceLogLine(label, decision.waitedMs, 'none'), 'warn');
+        return false;
+      }
+      if (decision.action === 'fail') {
+        this.log(downloadGrace.downloadGraceLogLine(label, downloadGrace.GRACE_WINDOW_MS, 'none'), 'warn');
+        return false;
+      }
+      await this._dlSleep(downloadGrace.GRACE_POLL_MS);
+    }
+    return false;
   }
 
   /**
@@ -14136,6 +14319,11 @@ class FlowAutomationEngine {
       task._mpNetloadCount = 0;
       task._mpNetloadProtoFailed = new Set();
       task._mpNetloadOutcome = null;
+      // v2.48.118 (F2): is attempt ka aaghaz — download
+      // grace ki sinceMs bandish yahi se bandhti hai (is
+      // pal se pehle shuru hue browser downloads is task
+      // ke nahi hain).
+      task._downloadAttemptStartedAt = Date.now();
       // Items 16 + 4: attempt ka aakhri hisaab EK jagah
       // se — census line, cycles line (sirf jab cycles
       // chale hon), aur attempt-summary line. Har
@@ -14325,6 +14513,16 @@ class FlowAutomationEngine {
       // v2.48.109: tartib SIRF tile-menu hai — backend
       // pre-step ko bhi koi bandhi link nahi mili aur
       // tile-menu download file nahi la saka.
+      // v2.48.118 (F2): verdict se pehle 10s ki mohlat —
+      // in-flight browser download is window me utar
+      // aaye to attempt SAVED hai (W10 Prompt #1 me file
+      // verdict ke ~1.6s baad utri thi). Mohlat khaali
+      // jaye to verdict bilkul waisa hi likha jata hai.
+      const graceSaved = await this._downloadGraceWait(task, downloadFolder, settings, attempts);
+      if (graceSaved || task.mediaSaved) {
+        const won = attempts.filter(a => a.ok).pop();
+        return finishVideoAttempt({ ok: true, strategy: won ? won.strategy : 'download-grace', attempts });
+      }
       this.log(`[ROOT] [Prompt #${n}] Download failed honestly: neither the backend pre-step nor the tile-menu download produced this video's file. The prompt was NOT resubmitted — the task parks for recovery, which retries the tile-menu download.`, 'warn');
       return finishVideoAttempt({ ok: false, attempts });
     }

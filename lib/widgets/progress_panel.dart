@@ -17,6 +17,20 @@ import 'video_player_dialog.dart';
 // count chips, and task cards that always show the progress bar, the
 // percent at the left under the bar, and Play + Folder outline icon
 // buttons at the right end of the bar line. No file paths anywhere.
+
+// v2.48.118 (F3): card ke neeche wali qataar (percent + timer |
+// buttons) ka hisaab. Buttons ka kul size pehle se tay hai —
+// 3 buttons × 26 + 2 beech-wale fasle × 5 = 88 — aur wo hamesha
+// card ki padding ke ANDAR ek fixed-width hisse me rehte hain;
+// text wala hissa Expanded + ellipsis se sikudta hai. Is se
+// tung panel (1024x768, FIT LAW) me bhi aakhri button card ki
+// border line se bahar nahi ja sakta (owner screenshot
+// 2026-11-17: FAILED card ka × border se bahar tha).
+const double progressCardButtonSize = 26;
+const double progressCardButtonGap = 5;
+const double progressCardActionsWidth =
+    progressCardButtonSize * 3 + progressCardButtonGap * 2;
+
 class ProgressPanel extends StatelessWidget {
   const ProgressPanel({super.key});
 
@@ -652,27 +666,50 @@ class ProgressPanel extends StatelessWidget {
           ),
           const SizedBox(height: 5),
           // Percent at left; Play + Folder at the right end (design)
+          // v2.48.118 (F3): qataar ab do hisson me hai — text
+          // wala hissa Expanded (percent ellipsis se sikudta
+          // hai) aur buttons ek fixed-width hisse me jo card
+          // ki padding ke andar rehta hai. Pehle saari qataar
+          // ek hi Row me thi: tung panel me kul chaudi card
+          // se zyada ho jati thi aur aakhri button (×) border
+          // line se bahar nikal jata tha (owner screenshot,
+          // FAILED card par sab se saaf).
           Row(
             children: [
-              Text(
-                percentText,
-                style: TextStyle(fontSize: 10, color: AppTheme.textDim),
+              Expanded(
+                child: Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        percentText,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(fontSize: 10, color: AppTheme.textDim),
+                      ),
+                    ),
+                    // v2.48.110 (G10): this video's own time — a live
+                    // elapsed timer while it generates, the final total
+                    // once it settles. Nothing renders when the item has
+                    // no start stamp (no invented times).
+                    // v2.48.112 (F): the timer renders only while the
+                    // card is ACTIVE (generating/downloading) or
+                    // FINISHED (completed/failed) — a card that fell
+                    // back to QUEUED keeps its start stamp but shows
+                    // no clock while it waits.
+                    if (item.startedAt != null &&
+                        (isGenerating || isDone || item.status == PromptStatus.failed)) ...[
+                      const SizedBox(width: 5),
+                      _ElapsedLabel(startedAt: item.startedAt, finishedAt: item.finishedAt),
+                    ],
+                  ],
+                ),
               ),
-              // v2.48.110 (G10): this video's own time — a live
-              // elapsed timer while it generates, the final total
-              // once it settles. Nothing renders when the item has
-              // no start stamp (no invented times).
-              // v2.48.112 (F): the timer renders only while the
-              // card is ACTIVE (generating/downloading) or
-              // FINISHED (completed/failed) — a card that fell
-              // back to QUEUED keeps its start stamp but shows
-              // no clock while it waits.
-              if (item.startedAt != null &&
-                  (isGenerating || isDone || item.status == PromptStatus.failed)) ...[
-                const SizedBox(width: 5),
-                _ElapsedLabel(startedAt: item.startedAt, finishedAt: item.finishedAt),
-              ],
-              const Spacer(),
+              const SizedBox(width: 5),
+              SizedBox(
+                width: progressCardActionsWidth,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.end,
+                  children: [
               _barIconButton(
                 icon: Icons.play_arrow,
                 enabled: isDone,
@@ -692,7 +729,7 @@ class ProgressPanel extends StatelessWidget {
                         )
                     : null,
               ),
-              const SizedBox(width: 5),
+              const SizedBox(width: progressCardButtonGap),
               _barIconButton(
                 icon: Icons.folder_open_outlined,
                 enabled: true,
@@ -703,13 +740,16 @@ class ProgressPanel extends StatelessWidget {
               // only — rendered solely for completed/failed items,
               // so a running card has no clear control at all.
               if (isFinishedCard) ...[
-                const SizedBox(width: 5),
+                const SizedBox(width: progressCardButtonGap),
                 _barIconButton(
                   icon: Icons.close,
                   enabled: true,
                   onTap: () => generator.clearProgressItem(item),
                 ),
               ],
+                  ],
+                ),
+              ),
             ],
           ),
           // v2.30.3: a FAILED card shows WHY. The engine's concrete
@@ -751,8 +791,8 @@ class ProgressPanel extends StatelessWidget {
       type: accent ? TactileType.icon : TactileType.secondary,
       isActive: accent,
       enabled: enabled,
-      width: 26,
-      height: 26,
+      width: progressCardButtonSize,
+      height: progressCardButtonSize,
       borderRadius: 7,
       bevelDepth: 2.0,
       padding: EdgeInsets.zero,

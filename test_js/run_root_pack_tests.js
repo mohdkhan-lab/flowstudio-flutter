@@ -15342,7 +15342,12 @@ async function main() {
       eq('X120 Z3: no press function is an honest false', await applyMenuZoom(null, 0.5, { delayMs: 0 }), false);
       // wiring: the set runs at both verify checkpoints (project
       // open + grid return), immediately around the read-back.
-      eq('X120 Z3: the zoom set is asserted at launch + both checkpoints', flowSrc120.split('this._applyGenerationZoom(').length - 1, 3);
+      // v2.48.118 (F1): do aur istemal jure — workspace-ready wali
+      // binding koshish (_ensureGenerationZoom) aur grid wali
+      // ek-mauqa koshish (_reassertZoomIfUnverified) bhi wahi
+      // keyboard setter chalati hain; Z3 ka contract (keyboard
+      // zoom, koi launch flag nahi) bilkul waisa hi hai.
+      eq('X120 Z3: the zoom set is asserted at launch + both checkpoints + the F1 ensure/re-assert', flowSrc120.split('this._applyGenerationZoom(').length - 1, 5);
       eq('X120 Z3: the read-back runs at both checkpoints', (flowSrc120.match(/await this\._verifyGenerationZoom\(\);/g) || []).length, 2);
       const launchStart = flowSrc120.indexOf('async launchBrowserForAccount(');
       const launchSlice = flowSrc120.slice(launchStart, launchStart + 30000);
@@ -15663,6 +15668,211 @@ async function main() {
       ok('X121 C4: both reconcile paths share the token-first scan',
         flowSrc121.includes('scanOpts.identity = { posterToken: idPoster, videoToken: idVideo, claimedTokens }'));
     }
+  }
+
+  // =====================================================================
+  // X122 (v2.48.118) — W10 LIVE DIAGNOSIS FIXES:
+  //   F1 zoom: the binding keyboard-zoom attempt now runs AFTER the
+  //      Flow workspace is ready, reads back devicePixelRatio, and
+  //      retries at settled moments up to 3 attempts (W10: the old
+  //      launch-time attempt fired ~5s after launch into a still-
+  //      loading page — 'dpr=1 FAILED' logged, never retried, owner
+  //      saw 100%). One extra re-apply is allowed after entering
+  //      the project grid when every earlier attempt failed. Zoom
+  //      failure never blocks generation; the launch flag
+  //      (--force-device-scale-factor) stays REMOVED.
+  //   F2 download grace: before the honest download-failure verdict,
+  //      a 10s grace (500ms polls) waits for THIS task's in-flight
+  //      browser download (E1-DL) to complete; a match is saved via
+  //      the normal browser-download path (W10 Prompt #1: verdict
+  //      at :15.7, the file landed at :16.8 and saved anyway).
+  //   F3 progress card: the bottom row's buttons now live in a
+  //      fixed-width (88) box inside the card padding and the text
+  //      side is Expanded + ellipsis — the × button can no longer
+  //      cross the card border on narrow panels (owner screenshot).
+  // =====================================================================
+  {
+    const fs122 = require('fs');
+    const path122 = require('path');
+    const flowSrc122 = fs122.readFileSync(path122.join(__dirname, '..', 'engine/flowAutomation.js'), 'utf8');
+    const progressSrc122 = fs122.readFileSync(path122.join(__dirname, '..', 'lib/widgets/progress_panel.dart'), 'utf8');
+    const FA122 = require('../engine/flowAutomation');
+    const ZP122 = require('../engine/zoomPolicy');
+    const DG122 = require('../engine/downloadGrace');
+
+    // --- F1 pure policy: band, retry decision, re-apply gate -------
+    eq('X122 F1: dpr 0.5 is in band', ZP122.zoomDprInBand(0.5), true);
+    eq('X122 F1: dpr 0.49 is in band', ZP122.zoomDprInBand(0.49), true);
+    eq('X122 F1: dpr 0.52 is in band', ZP122.zoomDprInBand(0.52), true);
+    eq('X122 F1: dpr 0.53 is out of band', ZP122.zoomDprInBand(0.53), false);
+    eq('X122 F1: dpr 1 is out of band', ZP122.zoomDprInBand(1), false);
+    eq('X122 F1: missing dpr is never verified', ZP122.zoomDprInBand(null), false);
+    eq('X122 F1: first failure retries', ZP122.nextZoomAction(1, 1), 'retry');
+    eq('X122 F1: second failure retries', ZP122.nextZoomAction(2, 1), 'retry');
+    eq('X122 F1: third failure gives up', ZP122.nextZoomAction(3, 1), 'giveup');
+    eq('X122 F1: verified dpr stops at once', ZP122.nextZoomAction(1, 0.5), 'done');
+    eq('X122 F1: verified dpr stops even at the cap', ZP122.nextZoomAction(3, 0.5), 'done');
+    eq('X122 F1: max attempts is 3', ZP122.ZOOM_MAX_ATTEMPTS, 3);
+    eq('X122 F1: retry delay is 800ms', ZP122.ZOOM_RETRY_DELAY_MS, 800);
+    eq('X122 F1: attempt line (verified)', ZP122.zoomAttemptLogLine('Mohd Khan', 2, 0.5),
+      '[ROOT] browser-zoom account=Mohd Khan attempt=2 dpr=0.5 verified');
+    eq('X122 F1: attempt line (FAILED)', ZP122.zoomAttemptLogLine('Mohd Khan', 1, 1),
+      '[ROOT] browser-zoom account=Mohd Khan attempt=1 dpr=1 FAILED');
+    eq('X122 F1: attempt line (no reading)', ZP122.zoomAttemptLogLine('Mohd Khan', 1, null),
+      '[ROOT] browser-zoom account=Mohd Khan attempt=1 dpr=n/a FAILED');
+    eq('X122 F1: grid re-apply due after a failed ensure', ZP122.shouldReapplyZoom({ ensuredOnce: true, verified: false, reasserted: false }), true);
+    eq('X122 F1: no grid re-apply when verified', ZP122.shouldReapplyZoom({ ensuredOnce: true, verified: true, reasserted: false }), false);
+    eq('X122 F1: no grid re-apply before any ensure', ZP122.shouldReapplyZoom({ ensuredOnce: false, verified: false, reasserted: false }), false);
+    eq('X122 F1: grid re-apply fires only once', ZP122.shouldReapplyZoom({ ensuredOnce: true, verified: false, reasserted: true }), false);
+
+    // --- F1 wiring: scheduling + the removed flag stays removed ----
+    const idxReady122 = flowSrc122.indexOf('The Flow workspace is ready — prompts can be sent.');
+    const idxEnsure122 = flowSrc122.indexOf('await this._ensureGenerationZoom();');
+    ok('X122 F1: the binding zoom attempt is scheduled', idxEnsure122 > 0);
+    ok('X122 F1: the binding attempt runs AFTER workspace-ready', idxReady122 > 0 && idxEnsure122 > idxReady122);
+    ok('X122 F1: grid re-assert is wired into the grid return', flowSrc122.includes('await this._reassertZoomIfUnverified();'));
+    ok('X122 F1: per-launch zoom state resets', flowSrc122.includes('this._zoomEnsuredOnce = false;') && flowSrc122.includes('this._zoomGridReassertDone = false;'));
+    ok('X122 F1: the device-scale launch flag is NOT back', !flowSrc122.includes('force-device-scale-factor'));
+
+    // --- F1 behaviour: fake page, scripted dpr readings ------------
+    const mkZoomEngine122 = (dprSeq) => {
+      const logs = [];
+      const eng = new FA122.FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+      const seq = dprSeq.slice();
+      eng.currentAccount = { name: 'Mohd Khan' };
+      eng.isStopping = false;
+      eng.page = {
+        isClosed: () => false,
+        keyboard: { down: async () => {}, press: async () => {}, up: async () => {} },
+        evaluate: async () => ({ dpr: seq.length ? seq.shift() : 1 })
+      };
+      return { eng, logs };
+    };
+    {
+      // dpr 1, then 0.5 — verified on the second attempt.
+      const { eng, logs } = mkZoomEngine122([1, 0.5]);
+      const okEnsure = await eng._ensureGenerationZoom();
+      eq('X122 F1: ensure succeeds when a retry lands in band', okEnsure, true);
+      eq('X122 F1: ensure stopped at the first verified attempt', eng._zoomAttempts, 2);
+      ok('X122 F1: attempt 1 logged FAILED', logs.some((m) => m === '[ROOT] browser-zoom account=Mohd Khan attempt=1 dpr=1 FAILED'));
+      ok('X122 F1: attempt 2 logged verified', logs.some((m) => m === '[ROOT] browser-zoom account=Mohd Khan attempt=2 dpr=0.5 verified'));
+      ok('X122 F1: success keeps the applied wording + attempt no', logs.some((m) => m === '[ROOT] browser-zoom account=Mohd Khan scale=0.5 applied attempt=2'));
+    }
+    {
+      // dpr stays 1 — exactly 3 attempts, no throw, run unblocked.
+      const { eng, logs } = mkZoomEngine122([1, 1, 1, 1]);
+      const okEnsure = await eng._ensureGenerationZoom();
+      eq('X122 F1: ensure gives up after 3 attempts without throwing', okEnsure, false);
+      eq('X122 F1: exactly 3 attempts were made', eng._zoomAttempts, 3);
+      eq('X122 F1: three FAILED attempt lines', logs.filter((m) => m.includes('browser-zoom') && m.includes('attempt=') && m.includes('FAILED')).length, 3);
+      // Grid re-apply: one extra shot; now the page reports 0.5.
+      eng.page.evaluate = async () => ({ dpr: 0.5 });
+      const okRe = await eng._reassertZoomIfUnverified();
+      eq('X122 F1: grid re-apply lands the zoom', okRe, true);
+      eq('X122 F1: grid re-apply counted as attempt 4', eng._zoomAttempts, 4);
+      const okRe2 = await eng._reassertZoomIfUnverified();
+      eq('X122 F1: grid re-apply never fires twice', okRe2, false);
+    }
+    {
+      // First attempt already in band — a single attempt.
+      const { eng } = mkZoomEngine122([0.5]);
+      const okEnsure = await eng._ensureGenerationZoom();
+      eq('X122 F1: first-attempt success', okEnsure, true);
+      eq('X122 F1: only one attempt needed', eng._zoomAttempts, 1);
+    }
+
+    // --- F2 pure grace: matching, refusal, timeout -----------------
+    eq('X122 F2: grace window is 10s', DG122.GRACE_WINDOW_MS, 10000);
+    eq('X122 F2: grace poll is 500ms', DG122.GRACE_POLL_MS, 500);
+    const graceState122 = (begins, completed) => ({ begins, completed: new Map(completed) });
+    {
+      const st = graceState122(
+        [{ guid: 'g1', suggestedFilename: 'Man_touching_feet_abc.mp4', at: 1500 }],
+        [['g1', { state: 'completed', at: 2600, receivedBytes: 2001623, totalBytes: 2001623 }]]);
+      const d = DG122.decideGrace(st, { startedAtMs: 1000, mediaSaved: false }, 2700, 1100);
+      eq('X122 F2: a matching completed download inside the window saves', d.action, 'saved');
+      eq('X122 F2: the save came via the event', d.via, 'event');
+      eq('X122 F2: the match is the task download', d.match && d.match.guid, 'g1');
+    }
+    {
+      // The same event, but it began BEFORE this attempt — not ours.
+      const st = graceState122(
+        [{ guid: 'g0', suggestedFilename: 'Old_video.mp4', at: 500 }],
+        [['g0', { state: 'completed', at: 2600, receivedBytes: 10, totalBytes: 10 }]]);
+      const d = DG122.decideGrace(st, { startedAtMs: 1000, mediaSaved: false }, 2700, 1100);
+      eq('X122 F2: a download begun before the attempt is ignored', d.action, 'wait');
+    }
+    {
+      // A claimed size is known and the completed size differs — no bind.
+      const st = graceState122(
+        [{ guid: 'g2', suggestedFilename: 'Other.mp4', at: 1500 }],
+        [['g2', { state: 'completed', at: 2600, receivedBytes: 999, totalBytes: 999 }]]);
+      const d = DG122.decideGrace(st, { startedAtMs: 1000, mediaSaved: false, claimedBytes: 2003355 }, 2700, 1100);
+      eq('X122 F2: a size mismatch never binds when the size is known', d.action, 'wait');
+      const d2 = DG122.decideGrace(st, { startedAtMs: 1000, mediaSaved: false, claimedBytes: 999 }, 2700, 1100);
+      eq('X122 F2: an exact claimed size binds', d2.action, 'saved');
+    }
+    {
+      // mediaSaved flipped by an in-flight path — saved even with no E1-DL state.
+      const d = DG122.decideGrace(null, { startedAtMs: 1000, mediaSaved: true }, 3000, 1100);
+      eq('X122 F2: an in-flight save inside the window counts', d.action, 'saved');
+      eq('X122 F2: that save is via already-saved', d.via, 'already-saved');
+    }
+    {
+      // Nothing arrives — the window runs out and the verdict proceeds.
+      const d = DG122.decideGrace(graceState122([], []), { startedAtMs: 1000, mediaSaved: false }, 11100, 1100);
+      eq('X122 F2: timeout declares the original failure', d.action, 'fail');
+      eq('X122 F2: timeout waited the full window', d.waitedMs, 10000);
+      const dMid = DG122.decideGrace(graceState122([], []), { startedAtMs: 1000, mediaSaved: false }, 5000, 1100);
+      eq('X122 F2: mid-window with nothing is still waiting', dMid.action, 'wait');
+    }
+    eq('X122 F2: waited text for the full window', DG122.graceWaitedText(10000), '10');
+    eq('X122 F2: waited text for a quick save', DG122.graceWaitedText(1600), '1.6');
+    eq('X122 F2: grace line (none)', DG122.downloadGraceLogLine(0, 10000, 'none'),
+      '[ROOT] download-grace task=0 waited=10 result=none');
+    eq('X122 F2: grace line (saved)', DG122.downloadGraceLogLine(2, 1600, 'saved'),
+      '[ROOT] download-grace task=2 waited=1.6 result=saved');
+    {
+      const snap = new Map([
+        ['C:\\dl', new Set(['Man_x.mp4', 'keep.mp4'])],
+        ['C:\\dl2', new Set(['Man_x (1).mp4'])]
+      ]);
+      const removed = DG122.snapshotExcluding(snap, 'Man_x.mp4');
+      eq('X122 F2: snapshot exclusion removes the name + dedup variant', removed, 2);
+      ok('X122 F2: unrelated files stay in the snapshot', snap.get('C:\\dl').has('keep.mp4'));
+    }
+
+    // --- F2 wiring: grace sits before the honest verdict -----------
+    const idxGrace122 = flowSrc122.indexOf('const graceSaved = await this._downloadGraceWait(task, downloadFolder, settings, attempts);');
+    const idxVerdict122 = flowSrc122.indexOf('Download failed honestly');
+    ok('X122 F2: the grace wait is wired', idxGrace122 > 0);
+    ok('X122 F2: grace runs BEFORE the honest-failure verdict', idxVerdict122 > 0 && idxGrace122 < idxVerdict122);
+    ok('X122 F2: the attempt start stamp is recorded', flowSrc122.includes('task._downloadAttemptStartedAt = Date.now();'));
+    const graceBody122 = flowSrc122.slice(flowSrc122.indexOf('async _downloadGraceWait('), flowSrc122.indexOf('async _downloadGraceWait(') + 4000);
+    ok('X122 F2: a grace match is saved via the normal browser-download path', graceBody122.includes('this._nativeAwaitAndSave(task, prep, sinceMs, 8000, downloadFolder, settings)'));
+    ok('X122 F2: the matched name leaves the watch snapshot first', graceBody122.includes('downloadGrace.snapshotExcluding(prep.existingFilesByFolder, decision.match.suggestedFilename)'));
+    ok('X122 F2: the grace decision is the pure helper', graceBody122.includes('downloadGrace.decideGrace(this._dlEventState,'));
+
+    // --- F3 structural: constants + the restructured row -----------
+    const mBtn122 = progressSrc122.match(/const double progressCardButtonSize = ([\d.]+);/);
+    const mGap122 = progressSrc122.match(/const double progressCardButtonGap = ([\d.]+);/);
+    ok('X122 F3: button size constant exists', !!mBtn122);
+    ok('X122 F3: button gap constant exists', !!mGap122);
+    const btnN122 = mBtn122 ? parseFloat(mBtn122[1]) : 0;
+    const gapN122 = mGap122 ? parseFloat(mGap122[1]) : 0;
+    eq('X122 F3: actions width = 3 buttons + 2 gaps = 88', btnN122 * 3 + gapN122 * 2, 88);
+    ok('X122 F3: actions width constant is that arithmetic', progressSrc122.includes('progressCardButtonSize * 3 + progressCardButtonGap * 2'));
+    ok('X122 F3: actions box uses the fixed width', progressSrc122.includes('width: progressCardActionsWidth'));
+    ok('X122 F3: bar buttons use the shared size', progressSrc122.includes('width: progressCardButtonSize') && progressSrc122.includes('height: progressCardButtonSize'));
+    const rowSlice122 = progressSrc122.slice(
+      progressSrc122.indexOf('// Percent at left; Play + Folder'),
+      progressSrc122.indexOf('FAILED card shows WHY'));
+    ok('X122 F3: the text side is Expanded', rowSlice122.includes('Expanded('));
+    ok('X122 F3: the percent text ellipsizes', rowSlice122.includes('overflow: TextOverflow.ellipsis'));
+    ok('X122 F3: no Spacer pushes the buttons out any more', !rowSlice122.includes('const Spacer()'));
+    ok('X122 F3: the card keeps its 8px padding (actions sit inside it)', progressSrc122.includes('padding: const EdgeInsets.all(8)'));
+    ok('X122 F3: the failure text still grows the card (maxLines 2 in the column)',
+      progressSrc122.includes('item.error!') && progressSrc122.includes('maxLines: 2'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

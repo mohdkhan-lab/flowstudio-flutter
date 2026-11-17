@@ -39,6 +39,22 @@ class TaskQueue {
     return this.pending.length > 0 ? this.pending.shift() : null;
   }
 
+  /**
+   * v2.48.112 (A): take the next pending task the predicate accepts
+   * (FIFO among the accepted ones). The run planner's per-account
+   * bundles pull through this: a worker takes only its own bundle's
+   * tasks, or — with no bundle — only tasks no bundle owns. Tasks the
+   * predicate rejects keep their place and their order.
+   */
+  nextMatching(predicate) {
+    if (typeof predicate !== 'function') return this.next();
+    const idx = this.pending.findIndex(t => {
+      try { return !!predicate(t); } catch (e) { return false; }
+    });
+    if (idx < 0) return null;
+    return this.pending.splice(idx, 1)[0];
+  }
+
   peek() {
     return this.pending.length > 0 ? this.pending[0] : null;
   }

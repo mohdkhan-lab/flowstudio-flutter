@@ -727,6 +727,59 @@ function panelDumpSource() {
 }
 
 /**
+ * v2.48.112 (H): the RICH panel dump's page-side source —
+ * the settings panel subtree's INTERACTIVE elements with
+ * the evidence a click diagnosis actually needs: tag,
+ * visible text, aria-label, disabled state and bounding
+ * box. .111's F5 dump returned texts=[] in the field
+ * because it only collected innerText — an element can
+ * be present, visible and clickable with no text at all
+ * (icon toggles), so this walk keys on interactivity,
+ * not text. Capped at 60 elements.
+ */
+function panelDumpRichSource() {
+  return '(() => {\n'
+    + '/*fsPanelDumpRich*/\n'
+    + 'try {\n'
+    + '  const pop = Array.from(document.querySelectorAll(\'.cdk-overlay-pane, .settings-content\')).find(p => p.getClientRects().length > 0) || document.querySelector(\'.settings-content\');\n'
+    + '  if (!pop) return { elements: [] };\n'
+    + '  const visible = (el) => { try { return el.getClientRects().length > 0; } catch (e) { return false; } };\n'
+    + '  const SEL = \'button, [role="radio"], [role="tab"], [role="option"], input, mat-button-toggle, [aria-checked], [data-state]\';\n'
+    + '  const els = Array.from(pop.querySelectorAll(SEL)).filter(visible).slice(0, 60);\n'
+    + '  const elements = els.map((el) => {\n'
+    + '    let box = null;\n'
+    + '    try { const r = el.getBoundingClientRect(); if (r) box = { x: r.x, y: r.y, w: r.width, h: r.height }; } catch (e) {}\n'
+    + '    let aria = \'\';\n'
+    + '    try { aria = el.getAttribute ? (el.getAttribute(\'aria-label\') || \'\') : \'\'; } catch (e) {}\n'
+    + '    let disabled = false;\n'
+    + '    try { disabled = !!(el.disabled || (el.getAttribute && (el.getAttribute(\'disabled\') !== null || el.getAttribute(\'aria-disabled\') === \'true\')) || (el.classList && el.classList.contains && el.classList.contains(\'disabled\'))); } catch (e) {}\n'
+    + '    const text = (el.innerText || \'\').replace(/\\s+/g, \' \').trim().slice(0, 60);\n'
+    + '    return { tag: String(el.tagName || \'\').toLowerCase(), text, aria: String(aria).slice(0, 60), disabled, box };\n'
+    + '  });\n'
+    + '  return { elements };\n'
+    + '} catch (e) { return { elements: [] }; }\n'
+    + '})()';
+}
+
+/** v2.48.112 (H): one interactive element of the rich dump as a [ROOT] line. */
+function settingsPanelRichElementLine(el) {
+  const e = el && typeof el === 'object' ? el : {};
+  const tag = String(e.tag == null ? '' : e.tag).trim() || '-';
+  const text = String(e.text == null ? '' : e.text).replace(/\s+/g, ' ').trim().slice(0, 60);
+  const aria = String(e.aria == null ? '' : e.aria).replace(/\s+/g, ' ').trim().slice(0, 60);
+  const box = e.box && typeof e.box === 'object'
+    ? `${Math.round(Number(e.box.x) || 0)},${Math.round(Number(e.box.y) || 0)},${Math.round(Number(e.box.w) || 0)},${Math.round(Number(e.box.h) || 0)}`
+    : '-';
+  return `[ROOT] settings-panel-el tag=${tag} text="${text}" aria="${aria}" disabled=${e.disabled ? 'true' : 'false'} box=${box}`;
+}
+
+/** v2.48.112 (H): the clicker's last target as a [ROOT] line. */
+function settingsClickTargetLine(t) {
+  if (!t || typeof t !== 'object') return '[ROOT] settings-click-target none recorded';
+  return `[ROOT] settings-click-target field=${t.field || t.kind || ''} strategy=${t.strategy || ''} want=${t.want || ''} at=${t.x},${t.y}`;
+}
+
+/**
  * v2.48.78 (Item A): panel ke ek field-group ka
  * TARGET option dhoondhne wala page-side source —
  * resolutionStateSource wali hi shakal (khalis
@@ -773,6 +826,12 @@ function panelDumpSource() {
  * ke group-container ke andar hi target dhoondho.
  * Group pehchana hi na jaye to purani pane-wide
  * rawish (fallback) bilkul waisi hi chalti hai.
+ * v2.48.112 (H): natije me selfDisabled bhi lautta
+ * hai — target element disabled hai ya nahi
+ * (disabled property / attribute / aria-disabled /
+ * disabled class) — readiness gate (neeche) isi par
+ * faisla karti hai ke panel asal me click ke liye
+ * tayyar hai ya abhi render ho raha hai.
  */
 function panelOptionTargetSource(kind, wantText) {
   const kindJson = JSON.stringify(String(kind || ''));
@@ -902,7 +961,9 @@ function panelOptionTargetSource(kind, wantText) {
     + '  let host = null;\n'
     + '  try { const hostEl = target.closest ? target.closest(\'mat-button-toggle, [role="radio"], [role="tab"]\') : null; if (hostEl && hostEl !== target) host = centre(hostEl); } catch (e) {}\n'
     + '  if (!host) { try { const p = target.parentElement; if (p && p !== pop) host = centre(p); } catch (e) {} }\n'
-    + '  return { found: !!self, options, self, inner, host, via };\n'
+    + '  let selfDisabled = false;\n'
+    + '  try { selfDisabled = !!(target.disabled || (target.getAttribute && (target.getAttribute(\'disabled\') !== null || target.getAttribute(\'aria-disabled\') === \'true\')) || (target.classList && target.classList.contains && target.classList.contains(\'disabled\'))); } catch (e) {}\n'
+    + '  return { found: !!self, options, self, inner, host, via, selfDisabled };\n'
     + '} catch (e) { return { found: false, options: [], self: null, inner: null, host: null, via: null }; }\n'
     + '})()';
 }
@@ -1506,6 +1567,19 @@ class FlowAutomationEngine {
     this.page = null;
     this.cdpSession = null;
     this.isStopping = false;
+    // v2.48.112 (D): the per-engine PAGE-OPERATION LEASE — a
+    // promise chain every page-driving entry point (submit,
+    // download, download-retry) queues on, so two drivers can
+    // never work this engine's one page at the same time.
+    this._pageOpChain = Promise.resolve();
+    // v2.48.112 (H): settings-click evidence + the one
+    // close-and-reopen retry per submission.
+    this._lastSettingsClickTarget = null;
+    this._panelReopenRetried = false;
+    // v2.48.112 (H): how long the settings readiness gate waits
+    // for the panel to finish rendering before a duration/count
+    // click (~5s in production; tests may shrink it).
+    this.settingsReadyWaitMs = Number(options.settingsReadyWaitMs) > 0 ? Number(options.settingsReadyWaitMs) : 5000;
     this.isPaused = false;
     this.currentAccount = null;
     // v2.25.0 (parked browser): is THIS engine's generation window
@@ -1645,7 +1719,16 @@ class FlowAutomationEngine {
     this.isPaused = false;
   }
 
-  stop() {
+  /**
+   * v2.48.112 (E): phase 1 of a stop — mark this engine stopping
+   * and detach the network capture, but do NOT touch the browser.
+   * In-flight page operations see the flag (submit/configure
+   * check it before every page access and bail out as STOPPED),
+   * and the pool gives them a bounded settle window before it
+   * closes browsers in phase 2. stop() below keeps its old
+   * one-shot behaviour (mark + close) for direct callers.
+   */
+  beginStop() {
     this.isStopping = true;
     this.isPaused = false;
     try { if (this.netCapture) this.netCapture.detach(); } catch (e) {}
@@ -1654,8 +1737,44 @@ class FlowAutomationEngine {
         const pid = this.browser.process() ? this.browser.process().pid : null;
         if (pid && this.currentAccount) liveBrowsers.unregister(this.currentAccount.id, pid);
       } catch (e) {}
+    }
+  }
+
+  stop() {
+    this.beginStop();
+    if (this.browser) {
       try { this.browser.close().catch(() => {}); } catch (e) {}
     }
+  }
+
+  /**
+   * v2.48.112 (D): run `fn` under this engine's page-operation
+   * lease — page-driving entry points (submit, download,
+   * download-retry) serialize through here so two drivers never
+   * work the one page at once. The chain never rejects (a failed
+   * operation must not jam the lease for the next one); the
+   * caller still receives fn's own result or throw.
+   */
+  _withPageLease(fn) {
+    const run = (this._pageOpChain || Promise.resolve()).then(() => fn());
+    this._pageOpChain = run.then(() => {}, () => {});
+    return run;
+  }
+
+  /**
+   * v2.48.112 (E): resolves when this engine's queued page
+   * operations have settled, or after `timeoutMs` — whichever
+   * comes first. The pool's two-phase stop waits on this before
+   * closing browsers.
+   */
+  pageOpsSettled(timeoutMs = 2000) {
+    const chain = this._pageOpChain || Promise.resolve();
+    const ms = Math.max(0, Number(timeoutMs) || 0);
+    if (ms === 0) return chain.catch(() => {});
+    return Promise.race([
+      chain.catch(() => {}),
+      new Promise(resolve => setTimeout(resolve, ms))
+    ]);
   }
 
   async launchBrowserForAccount(account, downloadDir) {
@@ -3146,6 +3265,10 @@ class FlowAutomationEngine {
         self: res.self || null,
         inner: res.inner || null,
         host: res.host || null,
+        // v2.48.112 (H): the target element's own disabled
+        // state, when the finder reported it (older/fake
+        // answers without the field read as enabled).
+        selfDisabled: !!res.selfDisabled,
         // v2.48.80 (Item A): finder jis pass se mila,
         // woh bolta hai; purane/jaali jawabon me via
         // na ho to found par 'exact' hi samjha jata hai.
@@ -3153,6 +3276,41 @@ class FlowAutomationEngine {
       };
     } catch (e) {
       return { found: false, options: [], self: null, inner: null, host: null, via: null };
+    }
+  }
+
+  // v2.48.112 (H): READINESS GATE — before a duration/count
+  // click, wait (bounded by settingsReadyWaitMs, ~5s) until
+  // the panel has FINISHED rendering: the target option is
+  // visible, NOT disabled, and standing still (same centre
+  // on two consecutive polls). The field evidence behind
+  // this: on accounts whose panel the app had never opened
+  // by hand, the pill read correctly yet every click
+  // strategy reported changed=false — consistent with
+  // clicks landing while the panel was still mounting.
+  // The gate never fails the configure by itself: on
+  // timeout it returns the best target seen and the click
+  // proceeds exactly as before (the read-back verify still
+  // judges the outcome).
+  async _waitPanelOptionReady(kind, wantText, firstTarget) {
+    let target = firstTarget;
+    if (!target || !target.found || !target.self) return target;
+    const deadline = Date.now() + Math.max(0, this.settingsReadyWaitMs || 5000);
+    let lastKey = null;
+    let stablePolls = 0;
+    for (;;) {
+      const key = target.self ? `${target.self.x},${target.self.y}` : '';
+      if (key && key === lastKey && !target.selfDisabled) {
+        stablePolls++;
+        if (stablePolls >= 2) return target;
+      } else {
+        stablePolls = 0;
+        lastKey = key;
+      }
+      if (Date.now() >= deadline) return target;
+      await sleep(150);
+      const fresh = await this._panelOptionTarget(kind, wantText);
+      if (fresh && fresh.found && fresh.self) target = fresh;
     }
   }
 
@@ -3199,7 +3357,12 @@ class FlowAutomationEngine {
   // changed='unchecked' darj hota hai; aakhri
   // darwaza (pill gate) wahan bhi waisa hi hai.
   async _selectPanelOption({ field, kind, wantText, verify } = {}) {
-    const target = await this._panelOptionTarget(kind, wantText);
+    let target = await this._panelOptionTarget(kind, wantText);
+    // v2.48.112 (H): duration/count clicks wait for the
+    // panel to finish rendering first (readiness gate).
+    if ((kind === 'duration' || kind === 'count') && target.found && target.self) {
+      target = await this._waitPanelOptionReady(kind, wantText, target);
+    }
     this.log(settingsOptionsDumpLine(field, target.options), 'info');
     if (!target.found || !target.self) {
       // v2.48.79 (Item C): options bhi lautta hai — bulane
@@ -3236,6 +3399,18 @@ class FlowAutomationEngine {
     for (const strat of strategies) {
       if (!strat.point) continue;
       lastStrategy = strat.name;
+      // v2.48.112 (H): remember exactly WHAT was clicked
+      // (element point + strategy) — the terminal-mismatch
+      // rich dump prints it, so the next diagnosis works
+      // from the click's real target instead of a guess.
+      this._lastSettingsClickTarget = {
+        field: field || kind || '',
+        kind: kind || '',
+        want: String(wantText == null ? '' : wantText),
+        strategy: strat.name,
+        x: Math.round(strat.point.x),
+        y: Math.round(strat.point.y)
+      };
       await clickAt(strat.point);
       let changed = null;
       if (typeof verify === 'function') {
@@ -3251,7 +3426,14 @@ class FlowAutomationEngine {
         return { ok: true, found: true, strategy: strat.name, options: target.options, via: target.via || 'exact' };
       }
     }
-    return { ok: false, found: true, strategy: lastStrategy, options: target.options, via: target.via || 'exact' };
+    // v2.48.112 (H): reaching here means EVERY strategy
+    // reported changed=false. For duration (the field with
+    // a real read-back verify) the caller gets needsReopen:
+    // the configure may close the panel, re-open it and run
+    // the whole configure once more before declaring a
+    // mismatch — a panel that was still mounting swallows
+    // the first pass whole.
+    return { ok: false, found: true, strategy: lastStrategy, options: target.options, via: target.via || 'exact', needsReopen: kind === 'duration' && typeof verify === 'function' };
   }
 
   /**
@@ -3277,6 +3459,28 @@ class FlowAutomationEngine {
     } catch (e) {
       return false;
     }
+  }
+
+  /**
+   * v2.48.112 (H): the terminal-mismatch dump — the classic
+   * texts dump FIRST (its [ROOT] lines and the F5 dump-count
+   * discipline are unchanged), then the RICH element lines
+   * and the click-target line. .111's field dump came back
+   * texts=[] and proved nothing; this one names every
+   * interactive element in the panel, its disabled state
+   * and its box, plus the exact point the clicker chose.
+   */
+  async _dumpSettingsPanelRich() {
+    const okDump = await this._dumpSettingsPanel();
+    try {
+      const res = await this.page.evaluate(panelDumpRichSource());
+      const els = res && Array.isArray(res.elements) ? res.elements.slice(0, 60) : [];
+      for (const el of els) {
+        this.log(settingsPanelRichElementLine(el), 'info');
+      }
+    } catch (e) {}
+    this.log(settingsClickTargetLine(this._lastSettingsClickTarget), 'info');
+    return okDump;
   }
 
   /**
@@ -3308,6 +3512,13 @@ class FlowAutomationEngine {
   }
 
   async configureGenerationSettings(settings, isRetry = false, attemptNo = 1) {
+    // v2.48.112 (E): a stop that landed before (or during the
+    // caller's last step) must never turn into a null-page
+    // evaluate crash here — the caller maps this to STOPPED
+    // and the task stays resumable.
+    if (this.isStopping || !this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) {
+      return { ok: false, stopped: true };
+    }
     // v2.48.111 (F5): how many panel dumps existed when THIS
     // attempt began — the terminal mismatch branch compares
     // against it before deciding to capture one of its own.
@@ -3641,12 +3852,26 @@ class FlowAutomationEngine {
         if (modeType === 'Video') {
           const targetDuration = settings.duration || '6s';
           this.log(`Selecting the Duration: [${targetDuration}]…`, 'info');
-          await this._selectPanelOption({
+          const durSel = await this._selectPanelOption({
             field: 'duration',
             kind: 'duration',
             wantText: wantDur,
             verify: async () => (await readSelectedDuration()) === wantDur
           });
+          // v2.48.112 (H): every click strategy changed
+          // nothing — the panel may still have been mounting
+          // when the clicks landed. Close it, re-open it and
+          // run the WHOLE configure once more (once per
+          // submission) before any mismatch is declared.
+          // Model-first ordering and the read-back verify
+          // are untouched: the retry IS a full configure.
+          if (durSel && durSel.needsReopen && !this._panelReopenRetried) {
+            this._panelReopenRetried = true;
+            this.log('[ROOT] settings-reopen field=duration — the first pass changed nothing; the panel is being closed and re-opened, then the full configure runs once more', 'warn');
+            try { await this.page.keyboard.press('Escape'); } catch (e) {}
+            await sleep(500);
+            return await this.configureGenerationSettings(settings, isRetry, attemptNo);
+          }
         }
 
         // 6. Select Outputs Count — v2.4.0: always x1 (locked). The
@@ -3783,7 +4008,10 @@ class FlowAutomationEngine {
             // point adds nothing — the panel already stands
             // documented in this run's log.
             if ((this._settingsPanelDumpCount || 0) === dumpsAtEntry) {
-              await this._dumpSettingsPanel();
+              // v2.48.112 (H): the RICH dump — interactive
+              // elements + click target, not texts alone
+              // (.111's field dump came back texts=[]).
+              await this._dumpSettingsPanelRich();
             }
             this.log(`[ROOT] settings-mismatch pill="${finalPillText}" fields=${pillMismatch.join(',')} — run stopped before any submit; no credits spent`, 'error');
             this.log(`Flow's settings panel does not match this run's settings (${pillMismatch.join(', ')}) — the prompt was NOT sent and no credits were spent. This account will be skipped for the rest of the run.`, 'error');
@@ -3805,10 +4033,25 @@ class FlowAutomationEngine {
   // BEFORE the prompt fires, so the pool may safely re-queue the task
   // on another account.
   async submitPrompt(promptText, settings, promptIndex, totalPrompts) {
+    // v2.48.112 (D): submissions run under the page-operation
+    // lease — a download or download-retry on this engine
+    // never overlaps a submit on the same page again.
+    return this._withPageLease(() => this._submitPromptInner(promptText, settings, promptIndex, totalPrompts));
+  }
+
+  async _submitPromptInner(promptText, settings, promptIndex, totalPrompts) {
     // v2.48.106 (Fix F6): a direct run clears any Agent-run
     // flag, so the direct route's chip disable applies again.
     this.__fsAgentRunActive = false;
-    if (this.isStopping) return { status: 'STOPPED' };
+    // v2.48.112 (E): never touch a page that is gone — a stop
+    // landing between the pool's pickup and this call used to
+    // surface as a null-page 'evaluate' worker error (W4).
+    // STOPPED is the resumable verdict: the pool re-queues the
+    // task untouched.
+    if (this.isStopping || !this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return { status: 'STOPPED' };
+    // v2.48.112 (H): this submission gets its one
+    // close-and-reopen configure retry.
+    this._panelReopenRetried = false;
     // v1.1: from here on, video streams on this page may be results of our
     // own submissions — arm the response capture (see launch handler).
     this.captureArmed = true;
@@ -3858,6 +4101,9 @@ class FlowAutomationEngine {
     const settingsSig = settingsSignatureOf(settings);
     if (!this.hasConfiguredSettings || this._appliedSettingsSig !== settingsSig) {
       const cfgRes = await this.configureGenerationSettings(settings);
+      // v2.48.112 (E): the stop landed mid-configure — the
+      // task never fired; report STOPPED, not a mismatch.
+      if (cfgRes && cfgRes.stopped) return { status: 'STOPPED' };
       if (cfgRes && Array.isArray(cfgRes.settingsMismatch)) {
         // v2.48.63 (SETTINGS TASDEEQ): pre-fire nakami —
         // prompt gaya hi nahi, credit kata hi nahi; pool
@@ -3878,6 +4124,7 @@ class FlowAutomationEngine {
     if (isVideoExpected && currentPillText && (currentPillText.includes('Banana') || currentPillText.startsWith('Image'))) {
       this.log(`The Flow workspace has gone back to Image (${currentPillText}) — applying Video mode again…`, 'warn');
       const cfgRes2 = await this.configureGenerationSettings(settings);
+      if (cfgRes2 && cfgRes2.stopped) return { status: 'STOPPED' };
       if (cfgRes2 && Array.isArray(cfgRes2.settingsMismatch)) {
         // v2.48.63 (SETTINGS TASDEEQ): dobara lagane ke
         // baad bhi pill mangi hui settings se nahi mili —
@@ -7652,6 +7899,13 @@ class FlowAutomationEngine {
    * stall every later round behind it.
    */
   async downloadTaskMedia(task, downloadFolder, settings, tileIndexHint) {
+    // v2.48.112 (D): downloads run under the page-operation
+    // lease — a submit or a download-retry on this engine
+    // never overlaps a download round on the same page.
+    return this._withPageLease(() => this._downloadTaskMediaImpl(task, downloadFolder, settings, tileIndexHint));
+  }
+
+  async _downloadTaskMediaImpl(task, downloadFolder, settings, tileIndexHint) {
     // v2.48.62 (ZC30 TEST FLAG — skipFirstTaskDownload):
     // is run ke pehle prompt ka download marhala jaan-
     // boojh kar chhoda gaya hai (ZC30 ka 'first vs latest
@@ -13105,6 +13359,14 @@ class FlowAutomationEngine {
    * { status:'tile-missing' } | { status:'download-failed', attempts }.
    */
   async retryDownloadForTask(task, downloadFolder, settings) {
+    // v2.48.112 (D): download-retries run under the
+    // page-operation lease — they drive the tile grid, the
+    // editor and the ⋮ menu, so they must never overlap a
+    // submit or a download round on this engine's page.
+    return this._withPageLease(() => this._retryDownloadForTaskImpl(task, downloadFolder, settings));
+  }
+
+  async _retryDownloadForTaskImpl(task, downloadFolder, settings) {
     const isImage = !!(settings && settings.type === 'Image');
     const n = (task.promptIndex || 0) + 1;
     // v2.48.63 (Item C — DRAIN STAND-DOWN): test-flag
@@ -13173,7 +13435,10 @@ class FlowAutomationEngine {
     this._downloadChannel = 'drain';
     let dl;
     try {
-      dl = await this.downloadTaskMedia(task, downloadFolder, settings, task.tileIndex);
+      // v2.48.112 (D): the IMPL directly — this retry already
+      // holds the page-operation lease; re-entering the public
+      // (leased) entry would deadlock the chain.
+      dl = await this._downloadTaskMediaImpl(task, downloadFolder, settings, task.tileIndex);
     } finally {
       this._downloadChannel = prevChannel || 'monitor';
     }
@@ -14321,4 +14586,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };

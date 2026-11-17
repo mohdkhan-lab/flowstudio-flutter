@@ -214,7 +214,7 @@ const PORT = 48190;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.111';
+const APP_VERSION = '2.48.112';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -439,8 +439,16 @@ async function startBridge() {
     // visible). The WorkerPool "headless" option is the background
     // flag (headed Chrome parked off-screen, never true headless).
     const backgroundSetting = dbService.getSetting('browser_background', '1');
+    // v2.48.112 (C): ONE parallel truth — the DB store wins over
+    // the request body (settingsTruth.resolveEffectiveParallel);
+    // the pool is built with the resolved value, pins it for the
+    // run, and the routes report it back from pool.concurrency.
+    const effectiveParallel = settingsTruth.resolveEffectiveParallel({
+      dbValue: dbService.getSetting('parallel_browsers', ''),
+      bodyValue: parallelBrowsers
+    });
     return new WorkerPool({
-      concurrency: parallelBrowsers || 1,
+      concurrency: effectiveParallel,
       headless: backgroundSetting !== '0',
       // Headless generation (owner's opt-in): TRUE headless Chrome
       // for generation workers — wins over the background/visible
@@ -1549,7 +1557,11 @@ async function startBridge() {
             model: dbService.getSetting('default_model', ''),
             duration: dbService.getSetting('default_duration', ''),
             aspectRatio: dbService.getSetting('default_aspect', ''),
-            quality: dbService.getSetting('default_quality', '')
+            quality: dbService.getSetting('default_quality', ''),
+            // v2.48.112 (C): the stored parallel count rides
+            // the same push, so the app's memory is refreshed
+            // from the store before an in-app run starts.
+            parallelBrowsers: dbService.getSetting('parallel_browsers', '')
           });
         } catch (e) { settingsHint = {}; }
         // v2.48.109 (F5 — PER-RUN PARAMS WIN): the caller
@@ -1711,7 +1723,10 @@ async function startBridge() {
 
         activeWorkerPool = pool;
         broadcastEvent('automation-log', {
-          message: `Generation started: ${config.prompts ? config.prompts.length : 0} prompt(s) • ${config.parallelBrowsers || 1} worker(s) in parallel`,
+          // v2.48.112 (C): the RESOLVED count (DB store first),
+          // not the raw request value — the log tells the truth
+          // the run actually uses.
+          message: `Generation started: ${config.prompts ? config.prompts.length : 0} prompt(s) • ${pool.concurrency} worker(s) in parallel`,
           level: 'info'
         });
 
@@ -1908,7 +1923,10 @@ async function startBridge() {
           broadcastEvent('automation-log', { message: 'Generation queue finished.', level: 'success' });
         });
 
-        return sendJson(200, { ok: true });
+        // v2.48.112 (C): the caller sees the parallel count the
+        // run actually resolved (DB store first) — spawn and
+        // supervision both pin this same value.
+        return sendJson(200, { ok: true, parallelBrowsers: pool.concurrency });
       }
 
       // v2.33.0 (missing-scene redo): make ONLY the scenes the last
@@ -1998,7 +2016,7 @@ async function startBridge() {
           activeRunStarted = null;
           broadcastEvent('automation-log', { message: 'Generation queue finished.', level: 'success' });
         });
-        return sendJson(200, { ok: true, started: true, missing: report.missing.length });
+        return sendJson(200, { ok: true, started: true, missing: report.missing.length, parallelBrowsers: pool.concurrency });
       }
 
       if (pathname === '/api/generation/pause' && req.method === 'POST') {
@@ -2070,7 +2088,7 @@ async function startBridge() {
           activeWorkerPool = null;
           broadcastEvent('automation-log', { message: 'Generation queue finished.', level: 'success' });
         });
-        return sendJson(200, { ok: true, resumed: true, mode: 'recovery', count: recoveryRows.length });
+        return sendJson(200, { ok: true, resumed: true, mode: 'recovery', count: recoveryRows.length, parallelBrowsers: pool.concurrency });
       }
 
       // v2.48.74 (Item C REVISED — owner): Progress panel
@@ -2130,7 +2148,7 @@ async function startBridge() {
           activeWorkerPool = null;
           broadcastEvent('automation-log', { message: 'Parked recovery finished.', level: 'success' });
         });
-        return sendJson(200, { ok: true, started: true, count: rows.length });
+        return sendJson(200, { ok: true, started: true, count: rows.length, parallelBrowsers: pool.concurrency });
       }
 
       // v2.48.74 (Item C REVISED — owner): Parked item

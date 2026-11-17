@@ -311,6 +311,13 @@ class _MainStudioScreenState extends State<MainStudioScreen> {
       if (aspect.isNotEmpty) settings.updateAspectRatio(aspect);
       final quality = pushed['quality']?.toString().trim() ?? '';
       if (quality.isNotEmpty) settings.updateQuality(quality);
+      // v2.48.112 (C): the stored parallel-workers count rides
+      // the same push — applying it here (through the provider's
+      // own updater, which persists back to the store) means the
+      // start body built below reads the store's value, not a
+      // stale in-memory one (the split-brain fix).
+      final parallel = int.tryParse(pushed['parallelBrowsers']?.toString() ?? '');
+      if (parallel != null) settings.updateParallelBrowsers(parallel.clamp(1, 4));
     }
     // v2.48.109 (F5 — PER-RUN PARAMS WIN): the bridge also
     // sends this run's own explicit settings (runSettings) —

@@ -41,7 +41,44 @@ function uiGenerateSettingsHint(dbSettings) {
     const s = String(v).trim();
     if (s) hint[field] = s;
   }
+  // v2.48.112 (C): the parallel-workers count rides the same push,
+  // so an MCP-driven in-app run lands on the app's ONE stored truth
+  // instead of whatever the app's memory happened to hold (the
+  // split-brain: spawn read Dart memory, supervision read the DB).
+  // Only a valid stored value is pushed; absent/invalid stays
+  // absent and Dart keeps its own value, exactly like the fields
+  // above.
+  const pb = clampParallelBrowsers(src.parallelBrowsers);
+  if (pb != null) hint.parallelBrowsers = String(pb);
   return hint;
+}
+
+/**
+ * v2.48.112 (C): the app's parallel-workers range is 1..4
+ * everywhere. Returns the clamped integer, or null when the value
+ * is absent / not a positive number.
+ */
+function clampParallelBrowsers(v) {
+  const n = Number(v);
+  if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.max(1, Math.min(4, Math.floor(n)));
+}
+
+/**
+ * v2.48.112 (C): ONE parallel-workers truth per run. The engine DB
+ * store (`parallel_browsers`) wins; the request body's value is
+ * only a fallback for when the store has none; the last resort is
+ * 1. The bridge resolves this BEFORE building the pool and reports
+ * it back in the start response, and the pool pins the resolved
+ * value for the whole run — spawn count and supervisor target can
+ * never again read two different numbers.
+ */
+function resolveEffectiveParallel({ dbValue, bodyValue } = {}) {
+  const fromDb = clampParallelBrowsers(dbValue);
+  if (fromDb != null) return fromDb;
+  const fromBody = clampParallelBrowsers(bodyValue);
+  if (fromBody != null) return fromBody;
+  return 1;
 }
 
 /**
@@ -91,4 +128,4 @@ function settingsSignatureOf(settings) {
   return [part(s.type || 'Video'), part(s.model), part(s.duration), part(s.aspectRatio), part(s.quality)].join('|');
 }
 
-module.exports = { SETTINGS_FIELDS, uiGenerateSettingsHint, effectiveRunSettings, settingsSignatureOf };
+module.exports = { SETTINGS_FIELDS, uiGenerateSettingsHint, effectiveRunSettings, settingsSignatureOf, clampParallelBrowsers, resolveEffectiveParallel };

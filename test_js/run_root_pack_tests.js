@@ -13828,7 +13828,7 @@ async function main() {
       liveParallel = 2;
       eq('X114 G2: the target re-reads on every call (4 -> 2)', pool._liveParallelTarget(), 2);
       liveParallel = 99;
-      eq('X114 G2: the target is clamped to the 5-worker range', pool._liveParallelTarget(), 5);
+      eq('X114 G2: the target is clamped to the 4-worker range', pool._liveParallelTarget(), 4);
       const poolNoLive = new WP114({ onLog: () => {}, concurrency: 3 });
       eq('X114 G2: with no provider the start value stands', poolNoLive._liveParallelTarget(), 3);
       const runSettings = { model: 'Omni Flash', duration: '4s', aspectRatio: '9:16', quality: '360p' };
@@ -13936,7 +13936,11 @@ async function main() {
       drains2.add(new Promise(() => {}));
       eq('X114 G6: drainAll with a timeout reports what is still pending', await drains2.drainAll(50), 1);
     }
-    ok('X114 G6 source: the worker window starts retries detached', poolSrc114.includes('startDetachedDownloadRetries(engine);'));
+    // v2.48.112 (D): the same-engine DETACHED retry is removed —
+    // the window section now awaits the engine's own retries
+    // serialized with its submissions (one driver per page);
+    // detached drains remain only for surrendered engines (G4).
+    ok('X114 G6 source: the worker window runs its own retries serialized (.112 D)', poolSrc114.includes('await processDownloadRetries(engine);') && !poolSrc114.includes('startDetachedDownloadRetries(engine);'));
     ok('X114 G6 source: the run end drains every detached job', poolSrc114.includes('await detachedDrains.drainAll();'));
 
     // --- G7: hard total cap of 3 ---
@@ -14012,7 +14016,7 @@ async function main() {
     ok('X114 G10: the generating update stamps the start', providerSrc114.includes('_stampStarted(item);'));
     ok('X114 G10: completions stamp the finish', providerSrc114.includes('_stampFinished(item);'));
     ok('X114 G10: a redo clears the old clock', providerSrc114.includes('item.startedAt = null;'));
-    ok('X114 G10: the card renders time only with a start stamp', panelSrc114.includes('if (item.startedAt != null)'));
+    ok('X114 G10: the card renders time only with a start stamp (.112 F: and only while active or finished)', panelSrc114.includes('if (item.startedAt != null &&') && panelSrc114.includes('(isGenerating || isDone || item.status == PromptStatus.failed)'));
     ok('X114 G10: the elapsed label ticks live while generating', panelSrc114.includes('Timer.periodic(const Duration(seconds: 1)') && panelSrc114.includes('class _ElapsedLabel'));
     ok('X114 G10: the elapsed format helper exists', panelSrc114.includes('String _formatElapsed(Duration d)'));
   }
@@ -14291,6 +14295,233 @@ async function main() {
     ok('X115 F6 source: the run end unpins them', poolSrc115.includes('this._unpinRunSettings();'));
     ok('X115 F6 source: the refresh skips pinned fields', poolSrc115.includes('this._runPinnedFields.has(field)'));
   }
+
+  // =====================================================================
+  // X116 (v2.48.112) — the parallel deep-dive fixes (brief A–I):
+  // (A) The credit plan is the ASSIGNMENT: engine/runPlanner deals
+  //      tasks into per-account bundles by capacity (50cr ÷ 7cr =
+  //      at most 7 videos per account; 17 prompts → 7/7/3); a
+  //      worker claims one bundle, binds its account (live
+  //      re-validated), works only its bundle; spillover is
+  //      re-planned ONCE after the first pass.
+  // (B) Workers/browsers spawn only for bundles that exist —
+  //      a 1-prompt run opens exactly 1 browser.
+  // (C) ONE parallel truth: the DB store wins over the request
+  //      body; the resolved value is pinned for the run (spawn +
+  //      supervision read it), reported in the start responses,
+  //      and pushed to the app with the settings hint. Range 1..4.
+  // (D) One driver per page: the .110 same-engine detached
+  //      download retry is removed (the window section awaits the
+  //      engine's own retries, serialized with its submissions),
+  //      and submit/download/retry serialize through the engine's
+  //      page-operation lease.
+  // (E) Stop can no longer null-evaluate an in-flight submit:
+  //      submit/configure return STOPPED on a stopping/closed
+  //      page, and the pool stop is two-phase (beginStop marks,
+  //      page ops settle, then browsers close). The task-error
+  //      handler never closes an engine owning download retries.
+  // (F) Progress only on the generating video: no blanket
+  //      pending→generating flip at run start; engine 'pending'
+  //      updates are consumed as queued (downloading when the
+  //      video already exists); the card bar + timer gate on
+  //      generating||downloading (timer also on finished).
+  // (G) Diagnostics: per-account rejection reasons logged once
+  //      per run; worker error stacks ride the failure record.
+  // (H) Settings clicks: readiness gate (option visible +
+  //      enabled + standing still, ~5s) before duration/count
+  //      clicks; one close-and-reopen full-configure retry when
+  //      every strategy changed nothing; the terminal mismatch
+  //      captures a RICH panel dump (interactive elements with
+  //      tag/text/aria/disabled/box + the click target).
+  // (I) runWatch: probe failures during active progress are a
+  //      one-per-episode 'net-warning', not a stop.
+  // =====================================================================
+  {
+    const fs116 = require('fs');
+    const path116 = require('path');
+    const read116 = (rel) => fs116.readFileSync(path116.join(__dirname, '..', rel), 'utf8');
+    const poolSrc116 = read116('engine/workerPool.js');
+    const flowSrc116 = read116('engine/flowAutomation.js');
+    const bridgeSrc116 = read116('engine_bridge.js');
+    const genSrc116 = read116('lib/providers/generator_provider.dart');
+    const panelSrc116 = read116('lib/widgets/progress_panel.dart');
+    const planner116 = require('../engine/runPlanner');
+    const truth116 = require('../engine/settingsTruth');
+    const { TaskQueue: TQ116 } = require('../engine/taskQueue');
+    const { WorkerPool: WP116 } = require('../engine/workerPool');
+    const runWatch116 = require('../engine/runWatch');
+    const {
+      FlowAutomationEngine: FAE116,
+      panelDumpRichSource: richSrc116,
+      settingsPanelRichElementLine: richLine116,
+      settingsClickTargetLine: clickLine116
+    } = require('../engine/flowAutomation');
+
+    // --- A: the planner's division ---
+    {
+      const tasks = Array.from({ length: 17 }, (_, i) => ({ id: `t${i + 1}` }));
+      const accounts = [
+        { id: 'a1', name: 'Acc One', credits: 50 },
+        { id: 'a2', name: 'Acc Two', credits: 50 },
+        { id: 'a3', name: 'Acc Three', credits: 50 }
+      ];
+      const plan = planner116.planBundles({ tasks, accounts, requiredCredits: 7 });
+      eq('X116 A: 17 prompts on 50-credit accounts divide into 3 bundles', plan.bundles.length, 3);
+      eq('X116 A: the split is 7/7/3', plan.bundles.map(b => b.tasks.length).join('/'), '7/7/3');
+      eq('X116 A: nothing spills when the total fits', plan.spillover.length, 0);
+      eq('X116 A: tasks are dealt in order', plan.bundles[0].taskIds.join(','), 't1,t2,t3,t4,t5,t6,t7');
+      eq('X116 A: the last bundle takes the remainder in order', plan.bundles[2].taskIds.join(','), 't15,t16,t17');
+    }
+    {
+      const tasks = Array.from({ length: 10 }, (_, i) => ({ id: `s${i + 1}` }));
+      const accounts = [
+        { id: 'low', name: 'Low', credits: 7 },
+        { id: 'rich', name: 'Rich', credits: 50 }
+      ];
+      const plan = planner116.planBundles({ tasks, accounts, requiredCredits: 7 });
+      eq('X116 A: the fullest account is served first', plan.bundles[0].accountId, 'rich');
+      eq('X116 A: the fullest takes its whole capacity', plan.bundles[0].tasks.length, 7);
+      eq('X116 A: the next account takes what its balance fits', plan.bundles[1].tasks.length, 1);
+      eq('X116 A: what fits nowhere spills over, in order', plan.spillover.map(t => t.id).join(','), 's9,s10');
+    }
+    {
+      const tasks = [{ id: 'x1' }, { id: 'x2' }];
+      const accounts = [
+        { id: 'a1', name: 'A1', credits: 50 },
+        { id: 'a2', name: 'A2', credits: 50 }
+      ];
+      const plan = planner116.planBundles({ tasks, accounts, requiredCredits: 7, excludeByTask: new Map([['x1', new Set(['a1'])]]) });
+      eq('X116 A: a re-plan never bundles a task onto an account it already tried', plan.bundles[0].taskIds.join(','), 'x2');
+      eq('X116 A: the excluded task lands on the other account', plan.bundles[1].taskIds.join(','), 'x1');
+      eq('X116 A: exclusion alone spills nothing here', plan.spillover.length, 0);
+    }
+    {
+      const q = new TQ116([{ id: 'q1' }, { id: 'q2' }, { id: 'q3' }]);
+      eq('X116 A: nextMatching takes the first task the predicate accepts', q.nextMatching(t => t.id !== 'q1').id, 'q2');
+      eq('X116 A: rejected tasks keep their place and order', q.next().id, 'q1');
+      eq('X116 A: nextMatching with no match returns null', q.nextMatching(() => false), null);
+    }
+    ok('X116 A source: runQueue plans bundles before the queue starts', poolSrc116.includes('runPlanner.planBundles'));
+    ok('X116 A source: a worker claims a bundle before any classic pick', poolSrc116.includes('const claim = claimNextBundle(workerId);'));
+    ok('X116 A source: exactly one re-plan runs after the first pass', poolSrc116.includes('replanSpillover()') && poolSrc116.includes('sweepOrphanedBundles()'));
+
+    // --- B: spawn only with work ---
+    {
+      const plan = planner116.planBundles({ tasks: [{ id: 'only' }], accounts: [{ id: 'a1', name: 'A1', credits: 50 }], requiredCredits: 7 });
+      eq('X116 B: one prompt plans exactly one bundle', plan.bundles.length, 1);
+      eq('X116 B: the one bundle holds the one prompt', plan.bundles[0].taskIds.join(','), 'only');
+    }
+    ok('X116 B source: the initial spawn is min(parallel, bundles)', poolSrc116.includes('Math.min(this.concurrency, bundles.length)'));
+
+    // --- C: one parallel source of truth ---
+    eq('X116 C: the DB store beats the request body', truth116.resolveEffectiveParallel({ dbValue: '2', bodyValue: 4 }), 2);
+    eq('X116 C: the body is only a fallback', truth116.resolveEffectiveParallel({ dbValue: '', bodyValue: 3 }), 3);
+    eq('X116 C: neither present resolves to 1', truth116.resolveEffectiveParallel({ dbValue: '', bodyValue: undefined }), 1);
+    eq('X116 C: values clamp to the 1..4 range', truth116.resolveEffectiveParallel({ dbValue: '9', bodyValue: 1 }), 4);
+    eq('X116 C: the settings hint carries a stored parallel count', truth116.uiGenerateSettingsHint({ model: 'Omni Flash', parallelBrowsers: '3' }).parallelBrowsers, '3');
+    eq('X116 C: the hint stays silent without a stored count', Object.keys(truth116.uiGenerateSettingsHint({ model: 'Omni Flash' })).length, 1);
+    {
+      const pool = new WP116({ concurrency: 4, onLog: () => {}, liveSettingsProvider: () => ({ parallelBrowsers: 2 }) });
+      pool._runParallelPin = 2;
+      eq('X116 C: the pinned value is what supervision reads', pool._liveParallelTarget(), 2);
+      pool._runParallelPin = 4;
+      eq('X116 C: the pin wins over the live store mid-run', pool._liveParallelTarget(), 4);
+      pool._runParallelPin = null;
+      eq('X116 C: unpinned, the live store value answers', pool._liveParallelTarget(), 2);
+      eq('X116 C: the constructor clamps to the 1..4 range', new WP116({ concurrency: 9, onLog: () => {} }).concurrency, 4);
+    }
+    ok('X116 C source: the bridge resolves before building the pool', bridgeSrc116.includes('resolveEffectiveParallel'));
+    ok('X116 C source: the start response reports the resolved count', bridgeSrc116.includes('parallelBrowsers: pool.concurrency'));
+    ok('X116 C source: runQueue pins the resolved count for the run', poolSrc116.includes('this._runParallelPin ='));
+
+    // --- D: one driver per page ---
+    {
+      const eng = new FAE116({ onLog: () => {} });
+      const order = [];
+      const slow = eng._withPageLease(async () => { order.push('a-start'); await new Promise(r => setTimeout(r, 30)); order.push('a-end'); });
+      const fast = eng._withPageLease(async () => { order.push('b-start'); order.push('b-end'); });
+      await Promise.all([slow, fast]);
+      eq('X116 D: page operations never overlap', order.join(','), 'a-start,a-end,b-start,b-end');
+      let threw = false;
+      try { await eng._withPageLease(async () => { throw new Error('boom'); }); } catch (e) { threw = true; }
+      ok('X116 D: a failed operation still reports its own throw', threw);
+      let after = false;
+      await eng._withPageLease(async () => { after = true; });
+      ok('X116 D: the lease is not jammed by a failed operation', after);
+    }
+    ok('X116 D source: submit runs under the lease', flowSrc116.includes('_submitPromptInner'));
+    ok('X116 D source: the window section awaits the engine\u2019s own retries', poolSrc116.includes('await processDownloadRetries(engine);'));
+
+    // --- E: stop can no longer kill an in-flight submit ---
+    {
+      const eng = new FAE116({ onLog: () => {} });
+      eng.page = null;
+      const res = await eng.submitPrompt('a prompt', { model: 'Omni Flash' }, 0, 1);
+      eq('X116 E: submit with no page returns STOPPED', res.status, 'STOPPED');
+      const eng2 = new FAE116({ onLog: () => {} });
+      eng2.page = { isClosed: () => true, evaluate: async () => { throw new Error("Cannot read properties of null (reading 'evaluate')"); } };
+      const res2 = await eng2.submitPrompt('a prompt', { model: 'Omni Flash' }, 0, 1);
+      eq('X116 E: submit on a closed page returns STOPPED (no evaluate crash)', res2.status, 'STOPPED');
+      const cfg = await eng2.configureGenerationSettings({ model: 'Omni Flash' });
+      ok('X116 E: configure on a closed page reports stopped', !!(cfg && cfg.stopped));
+      const eng3 = new FAE116({ onLog: () => {} });
+      let closed = false;
+      eng3.browser = { process: () => null, close: async () => { closed = true; } };
+      eng3.beginStop();
+      ok('X116 E: beginStop marks the engine stopping', eng3.isStopping === true);
+      eq('X116 E: beginStop does NOT close the browser (the pool closes in phase 2)', closed, false);
+      await eng3.pageOpsSettled(10);
+      ok('X116 E: pageOpsSettled resolves with nothing queued', true);
+    }
+    ok('X116 E source: the pool stop marks before it closes', poolSrc116.includes('beginStop') && poolSrc116.includes('pageOpsSettled'));
+    ok('X116 E source: the task-error close spares an engine with download retries', poolSrc116.includes('engineHasRetries'));
+
+    // --- F: progress only on the generating video ---
+    ok('X116 F source: engine pending updates are consumed as queued', genSrc116.includes("statusStr == 'pending'"));
+    ok('X116 F source: a generated-video pending reads as downloading', genSrc116.includes('PromptStatus.downloading : PromptStatus.queued'));
+    ok('X116 F source: the old blanket-flip comment is gone', !genSrc116.includes('Mark the queued items as generating'));
+    ok('X116 F source: the redo path queues instead of flipping', genSrc116.includes('item.status = PromptStatus.queued;'));
+    ok('X116 F source: the card timer is gated on active-or-finished', panelSrc116.includes('isGenerating || isDone || item.status == PromptStatus.failed'));
+    ok('X116 F source: startGeneration refreshes settings from the store first', genSrc116.includes('await settings.loadSettingsFromEngine();'));
+
+    // --- G: diagnostics ---
+    ok('X116 G source: account scans log per-account rejection reasons', poolSrc116.includes('[ROOT] account-rejection'));
+    ok('X116 G source: worker error stacks ride the failure record', poolSrc116.includes('opts.errorStack') && poolSrc116.includes('errorStack:'));
+
+    // --- H: settings-click hardening + the real dump ---
+    eq('X116 H: a rich element line carries tag/text/aria/disabled/box',
+      richLine116({ tag: 'button', text: '10s', aria: 'Duration', disabled: true, box: { x: 10.4, y: 20.5, w: 30, h: 12 } }),
+      '[ROOT] settings-panel-el tag=button text="10s" aria="Duration" disabled=true box=10,21,30,12');
+    eq('X116 H: the click-target line names field/strategy/want/point',
+      clickLine116({ field: 'duration', strategy: 'mouse', want: '10s', x: 100, y: 200 }),
+      '[ROOT] settings-click-target field=duration strategy=mouse want=10s at=100,200');
+    eq('X116 H: no recorded click target reads honestly', clickLine116(null), '[ROOT] settings-click-target none recorded');
+    ok('X116 H: the rich dump source keys on interactive elements', richSrc116().includes('fsPanelDumpRich'));
+    ok('X116 H source: the terminal mismatch captures the rich dump', flowSrc116.includes('await this._dumpSettingsPanelRich();'));
+    ok('X116 H source: duration/count clicks wait for panel readiness', flowSrc116.includes('_waitPanelOptionReady'));
+    ok('X116 H source: a no-change duration pass earns one reopen retry', flowSrc116.includes('settings-reopen field=duration'));
+
+    // --- I: runWatch false-positive guard ---
+    {
+      const w = runWatch116.createRunWatch();
+      w.start(0);
+      w.noteNetResult(false, 1000);
+      w.noteNetResult(false, 2000);
+      w.noteNetResult(false, 3000);
+      w.noteProgress(3500);
+      eq('X116 I: probe failures during active progress warn, not stop', w.evaluate(4000).type, 'net-warning');
+      eq('X116 I: the warning fires once per episode', w.evaluate(5000).type, 'none');
+      eq('X116 I: when progress also goes stale the run trips for real', w.evaluate(65000).type, 'net-lost');
+      const w2 = runWatch116.createRunWatch();
+      w2.start(0);
+      w2.noteNetResult(false, 1000);
+      w2.noteNetResult(false, 2000);
+      w2.noteNetResult(false, 3000);
+      eq('X116 I: probe failures with NO progress still trip at once', w2.evaluate(4000).type, 'net-lost');
+    }
+    ok('X116 I source: the pool logs the warning and keeps watching', poolSrc116.includes("verdict.type === 'net-warning'"));
+  }
+
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);

@@ -662,7 +662,13 @@ class ProgressPanel extends StatelessWidget {
               // elapsed timer while it generates, the final total
               // once it settles. Nothing renders when the item has
               // no start stamp (no invented times).
-              if (item.startedAt != null) ...[
+              // v2.48.112 (F): the timer renders only while the
+              // card is ACTIVE (generating/downloading) or
+              // FINISHED (completed/failed) — a card that fell
+              // back to QUEUED keeps its start stamp but shows
+              // no clock while it waits.
+              if (item.startedAt != null &&
+                  (isGenerating || isDone || item.status == PromptStatus.failed)) ...[
                 const SizedBox(width: 5),
                 _ElapsedLabel(startedAt: item.startedAt, finishedAt: item.finishedAt),
               ],

@@ -304,6 +304,12 @@ class GeneratorProvider with ChangeNotifier {
     // a failover re-emits 'pending' instead, which the app ignores
     // on purpose: it models engine-queued as generating). 'done' is
     // already covered by the video-completed event.
+    // v2.48.112 (F): 'pending' is consumed now too — since the
+    // run-start blanket flip is gone, engine-queued must be
+    // MODELLED as queued (see the 'pending' branch below), and
+    // 'failed' is accepted from queued as well: the engine only
+    // ever emits it as a FINAL verdict (the run-end leftover
+    // pass fails never-picked tasks with it).
     AutomationBridge.instance.onTaskUpdated = (data) {
       _stampEngineEvent();
       // v2.48.70 (Item C): recovery updates feed their own
@@ -385,9 +391,14 @@ class GeneratorProvider with ChangeNotifier {
         // cards are at startGeneration), so a queued external
         // card may settle failed directly — e.g. a task the
         // engine fails at the end of the run without a submit.
+        // v2.48.112 (F): own cards are no longer pre-flipped
+        // either — a queued own card settles failed the same
+        // way (the engine's 'failed' is always final; moves
+        // arrive as 'pending', never as 'failed').
         if (item.status == PromptStatus.generating ||
             item.status == PromptStatus.downloading ||
-            (external && item.status == PromptStatus.queued)) {
+            item.status == PromptStatus.queued ||
+            item.status == PromptStatus.pending) {
           item.status = PromptStatus.failed;
           item.error = data['reason']?.toString() ?? 'Generation failed';
           _stampFinished(item);
@@ -403,6 +414,29 @@ class GeneratorProvider with ChangeNotifier {
               fileName: item.outputFileName,
             );
           }
+          notifyListeners();
+        }
+      } else if (statusStr == 'pending') {
+        // v2.48.112 (F): the engine says this task is QUEUED —
+        // at run start, or after a pre-fire requeue / failover
+        // move. The card shows plain QUEUED (no progress bar,
+        // no timer — the panel gates both on the active
+        // states); a startedAt from an earlier pickup is kept
+        // (the clock resumes on the next pickup and the panel
+        // shows it again then). EXCEPTION: a 'pending' whose
+        // reason says the video HAS been generated is the
+        // download stage — its card truthfully shows
+        // DOWNLOADING while the file is fetched in the
+        // background.
+        final reason = data['reason']?.toString() ?? '';
+        final generated = reason.contains('video had been generated') ||
+            reason.contains('video has been generated');
+        if (item.status == PromptStatus.pending ||
+            item.status == PromptStatus.queued ||
+            item.status == PromptStatus.generating ||
+            item.status == PromptStatus.downloading) {
+          item.status =
+              generated ? PromptStatus.downloading : PromptStatus.queued;
           notifyListeners();
         }
       }
@@ -422,13 +456,23 @@ class GeneratorProvider with ChangeNotifier {
       // after its task-id / index attempts).
       final item = _matchTaskItem(data) ?? _matchExternalItem(data);
       if (item == null) return;
+      var changed = false;
+      // v2.48.112 (F): a live progress signal for a still-queued
+      // card is a real generating event for that item (the
+      // monitor only ever reports on submitted tasks) — flip
+      // it to generating NOW, at its real pickup, never at
+      // run start.
+      if (item.status == PromptStatus.pending ||
+          item.status == PromptStatus.queued) {
+        item.status = PromptStatus.generating;
+        changed = true;
+      }
       // v2.48.110 (G10): a live progress signal also proves the
       // pickup happened, if the task update was missed.
       if (item.status == PromptStatus.generating ||
           item.status == PromptStatus.downloading) {
         _stampStarted(item);
       }
-      var changed = false;
       final accName = data['accountName']?.toString();
       if (accName != null && accName.isNotEmpty && item.accountName != accName) {
         item.accountName = accName;
@@ -1424,6 +1468,13 @@ class GeneratorProvider with ChangeNotifier {
     }
     notifyListeners();
 
+    // v2.48.112 (C): refresh the settings from the engine store
+    // BEFORE the start body is built — the store is the ONE
+    // parallel truth (an MCP write lands there), and the count
+    // this run sends (and logs below) must be the store's, not
+    // whatever this provider's memory happened to hold.
+    await settings.loadSettingsFromEngine();
+
     activity.addLog(
       'Generation started: ${_items.length} prompt(s) • ${settings.settings.parallelBrowsers} worker(s) in parallel',
       level: LogLevel.info,
@@ -1495,18 +1546,21 @@ class GeneratorProvider with ChangeNotifier {
       return;
     }
 
-    // Mark the queued items as generating; real per-video completion
-    // arrives through the engine's video-completed events.
     // v2.30.3: only NOW has a run actually been started for this
     // item set — the Progress panel may show its cards, and the
     // heartbeat watchdog starts watching for engine silence.
     _runStarted = true;
     _armRunWatchdog();
-    for (final item in _items) {
-      if (item.status == PromptStatus.pending) {
-        item.status = PromptStatus.generating;
-      }
-    }
+    // v2.48.112 (F): the blanket pending→generating flip is
+    // GONE. It marked EVERY queued prompt as actively
+    // generating the moment a run started, so the panel showed
+    // an active progress line on videos that were merely
+    // waiting (the owner's complaint, confirmed by the
+    // deep-dive). Items stay QUEUED now; each one flips to
+    // generating only on the engine's real pickup event for
+    // THAT item (its 'generating' task update or a live
+    // progress signal), and back to queued if the engine
+    // requeues it pre-fire.
     notifyListeners();
   }
 
@@ -1603,7 +1657,10 @@ class GeneratorProvider with ChangeNotifier {
     );
     if (result['ok'] == true && result['started'] == true) {
       for (final item in missing) {
-        item.status = PromptStatus.generating;
+        // v2.48.112 (F): QUEUED, not generating — the redo's
+        // cards flip to generating on their own real pickup
+        // events, exactly like a fresh run's.
+        item.status = PromptStatus.queued;
         item.error = null;
         item.progress = 0;
         // v2.48.110 (G10): a redo is a NEW attempt — its clock

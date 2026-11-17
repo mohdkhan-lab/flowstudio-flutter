@@ -42,6 +42,8 @@ function createRunWatch(opts = {}) {
   let lastNetOkAt = null;
   let lastNetResultAt = null;
   let consecutiveNetFailures = 0;
+  let firstFailureAt = null;
+  let netWarned = false;
   let tripped = null;
 
   return {
@@ -52,6 +54,8 @@ function createRunWatch(opts = {}) {
       lastNetOkAt = null;
       lastNetResultAt = null;
       consecutiveNetFailures = 0;
+      firstFailureAt = null;
+      netWarned = false;
       tripped = null;
     },
 
@@ -65,8 +69,11 @@ function createRunWatch(opts = {}) {
       lastNetResultAt = now;
       if (ok) {
         consecutiveNetFailures = 0;
+        firstFailureAt = null;
+        netWarned = false;
         lastNetOkAt = now;
       } else {
+        if (consecutiveNetFailures === 0) firstFailureAt = now;
         consecutiveNetFailures++;
       }
     },
@@ -74,6 +81,8 @@ function createRunWatch(opts = {}) {
     /**
      * The verdict for time `now`:
      *   { type: 'none' }
+     *   { type: 'net-warning', consecutiveFailures }  (.112: probes
+     *     failing but the run itself still progressing — log, don't stop)
      *   { type: 'net-lost', consecutiveFailures, silenceMs }
      *   { type: 'stuck', idleMs }
      * Internet loss is reported before stuck: it is the more
@@ -82,7 +91,32 @@ function createRunWatch(opts = {}) {
     evaluate(now) {
       if (tripped) return tripped;
       if (startedAt == null) return { type: 'none' };
+      // v2.48.112 (I): the W4 false positive — the probes failed
+      // while work was visibly progressing (tasks changing state,
+      // files saving), and the run was killed anyway. A probe
+      // measures one route to one host; the run's own progress is
+      // direct evidence the work is moving. So a net-lost verdict
+      // now requires BOTH: the probe signal AND no engine activity
+      // inside the same window (the failure streak for the
+      // consecutive path; the silence window for the silence path).
+      // With activity present, the verdict is a one-per-episode
+      // 'net-warning' instead: the caller logs it and keeps
+      // watching — if progress also stops, a later evaluate trips
+      // for real. The stuck verdict below is unchanged: five
+      // minutes with NO progress trips regardless of probes.
+      const netWarning = () => {
+        if (netWarned) return { type: 'none' };
+        netWarned = true;
+        return { type: 'net-warning', consecutiveFailures: consecutiveNetFailures };
+      };
       if (consecutiveNetFailures >= netFailThreshold) {
+        // Activity excuses the probes only while it is BOTH
+        // inside the failure streak AND still recent — progress
+        // that itself went silent a full window ago excuses
+        // nothing (the stuck verdict below would otherwise be
+        // the only remaining guard, five minutes late).
+        const activeDuringStreak = lastProgressAt != null && firstFailureAt != null && lastProgressAt >= firstFailureAt && lastProgressAt > now - netSilenceMs;
+        if (activeDuringStreak) return netWarning();
         tripped = {
           type: 'net-lost',
           consecutiveFailures: consecutiveNetFailures,
@@ -92,6 +126,8 @@ function createRunWatch(opts = {}) {
       }
       const lastResultAt = lastNetResultAt == null ? startedAt : lastNetResultAt;
       if (now - lastResultAt >= netSilenceMs) {
+        const activeInWindow = lastProgressAt != null && lastProgressAt > now - netSilenceMs;
+        if (activeInWindow) return netWarning();
         tripped = {
           type: 'net-lost',
           consecutiveFailures: consecutiveNetFailures,

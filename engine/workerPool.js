@@ -23,6 +23,7 @@ const agentRules = require('./agentRules');
 const runWatch = require('./runWatch');
 const respawnGuardMod = require('./respawnGuard');
 const { createDetachedDrains } = require('./detachedDrains');
+const runPlanner = require('./runPlanner');
 const https = require('https');
 const resolutionMemory = require('./resolutionMemory');
 const windowStyle = require('./windowStyle');
@@ -84,7 +85,11 @@ class WorkerPool {
   constructor(options = {}) {
     // v2.0.0: parallel generation widened to 1..5 workers (owner's order:
     // default 3 — see main.js). Burst per worker stays capped at 4.
-    this.concurrency = Math.max(1, Math.min(5, Number(options.concurrency) || 1));
+    // v2.48.112 (C): the range is 1..4 — the app's one parallel range
+    // (the Settings store, the Dart provider and this engine all
+    // clamp to it now; the bridge resolves the run's value from the
+    // store before the pool is built).
+    this.concurrency = Math.max(1, Math.min(4, Number(options.concurrency) || 1));
     // Bounded launch retry (v1.1 freeze fix): a Chrome launch / profile-busy
     // failure is retried at most maxLaunchAttempts times per account per
     // run, with an async backoff between attempts — never a tight loop.
@@ -222,9 +227,28 @@ class WorkerPool {
     this.isStopping = true;
     this.isPaused = false;
     const engines = [...this.activeWorkers.values()];
+    // v2.48.112 (E): TWO-PHASE stop. Phase 1 only MARKS every
+    // engine stopping (beginStop: flag + capture detach, browser
+    // untouched) — an in-flight submit then sees the flag and
+    // returns STOPPED instead of crashing into a page that is
+    // about to vanish. Phase 2 gives in-flight page operations a
+    // bounded window to settle on their own. Only then (phase 3,
+    // the closeBrowser sweep below) do the browsers actually
+    // close. Before .112 the browser closed in the same breath
+    // as the flag, and an in-flight submit's next page.evaluate
+    // hit the null page — the W4 "Cannot read properties of null
+    // (reading 'evaluate')" worker errors.
     for (const engine of engines) {
-      try { engine.stop(); } catch (e) {}
+      try {
+        if (typeof engine.beginStop === 'function') engine.beginStop();
+        else engine.stop();
+      } catch (e) {}
     }
+    await Promise.all(engines.map(engine => (
+      typeof engine.pageOpsSettled === 'function'
+        ? engine.pageOpsSettled(2500).catch(() => {})
+        : Promise.resolve()
+    )));
     await Promise.all(engines.map(engine => engine.closeBrowser().catch(() => {})));
     // v2.31.3: a stopped run also arms each browser's watcher sweep.
     for (const engine of engines) {
@@ -261,15 +285,24 @@ class WorkerPool {
   }
 
   /**
-   * How many workers SHOULD be running right now: the live parallel
-   * setting when a provider exists, else the run's start value.
-   * Always clamped to the app's 1..5 worker range.
+   * How many workers SHOULD be running right now.
+   * v2.48.112 (C): while a run is live, the value RESOLVED AT ITS
+   * START (from the engine DB store — see settingsTruth.
+   * resolveEffectiveParallel) is pinned and is the ONLY value both
+   * the spawn count and this supervisor target read; a mid-run
+   * edit of the setting applies to the NEXT run, so the two can
+   * never disagree inside one run again (the W3B/W5 split-brain:
+   * spawn read 4 from Dart memory while supervision read 2 from
+   * the DB and retired the extra workers). With no run pinned,
+   * the live provider value (else the start value) answers as
+   * before. Always clamped to the app's 1..4 worker range.
    */
   _liveParallelTarget() {
+    if (this._runParallelPin != null) return this._runParallelPin;
     const live = this._liveSettings();
     const n = live ? Number(live.parallelBrowsers) : NaN;
     const target = (Number.isFinite(n) && n > 0) ? Math.floor(n) : this.concurrency;
-    return Math.max(1, Math.min(5, target));
+    return Math.max(1, Math.min(4, target));
   }
 
   /**
@@ -641,21 +674,27 @@ class WorkerPool {
   _findNextAvailableAccount(pool, requiredCredits, unusableAccounts, afterAccountId, resCtx) {
     // Eligibility (v2.48.10: factored out, rules unchanged) — the
     // account's live row, or null when this run may not use it.
-    const eligible = (candidate) => {
-      if (unusableAccounts && unusableAccounts.has(candidate.id)) return null;
+    // v2.48.112 (G): the rules live in ONE reason-returning check —
+    // `eligible` is its boolean face, and when a scan finds NOTHING
+    // the same check explains, per account, WHY (the W3B question
+    // "no free account" arrived with no evidence at all: accounts
+    // were being silently filtered by assignment, per-run unusable
+    // marks, status and balances, and the log said none of it).
+    const checkAccount = (candidate) => {
+      if (unusableAccounts && unusableAccounts.has(candidate.id)) return { reason: 'marked unusable in this run' };
       // v2.29.0 (checkbox truth): even if a caller hands this scan the
       // FULL account list, an account the owner unticked in the
       // sidebar can never be picked (or charged) by this run.
-      if (this.allowedAccountIds && !this.allowedAccountIds.has(String(candidate.id))) return null;
+      if (this.allowedAccountIds && !this.allowedAccountIds.has(String(candidate.id))) return { reason: 'not ticked for this run' };
       const live = dbService.getAccount(candidate.id) || candidate;
-      if (this.assignedAccounts.has(candidate.id)) return null;
-      if (live.status === 'Exhausted' || live.status === 'Need Login' || live.status === 'Unconfirmed') return null;
+      if (this.assignedAccounts.has(candidate.id)) return { reason: 'already assigned to another worker' };
+      if (live.status === 'Exhausted' || live.status === 'Need Login' || live.status === 'Unconfirmed') return { reason: `status is ${live.status}` };
       // v2.5.0: live-only mode — sirf Live / Ready accounts hi chune
       // jayenge, baaki sab is run ke liye invisible hain.
-      if (this.liveOnly && !WorkerPool.LIVE_READY_STATUSES.has(live.status)) return null;
+      if (this.liveOnly && !WorkerPool.LIVE_READY_STATUSES.has(live.status)) return { reason: `status is ${live.status} (live-only mode)` };
       // v1.8.0: Cooldown is a TIMED rest — an account whose rest has
       // expired is eligible again (openFlowStudio live-checks it first).
-      if (live.status === 'Cooldown' && accountHealth.isResting(live)) return null;
+      if (live.status === 'Cooldown' && accountHealth.isResting(live)) return { reason: 'on cooldown (resting)' };
       const credits = (typeof live.credits === 'number') ? live.credits : null;
       // v2.46.0: pick ke waqt bhi wahi rule jo pool par laga hai —
       // balance kam ho YA abhi tak padha hi na gaya ho (null), dono
@@ -663,8 +702,28 @@ class WorkerPool {
       // pehle "shayad hoga" samajh kar launch kar diya jata tha aur
       // waqt studio ke check me zaya hota tha). Image runs
       // (requiredCredits 0) par credits ka koi sawal hi nahi.
-      if (requiredCredits > 0 && (credits === null || credits < requiredCredits)) return null;
-      return live;
+      if (requiredCredits > 0 && (credits === null || credits < requiredCredits)) {
+        return { reason: credits === null ? 'balance never checked' : `only ${credits} credits (needs ${requiredCredits})` };
+      }
+      return { live };
+    };
+    const eligible = (candidate) => {
+      const r = checkAccount(candidate);
+      return r.live || null;
+    };
+    // v2.48.112 (G): when a scan finds nothing, say WHY for every
+    // account it passed over — once per run per (account, reason),
+    // so the evidence lands in the log without flooding it.
+    const logRejectionsOnce = () => {
+      if (!this._rejectLogSeen) this._rejectLogSeen = new Set();
+      for (const candidate of pool) {
+        const r = checkAccount(candidate);
+        if (r.live || !r.reason) continue;
+        const key = `${candidate.id}|${r.reason}`;
+        if (this._rejectLogSeen.has(key)) continue;
+        this._rejectLogSeen.add(key);
+        try { this.log(`[ROOT] account-rejection account=${candidate.googleName || candidate.name || candidate.id} reason=${r.reason}`, 'info'); } catch (e) {}
+      }
     };
     // v2.48.80 (Item C — PROVEN-ABSENT MEMORY): resCtx diya
     // gaya ho (sirf generation run deta hai) to har kabil
@@ -754,6 +813,8 @@ class WorkerPool {
     // Safety valve (round-robin): sirf proven-absent hi
     // bacha hai — pehla wala milega, asal koshish ke saath.
     if (firstKnown) return finish(firstKnown, evaluatedRr);
+    // v2.48.112 (G): nothing was pickable — leave the evidence.
+    logRejectionsOnce();
     return null;
   }
 
@@ -1298,6 +1359,15 @@ class WorkerPool {
       // pin the fields it resolved so the live refresh at pickup
       // can never overwrite them from the stored defaults.
       this._pinRunSettings(settings);
+      // v2.48.112 (C): pin the run's resolved parallel-workers
+      // count the same way — this.concurrency IS the value the
+      // bridge resolved from the DB store before building this
+      // pool, and spawn + supervision both read it through
+      // _liveParallelTarget for the whole run.
+      this._runParallelPin = Math.max(1, Math.min(4, Number(this.concurrency) || 1));
+      // v2.48.112 (G): per-run memory for the account-rejection
+      // evidence lines (each account+reason logs once per run).
+      this._rejectLogSeen = new Set();
       // v2.32.1: count how many tasks in this run share each
       // tag-derived file name, so the engine can number shared-tag
       // files by prompt (<tag>-1.mp4 … <tag>-5.mp4) instead of
@@ -1478,24 +1548,48 @@ class WorkerPool {
       // and switching mid-run (TEST489: the run opened on an
       // 8-credit account, spent its last video's worth, then paid
       // a ~37s browser switch for the remaining two).
-      if (requiredCredits > 0 && pendingTasks.length > 0) {
-        let remaining = pendingTasks.length;
-        const planParts = [];
-        const fullestFirst = [...pool].sort((x, y) => ((y.credits || 0) - (x.credits || 0)));
-        for (const a of fullestFirst) {
-          if (remaining <= 0) break;
-          const c = (typeof a.credits === 'number' && Number.isFinite(a.credits)) ? a.credits : 0;
-          const fits = Math.floor(Math.max(0, c) / requiredCredits);
-          if (fits <= 0) continue;
-          const take = Math.min(fits, remaining);
-          planParts.push(`${a.googleName || a.name}: ${take} video(s) (${take * requiredCredits} credits)`);
-          remaining -= take;
-        }
-        if (planParts.length > 0) {
-          const planMsg = `Credit plan for this run: ${pendingTasks.length} video(s) × ${requiredCredits} credits — ${planParts.join(' · ')}${remaining > 0 ? ` · the last ${remaining} video(s) will move to whichever account still has room (balances are re-read live at every studio open)` : ''}.`;
-          this.log(planMsg, 'info');
-          try { recordActivity({ category: 'credits', level: 'info', message: planMsg }); } catch (e) {}
-        }
+      //
+      // v2.48.112 (A — THE PLAN IS NOW THE ASSIGNMENT): the deep
+      // dive proved the .8 plan was cosmetic — it printed a split
+      // and then every worker pulled from ONE shared queue, so
+      // the division never bound anything (root cause #1 of the
+      // W3B/W4/W5 parallel failures). The planner's output is now
+      // the run's structure: per-account BUNDLES of tasks, dealt
+      // in order by credit capacity (50 credits ÷ 7 = at most 7
+      // videos on one account; 17 prompts divide 7/7/3). A worker
+      // claims exactly one bundle, binds that bundle's account
+      // (re-validated live at bind: ticked, status, balance ≥ the
+      // bundle's need) and works only its bundle, in order. Tasks
+      // that fit nowhere yet wait in the SPILLOVER; after the
+      // first pass they are re-planned ONCE against live re-read
+      // balances (see the supervisor block below). A task that
+      // has FIRED on an account never changes accounts through
+      // the plan — only pre-fire releases (bind failure, settings
+      // mismatch, low credits) and failover returns enter the
+      // spillover, and the re-plan never bundles a task onto an
+      // account the failover tracker says it already tried.
+      const bundlePlan = pendingTasks.length > 0
+        ? runPlanner.planBundles({ tasks: pendingTasks, accounts: pool, requiredCredits })
+        : { bundles: [], spillover: [] };
+      const bundles = bundlePlan.bundles.map((b, i) => ({
+        index: i,
+        accountId: b.accountId,
+        accountName: b.accountName,
+        taskIds: new Set(b.taskIds),
+        tasks: b.tasks,
+        claimedBy: null,
+        released: false,
+        done: false
+      }));
+      const bundledTaskIds = new Set();
+      for (const b of bundles) for (const id of b.taskIds) bundledTaskIds.add(id);
+      let spilloverTasks = [...bundlePlan.spillover];
+      const spilloverIds = new Set(spilloverTasks.map(t => t.id));
+      if (requiredCredits > 0 && pendingTasks.length > 0 && bundles.length > 0) {
+        const planParts = bundles.map(b => `${b.accountName}: ${b.tasks.length} video(s) (${b.tasks.length * requiredCredits} credits)`);
+        const planMsg = `Credit plan for this run: ${pendingTasks.length} video(s) × ${requiredCredits} credits — ${planParts.join(' · ')}${spilloverTasks.length > 0 ? ` · ${spilloverTasks.length} video(s) do not fit any account's remaining balance yet — they wait for the re-plan after the first pass` : ''}.`;
+        this.log(planMsg, 'info');
+        try { recordActivity({ category: 'credits', level: 'info', message: planMsg }); } catch (e) {}
       }
 
       const taskQueue = new TaskQueue(pendingTasks);
@@ -1504,7 +1598,170 @@ class WorkerPool {
         this.onTaskUpdate({ taskId: t.id, promptIndex: t.prompt_index, promptText: t.prompt_text, tag: t.prompt_tag || '', status: 'pending' });
       }
 
-      const actualWorkersCount = Math.min(this.concurrency, pool.length, pendingTasks.length);
+      // v2.48.112 (A): bundle bookkeeping helpers (run scope).
+      // validateBundleAccount re-checks a bundle's planned account
+      // against the LIVE DB row at bind time — the plan was made
+      // from a snapshot; a browser opens only for an account that
+      // can still serve its whole bundle right now.
+      const validateBundleAccount = (bundle) => {
+        const candidate = pool.find(a => String(a.id) === String(bundle.accountId));
+        if (!candidate) return null;
+        if (this.allowedAccountIds && !this.allowedAccountIds.has(String(candidate.id))) return null;
+        const live = dbService.getAccount(candidate.id) || candidate;
+        if (live.status === 'Exhausted' || live.status === 'Need Login' || live.status === 'Unconfirmed') return null;
+        if (this.liveOnly && !WorkerPool.LIVE_READY_STATUSES.has(live.status)) return null;
+        if (live.status === 'Cooldown' && accountHealth.isResting(live)) return null;
+        if (requiredCredits > 0) {
+          const credits = (typeof live.credits === 'number') ? live.credits : null;
+          const need = bundle.tasks.length * requiredCredits;
+          if (credits === null || credits < need) return null;
+        }
+        return live;
+      };
+      // A bundle whose account cannot serve it (or whose worker
+      // died / rotated away) gives its still-queued tasks back to
+      // the spillover — they are re-planned after the first pass,
+      // never silently served by another account mid-pass.
+      const releaseBundleToSpillover = (bundle, workerId) => {
+        if (!bundle || bundle.claimedBy !== workerId) return;
+        bundle.claimedBy = null;
+        bundle.released = true;
+        for (const t of bundle.tasks) {
+          if (!taskQueue.has(t.id)) continue;
+          bundledTaskIds.delete(t.id);
+          if (!spilloverIds.has(t.id)) {
+            spilloverTasks.push(t);
+            spilloverIds.add(t.id);
+          }
+        }
+      };
+      // Move a bundle's still-queued tasks into the spillover
+      // (used when an UNCLAIMED bundle's account cannot serve it).
+      const spillBundleTasks = (bundle) => {
+        bundle.released = true;
+        for (const t of bundle.tasks) {
+          bundledTaskIds.delete(t.id);
+          if (taskQueue.has(t.id) && !spilloverIds.has(t.id)) {
+            spilloverTasks.push(t);
+            spilloverIds.add(t.id);
+          }
+        }
+      };
+      // Claim the next unclaimed bundle for a worker: the bundle
+      // is validated live first; an invalid bundle is released to
+      // the spillover and the scan moves on to the next bundle.
+      const claimNextBundle = (workerId) => {
+        for (const bundle of bundles) {
+          if (bundle.claimedBy || bundle.released || bundle.done) continue;
+          if (this.assignedAccounts.has(bundle.accountId)) continue;
+          if (unusableAccounts.has(bundle.accountId)) {
+            spillBundleTasks(bundle);
+            continue;
+          }
+          const live = validateBundleAccount(bundle);
+          if (!live) {
+            this.log(`The planned account [${bundle.accountName}] cannot take its ${bundle.tasks.length} planned video(s) right now (its live status or balance changed) — those prompts wait for the re-plan after the first pass.`, 'warn');
+            spillBundleTasks(bundle);
+            continue;
+          }
+          bundle.claimedBy = workerId;
+          return { bundle, account: live };
+        }
+        return null;
+      };
+      // The worker's next task: while its bundle is alive (tasks
+      // queued OR still in flight) ONLY the bundle's own next
+      // task — the worker works its bundle, in order, and nothing
+      // else. With no live bundle, only UNBUNDLED work (failover
+      // returns) — never another bundle's task and never a
+      // spillover task (those wait for the re-plan, so the
+      // division the owner sees is the division that runs).
+      const takeNextTask = (bundle, bundleBusy) => {
+        // Defensive edge: no plan at all — classic FIFO behaviour.
+        if (bundles.length === 0) return taskQueue.next();
+        if (bundle) {
+          const own = taskQueue.nextMatching(t => bundle.taskIds.has(t.id));
+          if (own) return own;
+          if (bundleBusy) return null;
+        }
+        return taskQueue.nextMatching(t => !bundledTaskIds.has(t.id) && !spilloverIds.has(t.id));
+      };
+      // When a wave ends (no live workers), any bundle that still
+      // holds queued tasks is ownerless by definition — sweep its
+      // tasks into the spillover so the re-plan below sees them
+      // (a bundle can be stranded when its planned account was
+      // being used as another worker's classic account, or its
+      // worker exited on a path that never claimed it).
+      const sweepOrphanedBundles = () => {
+        for (const bundle of bundles) {
+          if (bundle.done || bundle.released) continue;
+          if (!bundle.tasks.some(t => taskQueue.has(t.id))) continue;
+          bundle.claimedBy = null;
+          bundle.released = true;
+          for (const t of bundle.tasks) {
+            if (!taskQueue.has(t.id)) continue;
+            bundledTaskIds.delete(t.id);
+            if (!spilloverIds.has(t.id)) {
+              spilloverTasks.push(t);
+              spilloverIds.add(t.id);
+            }
+          }
+        }
+      };
+      // The ONE re-plan: spillover tasks are divided again over
+      // the accounts' LIVE balances (workers' accounts excluded —
+      // they are mid-pass; per-run unusable marks honoured), and
+      // a task is never bundled onto an account it already tried.
+      // Returns how many NEW bundles were formed.
+      const replanSpillover = () => {
+        if (spilloverTasks.length === 0) return 0;
+        const liveAccounts = [];
+        for (const a of pool) {
+          if (unusableAccounts.has(a.id)) continue;
+          if (this.assignedAccounts.has(a.id)) continue;
+          const live = dbService.getAccount(a.id) || a;
+          if (live.status === 'Exhausted' || live.status === 'Need Login' || live.status === 'Unconfirmed') continue;
+          if (this.liveOnly && !WorkerPool.LIVE_READY_STATUSES.has(live.status)) continue;
+          if (live.status === 'Cooldown' && accountHealth.isResting(live)) continue;
+          liveAccounts.push(live);
+        }
+        const excludeByTask = new Map();
+        for (const t of spilloverTasks) {
+          let tried = null;
+          try { tried = failoverTracker.accountsTried(t.id); } catch (e) {}
+          if (tried && tried.size > 0) excludeByTask.set(t.id, new Set([...tried].map(String)));
+        }
+        const plan2 = runPlanner.planBundles({ tasks: spilloverTasks, accounts: liveAccounts, requiredCredits, excludeByTask });
+        let placed = 0;
+        for (const b of plan2.bundles) {
+          const bundle = {
+            index: bundles.length,
+            accountId: b.accountId,
+            accountName: b.accountName,
+            taskIds: new Set(b.taskIds),
+            tasks: b.tasks,
+            claimedBy: null,
+            released: false,
+            done: false
+          };
+          bundles.push(bundle);
+          for (const id of bundle.taskIds) {
+            bundledTaskIds.add(id);
+            spilloverIds.delete(id);
+          }
+          placed++;
+        }
+        spilloverTasks = [...plan2.spillover];
+        return placed;
+      };
+
+      // v2.48.112 (B): workers spawn only for bundles that exist —
+      // a 1-prompt run opens exactly 1 browser. (With no bundles
+      // at all — a defensive edge — the classic count applies and
+      // the classic pick serves the queue.)
+      const actualWorkersCount = bundles.length > 0
+        ? Math.min(this.concurrency, bundles.length)
+        : Math.min(this.concurrency, pool.length, pendingTasks.length);
       // v2.48.85 (RUN GRID — owner order 2026-11-10): a
       // VISIBLE-mode run lays its worker browsers out in a
       // FIXED grid over this PC's real work area, computed
@@ -1940,9 +2197,14 @@ class WorkerPool {
             taskId: rowTask.id,
             promptIndex: rowTask.prompt_index,
             reason,
-            detail: kind === 'prompt-policy'
+            // v2.48.112 (G): a thrown worker error's RAW STACK
+            // rides the failure record — Activity used to keep
+            // only the message, so the record could not show
+            // WHERE the engine actually failed.
+            detail: (kind === 'prompt-policy'
               ? `Prompt #${rowTask.prompt_index + 1} was stopped by Google's safety policy. This fault is from the prompt's side — the same will happen on every account, so credits were NOT wasted by trying other accounts. Change the prompt and send it again. Reason for stopping: ${reason}`
-              : `Prompt #${rowTask.prompt_index + 1} finally failed — all allowed tries (other accounts + same-account retry) are over, or no usable account is left. Attempts used: ${totalAttempts} of ${failover.MAX_TOTAL_ATTEMPTS} total (on ${distinctTries} distinct account(s)). Last reason: ${reason}. This task can be retried from History.`,
+              : `Prompt #${rowTask.prompt_index + 1} finally failed — all allowed tries (other accounts + same-account retry) are over, or no usable account is left. Attempts used: ${totalAttempts} of ${failover.MAX_TOTAL_ATTEMPTS} total (on ${distinctTries} distinct account(s)). Last reason: ${reason}. This task can be retried from History.`)
+              + (opts.errorStack ? `\nError stack: ${opts.errorStack}` : ''),
             message: `Task FAIL: Prompt #${rowTask.prompt_index + 1} — ${reason}`
           });
           this.log(`[ROOT] task #${rowTask.prompt_index + 1} settled FAILED (${kind || 'unknown'}) after ${totalAttempts} total attempt(s) (cap ${failover.MAX_TOTAL_ATTEMPTS}) on ${distinctTries} distinct account(s)`, 'error');
@@ -2142,29 +2404,14 @@ class WorkerPool {
       // running drain's loop picks up fresh entries); every drain
       // is tracked so the end of the run can wait for them all
       // before the final download pass.
+      // v2.48.112 (D): the same-engine detached retry is GONE —
+      // an engine's own retries now run serialized inside its
+      // worker's window section (see the call site). This tracker
+      // remains for the G4 surrendered-engine drains, whose
+      // engines have no live submitter and therefore exactly one
+      // driver; the run end still waits for them all before the
+      // final download pass.
       const detachedDrains = createDetachedDrains();
-      const retryDrainsInFlight = new Map(); // engine -> promise
-      const startDetachedDownloadRetries = (engine) => {
-        if (!engine || retryDrainsInFlight.has(engine)) return;
-        const p = (async () => {
-          try {
-            for (let pass = 0; pass < 10; pass++) {
-              const before = deferredDownloadRetries.filter(e => e.owner === engine).length;
-              if (before === 0) break;
-              await processDownloadRetries(engine);
-              const after = deferredDownloadRetries.filter(e => e.owner === engine).length;
-              // Entries the guards deliberately left (wrong
-              // account by then / a fetch still in flight) wait
-              // for the next window or the final pass — do not
-              // spin on them here.
-              if (after === 0 || after >= before) break;
-            }
-          } catch (e) {}
-        })();
-        retryDrainsInFlight.set(engine, p);
-        detachedDrains.add(p);
-        p.finally(() => { if (retryDrainsInFlight.get(engine) === p) retryDrainsInFlight.delete(engine); });
-      };
 
       // v1.1 freeze fix: accounts that cannot launch / open the studio in
       // this run are remembered here (shared across workers) together with
@@ -2215,6 +2462,14 @@ class WorkerPool {
         // v2.0.0: round-robin anchor — the account this worker was last
         // bound to; the next search starts after it.
         let lastBoundAccountId = null;
+        // v2.48.112 (A): the planner bundle this worker has claimed
+        // (null = classic worker serving unbundled failover work),
+        // and the done flag for "nothing in this run can come to
+        // me" (the queue still holds other bundles' tasks or
+        // spillover — the supervisor's replacements and the
+        // re-plan own those, this worker must not spin on them).
+        let myBundle = null;
+        let workerDone = false;
 
         // v2.48.110 (G4): engines are built by a FACTORY. When an
         // account runs dry mid-window, the worker hands its engine
@@ -2471,7 +2726,7 @@ class WorkerPool {
           const activeWorkerTasks = [];
           const maxBurstConcurrency = Math.min(4, Math.max(1, Number(settings.burstConcurrency) || 4));
 
-          while ((taskQueue.size() > 0 || activeWorkerTasks.length > 0) && !this.isStopping) {
+          while ((taskQueue.size() > 0 || activeWorkerTasks.length > 0) && !this.isStopping && !workerDone) {
             // v2.48.110 (G2): wind-down — the parallel-workers
             // setting was LOWERED mid-run; an idle worker retires
             // at this boundary instead of binding another account.
@@ -2488,10 +2743,57 @@ class WorkerPool {
             }
             if (this.isStopping) break;
 
+            // v2.48.112 (A): BUNDLE COMPLETION — when this worker's
+            // bundle has nothing queued and nothing in flight, the
+            // bundle is done: release its account (browser closes)
+            // so the binding below can claim the NEXT unstarted
+            // bundle with a fresh binding, exactly like a rotation.
+            if (myBundle && activeWorkerTasks.length === 0
+                && !taskQueue.pending.some(t => myBundle.taskIds.has(t.id))) {
+              myBundle.claimedBy = null;
+              myBundle.done = true;
+              myBundle = null;
+              if (workerAccount) {
+                await engine.closeBrowser().catch(() => {});
+                this.assignedAccounts.delete(workerAccount.id);
+                this._unregisterActiveBrowser(workerAccount.id);
+                workerAccount = null;
+              }
+            }
+
             // ---- Ensure this worker has a usable account + open studio ----
             if (!workerAccount || !engine.browser || !engine.page || engine.page.isClosed()) {
               if (!workerAccount) {
-                workerAccount = this._findNextAvailableAccount(pool, requiredCredits, unusableAccounts, lastBoundAccountId, resCtx);
+                // v2.48.112 (A+B): BUNDLE FIRST — claim the next
+                // unclaimed bundle and bind ITS account (the claim
+                // already re-validated it live). The browser for
+                // this account opens below, only now that the
+                // account HAS work. Only when no bundle can be
+                // claimed does the worker fall back to the classic
+                // pick, and only for UNBUNDLED (failover) work —
+                // accounts reserved by unclaimed bundles are
+                // blocked from that pick so the plan is never
+                // stolen from under its worker.
+                if (!myBundle) {
+                  const claim = claimNextBundle(workerId);
+                  if (claim) {
+                    myBundle = claim.bundle;
+                    workerAccount = claim.account;
+                  }
+                }
+                if (!workerAccount) {
+                  const hasUnbundledWork = bundles.length === 0
+                    || taskQueue.pending.some(t => !bundledTaskIds.has(t.id) && !spilloverIds.has(t.id));
+                  if (hasUnbundledWork) {
+                    const blocked = new Map(unusableAccounts);
+                    for (const b of bundles) {
+                      if (!b.claimedBy && !b.released && !b.done && !blocked.has(b.accountId)) {
+                        blocked.set(b.accountId, 'reserved for a planned bundle');
+                      }
+                    }
+                    workerAccount = this._findNextAvailableAccount(pool, requiredCredits, blocked, lastBoundAccountId, resCtx);
+                  }
+                }
                 if (!workerAccount) {
                   if (activeWorkerTasks.length === 0) {
                     if (taskQueue.size() > 0 && !lastStartError) {
@@ -2559,6 +2861,13 @@ class WorkerPool {
 
                   if (definitive || attempts >= this.maxLaunchAttempts) {
                     unusableAccounts.set(workerAccount.id, reason);
+                    // v2.48.112 (A): if this dead account was this
+                    // worker's bundle account, the bundle's
+                    // still-queued tasks go to the spillover.
+                    if (myBundle && String(myBundle.accountId) === String(workerAccount.id)) {
+                      releaseBundleToSpillover(myBundle, workerId);
+                      myBundle = null;
+                    }
                     if (!lastStartError) lastStartError = reason;
                     this.log(`Worker #${workerIndex + 1}: ${reason} This account is being skipped for this whole run.`, 'error');
                     // v2.4.0 self-check (background mode): if Flow
@@ -2589,8 +2898,20 @@ class WorkerPool {
 
             // ---- Burst submit: fill the sliding window ----
             while (activeWorkerTasks.length < maxBurstConcurrency && taskQueue.size() > 0 && !this.isStopping && !this.isPaused && !accountBlocked) {
-              const nextTask = taskQueue.next();
-              if (!nextTask) break;
+              // v2.48.112 (A): bundle-aware pull — this worker's
+              // own bundle first (in order); unbundled failover
+              // work only when it holds no live bundle.
+              const bundleBusy = !!(myBundle && activeWorkerTasks.some(t => myBundle.taskIds.has(t.taskId)));
+              const nextTask = takeNextTask(myBundle, bundleBusy);
+              if (!nextTask) {
+                // Nothing in this run can come to me right now:
+                // with an empty window I am done (the queue holds
+                // other bundles' tasks or spillover — replacements
+                // and the re-plan own those); with renders in
+                // flight I simply go and watch the window.
+                if (activeWorkerTasks.length === 0) workerDone = true;
+                break;
+              }
 
               // v2.0.0 FAILOVER guard: a task that already failed on THIS
               // worker's account is never fired on it again — it goes to
@@ -2750,6 +3071,14 @@ class WorkerPool {
                       drainRetries: (e) => processDownloadRetries(e)
                     }));
                     this.log(`Worker #${workerIndex + 1}: [${drainAccount ? drainAccount.name : 'account'}] cannot run Prompt #${currentIdx + 1} (${submitRes.status}) — moving to another account RIGHT NOW. Its ${drainTasks.length} generating video(s) keep finishing in the background and will download there; no prompt waits for them.`, 'warn');
+                    // v2.48.112 (A): the bundle's still-queued
+                    // remainder (this prompt included — it never
+                    // fired) goes to the spillover for the re-plan;
+                    // the in-flight ones finish on the drain above.
+                    if (myBundle) {
+                      releaseBundleToSpillover(myBundle, workerId);
+                      myBundle = null;
+                    }
                     break;
                   }
                   this.log(`Worker #${workerIndex + 1}: [${workerAccount.name}] cannot run Prompt #${currentIdx + 1} (${submitRes.status}). The prompt has been put back in the queue; as soon as this account's generating videos are downloaded, it will go to another account.`, 'warn');
@@ -2794,6 +3123,15 @@ class WorkerPool {
                   this.onTaskUpdate({ taskId: nextTask.id, promptIndex: currentIdx, promptText: nextTask.prompt_text, status: 'pending' });
                   noteTaskSettled(nextTask.id, 'moved');
                   this.log(`Worker #${workerIndex + 1}: [${workerAccount.name}]'s Flow settings panel does not match this run's settings (${mismatchFields}) — Prompt #${currentIdx + 1} was NOT sent and no credits were spent. The prompt is back in the queue; this account is skipped for the rest of the run.`, 'error');
+                  // v2.48.112 (A): this worker's bundle cannot be
+                  // served by this account at all — its remaining
+                  // prompts (this one included; none of them fired)
+                  // go to the spillover for the re-plan, which will
+                  // not place them back on this unusable account.
+                  if (myBundle) {
+                    releaseBundleToSpillover(myBundle, workerId);
+                    myBundle = null;
+                  }
                   accountBlocked = true;
                   break;
                 }
@@ -3002,19 +3340,30 @@ class WorkerPool {
                 if (workerAccount) {
                   try { failoverTracker.recordTry(nextTask.id, workerAccount.id); } catch (e) {}
                 }
-                const fo = failTaskOrFailover(nextTask, `Worker error: ${taskErr.message}`, workerAccount ? workerAccount.id : null, workerAccount ? workerAccount.name : '');
+                const fo = failTaskOrFailover(nextTask, `Worker error: ${taskErr.message}`, workerAccount ? workerAccount.id : null, workerAccount ? workerAccount.name : '', { errorStack: taskErr && taskErr.stack ? String(taskErr.stack) : null });
                 if (fo === 'failed') {
                   this.onTaskUpdate({ taskId: nextTask.id, promptIndex: currentIdx, promptText: nextTask.prompt_text, status: 'failed', reason: taskErr.message });
                 }
                 // Fail ONLY this task (fix #1). If other tasks are already
                 // rendering in this browser, keep it open so they can drain;
                 // otherwise close cleanly and rotate on the next iteration.
+                // v2.48.112 (E): …unless this engine still owns
+                // registered download retries — their tiles live in
+                // THIS browser's open project, and closing here
+                // would strand them. The browser stays; the
+                // window section retries those downloads on it,
+                // and rotation happens on a later pass.
                 if (activeWorkerTasks.length === 0) {
-                  await engine.closeBrowser().catch(() => {});
-                  if (workerAccount) {
-                    this.assignedAccounts.delete(workerAccount.id);
-                    this._unregisterActiveBrowser(workerAccount.id);
-                    workerAccount = null;
+                  const engineHasRetries = deferredDownloadRetries.some(e => e.owner === engine);
+                  if (engineHasRetries) {
+                    this.log(`Worker #${workerIndex + 1}: the browser is being kept open — download retries for videos already made on this account are still registered on it.`, 'warn');
+                  } else {
+                    await engine.closeBrowser().catch(() => {});
+                    if (workerAccount) {
+                      this.assignedAccounts.delete(workerAccount.id);
+                      this._unregisterActiveBrowser(workerAccount.id);
+                      workerAccount = null;
+                    }
                   }
                 } else {
                   this.log(`Worker #${workerIndex + 1}: the browser is being kept open so that the ${activeWorkerTasks.length} generating videos download completely.`, 'warn');
@@ -3044,7 +3393,7 @@ class WorkerPool {
                     // account-level failures (bounded by the tracker).
                     const rowTask = pendingTasks.find(pt => pt.id === t.taskId)
                       || { id: t.taskId, prompt_index: t.promptIndex, prompt_text: t.promptText };
-                    const fo = failTaskOrFailover(rowTask, `Worker error: ${waitErr.message}`, workerAccount ? workerAccount.id : null, workerAccount ? workerAccount.name : '');
+                    const fo = failTaskOrFailover(rowTask, `Worker error: ${waitErr.message}`, workerAccount ? workerAccount.id : null, workerAccount ? workerAccount.name : '', { errorStack: waitErr && waitErr.stack ? String(waitErr.stack) : null });
                     if (fo === 'failed') {
                       this.onTaskUpdate({ taskId: t.taskId, promptIndex: t.promptIndex, promptText: t.promptText, status: 'failed', reason: waitErr.message });
                     }
@@ -3078,7 +3427,22 @@ class WorkerPool {
               // submitting. Submission is never gated on a download
               // finishing (the run end still waits for every
               // detached retry before the final pass).
-              startDetachedDownloadRetries(engine);
+              // v2.48.112 (D): the G6 same-engine DETACHED retry is
+              // REMOVED. The deep dive proved the hazard: the
+              // detached drain drove tile-grid / editor / ⋮-menu
+              // retries on the SAME page a worker was submitting
+              // on — two drivers, one page — the "prompt par
+              // atakna" + "⋮ not found" cluster. This engine's
+              // retries now run HERE, serialized with its own
+              // submissions: the submission window above has fully
+              // drained, and the next submit waits for this drain
+              // to finish. (Retries belonging to a SURRENDERED
+              // engine — the G4 detached drain — still run on that
+              // engine in the background; no live worker submits
+              // on it, so it has exactly one driver too. Every
+              // page-touching entry point is additionally serialized
+              // by the engine's page-operation lease.)
+              await processDownloadRetries(engine);
 
               // Cooldown rotation: if a task in this window failed with
               // Google "Unusual Activity" and the window has drained, park
@@ -3102,6 +3466,14 @@ class WorkerPool {
               // ho gaye" keh deti thi — ab sirf itna kaha jata hai jo
               // sach hai (window settle ho gaya; natija upar ke log me).
               this.log(`Worker #${workerIndex + 1}: the wait for [${workerAccount.name}]'s generating videos is over (the ones that were made are downloaded; the ones that failed have their reasons in the log above). Now leaving this account and moving to another account…`, 'info');
+              // v2.48.112 (A): a blocked rotation releases the
+              // bundle's still-queued remainder to the spillover
+              // for the re-plan (pre-fire tasks only — the window
+              // has drained, so nothing here has fired-and-moved).
+              if (myBundle) {
+                releaseBundleToSpillover(myBundle, workerId);
+                myBundle = null;
+              }
               await engine.closeBrowser().catch(() => {});
               this.assignedAccounts.delete(workerAccount.id);
               this._unregisterActiveBrowser(workerAccount.id);
@@ -3123,7 +3495,7 @@ class WorkerPool {
             this.log(`Worker #${workerIndex + 1} me galti — ${t.plain}.`, 'error', { rawError: t.raw });
           }
           if (currentTask && !currentTask.completed && !currentTask.downloaded) {
-            const fo = failTaskOrFailover(currentTask, `Worker error: ${err.message}`, workerAccount ? workerAccount.id : null, workerAccount ? workerAccount.name : '');
+            const fo = failTaskOrFailover(currentTask, `Worker error: ${err.message}`, workerAccount ? workerAccount.id : null, workerAccount ? workerAccount.name : '', { errorStack: err && err.stack ? String(err.stack) : null });
             if (fo === 'failed') {
               this.onTaskUpdate({
                 taskId: currentTask.id,
@@ -3135,6 +3507,14 @@ class WorkerPool {
             }
           }
         } finally {
+          // v2.48.112 (A): a worker that ends (error, stop, retire)
+          // gives its bundle's still-queued tasks back to the
+          // spillover for the re-plan — never stranded on a dead
+          // worker, never silently moved to another account.
+          if (myBundle) {
+            releaseBundleToSpillover(myBundle, workerId);
+            myBundle = null;
+          }
           // No orphaned browsers, no leaked account assignments — ever.
           await engine.closeBrowser().catch(() => {});
           // v2.31.3: this worker's run has ended (complete, stopped
@@ -3233,6 +3613,14 @@ class WorkerPool {
         if (watchTripped || this.isStopping) return;
         let verdict = { type: 'none' };
         try { verdict = runWatchdog.evaluate(Date.now()); } catch (e) {}
+        // v2.48.112 (I): probes failing while the run itself is
+        // still progressing is a WARNING, not a stop (the W4
+        // false positive) — log it once per episode (the watch
+        // returns it once) and keep watching.
+        if (verdict.type === 'net-warning') {
+          this.log(`Internet checks are failing (${verdict.consecutiveFailures} in a row), but this run is still making progress — the run was NOT stopped. If progress also stops, the watchdog will stop the run and say why.`, 'warn');
+          return;
+        }
         if (verdict.type !== 'none') {
           watchTripped = true;
           tripRun(verdict);
@@ -3241,7 +3629,11 @@ class WorkerPool {
       if (probeTimer.unref) probeTimer.unref();
       if (watchTimer.unref) watchTimer.unref();
       this._runWatchTimers = { probeTimer, watchTimer };
-      try {
+      // v2.48.112 (A): the supervisor loop is one WAVE's worth of
+      // supervision; a run is wave 1 (the planned bundles) plus —
+      // only when spillover remains — ONE re-plan and a wave 2
+      // that works the new bundles.
+      const supervise = async () => {
         let prevTarget = null;
         while (liveWorkerIdx.size > 0) {
           const target = Math.min(this._liveParallelTarget(), pool.length);
@@ -3269,6 +3661,32 @@ class WorkerPool {
           }
           workerControl.retireRequests = Math.max(0, liveWorkerIdx.size - target);
           await sleep(400);
+        }
+      };
+      try {
+        await supervise();
+        // v2.48.112 (A): ONE re-plan of whatever the first pass
+        // could not place (plan overflow, bind failures, panel
+        // mismatches), against live re-read balances; a second
+        // wave then works the new bundles. Tasks that FIRED on
+        // an account never move through this — only pre-fire
+        // releases and unplaced spillover are re-planned.
+        if (!this.isStopping) {
+          sweepOrphanedBundles();
+          if (spilloverTasks.length > 0) {
+            const waitingBefore = spilloverTasks.length;
+            const placedBundles = replanSpillover();
+            if (placedBundles > 0) {
+              const placedTasks = waitingBefore - spilloverTasks.length;
+              this.log(`Re-plan: ${placedTasks} waiting prompt(s) were divided over the accounts again by their live balances — a second wave is starting for them now.`, 'info');
+              const wave2Count = Math.min(this.concurrency, placedBundles);
+              for (let i = 0; i < wave2Count; i++) spawnWorker(false);
+              await supervise();
+            }
+            if (spilloverTasks.length > 0 && !lastStartError) {
+              lastStartError = `${spilloverTasks.length} prompt(s) did not fit any account's remaining credits in this run.`;
+            }
+          }
         }
       } finally {
         clearInterval(probeTimer);
@@ -3560,6 +3978,8 @@ class WorkerPool {
       this._rootLogExport = null;
       // v2.48.111 (F6): the settings pin belongs to this run only.
       this._unpinRunSettings();
+      // v2.48.112 (C): the parallel pin belongs to this run only.
+      this._runParallelPin = null;
       // v2.48.85 (RUN GRID): the grid belongs to this run
       // only — the next run computes its own from scratch.
       this._runGrid = null;

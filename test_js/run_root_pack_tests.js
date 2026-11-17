@@ -14649,6 +14649,145 @@ async function main() {
     ok('X117 Z2 source: tile coords scroll the tile into the viewport centre', flowSrc117.includes("target.scrollIntoView({ behavior: 'instant', block: 'center' });"));
   }
 
+  // =====================================================================
+  // X118 (v2.48.114) — zoom that actually persists + credit-gate clarity
+  // (owner field reports 2026-11-17 shaam):
+  // (Z1b) The .113 CDP-only zoom reported 'applied' while the owner
+  //      saw NO zoom on screen — the scale rode a throwaway CDP
+  //      session that was detached right after. Now the PRIMARY
+  //      mechanism is the Chromium launch flag
+  //      --force-device-scale-factor=0.5 on the generation launch
+  //      path (whole browser, whole lifetime); the CDP call stays as
+  //      a secondary through the page's OWN live session only (never
+  //      create-and-detach; no live session = silent skip); and a
+  //      READ-BACK (devicePixelRatio / visualViewport.scale) logs
+  //      ONE verified/FAILED [ROOT] line per browser open.
+  // (Z2b) The credit gate's messages gain the breakdown they always
+  //      computed silently: total across the run's accounts, usable,
+  //      and the excluded credits by reason (resting on cooldown /
+  //      spread under one video's cost) — the field case was
+  //      "usable 94" against the owner's 142 total (43 resting +
+  //      5×1 under-cost). Gate math, thresholds and refusal
+  //      semantics are byte-for-byte the old ones.
+  // =====================================================================
+  {
+    const fs118 = require('fs');
+    const path118 = require('path');
+    const read118 = (rel) => fs118.readFileSync(path118.join(__dirname, '..', rel), 'utf8');
+    const flowSrc118 = read118('engine/flowAutomation.js');
+    const poolSrc118 = read118('engine/workerPool.js');
+    const {
+      browserZoomLaunchArg: launchArg118,
+      zoomReadbackVerified: zoomVerified118,
+      browserZoomVerifyLogLine: zoomVerifyLine118
+    } = require('../engine/flowAutomation');
+    const creditBreakdown118 = require('../engine/creditBreakdown');
+
+    // --- Z1b: the launch flag ---
+    eq('X118 Z1b: the launch arg is the 0.5 device-scale flag', launchArg118(), '--force-device-scale-factor=0.5');
+    eq('X118 Z1b: an explicit scale lands in the flag', launchArg118(0.5), '--force-device-scale-factor=0.5');
+    eq('X118 Z1b: a bad scale falls back to the generation scale', launchArg118(0), '--force-device-scale-factor=0.5');
+    {
+      const start = flowSrc118.indexOf('async launchBrowserForAccount(');
+      const slice = flowSrc118.slice(start, start + 30000);
+      ok('X118 Z1b source: generation launch args carry the zoom flag', slice.includes('browserZoomLaunchArg(),'));
+    }
+
+    // --- Z1b: the CDP secondary never creates/detaches a session ---
+    {
+      const start = flowSrc118.indexOf('async _applyGenerationZoom(');
+      const slice = flowSrc118.slice(start, start + 2600);
+      ok('X118 Z1b source: the zoom secondary uses the page own session', slice.includes('this.cdpSession'));
+      ok('X118 Z1b source: the zoom secondary never creates a session', !slice.includes('createCDPSession'));
+      ok('X118 Z1b source: the zoom secondary never detaches a session', !slice.includes('.detach('));
+    }
+
+    // --- Z1b: the read-back verdict + line forms (fake evaluations) ---
+    eq('X118 Z1b: dpr 0.5 alone verifies', zoomVerified118(0.5, 1), true);
+    eq('X118 Z1b: vv 0.5 alone verifies', zoomVerified118(1.25, 0.5), true);
+    eq('X118 Z1b: neither signal at 0.5 fails', zoomVerified118(1, 1), false);
+    eq('X118 Z1b: missing signals fail honestly', zoomVerified118(null, null), false);
+    eq('X118 Z1b: the verified line carries dpr + vv',
+      zoomVerifyLine118('Acc', 0.5, 0.5, 1),
+      '[ROOT] browser-zoom account=Acc scale=0.5 dpr=0.5 vv=1 verified');
+    eq('X118 Z1b: the vv-only line verifies with dpr n/a',
+      zoomVerifyLine118('Acc', 0.5, null, 0.5),
+      '[ROOT] browser-zoom account=Acc scale=0.5 dpr=n/a vv=0.5 verified');
+    eq('X118 Z1b: the FAILED line carries the real values',
+      zoomVerifyLine118('Acc', 0.5, 1, 1),
+      '[ROOT] browser-zoom account=Acc scale=0.5 dpr=1 vv=1 FAILED');
+    ok('X118 Z1b source: the read-back reads devicePixelRatio', flowSrc118.includes('window.devicePixelRatio'));
+    ok('X118 Z1b source: the read-back reads visualViewport.scale', flowSrc118.includes('window.visualViewport'));
+    ok('X118 Z1b source: the read-back runs at both checkpoints', (flowSrc118.match(/await this\._verifyGenerationZoom\(\);/g) || []).length >= 2);
+    ok('X118 Z1b source: the one-line guard resets per launch', flowSrc118.includes('this._zoomProofLogged = false;'));
+
+    // --- Z2b: the field fixture (usable 94 of 142: 43 resting, 5×1 under) ---
+    {
+      const isRestingFx = (a) => a.status === 'Cooldown';
+      const universe = [
+        { id: 'a10', credits: 43 }, { id: 'a16', credits: 43 }, { id: 'a12', credits: 8 },
+        { id: 'a17', credits: 43, status: 'Cooldown' },
+        { id: 'a11', credits: 1 }, { id: 'a13', credits: 1 }, { id: 'a14', credits: 1 },
+        { id: 'a15', credits: 1 }, { id: 'a18', credits: 1 },
+        { id: 'a99', credits: null }
+      ];
+      const bd = creditBreakdown118.computeCreditBreakdown(universe, {
+        requiredCredits: 7,
+        countedIds: new Set(['a10', 'a16', 'a12']),
+        isResting: isRestingFx
+      });
+      eq('X118 Z2b: the field total is 142', bd.total, 142);
+      eq('X118 Z2b: one resting account', bd.restingCount, 1);
+      eq('X118 Z2b: resting credits are 43', bd.restingCredits, 43);
+      eq('X118 Z2b: five under-cost accounts', bd.underCount, 5);
+      eq('X118 Z2b: under-cost credits are 5', bd.underCredits, 5);
+      eq('X118 Z2b: exclusions exist', bd.hasExclusions, true);
+      eq('X118 Z2b: the total segment', creditBreakdown118.creditGateTotalSegment(bd), ' of 142 total');
+      eq('X118 Z2b: the exclusion segment matches the brief shape',
+        creditBreakdown118.creditGateExclusionSegment(bd, 7),
+        ' (43 on 1 resting account, 5 spread over 5 accounts under 7 each)');
+      eq('X118 Z2b: the composed gate fragment reads whole',
+        `hold only 94${creditBreakdown118.creditGateTotalSegment(bd)}${creditBreakdown118.creditGateExclusionSegment(bd, 7)}`,
+        'hold only 94 of 142 total (43 on 1 resting account, 5 spread over 5 accounts under 7 each)');
+    }
+    {
+      // Zero exclusions: the error line changes ONLY by the total.
+      const bd = creditBreakdown118.computeCreditBreakdown(
+        [{ id: 'x', credits: 43 }, { id: 'y', credits: 43 }],
+        { requiredCredits: 7, countedIds: new Set(['x', 'y']), isResting: () => false }
+      );
+      eq('X118 Z2b: zero-exclusion total still sums', bd.total, 86);
+      eq('X118 Z2b: zero-exclusion has no exclusions', bd.hasExclusions, false);
+      eq('X118 Z2b: zero-exclusion segment is empty', creditBreakdown118.creditGateExclusionSegment(bd, 7), '');
+      eq('X118 Z2b: zero-exclusion parts are empty', creditBreakdown118.creditBreakdownParts(bd, 7).length, 0);
+    }
+    {
+      // A resting account the gate DID count is not an exclusion.
+      const bd = creditBreakdown118.computeCreditBreakdown(
+        [{ id: 'r', credits: 43, status: 'Cooldown' }, { id: 'u', credits: 10 }],
+        { requiredCredits: 7, countedIds: new Set(['r', 'u']), isResting: (a) => a.status === 'Cooldown' }
+      );
+      eq('X118 Z2b: a counted resting account is not excluded', bd.restingCount, 0);
+      eq('X118 Z2b: a counted resting account still totals', bd.total, 53);
+    }
+    {
+      // Plural forms.
+      const bd = creditBreakdown118.computeCreditBreakdown(
+        [{ id: 'r1', credits: 20, status: 'Cooldown' }, { id: 'r2', credits: 23, status: 'Cooldown' }, { id: 's', credits: 3 }],
+        { requiredCredits: 7, countedIds: new Set(), isResting: (a) => a.status === 'Cooldown' }
+      );
+      eq('X118 Z2b: plural parts read right',
+        creditBreakdown118.creditBreakdownParts(bd, 7).join(', '),
+        '43 on 2 resting accounts, 3 spread over 1 account under 7 each');
+    }
+    ok('X118 Z2b source: the pool uses the breakdown module', poolSrc118.includes("require('./creditBreakdown')"));
+    ok('X118 Z2b source: the gate computes the breakdown from the universe', poolSrc118.includes('computeCreditBreakdown(creditUniverse'));
+    ok('X118 Z2b source: the universe is captured before the filters', poolSrc118.includes('const creditUniverse = pool.slice();'));
+    ok('X118 Z2b source: the gate error carries total + exclusion segments', poolSrc118.includes('hold only ${knownUsable}${totalSeg}${exclSeg}'));
+    ok('X118 Z2b source: the gate math is untouched (sum)', poolSrc118.includes('knownUsable += Math.max(0, a.credits);'));
+    ok('X118 Z2b source: the gate math is untouched (refusal)', poolSrc118.includes('knownAccounts > 0 && knownUsable < totalNeeded'));
+  }
+
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);

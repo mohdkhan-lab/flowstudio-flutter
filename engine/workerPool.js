@@ -24,6 +24,7 @@ const runWatch = require('./runWatch');
 const respawnGuardMod = require('./respawnGuard');
 const { createDetachedDrains } = require('./detachedDrains');
 const runPlanner = require('./runPlanner');
+const creditBreakdown = require('./creditBreakdown');
 const https = require('https');
 const resolutionMemory = require('./resolutionMemory');
 const windowStyle = require('./windowStyle');
@@ -1434,6 +1435,14 @@ class WorkerPool {
           return;
         }
       }
+      // v2.48.114 (Z2b): the credit gate's breakdown universe —
+      // the accounts this run may consider (the ticked set,
+      // minus Need Login), captured BEFORE the live-only and
+      // balance filters below remove anyone. The gate's message
+      // explains its usable figure against THIS list: which
+      // credits sit on resting (cooldown) accounts and which
+      // are spread over accounts that cannot afford one video.
+      const creditUniverse = pool.slice();
       // v2.5.0: "Sirf live accounts chalao" ON ho to pool sirf Live /
       // Ready accounts ka banta hai; ek bhi na mile to wajah saaf
       // bol kar run yahin rukta hai (khamosh fail kabhi nahi).
@@ -1511,23 +1520,42 @@ class WorkerPool {
         const totalNeeded = requiredCredits * pendingTasks.length;
         let knownUsable = 0;
         let knownAccounts = 0;
+        const countedIds = new Set();
         for (const a of pool) {
           if (typeof a.credits === 'number' && Number.isFinite(a.credits)) {
             knownUsable += Math.max(0, a.credits);
             knownAccounts++;
+            countedIds.add(String(a.id));
           }
         }
+        // v2.48.114 (Z2b): the breakdown behind the gate's
+        // numbers — total across the run's accounts, and the
+        // excluded credits by reason (resting / under one
+        // video's cost). The gate's math is unchanged; only
+        // its message learns to show its working (the owner
+        // saw 142 total in the app while the gate said 94 —
+        // both were true, and now the message says why).
+        const bd = creditBreakdown.computeCreditBreakdown(creditUniverse, {
+          requiredCredits,
+          countedIds,
+          isResting: (a) => accountHealth.isResting(a)
+        });
+        const totalSeg = creditBreakdown.creditGateTotalSegment(bd);
+        const exclSeg = creditBreakdown.creditGateExclusionSegment(bd, requiredCredits);
         if (knownAccounts > 0 && knownUsable < totalNeeded) {
-          const msg = `Not enough credits for this run: ${pendingTasks.length} prompt(s) at ${requiredCredits} credits each need ${totalNeeded} credits, but the usable accounts together hold only ${knownUsable}. No prompt was submitted and no credits were spent. Add or refresh an account with enough credits, then press Generate again.`;
+          const msg = `Not enough credits for this run: ${pendingTasks.length} prompt(s) at ${requiredCredits} credits each need ${totalNeeded} credits, but the usable accounts together hold only ${knownUsable}${totalSeg}${exclSeg}. No prompt was submitted and no credits were spent. Add or refresh an account with enough credits, then press Generate again.`;
           this.log(msg, 'error');
           try {
-            recordActivity({ category: 'credits', level: 'error', message: `Credit gate: run stopped before starting — this run needs ${totalNeeded} credits, usable accounts hold ${knownUsable}` });
+            recordActivity({ category: 'credits', level: 'error', message: `Credit gate: run stopped before starting — this run needs ${totalNeeded} credits, usable accounts hold ${knownUsable}${totalSeg}${exclSeg}` });
           } catch (e) {}
           this.onProgress({ status: `Error: ${msg}` });
           return;
         }
         if (knownAccounts > 0) {
-          this.log(`Credit check passed: this run needs about ${totalNeeded} credits (${pendingTasks.length} prompts × ${requiredCredits}) and the usable accounts hold ${knownUsable}.`, 'info');
+          const exclNote = bd.hasExclusions
+            ? ` Total across accounts is ${bd.total} — not counted this run: ${creditBreakdown.creditBreakdownParts(bd, requiredCredits).join('; ')}.`
+            : '';
+          this.log(`Credit check passed: this run needs about ${totalNeeded} credits (${pendingTasks.length} prompts × ${requiredCredits}) and the usable accounts hold ${knownUsable}.${exclNote}`, 'info');
         }
       }
 

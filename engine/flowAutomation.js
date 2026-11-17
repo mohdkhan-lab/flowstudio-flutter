@@ -821,6 +821,57 @@ async function applyBrowserZoom(sendFn, scale = GENERATION_PAGE_SCALE) {
 }
 
 /**
+ * v2.48.114 (Z1b): the PRIMARY zoom mechanism — a Chromium
+ * launch flag. The .113 CDP-only route reported 'applied'
+ * in the log while the owner, watching the actual browser,
+ * saw NO zoom: the scale was set through a CDP session that
+ * was created for the call and detached right after, and a
+ * page-scale override does not survive its session. The
+ * launch flag scales the whole browser instance for its
+ * entire lifetime — no session lifetime is involved — so
+ * the visible window is zoomed from the first moment.
+ */
+function browserZoomLaunchArg(scale = GENERATION_PAGE_SCALE) {
+  const s = Number(scale);
+  const v = (Number.isFinite(s) && s > 0) ? s : GENERATION_PAGE_SCALE;
+  return `--force-device-scale-factor=${v}`;
+}
+
+/** v2.48.114 (Z1b): one read-back value as log text. */
+function zoomValueText(v) {
+  if (v === null || v === undefined) return 'n/a';
+  const n = Number(v);
+  if (!Number.isFinite(n)) return 'n/a';
+  return String(Math.round(n * 1000) / 1000);
+}
+
+/**
+ * v2.48.114 (Z1b): the read-back verdict — the 0.5 scaling
+ * counts as IN EFFECT when either signal shows it: the
+ * devicePixelRatio (0.5 on a 1.0-DPR display under the
+ * launch flag) or the visualViewport scale (0.5 under the
+ * CDP page-scale secondary). Either alone is enough; both
+ * missing/wrong is an honest FAILED.
+ */
+function zoomReadbackVerified(dpr, vv, scale = GENERATION_PAGE_SCALE) {
+  const s = Number(scale);
+  if (!Number.isFinite(s) || s <= 0) return false;
+  const near = (v) => {
+    if (v === null || v === undefined) return false;
+    const n = Number(v);
+    return Number.isFinite(n) && Math.abs(n - s) <= 0.06;
+  };
+  return near(dpr) || near(vv);
+}
+
+/** v2.48.114 (Z1b): the read-back proof as a [ROOT] line. */
+function browserZoomVerifyLogLine(accountName, scale, dpr, vv) {
+  const name = String(accountName == null ? '' : accountName).replace(/\s+/g, ' ').trim() || '-';
+  const verdict = zoomReadbackVerified(dpr, vv, scale) ? 'verified' : 'FAILED';
+  return `[ROOT] browser-zoom account=${name} scale=${scale} dpr=${zoomValueText(dpr)} vv=${zoomValueText(vv)} ${verdict}`;
+}
+
+/**
  * v2.48.113 (Z2): ⋮ hunt ki DOOSRI scope — tile ke hover
  * overlay/portal elements. Pehli scope tile ka apna
  * subtree hai (findMoreControl); wahan na mile to ye
@@ -1914,37 +1965,63 @@ class FlowAutomationEngine {
 
   /**
    * v2.48.113 (Z1): is engine ke page par generation zoom
-   * (50%) lagao. CDP session engine ki apni hai
-   * (this.cdpSession); na ho to page se taaza banti hai
-   * aur kaam ke baad detach ho jati hai. `logProof` true
-   * ho (browser open par) to [ROOT] browser-zoom wali
-   * proof line banti hai; re-assert (project open / grid
-   * wapsi) khamosh rehta hai. Nakami par sirf warning —
-   * zoom ki nakami kabhi kisi run ko nahi rokti.
+   * (50%) lagao. `logProof` true ho (browser open par) to
+   * [ROOT] browser-zoom wali proof line banti hai; re-assert
+   * (project open / grid wapsi) khamosh rehta hai. Nakami
+   * par sirf warning — zoom ki nakami kabhi kisi run ko
+   * nahi rokti.
+   * v2.48.114 (Z1b): ye CDP call ab SECONDARY hai — asal
+   * zoom launch flag (--force-device-scale-factor) se aata
+   * hai. Session ka istemal bhi theek kiya gaya: sirf page
+   * ki APNI maujooda automation session (this.cdpSession)
+   * chalegi; throwaway session bana kar detach karna band
+   * (usi detach ke baad .113 ka scale screen par tikta hi
+   * nahi tha). Apni session na ho to khamoshi se skip —
+   * flag window ko pehle hi cover karta hai.
    */
   async _applyGenerationZoom(logProof = false) {
     try {
       if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return false;
-      let session = (this.cdpSession && typeof this.cdpSession.send === 'function') ? this.cdpSession : null;
-      let own = false;
-      if (!session) {
-        try {
-          if (typeof this.page.createCDPSession === 'function') { session = await this.page.createCDPSession(); own = true; }
-          else if (this.page.target && typeof this.page.target === 'function') { session = await this.page.target().createCDPSession(); own = true; }
-        } catch (e) { session = null; }
-      }
-      if (!session) {
-        if (logProof) {
-          this.log(browserZoomLogLine(this.currentAccount ? this.currentAccount.name : null, GENERATION_PAGE_SCALE, false), 'warn');
-        }
-        return false;
-      }
+      const session = (this.cdpSession && typeof this.cdpSession.send === 'function') ? this.cdpSession : null;
+      if (!session) return false;
       const applied = await applyBrowserZoom((method, params) => session.send(method, params), GENERATION_PAGE_SCALE);
-      if (own && typeof session.detach === 'function') { try { await session.detach(); } catch (e) {} }
       if (logProof) {
         this.log(browserZoomLogLine(this.currentAccount ? this.currentAccount.name : null, GENERATION_PAGE_SCALE, applied), applied ? 'info' : 'warn');
       }
       return applied;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.114 (Z1b): zoom ka READ-BACK saboot — page ka
+   * asal effective scale padho (devicePixelRatio +
+   * visualViewport.scale) aur [ROOT] line me verified ya
+   * FAILED likho. Ek browser open par sirf EK line
+   * (this._zoomProofLogged, har launch par reset); baad
+   * ke checkpoints (grid wapsi) khamosh rehte hain. Ye
+   * line hukum ki nahi, ASAR ki gawahi hai — .113 ki
+   * 'applied' line hukum par sach thi, asar par nahi.
+   * Nakami par bhi run kabhi nahi rukta.
+   */
+  async _verifyGenerationZoom() {
+    try {
+      if (this._zoomProofLogged) return true;
+      if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return false;
+      const reading = await this.page.evaluate(() => ({
+        dpr: (typeof window !== 'undefined' && typeof window.devicePixelRatio === 'number') ? window.devicePixelRatio : null,
+        vv: (typeof window !== 'undefined' && window.visualViewport && typeof window.visualViewport.scale === 'number') ? window.visualViewport.scale : null
+      }));
+      const dpr = reading && typeof reading.dpr === 'number' ? reading.dpr : null;
+      const vv = reading && typeof reading.vv === 'number' ? reading.vv : null;
+      const verified = zoomReadbackVerified(dpr, vv, GENERATION_PAGE_SCALE);
+      this._zoomProofLogged = true;
+      this.log(
+        browserZoomVerifyLogLine(this.currentAccount ? this.currentAccount.name : null, GENERATION_PAGE_SCALE, dpr, vv),
+        verified ? 'info' : 'warn'
+      );
+      return verified;
     } catch (e) {
       return false;
     }
@@ -1959,6 +2036,9 @@ class FlowAutomationEngine {
     // Audit fix #5: a fresh browser launch must always re-apply settings.
     this.hasConfiguredSettings = false;
     this._appliedSettingsSig = null;
+    // v2.48.114 (Z1b): naya browser = zoom read-back ki
+    // nayi ek line (purani browser ki line nayi par nahi).
+    this._zoomProofLogged = false;
     // v2.48.9: a fresh launch = a fresh session — drop the cached
     // fetch inputs (cookies / user-agent) of the previous account.
     this._cookieHeaderCache = null;
@@ -2040,6 +2120,12 @@ class FlowAutomationEngine {
       `--user-data-dir=${profilePath}`,
       '--no-first-run',
       '--no-default-browser-check',
+      // v2.48.114 (Z1b — owner order): browser khulte hi
+      // 50% zoom, launch flag se — poori browser zindagi
+      // ke liye persistent, kisi CDP session ki umar se
+      // bandha hua nahi (.113 ka CDP-only rasta screen par
+      // tikta nahi tha).
+      browserZoomLaunchArg(),
       ...browserMode.launchWindowArgs(plan, gridBounds),
       ...(plan.antiThrottleArgs || []),
       '--disable-session-crashed-bubble',
@@ -2874,6 +2960,10 @@ class FlowAutomationEngine {
     // page scale reset kar sakti hain, is liye zoom
     // khamoshi se dobara assert karo.
     await this._applyGenerationZoom(false);
+    // v2.48.114 (Z1b): aur yahin pehla read-back saboot —
+    // page ka asal scale padh kar [ROOT] line (ek browser
+    // par ek hi dafa).
+    try { await this._verifyGenerationZoom(); } catch (e) {}
 
     // Dismiss tutorial/welcome overlay and clean up stale failed tiles
     try {
@@ -6302,7 +6392,14 @@ class FlowAutomationEngine {
     // sakti hai — har KAMYAB wapsi par zoom khamoshi se
     // dobara assert karo, phir natija waisa hi lauto.
     const finish = async (ok) => {
-      if (ok) { try { await this._applyGenerationZoom(false); } catch (e) {} }
+      if (ok) {
+        try { await this._applyGenerationZoom(false); } catch (e) {}
+        // v2.48.114 (Z1b): read-back saboot — project-open
+        // wali line pehle aa chuki ho to ye khamosh rehta
+        // hai (ek browser, ek line); na aayi ho to yahin
+        // banti hai.
+        try { await this._verifyGenerationZoom(); } catch (e) {}
+      }
       return ok;
     };
     if (await onGrid()) return finish(true);
@@ -14836,4 +14933,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, GENERATION_PAGE_SCALE, browserZoomLogLine, applyBrowserZoom, tileMoreOverlaySource, tileMenuDumpSource, tileMenuDumpElementLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, GENERATION_PAGE_SCALE, browserZoomLogLine, applyBrowserZoom, browserZoomLaunchArg, zoomReadbackVerified, browserZoomVerifyLogLine, tileMoreOverlaySource, tileMenuDumpSource, tileMenuDumpElementLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };

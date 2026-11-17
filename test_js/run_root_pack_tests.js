@@ -14017,6 +14017,281 @@ async function main() {
     ok('X114 G10: the elapsed format helper exists', panelSrc114.includes('String _formatElapsed(Duration d)'));
   }
 
+  // =====================================================================
+  // X115 (v2.48.111) — the two GOPAL-W3-1117 field defects (.110 par
+  // 0/20 saved, 0 credits spent):
+  // (F1) Supervisor respawn discipline (engine/respawnGuard):
+  //      .110 ka supervisor har exit ke ~400ms baad replacement
+  //      bhejta tha — na backoff, na cap, na yaad ke account-finding
+  //      abhi fail hua tha; 3 bindable accounts + target 4 par 4th
+  //      slot workers #3…#216+ churn kar gaya. Ab: 2 consecutive
+  //      instant no-account exits → cooldown (15s, doubling, 60s
+  //      cap), productive exit ya parallel RAISE cooldown saaf,
+  //      replacements hard-capped (30/run).
+  // (F2) Duration/count ka chunav GROUP-ANCHORED: panel IMAGE mode
+  //      me khula ho to do duration/count groups mounted ho sakte
+  //      hain; finder ab SELECTED element (reader wali pehchan) ke
+  //      group ke andar hi target dhoondhta hai — DOM order ka
+  //      pehla match nahi. Group na pehchana jaye to purani rawish.
+  // (F3) Duration/count par 'host' click apni alag strategy —
+  //      `inner || host` wala ghulna khatam.
+  // (F4) Count pill gate me shamil: pill par x2 = imaandar
+  //      mismatch (pehle gate count dekhta hi nahi tha).
+  // (F5) HAR terminal settings-mismatch par panel dump [ROOT]
+  //      lines me — agla field failure khud apna saboot layega.
+  // (F6) Live refresh run ke RESOLVED fields ko nahi badal sakta
+  //      (.109 F5 ka wada): pin start par, refresh sirf un fields
+  //      ko jo run ne specify nahi kiye; parallel hamesha live.
+  // =====================================================================
+  {
+    const fs115 = require('fs');
+    const path115 = require('path');
+    const read115 = (rel) => fs115.readFileSync(path115.join(__dirname, '..', rel), 'utf8');
+    const poolSrc115 = read115('engine/workerPool.js');
+    const flowSrc115 = read115('engine/flowAutomation.js');
+    const respawnGuard115 = require('../engine/respawnGuard');
+    const { WorkerPool: WP115 } = require('../engine/workerPool');
+    const {
+      panelOptionTargetSource: targetSrc115,
+      settingsPillMismatch: pillMismatch115,
+      parseSettingsPill: parsePill115
+    } = require('../engine/flowAutomation');
+
+    // --- F1: respawn guard — khalis hisaab, jaali ghadi ---
+    {
+      eq('X115 F1: the first cooldown is 15s', respawnGuard115.BASE_BACKOFF_MS, 15000);
+      eq('X115 F1: the cooldown ceiling is 60s', respawnGuard115.MAX_BACKOFF_MS, 60000);
+      eq('X115 F1: the per-run replacement cap is 30', respawnGuard115.MAX_REPLACEMENT_SPAWNS, 30);
+      const g = respawnGuard115.createRespawnGuard();
+      ok('X115 F1: an initial spawn is always allowed', g.canSpawn(0, false).ok);
+      g.noteSpawn(false);
+      eq('X115 F1: initial spawns never count as replacements', g.replacementSpawns, 0);
+      g.noteInstantNoAccountExit(1000);
+      ok('X115 F1: one instant exit alone arms no cooldown', g.canSpawn(1000, true).ok);
+      g.noteInstantNoAccountExit(2000);
+      const blocked = g.canSpawn(2000, true);
+      eq('X115 F1: two consecutive instant exits block a replacement', blocked.ok, false);
+      eq('X115 F1: the block reason is the cooldown', blocked.reason, 'cooldown');
+      eq('X115 F1: the first cooldown runs 15s from the trip', blocked.retryAt, 17000);
+      ok('X115 F1: the spawn is allowed once the cooldown passes', g.canSpawn(17000, true).ok);
+      g.noteInstantNoAccountExit(17000);
+      eq('X115 F1: a further instant exit re-arms at the doubled 30s backoff', g.canSpawn(17000, true).retryAt, 47000);
+      g.noteInstantNoAccountExit(17100);
+      eq('X115 F1: continued churn re-arms at the 60s ceiling', g.canSpawn(17100, true).retryAt, 77100);
+      g.noteInstantNoAccountExit(77100);
+      eq('X115 F1: the backoff never exceeds the 60s ceiling', g.canSpawn(77100, true).retryAt, 137100);
+      g.noteProductiveExit();
+      ok('X115 F1: a productive (bound) exit clears the cooldown at once', g.canSpawn(47200, true).ok);
+      g.noteInstantNoAccountExit(47300);
+      ok('X115 F1: after a reset, one instant exit alone does not re-trip', g.canSpawn(47300, true).ok);
+      g.noteInstantNoAccountExit(47400);
+      eq('X115 F1: the second consecutive exit re-arms the cooldown', g.canSpawn(47400, true).ok, false);
+      g.noteTargetRaise();
+      ok('X115 F1: a parallel raise clears the cooldown immediately', g.canSpawn(47400, true).ok);
+    }
+    {
+      const g = respawnGuard115.createRespawnGuard();
+      for (let i = 0; i < respawnGuard115.MAX_REPLACEMENT_SPAWNS; i++) g.noteSpawn(true);
+      eq('X115 F1: replacement spawns are counted', g.replacementSpawns, 30);
+      const capped = g.canSpawn(999999999, true);
+      eq('X115 F1: beyond the cap a replacement is refused', capped.ok, false);
+      eq('X115 F1: the cap refusal names itself', capped.reason, 'cap');
+      ok('X115 F1: the cap state latches', g.capReached);
+    }
+    {
+      // Supervisor ka chhota namuna — bilkul waisi hi cycle jo
+      // workerPool chalata hai (guard se pooch kar spawn), saare
+      // workers fauri no-account exit par. Kul spawns hadd ke
+      // andar rehne chahiye aur cooldown ke dauraan rukna bhi.
+      const g = respawnGuard115.createRespawnGuard();
+      let now = 0;
+      let live = 0;
+      let totalSpawns = 0;
+      const target = 4;
+      const spawn = (isReplacement) => { g.noteSpawn(isReplacement); live++; totalSpawns++; };
+      for (let i = 0; i < target; i++) spawn(false);
+      let cooldownPauses = 0;
+      for (let cycle = 0; cycle < 500; cycle++) {
+        while (live > 0) { live--; g.noteInstantNoAccountExit(now); }
+        while (live < target) {
+          const v = g.canSpawn(now, true);
+          if (!v.ok) {
+            if (v.reason === 'cooldown') { cooldownPauses++; now = v.retryAt; continue; }
+            break;
+          }
+          spawn(true);
+        }
+        if (live === 0) break;
+        now += 400;
+      }
+      eq('X115 F1: instantly-exiting workers keep total spawns at initial + cap', totalSpawns, 34);
+      eq('X115 F1: the simulated churn ends exactly at the replacement cap', g.replacementSpawns, 30);
+      ok('X115 F1: the cooldown genuinely paused respawns during the churn', cooldownPauses > 0);
+    }
+    ok('X115 F1 source: the pool requires the respawn guard', poolSrc115.includes("require('./respawnGuard')"));
+    ok('X115 F1 source: replacement spawns pass the guard', poolSrc115.includes('respawnGuard.canSpawn(Date.now(), true)'));
+    ok('X115 F1 source: a target raise clears the cooldown in the supervisor', poolSrc115.includes('respawnGuard.noteTargetRaise()'));
+    ok('X115 F1 source: worker exits feed the guard', poolSrc115.includes('respawnGuard.noteInstantNoAccountExit(Date.now())'));
+    ok('X115 F1 source: runWorker marks the churn signature', poolSrc115.includes("exitKind = 'no-account-instant'"));
+    ok('X115 F1 source: the cap refusal is announced once, plainly', poolSrc115.includes('No more accounts are available for the remaining prompts'));
+
+    // --- F2: group-anchored targeting — jaali DOM, do groups ---
+    {
+      const mkBox = (members) => ({ contains: (el) => members.includes(el), parentElement: null });
+      const mkBtn = (text, cx, box, attrs) => ({
+        innerText: text,
+        getClientRects: () => [1],
+        getBoundingClientRect: () => ({ x: cx - 20, y: 0, width: 40, height: 20 }),
+        scrollIntoView: () => {},
+        querySelector: () => null,
+        getAttribute: (n) => (attrs && attrs[n]) || null,
+        classList: { contains: () => false },
+        closest: () => box || null,
+        parentElement: box || null
+      });
+      const runTargetOn = (all, kind, want) => {
+        const pop = { getClientRects: () => [1], querySelectorAll: () => all, querySelector: () => null };
+        const fakeDoc = { querySelectorAll: () => [pop], querySelector: () => pop };
+        return new Function('document', `return ${targetSrc115(kind, want)};`)(fakeDoc);
+      };
+      // Duration: IMAGE group pehle (DOM order), VIDEO group
+      // baad me — selected (8s) VIDEO group me hai.
+      const imgDurMembers = []; const imgDurBox = mkBox(imgDurMembers);
+      const vidDurMembers = []; const vidDurBox = mkBox(vidDurMembers);
+      const img4 = mkBtn('4s', 20, imgDurBox); imgDurMembers.push(img4);
+      const img8 = mkBtn('8s', 70, imgDurBox); imgDurMembers.push(img8);
+      const vid4 = mkBtn('4s', 220, vidDurBox); vidDurMembers.push(vid4);
+      const vid6 = mkBtn('6s', 270, vidDurBox); vidDurMembers.push(vid6);
+      const vid8 = mkBtn('8s', 320, vidDurBox, { 'aria-checked': 'true' }); vidDurMembers.push(vid8);
+      const vid10 = mkBtn('10s', 370, vidDurBox); vidDurMembers.push(vid10);
+      const durAll = [img4, img8, vid4, vid6, vid8, vid10];
+      const tDur8 = runTargetOn(durAll, 'duration', '8s');
+      eq('X115 F2: the duration pick lands in the SELECTED (video) group, not the first DOM match', JSON.stringify(tDur8.self), JSON.stringify({ x: 320, y: 10 }));
+      const tDur10 = runTargetOn(durAll, 'duration', '10s');
+      eq('X115 F2: the wanted option is clicked as a sibling inside the same group', JSON.stringify(tDur10.self), JSON.stringify({ x: 370, y: 10 }));
+      eq('X115 F2: the survey still lists every duration option on the pane', JSON.stringify(tDur8.options), JSON.stringify(['4s', '8s', '4s', '6s', '8s', '10s']));
+      // Count: IMAGE group pehle, VIDEO group me x1 selected.
+      const imgCntMembers = []; const imgCntBox = mkBox(imgCntMembers);
+      const vidCntMembers = []; const vidCntBox = mkBox(vidCntMembers);
+      const imgX1 = mkBtn('x1', 20, imgCntBox); imgCntMembers.push(imgX1);
+      const imgX2 = mkBtn('x2', 70, imgCntBox); imgCntMembers.push(imgX2);
+      const vidX1 = mkBtn('x1', 220, vidCntBox, { 'aria-checked': 'true' }); vidCntMembers.push(vidX1);
+      const vidX2 = mkBtn('x2', 270, vidCntBox); vidCntMembers.push(vidX2);
+      const tCnt = runTargetOn([imgX1, imgX2, vidX1, vidX2], 'count', 'x2');
+      eq('X115 F2: the count pick lands in the SELECTED (video) group too', JSON.stringify(tCnt.self), JSON.stringify({ x: 270, y: 10 }));
+      // Fallback: koi selected nishan hi nahi — purani pane-wide
+      // rawish (DOM order ka pehla match) bilkul waisi hi.
+      const plain1 = mkBtn('8s', 70, null);
+      const plain2 = mkBtn('8s', 320, null);
+      const tPlain = runTargetOn([plain1, plain2], 'duration', '8s');
+      eq('X115 F2: with no selected marker the pane-wide first match stands (fallback)', JSON.stringify(tPlain.self), JSON.stringify({ x: 70, y: 10 }));
+    }
+    ok('X115 F2 source: the finder anchors duration/count picks to the selected group', flowSrc115.includes('anchoredPick'));
+
+    // --- F3: host apni strategy (duration), baaki fields purane ---
+    {
+      const clicks = [];
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { settingsSelectWaitMs: 200 });
+      eng.page = {
+        isClosed: () => false,
+        mouse: { click: async (x, y) => { clicks.push([x, y]); } },
+        evaluate: async () => ({ found: true, options: ['4s', '6s', '8s', '10s'], self: { x: 1, y: 1 }, inner: { x: 2, y: 2 }, host: { x: 3, y: 3 }, via: 'exact' })
+      };
+      const r = await eng._selectPanelOption({ field: 'duration', kind: 'duration', wantText: '10s', verify: async () => false });
+      eq('X115 F3: a never-settling duration is not a success', r.ok, false);
+      eq('X115 F3: all three points are clicked in order (self, inner, host)', JSON.stringify(clicks), JSON.stringify([[1, 1], [2, 2], [3, 3]]));
+      eq('X115 F3: the last strategy tried is the host', r.strategy, 'host');
+      ok('X115 F3: the host strategy is logged as its own line', logs.some(m => m === '[ROOT] settings-click field=duration strategy=host changed=false'));
+    }
+    {
+      const clicks = [];
+      const eng = new FlowAutomationEngine({ onLog: () => {} }, { settingsSelectWaitMs: 150 });
+      eng.page = {
+        isClosed: () => false,
+        mouse: { click: async (x, y) => { clicks.push([x, y]); } },
+        evaluate: async () => ({ found: true, options: ['360p', '720p'], self: { x: 1, y: 1 }, inner: { x: 2, y: 2 }, host: { x: 3, y: 3 }, via: 'exact' })
+      };
+      const r = await eng._selectPanelOption({ field: 'resolution', kind: 'resolution', wantText: '360p', verify: async () => false });
+      eq('X115 F3: resolution keeps its two strategies (host stays folded into inner)', JSON.stringify(clicks), JSON.stringify([[1, 1], [2, 2]]));
+      eq('X115 F3: resolution still ends on the inner strategy', r.strategy, 'inner');
+    }
+
+    // --- F4: count pill gate me ---
+    {
+      const req = { mode: 'Video', resolution: '360p', durationSec: 10, aspect: '16:9', count: 'x1' };
+      eq('X115 F4: a pill sitting on x2 now mismatches on count alone', JSON.stringify(pillMismatch115(req, parsePill115('Video · 360p · 10s crop_16_9 x2'))), JSON.stringify(['count']));
+      eq('X115 F4: a pill on x1 is clean', pillMismatch115(req, parsePill115('Video · 360p · 10s crop_16_9 x1')).length, 0);
+      const reqNoCount = { mode: 'Video', resolution: '360p', durationSec: 10, aspect: '16:9' };
+      eq('X115 F4: a request without count never compares count', pillMismatch115(reqNoCount, parsePill115('Video · 360p · 10s crop_16_9 x2')).length, 0);
+    }
+    ok('X115 F4 source: the gate request carries the run count', flowSrc115.includes('count: targetCount'));
+
+    // --- F5: terminal mismatch par panel dump ---
+    {
+      const mkMismatchPage = (state) => ({
+        isClosed: () => false,
+        mouse: { click: async () => {} },
+        keyboard: { press: async () => {} },
+        evaluate: async (fn) => {
+          if (typeof fn === 'string') {
+            if (fn.includes('fsPanelDump')) return { texts: ['Video', '720p', '10s'], hits: [] };
+            if (fn.includes('resolutionBtnSelected')) return { found: true, selected: state.res };
+            if (fn.includes('fsPanelTarget')) return { found: true, options: ['360p', '720p'], self: { x: 1, y: 1 }, inner: { x: 2, y: 2 }, host: { x: 3, y: 3 } };
+            return undefined;
+          }
+          const src = fn.toString();
+          if (src.includes('agent-mode-chip')) return false;
+          if (src.includes('removeBtns')) return undefined;
+          if (src.includes('settings-trigger-button') && src.includes('found: true')) return { found: true, x: 5, y: 5, text: state.pill };
+          if (src.includes("aria === 'video'")) return { clicked: false };
+          if (src.includes('btnFrames')) return undefined;
+          if (src.includes('modelDropdown')) return 'Omni Flash';
+          if (src.includes('durBtns')) return '10s';
+          if (src.includes('settings-trigger-button')) return state.pill;
+          return undefined;
+        }
+      });
+      const logs = [];
+      const eng = new FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, { settingsSelectWaitMs: 150 });
+      eng.page = mkMismatchPage({ res: '720p', pill: 'Video · 720p · 10s crop_9_16 x1' });
+      const res = await eng.configureGenerationSettings({ type: 'Video', videoMode: 'Text', model: 'Omni Flash', duration: '10s', aspectRatio: '9:16', quality: '360p' });
+      ok('X115 F5: the never-changing panel still ends in a settings mismatch', !!(res && Array.isArray(res.settingsMismatch)));
+      ok('X115 F5: the mismatch path captured the panel dump into the root log', logs.some(m => m.startsWith('[ROOT] settings-panel-dump texts=[')));
+      eq('X115 F5: the dump was captured once — on the terminal attempt', logs.filter(m => m.startsWith('[ROOT] settings-panel-dump texts=[')).length, 1);
+    }
+    ok('X115 F5 source: the mismatch path dumps the panel before failing the account', flowSrc115.includes('await this._dumpSettingsPanel();'));
+    ok('X115 F5 source: the terminal dump is skipped when this attempt already documented the panel', flowSrc115.includes('if ((this._settingsPanelDumpCount || 0) === dumpsAtEntry)'));
+
+    // --- F6: resolved fields pin — refresh unhe nahi badal sakta ---
+    {
+      eq('X115 F6: resolved fields are exactly the present, non-empty ones', JSON.stringify(WP115.resolvedSettingFields({ model: 'Omni Flash', duration: '', aspectRatio: null, quality: '720p' })), JSON.stringify(['model', 'quality']));
+      eq('X115 F6: a missing settings object resolves nothing', JSON.stringify(WP115.resolvedSettingFields(null)), JSON.stringify([]));
+      const stored = { parallelBrowsers: 4, model: 'Veo 3.1 Fast', duration: '8s', aspectRatio: '9:16', quality: '360p' };
+      const pool = new WP115({ onLog: () => {}, concurrency: 1, liveSettingsProvider: () => stored });
+      const runSettings = { model: 'Omni Flash', duration: '10s', aspectRatio: '16:9', quality: '720p' };
+      pool._pinRunSettings(runSettings);
+      const changed = pool._refreshLiveRunSettings(runSettings);
+      eq('X115 F6: a run started with explicit 720p keeps 720p against a stored 360p', runSettings.quality, '720p');
+      eq('X115 F6: the pinned model survives the refresh too', runSettings.model, 'Omni Flash');
+      eq('X115 F6: nothing changes when every field is pinned', JSON.stringify(changed), JSON.stringify([]));
+      eq('X115 F6: the parallel target still follows the live setting while pinned', pool._liveParallelTarget(), 4);
+      const partial = { quality: '720p' };
+      pool._pinRunSettings(partial);
+      const changedPartial = pool._refreshLiveRunSettings(partial);
+      eq('X115 F6: a field the run did not specify still follows the live store', partial.model, 'Veo 3.1 Fast');
+      eq('X115 F6: the specified field stays pinned in a partial run', partial.quality, '720p');
+      ok('X115 F6: the partial refresh names only the moved fields', changedPartial.includes('model') && !changedPartial.includes('quality'));
+      pool._unpinRunSettings();
+      const after = { model: 'Omni Flash', quality: '720p' };
+      pool._refreshLiveRunSettings(after);
+      eq('X115 F6: after the run ends (unpinned), the refresh applies again', after.quality, '360p');
+    }
+    ok('X115 F6 source: runQueue pins the run settings', poolSrc115.includes('this._pinRunSettings(settings);'));
+    ok('X115 F6 source: the run end unpins them', poolSrc115.includes('this._unpinRunSettings();'));
+    ok('X115 F6 source: the refresh skips pinned fields', poolSrc115.includes('this._runPinnedFields.has(field)'));
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

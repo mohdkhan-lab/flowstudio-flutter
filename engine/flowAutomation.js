@@ -528,13 +528,20 @@ function parseSettingsPill(text) {
  * settings aur pill ki asal haalat ka muqabla —
  * KHALIS faisla. requested = { mode: 'Video'|'Image',
  * resolution: '360p'|null, durationSec: number|null,
- * aspect: '9:16'|null } (null = is run ke liye wo
- * cheez maayne nahi rakhti, muqabla nahi hota). Pill
- * kisi cheez ko rakhta hi na ho to wo bhi ikhtilaf
- * gina jata hai (pill padh sakne ki soorat me).
+ * aspect: '9:16'|null, count: 'x1'|null } (null = is
+ * run ke liye wo cheez maayne nahi rakhti, muqabla
+ * nahi hota). Pill kisi cheez ko rakhta hi na ho to
+ * wo bhi ikhtilaf gina jata hai (pill padh sakne ki
+ * soorat me).
  * Lautta hai ikhtilaf wale kheton ke naam
- * ('mode'|'resolution'|'duration'|'aspect');
+ * ('mode'|'resolution'|'duration'|'aspect'|'count');
  * khaali fehrist = poora muwafiq.
+ * v2.48.111 (F4): count bhi ab darwaze par hai —
+ * .110 tak gate count ko dekhta hi nahi tha, to pill
+ * par x2 baitha rehta to wo khamoshi se guzar jata
+ * (GOPAL-W3-1117 me duration atka to count ka jhooth
+ * pakda hi nahi gaya; duration badal jata to x2 par
+ * dugne credits jal sakte the).
  */
 function settingsPillMismatch(requested, pill) {
   const out = [];
@@ -545,6 +552,7 @@ function settingsPillMismatch(requested, pill) {
   if (requested.resolution != null && pill.resolution !== requested.resolution) out.push('resolution');
   if (requested.durationSec != null && pill.durationSec !== requested.durationSec) out.push('duration');
   if (requested.aspect != null && pill.aspect !== requested.aspect) out.push('aspect');
+  if (requested.count != null && pill.count !== requested.count) out.push('count');
   return out;
 }
 
@@ -752,6 +760,19 @@ function panelDumpSource() {
  * field shakal) bhi target hai. Natije me via
  * ('exact'|'token'|null) bhi lautta hai. Baaki
  * fields bilkul exact-only rehte hain.
+ * v2.48.111 (F2): duration aur count par chunav ab
+ * GROUP-ANCHORED hai. Panel IMAGE mode me khula ho
+ * to pane me do duration/count groups ek saath
+ * mounted ho sakte hain, aur purana finder DOM
+ * order me pehla match utha leta tha — galat
+ * (inert) group ka element (GOPAL-W3-1117: 8s→10s
+ * aur x2→x1 teenon accounts par kabhi badla hi
+ * nahi). Ab: pehle woh element dhoondho jo is waqt
+ * SELECTED hai (bilkul readSelectedDuration wali
+ * pehchan — wahi group jo reader padhta hai), us
+ * ke group-container ke andar hi target dhoondho.
+ * Group pehchana hi na jaye to purani pane-wide
+ * rawish (fallback) bilkul waisi hi chalti hai.
  */
 function panelOptionTargetSource(kind, wantText) {
   const kindJson = JSON.stringify(String(kind || ''));
@@ -782,10 +803,48 @@ function panelOptionTargetSource(kind, wantText) {
     + '  const SEL_NARROW = \'button, [role="radio"], [role="tab"]\';\n'
     + '  const SEL_WIDE = \'button, [role="radio"], [role="tab"], mat-button-toggle, [class*="toggle"]\';\n'
     + '  const rankOf = (el) => { try { const tg = String(el.tagName || \'\').toLowerCase(); if (tg === \'mat-button-toggle\') return 1; const rl = el.getAttribute ? (el.getAttribute(\'role\') || \'\') : \'\'; if (tg === \'button\' || rl === \'radio\' || rl === \'tab\') return 0; return 2; } catch (e) { return 2; } };\n'
+    + '  const isSelectedEl = (el) => {\n'
+    + '    try {\n'
+    + '      if (!el) return false;\n'
+    + '      if (el.getAttribute) {\n'
+    + '        if (el.getAttribute(\'aria-checked\') === \'true\' || el.getAttribute(\'aria-selected\') === \'true\' || el.getAttribute(\'aria-pressed\') === \'true\' || el.getAttribute(\'data-state\') === \'on\') return true;\n'
+    + '      }\n'
+    + '      if (el.classList && el.classList.contains && (el.classList.contains(\'selected\') || el.classList.contains(\'active\'))) return true;\n'
+    + '    } catch (e) {}\n'
+    + '    return false;\n'
+    + '  };\n'
+    + '  const containsEl = (anc, el) => { try { return !!(anc && el && anc !== el && typeof anc.contains === \'function\' && anc.contains(el)); } catch (e) { return false; } };\n'
+    + '  const groupContainerOf = (selEl, group) => {\n'
+    + '    try {\n'
+    + '      const g = selEl.closest ? selEl.closest(\'[role="radiogroup"], [role="group"]\') : null;\n'
+    + '      if (g && g !== pop) { let n = 0; for (const b of group) { if (b === selEl || containsEl(g, b)) n++; } if (n >= 2) return g; }\n'
+    + '    } catch (e) {}\n'
+    + '    let node = null;\n'
+    + '    try { node = selEl.parentElement || null; } catch (e) {}\n'
+    + '    let hops = 0;\n'
+    + '    while (node && node !== pop && hops < 8) {\n'
+    + '      let n = 0;\n'
+    + '      for (const b of group) { if (b === selEl || containsEl(node, b)) n++; }\n'
+    + '      if (n >= 2) return node;\n'
+    + '      try { node = node.parentElement || null; } catch (e) { node = null; }\n'
+    + '      hops++;\n'
+    + '    }\n'
+    + '    return null;\n'
+    + '  };\n'
+    + '  const anchoredPick = (g) => {\n'
+    + '    if (kind !== \'duration\' && kind !== \'count\') return { identified: false, target: null };\n'
+    + '    const selEl = g.find(b => isSelectedEl(b)) || null;\n'
+    + '    if (!selEl) return { identified: false, target: null };\n'
+    + '    const box = groupContainerOf(selEl, g);\n'
+    + '    if (!box) return { identified: false, target: null };\n'
+    + '    const inBox = g.filter(b => b === selEl || containsEl(box, b));\n'
+    + '    if (inBox.length < 2) return { identified: false, target: null };\n'
+    + '    return { identified: true, target: inBox.find(b => matches(textOf(b))) || null };\n'
+    + '  };\n'
     + '  const scan = (sel, tokenMode) => {\n'
     + '    const collect = () => Array.from(pop.querySelectorAll(sel)).filter(visible).filter(b => tokenMode ? !!resolutionTokenOf(textOf(b)) : inGroup(textOf(b)));\n'
     + '    const pickFrom = (g) => {\n'
-    + '      if (!tokenMode) return g.find(b => matches(textOf(b))) || null;\n'
+    + '      if (!tokenMode) { const ap = anchoredPick(g); if (ap.identified) return ap.target; return g.find(b => matches(textOf(b))) || null; }\n'
     + '      const cands = g.filter(b => resolutionTokenOf(textOf(b)) === want);\n'
     + '      cands.sort((a, b) => rankOf(a) - rankOf(b));\n'
     + '      return cands[0] || null;\n'
@@ -3124,6 +3183,15 @@ class FlowAutomationEngine {
   //   3) strategy 'inner': pill na badle to andar
   //      wale label/radio element ya toggle host par
   //      click, phir poll dobara.
+  // v2.48.111 (F3): duration aur count par 'host' ab
+  // apni ALAG strategy hai — pehle strategies
+  // `inner || host` me ghuli hui thi, to andar wala
+  // label maujud hote hi host par click kabhi try hi
+  // nahi hota tha, chahe label inert hi kyun na ho
+  // (GOPAL-W3-1117 ki ek mumkin wajah). Ab teeno
+  // points ek ek karke try hote hain; baaki fields
+  // (resolution/aspect) ki purani do-strategy rawish
+  // bilkul waisi hi hai.
   // Har strategy [ROOT] settings-click line se darj.
   // verify na diya gaya ho (aspect/count — un ka
   // in-panel read-back maujood nahi) to click ke
@@ -3154,10 +3222,16 @@ class FlowAutomationEngine {
       if (!pt || !this.page || !this.page.mouse || typeof this.page.mouse.click !== 'function') return false;
       try { await this.page.mouse.click(pt.x, pt.y); return true; } catch (e) { return false; }
     };
-    const strategies = [
-      { name: 'mouse', point: target.self },
-      { name: 'inner', point: target.inner || target.host }
-    ];
+    const strategies = [{ name: 'mouse', point: target.self }];
+    if (kind === 'duration' || kind === 'count') {
+      // v2.48.111 (F3): host is its OWN strategy here —
+      // an inert inner label must not mean the host
+      // toggle is never tried.
+      strategies.push({ name: 'inner', point: target.inner });
+      strategies.push({ name: 'host', point: target.host });
+    } else {
+      strategies.push({ name: 'inner', point: target.inner || target.host });
+    }
     let lastStrategy = null;
     for (const strat of strategies) {
       if (!strat.point) continue;
@@ -3195,6 +3269,10 @@ class FlowAutomationEngine {
       for (const h of hits) {
         this.log(settingsPanelDumpElementLine(h), 'info');
       }
+      // v2.48.111 (F5): count REAL captures — the terminal
+      // mismatch path consults this so it never re-dumps a
+      // panel the current configure attempt already documented.
+      this._settingsPanelDumpCount = (this._settingsPanelDumpCount || 0) + 1;
       return true;
     } catch (e) {
       return false;
@@ -3230,6 +3308,10 @@ class FlowAutomationEngine {
   }
 
   async configureGenerationSettings(settings, isRetry = false, attemptNo = 1) {
+    // v2.48.111 (F5): how many panel dumps existed when THIS
+    // attempt began — the terminal mismatch branch compares
+    // against it before deciding to capture one of its own.
+    const dumpsAtEntry = this._settingsPanelDumpCount || 0;
     try {
       await this.ensureAgentModeDisabled();
       await sleep(1000);
@@ -3649,7 +3731,11 @@ class FlowAutomationEngine {
             // ke liye maayne nahi rakhta' samajhta hai.
             resolution: resolutionFieldAbsent ? null : genResolution,
             durationSec: parseInt(String(settings.duration || '6s'), 10) || null,
-            aspect: targetAspect
+            aspect: targetAspect,
+            // v2.48.111 (F4): the output count joins the gate —
+            // the run's count (always x1, step 6) must be what
+            // the pill shows, or the same honest mismatch fires.
+            count: targetCount
           };
           const pillMismatch = settingsPillMismatch(requestedPill, parseSettingsPill(finalPillText));
           if (pillMismatch.length > 0) {
@@ -3671,6 +3757,7 @@ class FlowAutomationEngine {
               else if (f === 'resolution') neededParts.push(requestedPill.resolution);
               else if (f === 'duration') neededParts.push(`${requestedPill.durationSec}s`);
               else if (f === 'aspect') neededParts.push(requestedPill.aspect);
+              else if (f === 'count') neededParts.push(requestedPill.count);
             }
             const repair = settingsRepairDecision({
               attemptsDone: attemptNo,
@@ -3682,6 +3769,21 @@ class FlowAutomationEngine {
               this.log(repair.logLine, 'warn');
               this.log(`Flow's settings panel does not match yet (${pillMismatch.join(', ')}) — opening the panel again and re-selecting (attempt ${repair.nextAttempt} of ${SETTINGS_REPAIR_MAX_ATTEMPTS})…`, 'warn');
               return await this.configureGenerationSettings(settings, isRetry, repair.nextAttempt);
+            }
+            // v2.48.111 (F5): a settings mismatch now DOCUMENTS
+            // the panel before the account fails — the same
+            // [ROOT] settings-panel-dump the resolution-not-found
+            // path already captures, but on EVERY terminal
+            // mismatch (any field), so the next field failure
+            // carries its own DOM evidence in the run's root log
+            // instead of needing a fresh diagnosis round. ONE
+            // refinement: when THIS attempt already captured a
+            // dump (the resolution-not-found path dumps once per
+            // attempt), a second identical dump at the terminal
+            // point adds nothing — the panel already stands
+            // documented in this run's log.
+            if ((this._settingsPanelDumpCount || 0) === dumpsAtEntry) {
+              await this._dumpSettingsPanel();
             }
             this.log(`[ROOT] settings-mismatch pill="${finalPillText}" fields=${pillMismatch.join(',')} — run stopped before any submit; no credits spent`, 'error');
             this.log(`Flow's settings panel does not match this run's settings (${pillMismatch.join(', ')}) — the prompt was NOT sent and no credits were spent. This account will be skipped for the rest of the run.`, 'error');

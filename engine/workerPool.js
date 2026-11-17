@@ -21,6 +21,7 @@ const { duplicateQueueEntryLogLine } = require('./queueDedupe');
 const browserMode = require('./browserMode');
 const agentRules = require('./agentRules');
 const runWatch = require('./runWatch');
+const respawnGuardMod = require('./respawnGuard');
 const { createDetachedDrains } = require('./detachedDrains');
 const https = require('https');
 const resolutionMemory = require('./resolutionMemory');
@@ -272,10 +273,34 @@ class WorkerPool {
   }
 
   /**
+   * v2.48.111 (F6): pin the fields this run RESOLVED at its start.
+   * .109's promise (F5 there): a run's sent model/duration/aspect/
+   * quality WIN over the stored defaults for the whole run — but
+   * .110's live refresh overwrote them from the store at every
+   * pickup, silently un-resolving an MCP run's explicit values.
+   * The pin is the set of fields PRESENT in the run's start
+   * settings; the refresh below may only move fields the run did
+   * not specify. parallel_browsers is not a settings-object field
+   * at all — it stays fully live via _liveParallelTarget (G2).
+   */
+  _pinRunSettings(settings) {
+    const fields = WorkerPool.resolvedSettingFields(settings);
+    this._runPinnedFields = new Set(fields);
+    return fields;
+  }
+
+  /** v2.48.111 (F6): the pin belongs to one run — drop it at run end. */
+  _unpinRunSettings() {
+    this._runPinnedFields = null;
+  }
+
+  /**
    * Refresh the run's shared settings object from the live store:
    * model/duration/aspect/quality for NOT-yet-submitted prompts
-   * follow the owner's mid-run change. Submitted prompts keep the
-   * values they were sent with (their settings were already read).
+   * follow the owner's mid-run change — EXCEPT the fields this run
+   * resolved at its start (v2.48.111 F6: those are pinned, see
+   * _pinRunSettings). Submitted prompts keep the values they were
+   * sent with (their settings were already read).
    * Returns the names of the fields that changed (and logs them).
    */
   _refreshLiveRunSettings(settings) {
@@ -284,6 +309,7 @@ class WorkerPool {
     if (!live) return [];
     const changed = [];
     for (const field of ['model', 'duration', 'aspectRatio', 'quality']) {
+      if (this._runPinnedFields && this._runPinnedFields.has(field)) continue;
       const v = live[field];
       if (v === undefined || v === null || String(v).trim() === '') continue;
       if (String(settings[field] || '') !== String(v)) {
@@ -1267,6 +1293,11 @@ class WorkerPool {
       this.currentBatchId = batchId;
       this.batchIds = new Set(pendingTasks.map(t => t.batch_id).filter(Boolean));
       if (batchId) this.batchIds.add(batchId);
+      // v2.48.111 (F6): the settings object is now FINAL for this
+      // run (fresh values as sent, or a resume's own row values) —
+      // pin the fields it resolved so the live refresh at pickup
+      // can never overwrite them from the stored defaults.
+      this._pinRunSettings(settings);
       // v2.32.1: count how many tasks in this run share each
       // tag-derived file name, so the engine can number shared-tag
       // files by prompt (<tag>-1.mp4 … <tag>-5.mp4) instead of
@@ -2163,6 +2194,13 @@ class WorkerPool {
         // below must always be able to see the task it was processing.
         let currentTask = null;
         let workerAccount = null;
+        // v2.48.111 (F1): how this worker's life ends, reported to
+        // the supervisor when runWorker returns — 'no-account-
+        // instant' ONLY when the worker never bound an account at
+        // all (the churn signature the respawn guard disciplines);
+        // every other exit is a productive one.
+        let exitKind = 'done';
+        let everBoundAccount = false;
         // Set when the bound account reports EXHAUSTED / LOW_CREDITS before a
         // prompt fires. Submission pauses on this account, the in-flight
         // window drains on the SAME browser (renders live server-side in
@@ -2460,9 +2498,15 @@ class WorkerPool {
                       lastStartError = 'No account with enough credits is left available for the remaining prompts.';
                     }
                     this.log(`Worker #${workerIndex + 1}: no free account with enough credits was found — this worker is stopping.`, 'warn');
+                    // v2.48.111 (F1): a worker that NEVER bound an
+                    // account reports the churn signature to the
+                    // supervisor; one that had an account earlier
+                    // in its life ends productively.
+                    if (!everBoundAccount) exitKind = 'no-account-instant';
                     break;
                   }
                 } else {
+                  everBoundAccount = true;
                   this.assignedAccounts.add(workerAccount.id);
                   lastBoundAccountId = workerAccount.id;
                   // v2.48.110 (G4): the engine's own context learns
@@ -3107,6 +3151,8 @@ class WorkerPool {
           this.activeWorkers.delete(workerId);
           this.onWorkerUpdate({ workerId, workerIndex, status: 'Idle' });
         }
+        // v2.48.111 (F1): the supervisor reads the exit kind.
+        return exitKind;
       };
 
       // v2.48.110 (G2 + G5 + G8): workers are SUPERVISED, not
@@ -3124,16 +3170,39 @@ class WorkerPool {
       const liveWorkerIdx = new Set();
       let nextWorkerIndex = 0;
       const workerControl = { retireRequests: 0 };
-      const spawnWorker = () => {
+      // v2.48.111 (F1): respawn discipline — the supervisor's
+      // memory of instant no-account exits (engine/respawnGuard).
+      // .110's supervisor respawned a replacement within ~400 ms
+      // of every exit with no backoff, no cap and no memory, so a
+      // slot with no bindable account churned through workers
+      // #3…#216+ in ~80s (GOPAL-W3-1117 field run). The guard now
+      // gates every REPLACEMENT spawn: 2 consecutive instant
+      // no-account exits arm a cooldown (15s, doubling, 60s cap)
+      // until a bound worker exits or the cooldown passes;
+      // replacements are hard-capped per run; a parallel RAISE
+      // clears the cooldown at once (G2's headline behaviour is
+      // untouched).
+      const respawnGuard = respawnGuardMod.createRespawnGuard();
+      let respawnCapLogged = false;
+      const noteWorkerExit = (outcome) => {
+        if (outcome === 'no-account-instant') {
+          respawnGuard.noteInstantNoAccountExit(Date.now());
+        } else {
+          respawnGuard.noteProductiveExit();
+        }
+      };
+      const spawnWorker = (isReplacement) => {
         const idx = nextWorkerIndex++;
         liveWorkerIdx.add(idx);
+        respawnGuard.noteSpawn(!!isReplacement);
         const p = Promise.resolve()
           .then(() => runWorker(idx, workerControl))
-          .catch(() => {})
+          .then((outcome) => { noteWorkerExit(outcome); })
+          .catch(() => { noteWorkerExit(null); })
           .finally(() => { liveWorkerIdx.delete(idx); });
         workerPromises.push(p);
       };
-      for (let i = 0; i < actualWorkersCount; i++) spawnWorker();
+      for (let i = 0; i < actualWorkersCount; i++) spawnWorker(false);
 
       runWatchdog.start(Date.now());
       let watchTripped = false;
@@ -3173,10 +3242,30 @@ class WorkerPool {
       if (watchTimer.unref) watchTimer.unref();
       this._runWatchTimers = { probeTimer, watchTimer };
       try {
+        let prevTarget = null;
         while (liveWorkerIdx.size > 0) {
           const target = Math.min(this._liveParallelTarget(), pool.length);
+          // v2.48.111 (F1): a RAISE of the parallel target earns
+          // an immediate spawn attempt — the churn cooldown never
+          // blocks the owner's mid-run raise (G2).
+          if (prevTarget !== null && target > prevTarget) respawnGuard.noteTargetRaise();
+          prevTarget = target;
           while (liveWorkerIdx.size < target && taskQueue.size() > 0 && !this.isStopping) {
-            spawnWorker();
+            // v2.48.111 (F1): every replacement spawn passes the
+            // respawn guard — cooldown (churn) or the per-run cap
+            // refuses it, and the cap refusal is announced once.
+            const verdict = respawnGuard.canSpawn(Date.now(), true);
+            if (!verdict.ok) {
+              if (verdict.reason === 'cap' && !respawnCapLogged) {
+                respawnCapLogged = true;
+                this.log('No more accounts are available for the remaining prompts — no further workers will be started in this run; the run continues on the worker(s) already running.', 'warn');
+                try {
+                  recordActivity({ category: 'system', level: 'warn', stage: 'respawn-cap', message: 'Replacement-worker cap reached: no more accounts are available for the remaining prompts; the run continues on its already-running worker(s).' });
+                } catch (e) {}
+              }
+              break;
+            }
+            spawnWorker(true);
           }
           workerControl.retireRequests = Math.max(0, liveWorkerIdx.size - target);
           await sleep(400);
@@ -3469,6 +3558,8 @@ class WorkerPool {
         }
       } catch (e) {}
       this._rootLogExport = null;
+      // v2.48.111 (F6): the settings pin belongs to this run only.
+      this._unpinRunSettings();
       // v2.48.85 (RUN GRID): the grid belongs to this run
       // only — the next run computes its own from scratch.
       this._runGrid = null;
@@ -3496,6 +3587,22 @@ WorkerPool.buildRunStatusText = function buildRunStatusText(stats) {
   let text = `Running — ${active} generating · ${done} complete · total ${total} prompts`;
   if (failed > 0) text += ` · ${failed} fail`;
   return text;
+};
+
+// v2.48.111 (F6): which of the run-settings fields a settings
+// object actually RESOLVED — present with a non-empty value.
+// Pure + exported so the pins can hold the definition: these are
+// exactly the fields _pinRunSettings pins for a run, and the only
+// fields _refreshLiveRunSettings may never overwrite mid-run.
+WorkerPool.resolvedSettingFields = function resolvedSettingFields(settings) {
+  const out = [];
+  if (!settings || typeof settings !== 'object') return out;
+  for (const field of ['model', 'duration', 'aspectRatio', 'quality']) {
+    const v = settings[field];
+    if (v === undefined || v === null || String(v).trim() === '') continue;
+    out.push(field);
+  }
+  return out;
 };
 
 // Pack 3 (item 8): the run-end "videos had been generated but

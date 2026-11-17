@@ -780,6 +780,141 @@ function settingsClickTargetLine(t) {
 }
 
 /**
+ * v2.48.113 (Z1 — OWNER ORDER 2026-11-17): har generation
+ * browser 50% zoom par khulta hai. W6 ke live log (owner
+ * ne khud bheja) me generation bilkul theek chali, lekin
+ * bani hui har video ka download ek hi jagah mara — tile
+ * par ⋮ button nahi mila. Owner ki apni field observation:
+ * browser ka zoom 50% ho to Flow ki website theek se
+ * dikhti hai (zyada tiles nazar aati hain, tile ke
+ * controls haath ki pahunch me rehte hain). Ye scale CDP
+ * `Emulation.setPageScaleFactor` se lagta hai — Chrome
+ * ki apni zoom setting se alag, profile me kuch save
+ * nahi hota.
+ */
+const GENERATION_PAGE_SCALE = 0.5;
+
+/** v2.48.113 (Z1): one browser's zoom proof as a [ROOT] line. */
+function browserZoomLogLine(accountName, scale, applied) {
+  const name = String(accountName == null ? '' : accountName).replace(/\s+/g, ' ').trim() || '-';
+  return `[ROOT] browser-zoom account=${name} scale=${scale} ${applied ? 'applied' : 'FAILED'}`;
+}
+
+/**
+ * v2.48.113 (Z1): page scale lagane wala khalis helper —
+ * CDP seam (`sendFn`) injectable hai taaki test use jaali
+ * seam se parkh sake; asal istemal me sendFn engine ke
+ * apne CDP session ki `send` hoti hai. Kabhi throw nahi
+ * karta: nakami par false, taaki zoom ki nakami kabhi
+ * kisi run ko na roke.
+ */
+async function applyBrowserZoom(sendFn, scale = GENERATION_PAGE_SCALE) {
+  try {
+    if (typeof sendFn !== 'function') return false;
+    const s = Number(scale);
+    if (!Number.isFinite(s) || s <= 0) return false;
+    await sendFn('Emulation.setPageScaleFactor', { pageScaleFactor: s });
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * v2.48.113 (Z2): ⋮ hunt ki DOOSRI scope — tile ke hover
+ * overlay/portal elements. Pehli scope tile ka apna
+ * subtree hai (findMoreControl); wahan na mile to ye
+ * source un overlay roots (CDK overlay panes/container,
+ * overlay-class wale layers) me wahi ⋮ dhoondhta hai
+ * jin ka koi more-button TILE KE BOX PAR baitha ho —
+ * yani wo button asal me is tile ka hover control hai,
+ * kisi aur tile ya menu ka nahi. Tile se bandha hona hi
+ * is scope ki pehchan hai; bina overlap wala overlay
+ * button kabhi nahi uthaya jata.
+ */
+function tileMoreOverlaySource(tileIndex) {
+  const idx = Number.isFinite(Number(tileIndex)) ? Math.trunc(Number(tileIndex)) : -1;
+  return '(() => {\n'
+    + '/*fsTileMoreOverlay*/\n'
+    + 'try {\n'
+    + '  const idx = ' + JSON.stringify(idx) + ';\n'
+    + '  const tiles = Array.from(document.querySelectorAll(\'flow-grid-tile-container\'));\n'
+    + '  const tile = (idx >= 0) ? tiles[idx] : null;\n'
+    + '  if (!tile) return { found: false };\n'
+    + '  const tr = tile.getBoundingClientRect();\n'
+    + '  if (!tr || !(tr.width > 0) || !(tr.height > 0)) return { found: false };\n'
+    + '  const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };\n'
+    + '  const isMore = (b) => {\n'
+    + '    const aria = (b.getAttribute(\'aria-label\') || \'\').toLowerCase();\n'
+    + '    const icon = b.querySelector(\'mat-icon, [data-icon], svg\');\n'
+    + '    const iconTxt = icon ? (icon.textContent || \'\').trim().toLowerCase() : \'\';\n'
+    + '    return aria.includes(\'more options\') || aria.includes(\'more actions\') || aria === \'more\'\n'
+    + '      || iconTxt === \'more_vert\' || iconTxt === \'more_horiz\';\n'
+    + '  };\n'
+    + '  const overlaps = (r) => r.left < tr.right && r.right > tr.left && r.top < tr.bottom && r.bottom > tr.top;\n'
+    + '  const roots = Array.from(document.querySelectorAll(\'.cdk-overlay-pane, .cdk-overlay-container, [class*="overlay"]\'));\n'
+    + '  for (const root of roots) {\n'
+    + '    try { if (tile.contains(root) || root.contains(tile)) continue; } catch (e) {}\n'
+    + '    const els = Array.from(root.querySelectorAll(\'button, [role="button"]\'));\n'
+    + '    for (const b of els) {\n'
+    + '      if (!visible(b)) continue;\n'
+    + '      if (!isMore(b)) continue;\n'
+    + '      const r = b.getBoundingClientRect();\n'
+    + '      if (!overlaps(r)) continue;\n'
+    + '      return { found: true, x: r.left + r.width / 2, y: r.top + r.height / 2 };\n'
+    + '    }\n'
+    + '  }\n'
+    + '  return { found: false };\n'
+    + '} catch (e) { return { found: false }; }\n'
+    + '})()';
+}
+
+/**
+ * v2.48.113 (Z2): ⋮ hunt ki aakhri nakami par tile ka
+ * dump — download-side ka .112 settings dump wala
+ * counterpart. Tile ke subtree ke saare buttons /
+ * [role=button] / aria-labelled elements (tag,
+ * aria-label, text, box) [ROOT] log me jate hain, taaki
+ * agli nakami sirf log se diagnose ho — ke tile asal
+ * me kya expose karti hai, aur ⋮ kis shakal me hai ya
+ * hai bhi nahi. Cap 40 elements.
+ */
+function tileMenuDumpSource(tileIndex) {
+  const idx = Number.isFinite(Number(tileIndex)) ? Math.trunc(Number(tileIndex)) : -1;
+  return '(() => {\n'
+    + '/*fsTileMenuDump*/\n'
+    + 'try {\n'
+    + '  const idx = ' + JSON.stringify(idx) + ';\n'
+    + '  const tiles = Array.from(document.querySelectorAll(\'flow-grid-tile-container\'));\n'
+    + '  const tile = (idx >= 0) ? tiles[idx] : null;\n'
+    + '  if (!tile) return { elements: [] };\n'
+    + '  const els = Array.from(tile.querySelectorAll(\'button, [role="button"], [aria-label]\')).slice(0, 40);\n'
+    + '  const elements = els.map((el) => {\n'
+    + '    let box = null;\n'
+    + '    try { const r = el.getBoundingClientRect(); if (r) box = { x: (r.x != null ? r.x : r.left) || 0, y: (r.y != null ? r.y : r.top) || 0, w: r.width || 0, h: r.height || 0 }; } catch (e) {}\n'
+    + '    let aria = \'\';\n'
+    + '    try { aria = el.getAttribute ? (el.getAttribute(\'aria-label\') || \'\') : \'\'; } catch (e) {}\n'
+    + '    const text = (el.innerText || el.textContent || \'\').replace(/\\s+/g, \' \').trim().slice(0, 60);\n'
+    + '    return { tag: String(el.tagName || \'\').toLowerCase(), aria: String(aria).slice(0, 60), text, box };\n'
+    + '  });\n'
+    + '  return { elements };\n'
+    + '} catch (e) { return { elements: [] }; }\n'
+    + '})()';
+}
+
+/** v2.48.113 (Z2): the tile dump's one element as a [ROOT] line. */
+function tileMenuDumpElementLine(el) {
+  const e = el && typeof el === 'object' ? el : {};
+  const tag = String(e.tag == null ? '' : e.tag).trim() || '-';
+  const aria = String(e.aria == null ? '' : e.aria).replace(/\s+/g, ' ').trim().slice(0, 60);
+  const text = String(e.text == null ? '' : e.text).replace(/\s+/g, ' ').trim().slice(0, 60);
+  const box = e.box && typeof e.box === 'object'
+    ? `${Math.round(Number(e.box.x) || 0)},${Math.round(Number(e.box.y) || 0)},${Math.round(Number(e.box.w) || 0)},${Math.round(Number(e.box.h) || 0)}`
+    : '-';
+  return `[ROOT] tile-menu-dump el=${tag} aria="${aria}" text="${text}" box=${box}`;
+}
+
+/**
  * v2.48.78 (Item A): panel ke ek field-group ka
  * TARGET option dhoondhne wala page-side source —
  * resolutionStateSource wali hi shakal (khalis
@@ -1777,6 +1912,44 @@ class FlowAutomationEngine {
     ]);
   }
 
+  /**
+   * v2.48.113 (Z1): is engine ke page par generation zoom
+   * (50%) lagao. CDP session engine ki apni hai
+   * (this.cdpSession); na ho to page se taaza banti hai
+   * aur kaam ke baad detach ho jati hai. `logProof` true
+   * ho (browser open par) to [ROOT] browser-zoom wali
+   * proof line banti hai; re-assert (project open / grid
+   * wapsi) khamosh rehta hai. Nakami par sirf warning —
+   * zoom ki nakami kabhi kisi run ko nahi rokti.
+   */
+  async _applyGenerationZoom(logProof = false) {
+    try {
+      if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return false;
+      let session = (this.cdpSession && typeof this.cdpSession.send === 'function') ? this.cdpSession : null;
+      let own = false;
+      if (!session) {
+        try {
+          if (typeof this.page.createCDPSession === 'function') { session = await this.page.createCDPSession(); own = true; }
+          else if (this.page.target && typeof this.page.target === 'function') { session = await this.page.target().createCDPSession(); own = true; }
+        } catch (e) { session = null; }
+      }
+      if (!session) {
+        if (logProof) {
+          this.log(browserZoomLogLine(this.currentAccount ? this.currentAccount.name : null, GENERATION_PAGE_SCALE, false), 'warn');
+        }
+        return false;
+      }
+      const applied = await applyBrowserZoom((method, params) => session.send(method, params), GENERATION_PAGE_SCALE);
+      if (own && typeof session.detach === 'function') { try { await session.detach(); } catch (e) {} }
+      if (logProof) {
+        this.log(browserZoomLogLine(this.currentAccount ? this.currentAccount.name : null, GENERATION_PAGE_SCALE, applied), applied ? 'info' : 'warn');
+      }
+      return applied;
+    } catch (e) {
+      return false;
+    }
+  }
+
   async launchBrowserForAccount(account, downloadDir) {
     this.lastLaunchError = null;
     // v2.31.3: new work starting on this browser cancels any pending
@@ -2064,6 +2237,12 @@ class FlowAutomationEngine {
       } catch (e) {}
 
       this.currentAccount = account;
+      // v2.48.113 (Z1 — owner order): browser khulte hi
+      // 50% zoom, kisi bhi Flow interaction se PEHLE, aur
+      // [ROOT] proof line ke saath. Generation aur
+      // recovery/resume dono ke browser yahin se khulte
+      // hain, is liye ek hi jagah dono ko mil jata hai.
+      await this._applyGenerationZoom(true);
       // v2.25.0: the launch plan decides where the window STARTS —
       // background = parked off-screen, visible = on screen.
       this.windowShown = !plan.background;
@@ -2689,6 +2868,12 @@ class FlowAutomationEngine {
     // recovery ('existing') = 'recovery-entry'. Run
     // yahan se aage kahin bhi mare, record reh jayega.
     this._registerCurrentProject(preferFreshCanvas ? 'fresh-entry' : 'recovery-entry');
+
+    // v2.48.113 (Z1): project-open poora — yahan tak aane
+    // wali navigations (Flow home, gallery, recorded URL)
+    // page scale reset kar sakti hain, is liye zoom
+    // khamoshi se dobara assert karo.
+    await this._applyGenerationZoom(false);
 
     // Dismiss tutorial/welcome overlay and clean up stale failed tiles
     try {
@@ -3481,6 +3666,31 @@ class FlowAutomationEngine {
     } catch (e) {}
     this.log(settingsClickTargetLine(this._lastSettingsClickTarget), 'info');
     return okDump;
+  }
+
+  /**
+   * v2.48.113 (Z2): tile-menu hunt ki aakhri nakami par
+   * tile ka dump — tile ke subtree ke saare buttons /
+   * [role=button] / aria-labelled elements [ROOT] lines
+   * me (tag, aria-label, text, box). Settings dump
+   * (upar) ka download-side counterpart: agli ⋮ nakami
+   * sirf log se diagnose hogi.
+   */
+  async _dumpTileElements(tileIndex) {
+    try {
+      const res = await this.page.evaluate(tileMenuDumpSource(tileIndex));
+      const els = res && Array.isArray(res.elements) ? res.elements.slice(0, 40) : [];
+      if (!els.length) {
+        this.log(`[ROOT] tile-menu-dump tile=${tileIndex} elements=0`, 'info');
+        return false;
+      }
+      for (const el of els) {
+        this.log(tileMenuDumpElementLine(el), 'info');
+      }
+      return true;
+    } catch (e) {
+      return false;
+    }
   }
 
   /**
@@ -6087,11 +6297,19 @@ class FlowAutomationEngine {
           && document.querySelectorAll('flow-grid-tile-container').length > 0);
       } catch (e) { return false; }
     };
-    if (await onGrid()) return true;
+    // v2.48.113 (Z1): grid par wapsi aksar ek navigation
+    // (goBack / goto) se hoti hai jo page scale reset kar
+    // sakti hai — har KAMYAB wapsi par zoom khamoshi se
+    // dobara assert karo, phir natija waisa hi lauto.
+    const finish = async (ok) => {
+      if (ok) { try { await this._applyGenerationZoom(false); } catch (e) {} }
+      return ok;
+    };
+    if (await onGrid()) return finish(true);
 
     try { await this.page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 }); } catch (e) {}
     await sleep(1200);
-    if (await onGrid()) return true;
+    if (await onGrid()) return finish(true);
 
     try {
       await this.page.evaluate(() => {
@@ -6105,7 +6323,7 @@ class FlowAutomationEngine {
       });
     } catch (e) {}
     await sleep(1200);
-    if (await onGrid()) return true;
+    if (await onGrid()) return finish(true);
 
     try {
       const m = this.page.url().match(/(https:\/\/flow\.google\.com\/project\/[^/]+)/);
@@ -6114,7 +6332,7 @@ class FlowAutomationEngine {
         await sleep(1500);
       }
     } catch (e) {}
-    return await onGrid();
+    return finish(await onGrid());
   }
 
   /**
@@ -6890,13 +7108,37 @@ class FlowAutomationEngine {
       }
     };
 
+    // v2.48.113 (Z2): doosri scope — tile ke hover
+    // overlay/portal elements (tileMoreOverlaySource):
+    // ⋮ agar tile ke subtree me nahi, kisi overlay layer
+    // me hai aur tile ke box par baitha hai, to wahi se
+    // milega. Pehchan sirf overlap hai — bina tile par
+    // baithe koi overlay button nahi uthaya jata.
+    const findMoreControlOverlay = async (scopeIdx) => {
+      try {
+        return await this.page.evaluate(tileMoreOverlaySource(scopeIdx));
+      } catch (e) {
+        return { found: false };
+      }
+    };
+
     let more = { found: false };
+    let lastTileIdx = -1;
     // v2.30.4: ⋮ button ki talash ab 3 koshishon tak chalti hai aur
     // nakami LOG hoti hai. v2.30.3 tak ye rasta bina ek bhi log line
     // ke chup-chaap mar jata tha (owner ka 2026-10-25 multi-video
     // run: Prompt #4 par ⋮ us pal nahi mila — grid usi pal Prompt #5
     // ke render se badal raha tha — aur engine seedha dheele editor
     // raste par chala gaya, jahan run atka raha).
+    // v2.48.113 (Z2): har koshish hunt se PEHLE tile ko
+    // viewport ke markaz me scroll karti hai
+    // (_tileCenterCoords scrollIntoView block:'center'
+    // karta hai), us par hover karti hai aur ~600ms
+    // thaharti hai — Flow ka ⋮ affordance hover par hi
+    // zahir hota hai, aur 50% zoom (Z1) par tile chhoti
+    // hone se hover ka nishana pakka hona chahiye. Phir
+    // pehle tile ka apna subtree, phir us ke hover
+    // overlay/portal wali scope.
     for (let hunt = 0; hunt < 3 && !more.found; hunt++) {
       if (hunt > 0) await sleep(1200);
       let onGrid = false;
@@ -6904,12 +7146,16 @@ class FlowAutomationEngine {
       if (onGrid) {
         const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
         if (idx >= 0) {
+          lastTileIdx = idx;
           const coords = await this._tileCenterCoords(idx);
           if (coords.found) {
             await this.page.mouse.move(coords.x, coords.y);
-            await sleep(900);
+            await sleep(600);
           }
           more = await findMoreControl(idx);
+          if (!more.found) {
+            more = await findMoreControlOverlay(idx);
+          }
         }
       } else {
         // Editor khula hai — uske ⋮ button ko dhoondho (page scope).
@@ -6917,6 +7163,10 @@ class FlowAutomationEngine {
       }
     }
     if (!more.found) {
+      // v2.48.113 (Z2): aakhri nakami par tile jo kuch
+      // expose karti hai, [ROOT] log me dump karo —
+      // agli nakami sirf log se diagnose hogi.
+      if (lastTileIdx >= 0) { try { await this._dumpTileElements(lastTileIdx); } catch (e) {} }
       this.log(`[Prompt #${n}] The ⋮ (more options) button was not found on its tile even after 3 tries — the editor form will be tried.`, 'warn');
       attempts.push({ strategy: 'native-menu', ok: false, note: 'the ⋮ (more options) button was not found even after 3 tries' });
       return false;
@@ -14586,4 +14836,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, GENERATION_PAGE_SCALE, browserZoomLogLine, applyBrowserZoom, tileMoreOverlaySource, tileMenuDumpSource, tileMenuDumpElementLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };

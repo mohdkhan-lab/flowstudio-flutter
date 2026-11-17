@@ -14522,6 +14522,133 @@ async function main() {
     ok('X116 I source: the pool logs the warning and keeps watching', poolSrc116.includes("verdict.type === 'net-warning'"));
   }
 
+  // =====================================================================
+  // X117 (v2.48.113) — the W6 download fixes (owner order 2026-11-17):
+  // (Z1) Every generation/recovery browser opens at 50% page zoom
+  //      (CDP Emulation.setPageScaleFactor, 0.5) — applied at browser
+  //      open with a [ROOT] proof line, re-asserted silently when
+  //      the project opens and on every return to the project grid.
+  //      A zoom failure warns and continues; it never fails a run.
+  // (Z2) The tile-menu ⋮ hunt scrolls the tile into the viewport
+  //      centre and hovers it (~600ms settle) before hunting; the
+  //      hunt scope is the tile's own subtree first, then the tile's
+  //      hover overlay/portal elements (only a ⋮ overlapping the
+  //      tile's own box counts); a final failure dumps the tile's
+  //      exposed elements into the [ROOT] log. The 3-try structure
+  //      and the download-stage no-resubmit rule are unchanged.
+  // =====================================================================
+  {
+    const fs117 = require('fs');
+    const path117 = require('path');
+    const read117 = (rel) => fs117.readFileSync(path117.join(__dirname, '..', rel), 'utf8');
+    const flowSrc117 = read117('engine/flowAutomation.js');
+    const {
+      GENERATION_PAGE_SCALE: scale117,
+      browserZoomLogLine: zoomLine117,
+      applyBrowserZoom: applyZoom117,
+      tileMoreOverlaySource: overlaySrc117,
+      tileMenuDumpSource: tileDumpSrc117,
+      tileMenuDumpElementLine: tileDumpLine117
+    } = require('../engine/flowAutomation');
+
+    // --- Z1: the zoom helper through the CDP seam ---
+    eq('X117 Z1: the generation page scale is 0.5', scale117, 0.5);
+    {
+      const calls = [];
+      const send = async (method, params) => { calls.push([method, params]); };
+      eq('X117 Z1: the helper reports success through the seam', await applyZoom117(send), true);
+      eq('X117 Z1: the helper makes exactly one CDP call', calls.length, 1);
+      eq('X117 Z1: the CDP method is Emulation.setPageScaleFactor', calls[0][0], 'Emulation.setPageScaleFactor');
+      eq('X117 Z1: the scale factor sent is 0.5', calls[0][1].pageScaleFactor, 0.5);
+      eq('X117 Z1: a failing seam is a quiet false, never a throw', await applyZoom117(async () => { throw new Error('cdp down'); }), false);
+      eq('X117 Z1: a missing seam is a quiet false', await applyZoom117(null), false);
+      eq('X117 Z1: a bad scale is a quiet false', await applyZoom117(send, 0), false);
+    }
+    eq('X117 Z1: the proof line names account, scale and applied',
+      zoomLine117('flow.google.com_cookies (12)', 0.5, true),
+      '[ROOT] browser-zoom account=flow.google.com_cookies (12) scale=0.5 applied');
+    eq('X117 Z1: a failed application reads FAILED in the proof line',
+      zoomLine117('Acc', 0.5, false),
+      '[ROOT] browser-zoom account=Acc scale=0.5 FAILED');
+    ok('X117 Z1 source: zoom is applied at browser open with the proof line', flowSrc117.includes('await this._applyGenerationZoom(true);'));
+    ok('X117 Z1 source: completion points re-assert the zoom silently', (flowSrc117.match(/await this\._applyGenerationZoom\(false\);/g) || []).length >= 2);
+    {
+      const start = flowSrc117.indexOf('async _returnToProjectGrid()');
+      const slice = flowSrc117.slice(start, start + 2600);
+      ok('X117 Z1 source: grid return re-asserts the zoom on success', slice.includes('await this._applyGenerationZoom(false);'));
+    }
+
+    // --- Z2: the overlay scope finds only the tile's own ⋮ ---
+    {
+      const tileRect = { left: 100, top: 100, right: 300, bottom: 260, width: 200, height: 160, x: 100, y: 100 };
+      const mkBtn = (aria, rect) => ({
+        tagName: 'BUTTON',
+        getAttribute: (name) => (name === 'aria-label' ? aria : null),
+        querySelector: () => null,
+        getBoundingClientRect: () => rect
+      });
+      const onTileBtn = mkBtn('More options', { left: 270, top: 110, right: 294, bottom: 134, width: 24, height: 24, x: 270, y: 110 });
+      const elsewhereBtn = mkBtn('More options', { left: 900, top: 20, right: 924, bottom: 44, width: 24, height: 24, x: 900, y: 20 });
+      const tile117 = {
+        getBoundingClientRect: () => tileRect,
+        contains: () => false,
+        querySelectorAll: () => []
+      };
+      const paneHit = { contains: () => false, querySelectorAll: () => [elsewhereBtn, onTileBtn] };
+      const docHit = { querySelectorAll: (sel) => (sel.includes('flow-grid-tile-container') ? [tile117] : [paneHit]) };
+      const hit = new Function('document', `return ${overlaySrc117(0)};`)(docHit);
+      eq('X117 Z2: the overlay hunt finds the ⋮ sitting on the tile', hit.found, true);
+      eq('X117 Z2: the overlay hunt returns the on-tile button centre', `${hit.x},${hit.y}`, '282,122');
+      const paneMiss = { contains: () => false, querySelectorAll: () => [elsewhereBtn] };
+      const docMiss = { querySelectorAll: (sel) => (sel.includes('flow-grid-tile-container') ? [tile117] : [paneMiss]) };
+      const miss = new Function('document', `return ${overlaySrc117(0)};`)(docMiss);
+      eq('X117 Z2: an overlay ⋮ NOT on the tile is never taken', miss.found, false);
+    }
+
+    // --- Z2: the tile dump lists what the tile exposes ---
+    {
+      const elBtn = {
+        tagName: 'BUTTON',
+        getAttribute: (name) => (name === 'aria-label' ? 'More options' : null),
+        innerText: '',
+        textContent: '',
+        getBoundingClientRect: () => ({ x: 270, y: 110, left: 270, top: 110, width: 24, height: 24 })
+      };
+      const elDiv = {
+        tagName: 'DIV',
+        getAttribute: () => null,
+        innerText: 'A village scene',
+        textContent: 'A village scene',
+        getBoundingClientRect: () => ({ x: 100, y: 100, left: 100, top: 100, width: 200, height: 160 })
+      };
+      const tile117 = { querySelectorAll: () => [elBtn, elDiv] };
+      const fakeDoc = { querySelectorAll: () => [tile117] };
+      const dump = new Function('document', `return ${tileDumpSrc117(0)};`)(fakeDoc);
+      eq('X117 Z2: the tile dump lists every exposed element', dump.elements.length, 2);
+      eq('X117 Z2: the tile dump carries the ⋮ aria-label', dump.elements[0].aria, 'More options');
+      eq('X117 Z2: a dump element line carries tag/aria/text/box',
+        tileDumpLine117(dump.elements[0]),
+        '[ROOT] tile-menu-dump el=button aria="More options" text="" box=270,110,24,24');
+    }
+
+    // --- Z2: scroll + hover + settle happen before the hunt ---
+    {
+      const start = flowSrc117.indexOf('async _nativeMenuForm(');
+      const slice = flowSrc117.slice(start, start + 9000);
+      const scrollAt = slice.indexOf('_tileCenterCoords(idx)');
+      const hoverAt = slice.indexOf('this.page.mouse.move(coords.x, coords.y)');
+      const settleAt = slice.indexOf('await sleep(600);');
+      const huntAt = slice.indexOf('findMoreControl(idx)');
+      const overlayAt = slice.indexOf('findMoreControlOverlay(idx)');
+      ok('X117 Z2 source: tile coords (scroll into view) resolve before the hunt', scrollAt >= 0 && huntAt > scrollAt);
+      ok('X117 Z2 source: the tile is hovered before the hunt', hoverAt > scrollAt && huntAt > hoverAt);
+      ok('X117 Z2 source: a ~600ms settle follows the hover, before the hunt', settleAt > hoverAt && huntAt > settleAt);
+      ok('X117 Z2 source: the overlay scope runs when the tile subtree misses', overlayAt > huntAt);
+      ok('X117 Z2 source: a final failure dumps the tile elements', slice.indexOf('await this._dumpTileElements(lastTileIdx);') > overlayAt);
+    }
+    ok('X117 Z2 source: tile coords scroll the tile into the viewport centre', flowSrc117.includes("target.scrollIntoView({ behavior: 'instant', block: 'center' });"));
+  }
+
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);

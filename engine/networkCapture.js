@@ -696,10 +696,32 @@ function fetchRwRewrite(url, headers) {
   } catch (e) { return null; }
 }
 
+/**
+ * v2.48.117 (C2): kram-bandhan ka darwaza — bin-bandha URL
+ * kataar ke pehle task ko SIRF tab mile jab is page par
+ * intezaar kar raha task EK hi ho. Ginti wahi "waiting"
+ * wali hai (bandhan ke baghair wale submissions). Saf
+ * function — X121 pins isi par hain.
+ */
+function orderBindGateAllows(inFlightCount) {
+  return Number(inFlightCount) === 1;
+}
+
 class NetworkCapture {
   constructor(opts = {}) {
     this.patterns = opts.patterns || CAPTURE_PATTERNS;
     this.onMediaBound = typeof opts.onMediaBound === 'function' ? opts.onMediaBound : (() => {});
+    // v2.48.117 (C2): workflowId kisi task se PEHLI baar
+    // bandhe to us ki khabar — engine use task ki DB row
+    // par mustaqil darj karta hai (identityPort). Callback
+    // na ho to bandhan sirf memory me rehta hai (purana
+    // vyavhaar).
+    this.onWorkflowBound = typeof opts.onWorkflowBound === 'function' ? opts.onWorkflowBound : null;
+    // v2.48.117 (C2): kram-bandhan ka darwaza band kare to
+    // us ki khabar — engine use '[ROOT] order-bind refused
+    // in-flight=<n>' line me badalta hai. Callback na ho
+    // to inkaar khamosh hai (vyavhaar wahi rehta hai).
+    this.onOrderBindRefused = typeof opts.onOrderBindRefused === 'function' ? opts.onOrderBindRefused : null;
     // v2.48.27 (NET-BIG): bade (≥200KB) jawabon ki khabar engine ko
     // — engine use [NET-BIG] line me badalta hai. Callback na ho
     // to shikar khamoshi se band rehta hai (koi vyavhaar-badal nahi).
@@ -1813,6 +1835,9 @@ class NetworkCapture {
     if (!cand) return null;
     cand.id = id;
     this.keyById.set(id, cand.key);
+    // v2.48.117 (C2): naya bandhan — engine ko khabar taaki
+    // workflowId task ki DB row par bhi darj ho jaye.
+    try { if (this.onWorkflowBound) this.onWorkflowBound(cand.key, id); } catch (e) {}
     return cand.key;
   }
 
@@ -3514,6 +3539,24 @@ class NetworkCapture {
       if (!best || sight.firstSeenAt < best.sight.firstSeenAt) best = { url, sight };
     }
     if (!best) return null;
+    // v2.48.117 (C2 — ORDER-BIND GATE): kram-bandhan sab
+    // se kamzor pehchan hai — ek bin-bandha URL kataar ke
+    // pehle task ko de dena SIRF tab mehfooz hai jab is
+    // page par EK hi task intezaar me ho. Do ya zyada
+    // intezaar kar rahe hon to URL kis ka hai, ye kram se
+    // tay NAHI ho sakta (W9 ka saboot: padosi ki stream
+    // galat task ke naam save ho gayi) — URL UNCLAIMED
+    // rehta hai; use token wala rasta ya tile-menu
+    // suljhaye ga. Intezaar ki ginti wahi hai jo upar
+    // `waiting` me bani (bandhan ke baghair wale
+    // submissions) — is pal wahi is page ki asal
+    // "in-flight" kataar hai. Inkaar ki khabar engine ko
+    // [ROOT] line ke liye jati hai.
+    const inFlight = waiting.length;
+    if (!orderBindGateAllows(inFlight)) {
+      try { if (this.onOrderBindRefused) this.onOrderBindRefused(inFlight); } catch (e) {}
+      return null;
+    }
     if (this._bindUrlToKey(key, best.url, 'order', at)) return this.urlByKey.get(key);
     return null;
   }
@@ -3549,4 +3592,4 @@ class NetworkCapture {
   }
 }
 
-module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, gvReqFields, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo };
+module.exports = { NetworkCapture, CAPTURE_PATTERNS, hostOf, pathKeyOf, isBatchExecuteUrl, rpcidsOf, scanBatchExecuteBody, decodeCdpBody, unescapeJsonText, urlShape, isApiUrl, isMediaHostUrl, isMediaUrl, isGenerateApiUrl, isStatusApiUrl, pickReplayHeaders, extractUrlsFromText, extractWorkflowIdsFromText, scanJsonValue, scanBodyForCapture, scanFramePayload, NET_BIG_THRESHOLD_BYTES, isNetBigResponse, headerValueOf, summarizeNetBigWindow, isGooglevideoPlaybackUrl, gvReqFields, parseContentRangeOffset, uncoveredChunkPieces, assembleMainpageChunks, segmentKeyOf, rangeStripOf, fetchRwRewrite, rpcVideoUrlInfo, orderBindGateAllows };

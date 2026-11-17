@@ -6,6 +6,7 @@ const { getAccountProfilePath } = require('./accountStore');
 const { checkProfileBusyAsync } = require('./processHelper');
 const liveBrowsers = require('./liveBrowsers');
 const tileIdentity = require('./tileIdentity');
+const mediaToken = require('./mediaToken');
 const stallWatch = require('./stallWatch');
 const renderProgressWatch = require('./renderProgressWatch');
 const tileState = require('./tileState');
@@ -954,6 +955,115 @@ function tileMoreOverlaySource(tileIndex) {
 }
 
 /**
+ * v2.48.117 (C3 — BIRTH REGISTRATION): pehchan naam se
+ * nahi, ID se. Submit se THEEK pehle grid ke saare tile
+ * elements par 'data-fs-prebirth' ki mohar — submit ke
+ * baad jo container is mohar ke baghair aaye, wahi is
+ * submission ki nayi tile hai (element set-difference;
+ * submits har worker par tartib se hote hain, is liye
+ * pehla naya element isi task ka hai). Aria-label is me
+ * kahin istemal NAHI hota — Flow ka rename is pehchan ko
+ * chhoo hi nahi sakta.
+ */
+function birthMarkExistingTilesSource() {
+  return '(() => {\n'
+    + '/*fsBirthMarkExisting*/\n'
+    + 'try {\n'
+    + '  const tiles = Array.from(document.querySelectorAll(\'flow-grid-tile-container\'));\n'
+    + '  for (const c of tiles) { try { c.setAttribute(\'data-fs-prebirth\', \'1\'); } catch (e) {} }\n'
+    + '  return { count: tiles.length };\n'
+    + '} catch (e) { return { count: 0 }; }\n'
+    + '})()';
+}
+
+/**
+ * v2.48.117 (C3): birth probe — pehla container jo na
+ * prebirth-mohar wala ho na pehle se kisi task ke naam
+ * stamp ho, wahi is submission ki tile hai: usi pal us
+ * par 'data-fs-task=<stamp>' lag jata hai (DOM node apni
+ * pehchan rename ke baad bhi rakhta hai) aur us ke poster
+ * <img> / <video> ke pate lautte hain — Node taraf un ke
+ * token (engine/mediaToken.js) task ki row par darj hote
+ * hain. Koi naya element na ho to { found:false } —
+ * registration khamoshi se skip (na fail, na resubmit).
+ */
+function birthTileProbeSource(stampValue) {
+  const stamp = String(stampValue || '');
+  return '(() => {\n'
+    + '/*fsBirthTileProbe*/\n'
+    + 'try {\n'
+    + '  const stamp = ' + JSON.stringify(stamp) + ';\n'
+    + '  const tiles = Array.from(document.querySelectorAll(\'flow-grid-tile-container\'));\n'
+    + '  for (const c of tiles) {\n'
+    + '    if (c.getAttribute(\'data-fs-prebirth\')) continue;\n'
+    + '    if (c.getAttribute(\'data-fs-task\')) continue;\n'
+    + '    try { c.setAttribute(\'data-fs-task\', stamp); } catch (e) {}\n'
+    + '    let posterSrc = \'\';\n'
+    + '    try { const img = c.querySelector(\'img\'); if (img && img.src) posterSrc = String(img.src); } catch (e) {}\n'
+    + '    let videoSrc = \'\';\n'
+    + '    try { const vid = c.querySelector(\'video\'); if (vid) videoSrc = String(vid.currentSrc || vid.src || \'\'); } catch (e) {}\n'
+    + '    return { found: true, posterSrc, videoSrc };\n'
+    + '  }\n'
+    + '  return { found: false, posterSrc: \'\', videoSrc: \'\' };\n'
+    + '} catch (e) { return { found: false, posterSrc: \'\', videoSrc: \'\' }; }\n'
+    + '})()';
+}
+
+/**
+ * v2.48.117 (C4): is session me stamp hue element ka
+ * maujooda DOM index — naam badle ya grid shift ho,
+ * stamp wala element wahi rehta hai. Na mile to -1.
+ */
+function tileStampIndexSource(stampValue) {
+  const stamp = String(stampValue || '');
+  return '(() => {\n'
+    + '/*fsTileStampIndex*/\n'
+    + 'try {\n'
+    + '  const stamp = ' + JSON.stringify(stamp) + ';\n'
+    + '  if (!stamp) return -1;\n'
+    + '  const tiles = Array.from(document.querySelectorAll(\'flow-grid-tile-container\'));\n'
+    + '  for (let i = 0; i < tiles.length; i++) {\n'
+    + '    if (tiles[i].getAttribute(\'data-fs-task\') === stamp) return i;\n'
+    + '  }\n'
+    + '  return -1;\n'
+    + '} catch (e) { return -1; }\n'
+    + '})()';
+}
+
+/**
+ * v2.48.117 (C4): har tile ke poster/video pate ek saath
+ * — Node taraf token nikal kar task ke darj token se
+ * muqabla hota hai (fresh page / recovery ki pehchan).
+ */
+function tileMediaSrcsSource() {
+  return '(() => {\n'
+    + '/*fsTileMediaSrcs*/\n'
+    + 'try {\n'
+    + '  const tiles = Array.from(document.querySelectorAll(\'flow-grid-tile-container\'));\n'
+    + '  return tiles.map((c) => {\n'
+    + '    let posterSrc = \'\';\n'
+    + '    try { const img = c.querySelector(\'img\'); if (img && img.src) posterSrc = String(img.src); } catch (e) {}\n'
+    + '    let videoSrc = \'\';\n'
+    + '    try { const vid = c.querySelector(\'video\'); if (vid) videoSrc = String(vid.currentSrc || vid.src || \'\'); } catch (e) {}\n'
+    + '    return { posterSrc, videoSrc };\n'
+    + '  });\n'
+    + '} catch (e) { return []; }\n'
+    + '})()';
+}
+
+/** v2.48.117 (C3/C5): janam ke nishan ki [ROOT] saboot line. */
+function birthMarkLogLine(taskLabel, workflowId, posterToken) {
+  const wf = workflowId ? String(workflowId) : '-';
+  const tok = posterToken ? String(posterToken) : '-';
+  return `[ROOT] birth-mark task=${taskLabel} workflow=${wf} token=${tok}`;
+}
+
+/** v2.48.117 (C4/C5): tile kis pehchan se mili — [ROOT] saboot line. */
+function tileFindLogLine(taskLabel, by) {
+  return `[ROOT] tile-find task=${taskLabel} by=${by}`;
+}
+
+/**
  * v2.48.113 (Z2): ⋮ hunt ki aakhri nakami par tile ka
  * dump — download-side ka .112 settings dump wala
  * counterpart. Tile ke subtree ke saare buttons /
@@ -1660,6 +1770,17 @@ class FlowAutomationEngine {
       onMediaBound: (key, url, via) => {
         try { this._onBackendMediaBound(key, url, via); } catch (e) {}
       },
+      // v2.48.117 (C2): workflowId ka bandhan task ki DB
+      // row par bhi darj ho (identityPort) — pehchan sirf
+      // capture ki memory me na rahe.
+      onWorkflowBound: (key, workflowId) => {
+        try { this._onWorkflowBound(key, workflowId); } catch (e) {}
+      },
+      // v2.48.117 (C2): kram-bandhan ka inkaar [ROOT] line
+      // me — field saboot ke darwaza kab aur kyun band hua.
+      onOrderBindRefused: (inFlight) => {
+        try { this.log(`[ROOT] order-bind refused in-flight=${inFlight}`, 'warn'); } catch (e) {}
+      },
       // v2.48.27 (NET-BIG): ≥200KB ka har network jawab ek line —
       // Download click ke baad file ke bytes kis channel se aate
       // hain, uska shikar. Stage ka andaza: kisi task ka download
@@ -1940,6 +2061,32 @@ class FlowAutomationEngine {
       recordSeen: () => null
     };
     this.projectPort = Object.assign({}, noopProjectPort, options.projectPort || {});
+    // v2.48.117 (EXACT-DOWNLOAD METHOD): IDENTITY LEDGER
+    // port — pool isey dbService ke write-if-empty setters
+    // se bandhta hai. Engine task ki pehchan (workflowId,
+    // tile ke poster/video token) is port se row par darj
+    // karta hai: workflowId capture ke bandhan par
+    // (_onWorkflowBound), token janam par (submit) ya pehli
+    // tile-bandhan ki fasal par (monitor harvest). No-op jab
+    // pool na bandhe (purane bulane wale / tests — pehchan
+    // sirf memory me rehti hai, vyavhaar nahi badalta).
+    //   noteWorkflowId(taskId, workflowId)
+    //   notePosterToken(taskId, posterToken, videoToken)
+    const noopIdentityPort = {
+      noteWorkflowId: () => {},
+      notePosterToken: () => {}
+    };
+    this.identityPort = Object.assign({}, noopIdentityPort, options.identityPort || {});
+    // v2.48.117: tile-find saboot lines har task+route par
+    // is engine session me SIRF ek dafa (readiness polls
+    // _resolveTileIndexForTask ko bar bar bulate hain —
+    // line saboot hai, shor nahi).
+    this._tileFindLogged = new Set();
+    // v2.48.117: is session me janam par dawa kiye gaye
+    // poster token (token -> videoId) — do tasks ek hi
+    // token kabhi share nahi karte; doosra dawa mile to
+    // token darj nahi hota (stamp phir bhi lagta hai).
+    this._birthTokensClaimed = new Map();
     // v2.31.3 tuning (constructor options so simulations can shrink
     // the windows; production uses these defaults): one download
     // ROUND gets 150s (v2.48.0: raised from 120s — the 25s media-
@@ -4992,6 +5139,12 @@ class FlowAutomationEngine {
       preExistingTileCount = snap.count;
       preExistingAriaLabels = snap.labels;
     } catch (e) {}
+    // v2.48.117 (C3): is snapshot ke saath hi grid ke
+    // maujooda ELEMENTS par prebirth mohar — submit ke
+    // baad ka element set-difference (birthTileProbeSource)
+    // isi mohar se nayi tile pehchanta hai. Mohar na lag
+    // paye to registration khamoshi se skip hoti hai.
+    try { await this.page.evaluate(birthMarkExistingTilesSource()); } catch (e) {}
 
     const preExistingVideoUrls = new Set(this.capturedVideoUrls || []);
 
@@ -5291,10 +5444,39 @@ class FlowAutomationEngine {
       }
     }
 
+    // v2.48.117 (C3): BIRTH REGISTRATION — is submit ki
+    // nayi tile ko element se pehchano (prebirth mohar ke
+    // baghair pehla container), us par data-fs-task mohar
+    // lagao aur us ke poster/video token lo. Ye pehchan
+    // NAAM se bilkul azaad hai: Flow tile ka title badal
+    // de, token nahi badalta. Pool in token ko task ki DB
+    // row par darj karta hai (projectUrl wali hi tartib);
+    // tile-find (C4) download/recovery me tile ko inhi se
+    // dhoondhta hai. Registration na ho paye to task
+    // baghair token ke aage badhta hai — purana
+    // fingerprint rasta barkarar, koi fail/resubmit nahi.
+    let birthPosterToken = '';
+    let birthVideoToken = '';
+    try {
+      const birth = await this._registerBirthTile(videoId);
+      birthPosterToken = birth.posterToken || '';
+      birthVideoToken = birth.videoToken || '';
+    } catch (e) {}
+    try {
+      const wfNow = (this.netCapture && typeof this.netCapture.workflowIdForKey === 'function')
+        ? this.netCapture.workflowIdForKey(videoId) : null;
+      this.log(birthMarkLogLine(promptIndex, wfNow, birthPosterToken), 'info');
+    } catch (e) {}
+
     const submittedTask = {
       status: 'SUBMITTED',
       videoId,
       projectUrl: birthProjectUrl,
+      // v2.48.117 (C3): janam ke token — pool row par darj
+      // karta hai, monitor/download inhi se tile pehchanta
+      // hai (naam se nahi).
+      birthPosterToken,
+      birthVideoToken,
       // v2.8.0: network capture isi key se is task ko pehchanta hai
       // (videoId hi capture key hai — submit ke pal par tay hua).
       captureKey: videoId,
@@ -5374,10 +5556,59 @@ class FlowAutomationEngine {
     // (v2.48.41: background page khatam — hamesha apna page).
     const pg = page || this.page;
     if (!pg || pg.isClosed()) return -1;
+    // v2.48.117 (C4): pehchan ki tartib — pehle ID, phir
+    // naam. (1) Is session ki DOM mohar (data-fs-task):
+    // element wahi rehta hai, Flow ka rename use chhoo
+    // nahi sakta. (2) Darj token: fresh page par bhi tile
+    // ke poster/video pate ka token task ke token se
+    // mile to wahi tile hai. (3) Fingerprint — SIRF
+    // legacy fallback (neeche).
+    const stampKey = task ? (task.captureKey || task.videoId || null) : null;
+    if (stampKey) {
+      try {
+        const byStamp = await pg.evaluate(tileStampIndexSource(stampKey));
+        if (typeof byStamp === 'number' && byStamp >= 0) {
+          this._logTileFind(task, 'stamp');
+          return byStamp;
+        }
+      } catch (e) {}
+    }
+    const wantPoster = this._taskPosterToken(task);
+    const wantVideo = this._taskVideoToken(task);
+    if (wantPoster || wantVideo) {
+      try {
+        const srcs = await pg.evaluate(tileMediaSrcsSource());
+        if (Array.isArray(srcs)) {
+          if (wantPoster) {
+            for (let i = 0; i < srcs.length; i++) {
+              if (mediaToken.posterTokenFromUrl(srcs[i].posterSrc || '') === wantPoster) {
+                this._logTileFind(task, 'poster-token');
+                return i;
+              }
+            }
+          }
+          if (wantVideo) {
+            for (let i = 0; i < srcs.length; i++) {
+              if (mediaToken.videoTokenFromUrl(srcs[i].videoSrc || '') === wantVideo) {
+                this._logTileFind(task, 'video-token');
+                return i;
+              }
+            }
+          }
+        }
+      } catch (e) {}
+    }
     const fp = task ? (task.lockedTileFingerprint || null) : null;
     if (fp) {
       const byFp = await this._resolveTileIndexByFingerprint(fp, pg);
-      if (byFp >= 0) return byFp;
+      if (byFp >= 0) {
+        // Legacy fallback ki line SIRF tab jab task ke
+        // paas ID wali pehchan thi bhi — wahan naam par
+        // girna khabar ke qabil hai; bina token wale
+        // purane tasks ke liye ye aam rasta hai.
+        if (wantPoster || wantVideo || stampKey) this._logTileFind(task, 'fingerprint-legacy');
+        return byFp;
+      }
     }
     return (typeof fallbackIdx === 'number' && fallbackIdx >= 0) ? fallbackIdx : -1;
   }
@@ -5496,7 +5727,15 @@ class FlowAutomationEngine {
    * submitting anything. Scoring is the replica-tested tileIdentity
    * strong-match (containment metric); an exact tie between two tiles
    * returns null (ambiguous — never guess which video is whose).
-   * Returns { tileIndex, fingerprint, url|null } or null.
+   * Returns { tileIndex, fingerprint, url|null, via } or null.
+   *
+   * v2.48.117 (C4): opts.identity = { posterToken, videoToken,
+   * claimedTokens } diye jayein to scan PEHLE token se
+   * dhoondhta hai (poster, phir video) — naam bilkul nahi
+   * padhta. Token wala hit 'via' ke saath lautta hai.
+   * Token na mile tab hi lafz-score wala purana rasta —
+   * aur wo bhi un tiles tak mehdood jo kisi aur task ke
+   * token se bandhi na hon (claimedTokens).
    */
   async _scanGridForPrompt(promptText, isImage = false, opts = {}) {
     if (!this.page || this.page.isClosed()) return null;
@@ -5504,17 +5743,55 @@ class FlowAutomationEngine {
     try {
       tiles = await this.page.evaluate(() => {
         const containers = Array.from(document.querySelectorAll('flow-grid-tile-container'));
-        return containers.map((c, i) => ({
-          tileIndex: i,
-          aria: c.getAttribute('aria-label') || '',
-          hasVideo: !!c.querySelector('video'),
-          hasImg: !!c.querySelector('img')
-        }));
+        return containers.map((c, i) => {
+          let posterSrc = '';
+          try { const img = c.querySelector('img'); if (img && img.src) posterSrc = String(img.src); } catch (e) {}
+          let videoSrc = '';
+          try { const vid = c.querySelector('video'); if (vid) videoSrc = String(vid.currentSrc || vid.src || ''); } catch (e) {}
+          return {
+            tileIndex: i,
+            aria: c.getAttribute('aria-label') || '',
+            hasVideo: !!c.querySelector('video'),
+            hasImg: !!c.querySelector('img'),
+            posterSrc,
+            videoSrc
+          };
+        });
       });
     } catch (e) {
       return null;
     }
     if (!tiles || tiles.length === 0) return null;
+
+    // v2.48.117 (C4): TOKEN pehle — ye tile usi task ki
+    // hai jis ka token is ke pate se milta hai; Flow ka
+    // rakha naam is faisle me kahin nahi aata.
+    const identity = (opts && opts.identity) || null;
+    if (identity && (identity.posterToken || identity.videoToken)) {
+      const claimedTokens = identity.claimedTokens || new Set();
+      const enriched = tiles.map(t => ({
+        ...t,
+        posterToken: mediaToken.posterTokenFromUrl(t.posterSrc || ''),
+        videoToken: mediaToken.videoTokenFromUrl(t.videoSrc || '')
+      }));
+      const tryToken = async (field, want, via) => {
+        if (!want) return null;
+        const hit = enriched.find(t => t[field] === want && !claimedTokens.has(t[field]));
+        if (!hit) return null;
+        const url = await this._extractTileMediaUrl(
+          { lockedTileFingerprint: tileIdentity.tileFingerprint(hit.aria, '') }, hit.tileIndex, isImage
+        );
+        return { tileIndex: hit.tileIndex, fingerprint: tileIdentity.tileFingerprint(hit.aria, ''), url: url || null, via };
+      };
+      const byPoster = await tryToken('posterToken', identity.posterToken, 'poster-token');
+      if (byPoster) return byPoster;
+      const byVideo = await tryToken('videoToken', identity.videoToken, 'video-token');
+      if (byVideo) return byVideo;
+      // Token scan khaali — lafz wala rasta neeche, lekin
+      // sirf un tiles par jo kisi aur ke token ki na hon.
+      tiles = enriched.filter(t => !(t.posterToken && claimedTokens.has(t.posterToken)));
+      if (tiles.length === 0) return null;
+    }
 
     const promptWords = tileIdentity.significantWords(promptText || '');
 
@@ -5535,7 +5812,7 @@ class FlowAutomationEngine {
         const url = await this._extractTileMediaUrl(
           { lockedTileFingerprint: best.fingerprint }, best.tileIndex, isImage
         );
-        return { tileIndex: best.tileIndex, fingerprint: best.fingerprint, url: url || null };
+        return { tileIndex: best.tileIndex, fingerprint: best.fingerprint, url: url || null, via: 'fingerprint' };
       }
       if (best) return null; // ambiguous scored tie — never guess
     }
@@ -5559,7 +5836,7 @@ class FlowAutomationEngine {
         const url = await this._extractTileMediaUrl(
           { lockedTileFingerprint: fp }, t.tileIndex, isImage
         );
-        return { tileIndex: t.tileIndex, fingerprint: fp, url: url || null, viaFallback: true };
+        return { tileIndex: t.tileIndex, fingerprint: fp, url: url || null, viaFallback: true, via: 'order-fallback' };
       }
     }
     return null;
@@ -5626,11 +5903,33 @@ class FlowAutomationEngine {
           };
         }
       }
+      // v2.48.117 (C4): is task ke darj token scan ko sab
+      // se pehle milte hain; is window ke doosre tasks ke
+      // token claimed hain — un ki tiles is scan ke
+      // lafz-wale hisse se bhi bahar rehti hain.
+      const idPoster = this._taskPosterToken(task);
+      const idVideo = this._taskVideoToken(task);
+      if (idPoster || idVideo) {
+        const claimedTokens = new Set();
+        if (window) {
+          for (const t of window) {
+            if (t === task) continue;
+            const pt = this._taskPosterToken(t); if (pt) claimedTokens.add(pt);
+            const vt = this._taskVideoToken(t); if (vt) claimedTokens.add(vt);
+          }
+        }
+        scanOpts.identity = { posterToken: idPoster, videoToken: idVideo, claimedTokens };
+      }
       scan = await this._scanGridForPrompt(task.promptText, isImageMode, scanOpts);
     } catch (e) {
       scan = null;
     }
     if (!scan) return false;
+    // v2.48.117 (C4/C5): scan kis pehchan se mila — saboot.
+    try {
+      if (scan.via === 'poster-token' || scan.via === 'video-token') this._logTileFind(task, scan.via);
+      else if (scan.via === 'fingerprint' && (this._taskPosterToken(task) || this._taskVideoToken(task))) this._logTileFind(task, 'fingerprint-legacy');
+    } catch (e) {}
     const preExisting = task._preExistingFp || new Set(task.preExistingFingerprints || []);
     if (preExisting.has(scan.fingerprint)) return false;
     if (this.claimedTileFingerprints.has(scan.fingerprint) && task.lockedTileFingerprint !== scan.fingerprint) {
@@ -5652,8 +5951,23 @@ class FlowAutomationEngine {
    */
   async reconcileRecoveredTask(task, downloadFolder, settings) {
     const isImage = !!(settings && settings.type === 'Image');
-    const scan = await this._scanGridForPrompt(task.promptText, isImage);
+    // v2.48.117 (C4): recovery ki talash bhi pehle ID se —
+    // row ke darj token (pool taskObj par lata hai) scan
+    // ko sab se pehle milte hain; .116 ke sweep ki har
+    // koshish bhi isi scan se guzarti hai, is liye sweep
+    // ke andar bhi tartib token pehle, lafz baad me hai.
+    const idPoster = this._taskPosterToken(task);
+    const idVideo = this._taskVideoToken(task);
+    const scanOpts = {};
+    if (idPoster || idVideo) {
+      scanOpts.identity = { posterToken: idPoster, videoToken: idVideo, claimedTokens: new Set() };
+    }
+    const scan = await this._scanGridForPrompt(task.promptText, isImage, scanOpts);
     if (!scan) return { found: false };
+    try {
+      if (scan.via === 'poster-token' || scan.via === 'video-token') this._logTileFind(task, scan.via);
+      else if (scan.via === 'fingerprint' && (idPoster || idVideo)) this._logTileFind(task, 'fingerprint-legacy');
+    } catch (e) {}
     task.lockedTileFingerprint = scan.fingerprint;
     task.tileIndex = scan.tileIndex;
     if (scan.url) task.completedVideoUrl = scan.url;
@@ -8277,6 +8591,106 @@ class FlowAutomationEngine {
       task.backendUrlVia = bound.via;
       if (!this.isStopping) this._kickBackendFetch(task, task._backendCtx);
     }
+  }
+
+  // ------------------------------------------------------------------
+  // v2.48.117 (EXACT-DOWNLOAD METHOD) — pehchan naam se nahi, ID se.
+  // ------------------------------------------------------------------
+
+  /** Task ki DB row pehchan (identityPort ke liye) — videoId kabhi nahi. */
+  _identityRowId(task) {
+    if (!task) return null;
+    return task.taskId || task.id || null;
+  }
+
+  /** Task ka darj poster token — jahan bhi rakha ho (row/runtime/janam). */
+  _taskPosterToken(task) {
+    if (!task) return '';
+    return String(task.poster_token || task.posterToken || task.birthPosterToken || '');
+  }
+
+  /** Task ka darj video token. */
+  _taskVideoToken(task) {
+    if (!task) return '';
+    return String(task.video_token || task.videoToken || task.birthVideoToken || '');
+  }
+
+  /**
+   * v2.48.117 (C4/C5): tile-find saboot line — har task +
+   * route par is engine session me sirf EK dafa (dedupe
+   * set constructor me hai).
+   */
+  _logTileFind(task, by) {
+    try {
+      const label = task ? (task.taskId || task.id || task.videoId || (typeof task.promptIndex === 'number' ? task.promptIndex : '?')) : '?';
+      const dedupeKey = `${label}|${by}`;
+      if (this._tileFindLogged.has(dedupeKey)) return;
+      this._tileFindLogged.add(dedupeKey);
+      this.log(tileFindLogLine(label, by), 'info');
+    } catch (e) {}
+  }
+
+  /**
+   * v2.48.117 (C2): capture ne workflowId is task se
+   * bandha — wahi ID ab task ki DB row par bhi darj ho
+   * (identityPort; pool use dbService.setTaskWorkflowId
+   * se bandhta hai). Task is pal capture kitab me na
+   * mile, ya us ki row pehchan na mile, to khamosh skip —
+   * memory wala bandhan apni jagah barkarar hai.
+   */
+  _onWorkflowBound(key, workflowId) {
+    if (!key || !workflowId) return;
+    let task = null;
+    try { task = this._captureTasks.get(key) || null; } catch (e) { task = null; }
+    if (!task) return;
+    try { task.workflowId = workflowId; } catch (e) {}
+    const rowId = this._identityRowId(task);
+    if (!rowId) return;
+    try { this.identityPort.noteWorkflowId(rowId, workflowId); } catch (e) {}
+  }
+
+  /**
+   * v2.48.117 (C3): BIRTH REGISTRATION — submit kamyab
+   * hone ke baad is task ki nayi tile ko ELEMENT se
+   * pehchano: pre-submit mohar (data-fs-prebirth) ke
+   * baghair pehla container isi ka hai. Us par
+   * data-fs-task mohar + us ke poster/video paton ke
+   * token. Lautta hai { posterToken, videoToken } —
+   * dono khaali hon to registration nahi hui (purana
+   * fingerprint rasta apni jagah chalta rahega; koi
+   * fail, koi resubmit nahi).
+   */
+  async _registerBirthTile(videoId) {
+    const out = { posterToken: '', videoToken: '' };
+    if (!videoId || !this.page || this.page.isClosed()) return out;
+    let probe = null;
+    for (let attempt = 0; attempt < 4 && !probe; attempt++) {
+      try {
+        const res = await this.page.evaluate(birthTileProbeSource(videoId));
+        if (res && res.found) probe = res;
+      } catch (e) {}
+      if (!probe) await sleep(2000);
+    }
+    if (!probe) return out;
+    let posterToken = '';
+    let videoToken = '';
+    try { posterToken = mediaToken.posterTokenFromUrl(probe.posterSrc || '') || ''; } catch (e) {}
+    try { videoToken = mediaToken.videoTokenFromUrl(probe.videoSrc || '') || ''; } catch (e) {}
+    // Dawa ki hifazat: ek token is session me do tasks ka
+    // nahi ho sakta. Doosra dawa = grid ka dobara bana hua
+    // purana element ho sakta hai — token darj nahi hoga
+    // (stamp reh jata hai, wo is session ki sahulat hai).
+    if (posterToken) {
+      const claimedBy = this._birthTokensClaimed.get(posterToken);
+      if (claimedBy && claimedBy !== videoId) {
+        posterToken = '';
+      } else {
+        this._birthTokensClaimed.set(posterToken, videoId);
+      }
+    }
+    out.posterToken = posterToken;
+    out.videoToken = videoToken;
+    return out;
   }
 
   /** Ek hi task ka backend fetch ek hi baar chalega — in-flight guard. */
@@ -14483,6 +14897,13 @@ class FlowAutomationEngine {
               const hasResolutionBadge = text.includes('360p') || text.includes('720p') || text.includes('1080p') || text.includes('100%') || text.includes('2k') || text.includes('4k');
               const hasDuration = /\b0:0\d\b|\b\d+s\b/.test(text);
               const isReady = !isGenerating && !isFailed && (hasResolutionBadge || hasVideo || hasDuration || hasImg);
+              // v2.48.117 (C4): tile ke pate bhi — Node taraf
+              // in ke token assignTiles ke Pass 0 ki pehchan
+              // hain (naam se azaad).
+              let posterSrc = '';
+              try { const img = c.querySelector('img'); if (img && img.src) posterSrc = String(img.src); } catch (e) {}
+              let videoSrc = '';
+              try { const vid = c.querySelector('video'); if (vid) videoSrc = String(vid.currentSrc || vid.src || ''); } catch (e) {}
 
               return {
                 tileIndex: idx,
@@ -14495,7 +14916,9 @@ class FlowAutomationEngine {
                 failureKind,
                 failureReason: refusalSnippet,
                 isUnusualActivity,
-                isReady
+                isReady,
+                posterSrc,
+                videoSrc
               };
             });
           }
@@ -14625,7 +15048,10 @@ class FlowAutomationEngine {
         const tileDescriptors = canvasState.map(t => ({
           ...t,
           fingerprint: tileIdentity.tileFingerprint(t.promptAria, t.text),
-          words: tileIdentity.significantWords(`${t.promptAria} ${t.text}`)
+          words: tileIdentity.significantWords(`${t.promptAria} ${t.text}`),
+          // v2.48.117 (C4): tile ki ID-pehchan (Pass 0).
+          posterToken: mediaToken.posterTokenFromUrl(t.posterSrc || ''),
+          videoToken: mediaToken.videoTokenFromUrl(t.videoSrc || '')
         }));
         const taskViews = accountTasks.filter(t => !t.downloaded).map(t => {
           if (!t._promptWords) t._promptWords = tileIdentity.significantWords(t.promptText || '');
@@ -14650,10 +15076,18 @@ class FlowAutomationEngine {
             // Agent tasks keep their own group fields (groupKey
             // null there); a lone task gets no group key.
             groupKey: t.agentGroupKey ? null : (accountTasks.length > 1 ? this._directBatchKey : null),
-            groupIndex: t.agentGroupKey ? null : (typeof t.promptIndex === 'number' ? t.promptIndex : 0)
+            groupIndex: t.agentGroupKey ? null : (typeof t.promptIndex === 'number' ? t.promptIndex : 0),
+            // v2.48.117 (C4): task ki darj ID-pehchan —
+            // assignTiles ka Pass 0 inhi se bandhta hai,
+            // lafz-score se pehle.
+            posterToken: this._taskPosterToken(t) || null,
+            videoToken: this._taskVideoToken(t) || null
           };
         });
-        const tileAssignments = tileIdentity.assignTiles(taskViews, tileDescriptors, this.claimedTileFingerprints);
+        // v2.48.117 (C4/C5): har bandhan ka rasta bhi —
+        // tile-find saboot line ke liye.
+        const tileRoutes = new Map();
+        const tileAssignments = tileIdentity.assignTiles(taskViews, tileDescriptors, this.claimedTileFingerprints, tileRoutes);
 
         if (modalViolation && modalVictim) {
           try { await this.page.keyboard.press('Escape'); } catch (e) {}
@@ -14738,6 +15172,42 @@ class FlowAutomationEngine {
           if (bestTile && task.lockedTileFingerprint !== bestTile.fingerprint) {
             task.lockedTileFingerprint = bestTile.fingerprint;
             this.claimedTileFingerprints.add(bestTile.fingerprint);
+          }
+          // v2.48.117 (C4/C5): bandhan ka rasta saboot me —
+          // token wala rasta apne naam se, aur token rakhne
+          // wale task ka lafz par girna 'fingerprint-legacy'
+          // ke naam se (ek dafa per task, _logTileFind ki
+          // dedupe se).
+          if (bestTile) {
+            try {
+              const route = tileRoutes.get(task.videoId);
+              if (route === 'poster-token' || route === 'video-token') {
+                this._logTileFind(task, route);
+              } else if (route && (this._taskPosterToken(task) || this._taskVideoToken(task))) {
+                this._logTileFind(task, 'fingerprint-legacy');
+              }
+            } catch (e) {}
+            // v2.48.117 (C3 saathi — TOKEN HARVEST): janam
+            // par token na mila ho (registration skip, ya
+            // Agent se aaya task) to pehli pakki bandhan
+            // wali tile ka token hi task ki pehchan ban
+            // jata hai — row par write-if-empty, is liye
+            // janam wala token is se kabhi nahi badalta.
+            try {
+              const rowId = this._identityRowId(task);
+              let harvested = false;
+              if (!this._taskPosterToken(task) && bestTile.posterToken) {
+                task.posterToken = bestTile.posterToken;
+                harvested = true;
+              }
+              if (!this._taskVideoToken(task) && bestTile.videoToken) {
+                task.videoToken = bestTile.videoToken;
+                harvested = true;
+              }
+              if (harvested && rowId) {
+                this.identityPort.notePosterToken(rowId, this._taskPosterToken(task), this._taskVideoToken(task));
+              }
+            } catch (e) {}
           }
 
           // v2.4.0 — TILE STATE + HEARTBEAT (fixes 2 & 3: the owner's
@@ -14929,6 +15399,20 @@ class FlowAutomationEngine {
             } else if (stallAct.type === 'recovered') {
               this.log(`[Prompt #${task.promptIndex + 1}] Tile found! The render is visible again (after a wait of ${stallWatch.formatDuration(stallAct.recoveryForSec)}) — its further progress will now be watched.`, 'success');
             } else if (stallAct.type === 'give-up') {
+              // v2.48.117 (C4): 'tile not created' ka faisla
+              // token rakhne wale task ke liye AAKHRI token
+              // scan ke baghair NAHI — janam ka element
+              // intezaar (C3) aur ye token scan dono khaali
+              // hon tab hi ye verdict imaandar hai. Scan
+              // tile bandh de to task jeeta rehta hai.
+              if (this._taskPosterToken(task) || this._taskVideoToken(task)) {
+                const rescuedByToken = await this._recoveryScanForTask(task, isImageMode);
+                if (rescuedByToken) {
+                  stallWatch.clearStall(task);
+                  this.log(`[Prompt #${task.promptIndex + 1}] The final identity scan found this prompt's tile by its recorded token — it was NOT dropped; monitoring continues.`, 'success');
+                  continue;
+                }
+              }
               this.log(`[Prompt #${task.promptIndex + 1}] Even after the full recovery attempt (${stallWatch.formatDuration(stallAct.recoveryForSec)}), this prompt's tile was not found in the Flow project — Flow may have dropped or rejected the render. The task is being marked failed.`, 'warn');
               task.completed = true;
               task.downloaded = true;
@@ -15339,4 +15823,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, GENERATION_PAGE_SCALE, browserZoomLogLine, menuZoomKeySequence, applyMenuZoom, zoomReadbackVerified, browserZoomVerifyLogLine, tileMoreOverlaySource, tileMenuDumpSource, tileMenuDumpElementLine, tileMoreIdentitySource, tileMoreStateSource, tileMoreActivateSource, menuDownloadActivateSource, tileMenuOpenProbeSource, menuDownloadIdentitySource, tileMenuItemsDumpSource, tileMenuItemsElementLine, tileMenuItemsDumpLines, tileMenuOpenLogLine, tileDownloadClickLogLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, GENERATION_PAGE_SCALE, browserZoomLogLine, menuZoomKeySequence, applyMenuZoom, zoomReadbackVerified, browserZoomVerifyLogLine, tileMoreOverlaySource, tileMenuDumpSource, tileMenuDumpElementLine, tileMoreIdentitySource, tileMoreStateSource, tileMoreActivateSource, menuDownloadActivateSource, tileMenuOpenProbeSource, menuDownloadIdentitySource, tileMenuItemsDumpSource, tileMenuItemsElementLine, tileMenuItemsDumpLines, tileMenuOpenLogLine, tileDownloadClickLogLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption, birthMarkExistingTilesSource, birthTileProbeSource, tileStampIndexSource, tileMediaSrcsSource, birthMarkLogLine, tileFindLogLine };

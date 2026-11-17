@@ -271,6 +271,18 @@ function initSchema() {
   // duration column / runtime hisaab fallback hai.
   addColumnIfMissing('queue_tasks', 'expected_duration_sec REAL DEFAULT 0');
   addColumnIfMissing('queue_tasks', "prompt_fingerprint TEXT DEFAULT ''");
+  // v2.48.117 (EXACT-DOWNLOAD METHOD — C1): pehchan NAAM se
+  // nahi, ID se. workflow_id = is task ke submit par backend
+  // se bandha hua Flow workflowId (networkCapture ki sab se
+  // mazboot pehchan, ab memory ke bajaye row par mustaqil).
+  // poster_token / video_token = is task ki tile ke poster
+  // <img> / <video> URL ka path token — Flow tile ka NAAM
+  // (aria-label) render ke baad badal deta hai, ye token
+  // nahi badalta, is liye recovery/download tile ko isi se
+  // dhoondhte hain (flowAutomation ki tile-find tartib).
+  addColumnIfMissing('queue_tasks', "workflow_id TEXT DEFAULT ''");
+  addColumnIfMissing('queue_tasks', "poster_token TEXT DEFAULT ''");
+  addColumnIfMissing('queue_tasks', "video_token TEXT DEFAULT ''");
 
   recoveredInterruptedCount = recoverInterruptedTasks();
   persistDirty = true;
@@ -605,6 +617,54 @@ const dbService = {
       run("UPDATE queue_tasks SET project_url = ? WHERE id = ? AND (project_url IS NULL OR project_url = '')", [u, taskId]);
     }
     return this.getTask(taskId);
+  },
+
+  /**
+   * v2.48.117 (C1/C2): the workflowId the backend bound to
+   * this task's submission, persisted on the row. Latest
+   * binding wins (a failover attempt is a NEW workflow —
+   * its ID is the live one); the value is evidence for the
+   * backend route and the Doctor, never a tile locator.
+   */
+  setTaskWorkflowId(taskId, workflowId) {
+    const w = String(workflowId || '');
+    if (w) {
+      run('UPDATE queue_tasks SET workflow_id = ? WHERE id = ?', [w, taskId]);
+    }
+    return this.getTask(taskId);
+  },
+
+  getTaskWorkflowId(taskId) {
+    const row = this.getTask(taskId);
+    return row ? String(row.workflow_id || '') : '';
+  },
+
+  /**
+   * v2.48.117 (C1/C3): the task's tile identity tokens.
+   * WRITE-IF-EMPTY, the R2 spirit: the FIRST observed
+   * token is the birth truth — a later look (a monitor
+   * harvest off a possibly mis-assigned tile, a failover
+   * attempt's tile) never overwrites it.
+   */
+  setTaskPosterTokenIfEmpty(taskId, token) {
+    const t = String(token || '');
+    if (t) {
+      run("UPDATE queue_tasks SET poster_token = ? WHERE id = ? AND (poster_token IS NULL OR poster_token = '')", [t, taskId]);
+    }
+    return this.getTask(taskId);
+  },
+
+  setTaskVideoTokenIfEmpty(taskId, token) {
+    const t = String(token || '');
+    if (t) {
+      run("UPDATE queue_tasks SET video_token = ? WHERE id = ? AND (video_token IS NULL OR video_token = '')", [t, taskId]);
+    }
+    return this.getTask(taskId);
+  },
+
+  getTaskPosterToken(taskId) {
+    const row = this.getTask(taskId);
+    return row ? String(row.poster_token || '') : '';
   },
 
   /**

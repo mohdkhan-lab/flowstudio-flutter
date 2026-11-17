@@ -650,6 +650,28 @@ class WorkerPool {
     };
   }
 
+  /**
+   * v2.48.117 (EXACT-DOWNLOAD METHOD): the IDENTITY LEDGER
+   * port bound into every engine this pool creates. The
+   * engine reports a task's identity marks through it —
+   * the workflowId the backend bound (C2) and the tile
+   * tokens harvested at first binding (C3) — and they land
+   * on the task's DB row: workflow_id as the latest
+   * binding, the tokens write-if-empty (the birth token is
+   * the truth and is never overwritten).
+   */
+  _identityPort() {
+    return {
+      noteWorkflowId: (taskId, workflowId) => {
+        try { dbService.setTaskWorkflowId(taskId, workflowId); } catch (e) {}
+      },
+      notePosterToken: (taskId, posterToken, videoToken) => {
+        try { if (posterToken) dbService.setTaskPosterTokenIfEmpty(taskId, posterToken); } catch (e) {}
+        try { if (videoToken) dbService.setTaskVideoTokenIfEmpty(taskId, videoToken); } catch (e) {}
+      }
+    };
+  }
+
   _creditPort() {
     const cs = getCreditService();
     // v2.0.0: spend ledger for the credits dashboard. Fed ONLY through
@@ -1083,7 +1105,9 @@ class WorkerPool {
         // v2.31.3: recovery downloads count in the same ledger.
         downloadPort: this._downloadPort(),
         // v2.48.60: recovery entries also register their project.
-        projectPort: this._projectPort()
+        projectPort: this._projectPort(),
+        // v2.48.117: identity marks land on the task rows.
+        identityPort: this._identityPort()
       });
 
       // v2.48.110 (G1): this recovery engine is a LOCAL engine —
@@ -1194,7 +1218,12 @@ class WorkerPool {
             videoId: row.id,
             startTime: Date.now(),
             downloaded: false,
-            completed: false
+            completed: false,
+            // v2.48.117 (C4): row ke darj token — recovery
+            // scan (planned project aur .116 sweep dono)
+            // tile ko pehle inhi se dhoondhta hai.
+            posterToken: row.poster_token || '',
+            videoToken: row.video_token || ''
           };
           let res = null;
           try { res = await engine.reconcileRecoveredTask(taskObj, downloadFolder, settings); } catch (e) { res = null; }
@@ -2838,6 +2867,8 @@ class WorkerPool {
           downloadPort: this._downloadPort(),
           // v2.48.60: project entries register in the registry.
           projectPort: this._projectPort(),
+          // v2.48.117: identity marks land on the task rows.
+          identityPort: this._identityPort(),
           // v2.48.80 (Item C): proven-absent kitab ka kv —
           // engine apne kamyab/naakam chunav wahan darj
           // karta hai (record sirf panel-dump saboot par).
@@ -3408,6 +3439,23 @@ class WorkerPool {
                           this.log(`[ROOT] project-registered account=${workerAccount.id} id=${projectIdOfUrl(purl)} at=${new Date(firstSeen).toISOString()} source=task-birth`, 'info');
                         }
                       }
+                    }
+                  } catch (e) {}
+                  // v2.48.117 (C3): janam ke token bhi isi
+                  // pal row par darj — write-if-empty, pehla
+                  // token hi asal pehchan hai (failover ki
+                  // tile isay nahi badal sakti). Runtime
+                  // copy bhi saath, taaki is run ka monitor
+                  // aur download tile ko naam ke bajaye
+                  // token se pehchane.
+                  try {
+                    if (submitRes.birthPosterToken) {
+                      dbService.setTaskPosterTokenIfEmpty(nextTask.id, submitRes.birthPosterToken);
+                      submitRes.posterToken = submitRes.birthPosterToken;
+                    }
+                    if (submitRes.birthVideoToken) {
+                      dbService.setTaskVideoTokenIfEmpty(nextTask.id, submitRes.birthVideoToken);
+                      submitRes.videoToken = submitRes.birthVideoToken;
                     }
                   } catch (e) {}
                   activeWorkerTasks.push(submitRes);

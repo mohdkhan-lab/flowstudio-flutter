@@ -15357,6 +15357,314 @@ async function main() {
     ok('X120 source: every sweep try leaves its proof line', poolSrc120.includes('recoverySweepLogLine(row.prompt_index, cand.projectUrl, foundHere)'));
   }
 
+  // =====================================================================
+  // X121 (v2.48.117) — EXACT-DOWNLOAD METHOD: pehchan naam se nahi, ID
+  // se. Field failure (W9, 2026-11-17): tile identity was the tile's
+  // aria-label — Flow's auto-title, REPLACED after the render — so
+  // word-scoring bound neighbours (file "31" held scene 37) and
+  // reported "not created" for tiles standing in the grid. Now:
+  //   C1 the task row carries workflow_id + poster_token +
+  //      video_token (tokens write-if-empty — first wins);
+  //   C2 a bound workflowId also persists to the row, and the
+  //      ORDER-binding fallback fires only when exactly ONE task
+  //      is in flight on the page — otherwise the URL stays
+  //      UNCLAIMED and '[ROOT] order-bind refused' is logged;
+  //   C3 at submit, the grid's elements are pre-marked; the first
+  //      NEW element after the submit is this task's tile — it is
+  //      stamped data-fs-task and its poster/video tokens recorded
+  //      ('[ROOT] birth-mark' line);
+  //   C4 tile location precedence: DOM stamp > poster token >
+  //      video token > fingerprint (legacy, token-less tasks and
+  //      restricted candidate sets only); '[ROOT] tile-find' lines;
+  //      a "not created" verdict for a token task requires the
+  //      final token scan to come up empty too.
+  // =====================================================================
+  {
+    const fs121 = require('fs');
+    const path121 = require('path');
+    const flowSrc121 = fs121.readFileSync(path121.join(__dirname, '..', 'engine/flowAutomation.js'), 'utf8');
+    const poolSrc121 = fs121.readFileSync(path121.join(__dirname, '..', 'engine/workerPool.js'), 'utf8');
+    const dbSrc121 = fs121.readFileSync(path121.join(__dirname, '..', 'engine/db.js'), 'utf8');
+    const capSrc121 = fs121.readFileSync(path121.join(__dirname, '..', 'engine/networkCapture.js'), 'utf8');
+    const FA121 = require('../engine/flowAutomation');
+    const MT121 = require('../engine/mediaToken');
+    const TI121 = require('../engine/tileIdentity');
+    const { orderBindGateAllows } = require('../engine/networkCapture');
+
+    // --- Token extraction: stable across signed queries ------------
+    {
+      eq('X121 token: lh3 path token, signed query dropped',
+        MT121.posterTokenFromUrl('https://lh3.googleusercontent.com/videoplayback/abc123xyzDEF456?q=secret&sig=zzz'),
+        'videoplayback/abc123xyzDEF456');
+      eq('X121 token: same media, different query — same token',
+        MT121.posterTokenFromUrl('https://lh3.googleusercontent.com/videoplayback/abc123xyzDEF456?w=512&sig=other'),
+        'videoplayback/abc123xyzDEF456');
+      eq('X121 token: flow-content path token',
+        MT121.videoTokenFromUrl('https://flow-content.google/video/abc123def?sig=xyz&expire=1'),
+        'video/abc123def');
+      eq('X121 token: googlevideo identity is the id param',
+        MT121.videoTokenFromUrl('https://rr2---sn-abc123.googlevideo.com/videoplayback?expire=999&id=xyz789&itag=18&source=youtube'),
+        'gv:xyz789');
+      eq('X121 token: googlevideo id survives host + itag change',
+        MT121.videoTokenFromUrl('https://rr9---sn-zzz999.googlevideo.com/videoplayback?expire=111&id=xyz789&itag=22'),
+        'gv:xyz789');
+      eq('X121 token: junk URL — null', MT121.mediaTokenFromUrl('not a url at all'), null);
+      eq('X121 token: empty — null', MT121.mediaTokenFromUrl(''), null);
+      eq('X121 token: blob — null', MT121.mediaTokenFromUrl('blob:https://flow.google.com/1234-abcd'), null);
+      eq('X121 token: foreign host — null', MT121.mediaTokenFromUrl('https://example.com/video/abc123def'), null);
+      eq('X121 token: bare endpoint — null', MT121.mediaTokenFromUrl('https://lh3.googleusercontent.com/videoplayback'), null);
+      eq('X121 token: googlevideo without id — null', MT121.mediaTokenFromUrl('https://rr2---sn-abc.googlevideo.com/videoplayback?itag=18'), null);
+      ok('X121 token: sameMediaToken true across queries',
+        MT121.sameMediaToken('https://lh3.googleusercontent.com/videoplayback/m1?a=1', 'https://lh3.googleusercontent.com/videoplayback/m1?a=2'));
+      eq('X121 token: sameMediaToken false for junk pair',
+        MT121.sameMediaToken('junk', 'junk'), false);
+    }
+
+    // --- C1: DB columns + setter semantics (child round-trip) ------
+    {
+      ok('X121 C1: db migrates workflow_id', dbSrc121.includes('addColumnIfMissing(\'queue_tasks\', "workflow_id TEXT DEFAULT \'\'")'));
+      ok('X121 C1: db migrates poster_token', dbSrc121.includes('addColumnIfMissing(\'queue_tasks\', "poster_token TEXT DEFAULT \'\'")'));
+      ok('X121 C1: db migrates video_token', dbSrc121.includes('addColumnIfMissing(\'queue_tasks\', "video_token TEXT DEFAULT \'\'")'));
+      const { execFileSync } = require('child_process');
+      const os = require('os');
+      const fsx = require('fs');
+      const pathx = require('path');
+      const tmpDir = fsx.mkdtempSync(pathx.join(os.tmpdir(), 'fs-x121-db-'));
+      const dbPath = JSON.stringify(pathx.join(__dirname, '..', 'engine', 'db.js'));
+      const script = `(async () => {
+        const { dbService } = require(${dbPath});
+        await dbService.ensureInit();
+        const rows = dbService.createBatchTasks('b-x121', ['x121 identity prompt'], {});
+        const id = rows[0].id;
+        const fresh = dbService.getTask(id);
+        const freshFields = [fresh.workflow_id || '', fresh.poster_token || '', fresh.video_token || ''].join('|');
+        dbService.setTaskWorkflowId(id, 'wf-x121-1');
+        const wf1 = dbService.getTaskWorkflowId(id);
+        dbService.setTaskWorkflowId(id, 'wf-x121-2');
+        const wf2 = dbService.getTaskWorkflowId(id);
+        dbService.setTaskPosterTokenIfEmpty(id, 'videoplayback/tok-a');
+        const pt1 = dbService.getTaskPosterToken(id);
+        dbService.setTaskPosterTokenIfEmpty(id, 'videoplayback/tok-b');
+        const pt2 = dbService.getTaskPosterToken(id);
+        dbService.setTaskVideoTokenIfEmpty(id, 'gv:vid-1');
+        const vt1 = dbService.getTask(id).video_token || '';
+        dbService.setTaskVideoTokenIfEmpty(id, 'gv:vid-2');
+        const vt2 = dbService.getTask(id).video_token || '';
+        console.log(JSON.stringify({ freshFields, wf1, wf2, pt1, pt2, vt1, vt2 }));
+      })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+      let rt = null;
+      try {
+        const out = execFileSync(process.execPath, ['-e', script], { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir }, encoding: 'utf8' });
+        rt = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+      } catch (e) { rt = null; }
+      ok('X121 C1-DB: the round-trip child ran', !!rt);
+      eq('X121 C1-DB: a fresh row carries empty identity fields', rt && rt.freshFields, '||');
+      eq('X121 C1-DB: workflow id persists', rt && rt.wf1, 'wf-x121-1');
+      eq('X121 C1-DB: the latest workflow binding wins', rt && rt.wf2, 'wf-x121-2');
+      eq('X121 C1-DB: poster token persists', rt && rt.pt1, 'videoplayback/tok-a');
+      eq('X121 C1-DB: poster token is write-if-empty (first wins)', rt && rt.pt2, 'videoplayback/tok-a');
+      eq('X121 C1-DB: video token persists', rt && rt.vt1, 'gv:vid-1');
+      eq('X121 C1-DB: video token is write-if-empty (first wins)', rt && rt.vt2, 'gv:vid-1');
+      try { fsx.rmSync(tmpDir, { recursive: true, force: true }); } catch (e) {}
+    }
+
+    // --- C2: workflow-bound callback + order-bind gate -------------
+    {
+      const bound121 = [];
+      const ncW = new NetworkCapture({ onWorkflowBound: (k, id) => bound121.push(`${k}=${id}`) });
+      ncW.beginSubmission('task-w', Date.now());
+      ncW._bindId('wf-x121-a', Date.now());
+      eq('X121 C2: a fresh workflow binding fires the callback', bound121.join(','), 'task-w=wf-x121-a');
+      ncW._bindId('wf-x121-a', Date.now());
+      eq('X121 C2: the same binding never fires twice', bound121.length, 1);
+      eq('X121 C2: gate allows exactly one in flight', orderBindGateAllows(1), true);
+      eq('X121 C2: gate refuses two in flight', orderBindGateAllows(2), false);
+      eq('X121 C2: gate refuses zero', orderBindGateAllows(0), false);
+      ok('X121 C2: claimByOrder consults the gate', capSrc121.includes('orderBindGateAllows(inFlight)'));
+      ok('X121 C2: refusal reaches the engine callback', capSrc121.includes('this.onOrderBindRefused(inFlight)'));
+      ok('X121 C2: the engine logs the refusal line', flowSrc121.includes('[ROOT] order-bind refused in-flight=${inFlight}'));
+
+      // Do intezaar kar rahe tasks: kram-bandhan INKAAR, URL unclaimed.
+      const MEDIA121 = 'https://lh3.googleusercontent.com/videoplayback/freshmedia123?Expires=999&Signature=s';
+      const refused121 = [];
+      const nc2 = new NetworkCapture({ onOrderBindRefused: (n) => refused121.push(n) });
+      const t0 = Date.now();
+      nc2.beginSubmission('task-a', t0);
+      nc2.beginSubmission('task-b', t0 + 10);
+      nc2._sightUrl(MEDIA121, 'api-body', t0 + 5000, []);
+      eq('X121 C2: two in flight — order claim refused', nc2.claimByOrder('task-a', t0 + 6000), null);
+      eq('X121 C2: the URL stays unclaimed', nc2.urlForKey('task-a'), null);
+      eq('X121 C2: refusal reported with the in-flight count', refused121.join(','), '2');
+      eq('X121 C2: the sighting itself remains on the books', nc2.statsSnapshot().unclaimed, 1);
+      // Ek hi task: purana vyavhaar barkarar.
+      const nc1 = new NetworkCapture({});
+      nc1.beginSubmission('task-a', t0);
+      nc1._sightUrl(MEDIA121, 'api-body', t0 + 5000, []);
+      const got1 = nc1.claimByOrder('task-a', t0 + 6000);
+      ok('X121 C2: single flight — order claim still binds', !!got1 && got1.url === MEDIA121 && got1.via === 'order');
+    }
+
+    // --- C3: birth assignment by element set-difference -----------
+    {
+      const mkTile121 = (aria, posterSrc, videoSrc) => {
+        const attrs = new Map();
+        if (aria) attrs.set('aria-label', aria);
+        return {
+          getAttribute: (n) => (attrs.has(n) ? attrs.get(n) : null),
+          setAttribute: (n, v) => { attrs.set(n, String(v)); },
+          querySelector: (sel) => {
+            if (sel === 'img') return posterSrc ? { src: posterSrc } : null;
+            if (sel === 'video') return videoSrc ? { src: videoSrc, currentSrc: videoSrc } : null;
+            return null;
+          }
+        };
+      };
+      const runSrc121 = (src, doc) => new Function('document', 'window', `return ${src};`)(doc, {});
+      const oldA = mkTile121('Old title one', 'https://lh3.googleusercontent.com/videoplayback/oldmedia1?sig=a', '');
+      const oldB = mkTile121('Old title two', 'https://lh3.googleusercontent.com/videoplayback/oldmedia2?sig=a', '');
+      const tiles121 = [oldA, oldB];
+      const doc121 = { querySelectorAll: (sel) => (String(sel).includes('flow-grid-tile-container') ? tiles121.slice() : []) };
+      eq('X121 C3: prebirth marks every existing tile', runSrc121(FA121.birthMarkExistingTilesSource(), doc121).count, 2);
+      ok('X121 C3: the mark lands on the elements themselves',
+        oldA.getAttribute('data-fs-prebirth') === '1' && oldB.getAttribute('data-fs-prebirth') === '1');
+      const newTile = mkTile121('Man doing a brand new thing',
+        'https://lh3.googleusercontent.com/videoplayback/newmedia9?sig=b',
+        'https://rr2---sn-x.googlevideo.com/videoplayback?expire=9&id=newmedia9&itag=18');
+      tiles121.push(newTile);
+      const probe121 = runSrc121(FA121.birthTileProbeSource('vid-x121'), doc121);
+      eq('X121 C3: the probe finds the new element', probe121.found, true);
+      eq('X121 C3: the probe stamps exactly the new element', newTile.getAttribute('data-fs-task'), 'vid-x121');
+      eq('X121 C3: the probe reads the new tile poster', probe121.posterSrc, 'https://lh3.googleusercontent.com/videoplayback/newmedia9?sig=b');
+      eq('X121 C3: a second probe finds nothing new', runSrc121(FA121.birthTileProbeSource('vid-other'), doc121).found, false);
+      eq('X121 C3: the stamp index resolves after grid shifts', runSrc121(FA121.tileStampIndexSource('vid-x121'), doc121), 2);
+      eq('X121 C3: an unknown stamp resolves to -1', runSrc121(FA121.tileStampIndexSource('vid-nope'), doc121), -1);
+      eq('X121 C3: media srcs read covers every tile', runSrc121(FA121.tileMediaSrcsSource(), doc121).length, 3);
+      eq('X121 C3: birth-mark line shape', FA121.birthMarkLogLine(3, 'wf-9', 'videoplayback/abc'),
+        '[ROOT] birth-mark task=3 workflow=wf-9 token=videoplayback/abc');
+      eq('X121 C3: birth-mark line dashes for missing marks', FA121.birthMarkLogLine('task_9', null, ''),
+        '[ROOT] birth-mark task=task_9 workflow=- token=-');
+      ok('X121 C3: submit registers the birth tile', flowSrc121.includes('await this._registerBirthTile(videoId)'));
+      ok('X121 C3: the submitted task carries the birth tokens',
+        flowSrc121.includes('birthPosterToken,') && flowSrc121.includes('birthVideoToken,'));
+      ok('X121 C3: the pool persists birth tokens write-if-empty',
+        poolSrc121.includes('dbService.setTaskPosterTokenIfEmpty(nextTask.id, submitRes.birthPosterToken)'));
+    }
+
+    // --- C4: tile-find precedence ----------------------------------
+    {
+      // assignTiles Pass 0: template siblings (identical words —
+      // scored pass ties), the token decides, neighbour-proof.
+      const words121 = new Set(['gopal', 'collector', 'office', 'enters', 'file', 'shock']);
+      const mkTask121 = (key, extra) => ({
+        key, promptWords: words121, preExistingFingerprints: new Set(),
+        lockedFingerprint: null, agentGroupKey: null, agentSceneIndex: 0,
+        groupKey: null, groupIndex: 0, ...(extra || {})
+      });
+      const mkTileD121 = (tileIndex, fingerprint, posterToken, videoToken) => ({
+        tileIndex, fingerprint, words: new Set(words121), posterToken, videoToken
+      });
+      const routes121 = new Map();
+      const res121 = TI121.assignTiles(
+        [mkTask121('A', {}), mkTask121('B', { posterToken: 'videoplayback/media-b' })],
+        [mkTileD121(0, 'title one', 'videoplayback/media-a', null), mkTileD121(1, 'title two', 'videoplayback/media-b', null)],
+        new Set(), routes121);
+      eq('X121 C4: the token binds its own tile among siblings', res121.get('B') && res121.get('B').tileIndex, 1);
+      eq('X121 C4: the route is reported as poster-token', routes121.get('B'), 'poster-token');
+      eq('X121 C4: the sibling still gets the remaining tile', res121.get('A') && res121.get('A').tileIndex, 0);
+      // Token outranks a locked fingerprint pointing elsewhere.
+      const routes121b = new Map();
+      const res121b = TI121.assignTiles(
+        [mkTask121('C', { lockedFingerprint: 'title one', posterToken: 'videoplayback/media-b' })],
+        [mkTileD121(0, 'title one', 'videoplayback/media-a', null), mkTileD121(1, 'title two', 'videoplayback/media-b', null)],
+        new Set(), routes121b);
+      eq('X121 C4: poster token outranks the locked fingerprint', res121b.get('C') && res121b.get('C').tileIndex, 1);
+      // Video token is the second identity.
+      const routes121c = new Map();
+      const res121c = TI121.assignTiles(
+        [mkTask121('D', { posterToken: 'videoplayback/absent', videoToken: 'gv:vid-9' })],
+        [mkTileD121(0, 'title one', 'videoplayback/media-a', 'gv:vid-8'), mkTileD121(1, 'title two', null, 'gv:vid-9')],
+        new Set(), routes121c);
+      eq('X121 C4: video token binds when the poster misses', res121c.get('D') && res121c.get('D').tileIndex, 1);
+      eq('X121 C4: the route is reported as video-token', routes121c.get('D'), 'video-token');
+      // Pre-existing paranoia holds for tokens too.
+      const res121d = TI121.assignTiles(
+        [mkTask121('E', { posterToken: 'videoplayback/media-a', preExistingFingerprints: new Set(['title one']) })],
+        [mkTileD121(0, 'title one', 'videoplayback/media-a', null)],
+        new Set(), new Map());
+      eq('X121 C4: a pre-existing tile is never token-bound', res121d.has('E'), false);
+      // Token-less tasks: legacy behaviour unchanged (locked fp binds).
+      const routes121e = new Map();
+      const res121e = TI121.assignTiles(
+        [mkTask121('F', { lockedFingerprint: 'title two' })],
+        [mkTileD121(0, 'title one', 'videoplayback/media-a', null), mkTileD121(1, 'title two', 'videoplayback/media-b', null)],
+        new Set(), routes121e);
+      eq('X121 C4: a token-less task keeps the legacy lock', res121e.get('F') && res121e.get('F').tileIndex, 1);
+      eq('X121 C4: the legacy route is reported as such', routes121e.get('F'), 'locked-fingerprint');
+
+      // The canonical resolver: stamp > poster token > fingerprint.
+      const mkTile121b = (aria, stamp, posterSrc) => {
+        const attrs = new Map();
+        if (aria) attrs.set('aria-label', aria);
+        if (stamp) attrs.set('data-fs-task', stamp);
+        return {
+          getAttribute: (n) => (attrs.has(n) ? attrs.get(n) : null),
+          setAttribute: (n, v) => { attrs.set(n, String(v)); },
+          querySelector: (sel) => (sel === 'img' && posterSrc ? { src: posterSrc } : null)
+        };
+      };
+      const eng121 = new FlowAutomationEngine({ onLog: () => {} }, {});
+      const driveResolver = async (tiles, task, fallbackIdx = -1) => {
+        global.document = { querySelectorAll: (sel) => (String(sel).includes('flow-grid-tile-container') ? tiles.slice() : []) };
+        eng121.page = {
+          isClosed: () => false,
+          evaluate: async (arg, val) => {
+            if (typeof arg === 'function') return arg(val);
+            return new Function('document', 'window', `return ${arg};`)(global.document, {});
+          }
+        };
+        try { return await eng121._resolveTileIndexForTask(task, fallbackIdx); }
+        finally { delete global.document; }
+      };
+      const tileFp = mkTile121b('alpha title', null, 'https://lh3.googleusercontent.com/videoplayback/oldmedia1?sig=a');
+      const tileStamped = mkTile121b('renamed by flow', 'vid-x121', 'https://lh3.googleusercontent.com/videoplayback/newmedia9?sig=b');
+      const tilePlain = mkTile121b('gamma title', null, 'https://lh3.googleusercontent.com/videoplayback/oldmedia2?sig=a');
+      const taskFull = { videoId: 'vid-x121', captureKey: 'vid-x121', lockedTileFingerprint: 'alpha title', posterToken: 'videoplayback/newmedia9' };
+      eq('X121 C4: the DOM stamp beats the fingerprint', await driveResolver([tileFp, tileStamped, tilePlain], taskFull), 1);
+      const tileUnstamped = mkTile121b('renamed by flow', null, 'https://lh3.googleusercontent.com/videoplayback/newmedia9?sig=b');
+      eq('X121 C4: the poster token beats the fingerprint on a fresh page', await driveResolver([tileFp, tileUnstamped, tilePlain], taskFull), 1);
+      eq('X121 C4: the fingerprint remains the legacy fallback',
+        await driveResolver([tileFp, tileUnstamped, tilePlain], { videoId: 'vid-other', lockedTileFingerprint: 'alpha title' }), 0);
+      eq('X121 C4: nothing found — the fallback index rules',
+        await driveResolver([tileFp, tileUnstamped, tilePlain], { videoId: 'vid-none' }, 2), 2);
+      eq('X121 C4: tile-find line shape', FA121.tileFindLogLine('task_1', 'poster-token'),
+        '[ROOT] tile-find task=task_1 by=poster-token');
+
+      // The recovery scan is token-first; a claimed token is never
+      // taken; without identity the same grid yields nothing for a
+      // word-less prompt (the honest "not found" the verdict needs).
+      const engScan121 = new FlowAutomationEngine({ onLog: () => {} }, {});
+      const cannedTiles121 = [
+        { tileIndex: 0, aria: 'Man walking in office corridor', hasVideo: true, hasImg: true, posterSrc: 'https://lh3.googleusercontent.com/videoplayback/media-a?sig=1', videoSrc: '' },
+        { tileIndex: 1, aria: 'Woman reading a letter quietly', hasVideo: true, hasImg: true, posterSrc: 'https://lh3.googleusercontent.com/videoplayback/media-b?sig=1', videoSrc: '' }
+      ];
+      engScan121.page = { isClosed: () => false, evaluate: async () => cannedTiles121 };
+      const scanHit = await engScan121._scanGridForPrompt('zzz qqq vvv nnn', false,
+        { identity: { posterToken: 'videoplayback/media-b', videoToken: '', claimedTokens: new Set() } });
+      ok('X121 C4: the recovery scan finds by token, not words', !!scanHit && scanHit.via === 'poster-token' && scanHit.tileIndex === 1);
+      const scanClaimed = await engScan121._scanGridForPrompt('zzz qqq vvv nnn', false,
+        { identity: { posterToken: 'videoplayback/media-b', videoToken: '', claimedTokens: new Set(['videoplayback/media-b']) } });
+      eq('X121 C4: a token claimed by a sibling is never taken', scanClaimed, null);
+      const scanNone = await engScan121._scanGridForPrompt('zzz qqq vvv nnn', false, {});
+      eq('X121 C4: no identity + no word match — honestly nothing', scanNone, null);
+      ok('X121 C4: the give-up verdict runs a final token scan first',
+        flowSrc121.includes('rescuedByToken') && flowSrc121.includes('await this._recoveryScanForTask(task, isImageMode)'));
+      ok('X121 C4: recovery rows carry their tokens into the scan',
+        poolSrc121.includes("posterToken: row.poster_token || ''"));
+      ok('X121 C4: both reconcile paths share the token-first scan',
+        flowSrc121.includes('scanOpts.identity = { posterToken: idPoster, videoToken: idVideo, claimedTokens }'));
+    }
+  }
+
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);
 }

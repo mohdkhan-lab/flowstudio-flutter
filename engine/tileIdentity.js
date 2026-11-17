@@ -117,19 +117,34 @@ function isWeakTextPrompt(promptWords) {
  * tasks: [{ key, promptWords:Set, preExistingFingerprints:Set,
  *           lockedFingerprint:string|null,
  *           agentGroupKey:string|null, agentSceneIndex:number,
- *           groupKey:string|null, groupIndex:number }]
+ *           groupKey:string|null, groupIndex:number,
+ *           posterToken:string|null, videoToken:string|null }]
  *   groupKey/groupIndex (v2.48.109, F2) — the general form of
  *   agentGroupKey/agentSceneIndex: any multi-prompt run's
  *   siblings share one group key and take tiles in group
  *   order. Agent tasks keep passing agentGroupKey /
  *   agentSceneIndex; the pass below reads groupKey first,
  *   then the agent fields, so both spellings work.
- * tiles: [{ tileIndex, fingerprint, words:Set }]
+ *   posterToken/videoToken (v2.48.117) — the task's tile
+ *   identity recorded at birth (engine/mediaToken.js): the
+ *   per-media token of its poster <img> / <video> URL. Flow
+ *   renames the tile's aria-label after the render; these
+ *   tokens do not rename, so they outrank every text rule.
+ * tiles: [{ tileIndex, fingerprint, words:Set,
+ *           posterToken:string|null, videoToken:string|null }]
  * claimedFingerprints: Set of fingerprints already bound to tasks that
  * are NOT in this call (e.g. tasks from another worker window sharing
  * the engine — normally empty, kept for safety).
+ * routesOut (optional Map, v2.48.117): when supplied, it is
+ * filled with the binding route per task key ('poster-token',
+ * 'video-token', 'locked-fingerprint', 'sibling-order',
+ * 'scored', 'order-fallback') so the caller can log the
+ * tile-find evidence line. Behaviour is identical without it.
  *
  * Returns Map(taskKey -> tile). Rules, in order:
+ *  0. (v2.48.117) TOKEN identity: a task carrying a birth
+ *     poster/video token binds the tile carrying that exact
+ *     token — name-free, rename-proof, neighbour-proof.
  *  1. A task with a lockedFingerprint re-binds to the tile carrying
  *     that exact fingerprint (index-independent — grid shifts and
  *     insertions cannot cross wires), unless that tile is in the
@@ -142,19 +157,47 @@ function isWeakTextPrompt(promptWords) {
  *     (a tie means the tile is ambiguous — leave it unclaimed this
  *     poll rather than guess; later polls re-score with more text).
  */
-function assignTiles(tasks, tiles, claimedFingerprints) {
+function assignTiles(tasks, tiles, claimedFingerprints, routesOut) {
   const result = new Map();
   const usedTiles = new Set();
   const external = claimedFingerprints || new Set();
+  const noteRoute = (key, route) => { if (routesOut) routesOut.set(key, route); };
+
+  // Pass 0 (v2.48.117, C4) — TOKEN IDENTITY, naam se nahi ID
+  // se. A tile whose poster token equals the task's recorded
+  // birth token IS that task's tile, whatever Flow renamed it
+  // to; a neighbour's tile carries a different token and can
+  // never be taken. Poster first (recorded at birth from the
+  // tile itself), video token second. The usual paranoia
+  // applies: never a pre-existing tile, never an externally
+  // claimed one, each tile to at most one task.
+  for (const field of ['posterToken', 'videoToken']) {
+    for (const task of tasks) {
+      if (result.has(task.key)) continue;
+      const want = task[field];
+      if (!want) continue;
+      const tile = tiles.find(t => t[field] === want
+        && !usedTiles.has(t.tileIndex)
+        && !external.has(t.fingerprint)
+        && !(task.preExistingFingerprints && task.preExistingFingerprints.has(t.fingerprint)));
+      if (tile) {
+        result.set(task.key, tile);
+        usedTiles.add(tile.tileIndex);
+        noteRoute(task.key, field === 'posterToken' ? 'poster-token' : 'video-token');
+      }
+    }
+  }
 
   // Pass 1: fingerprint re-binding.
   for (const task of tasks) {
+    if (result.has(task.key)) continue;
     if (!task.lockedFingerprint) continue;
     if (task.preExistingFingerprints && task.preExistingFingerprints.has(task.lockedFingerprint)) continue;
     const tile = tiles.find(t => t.fingerprint === task.lockedFingerprint && !usedTiles.has(t.tileIndex));
     if (tile) {
       result.set(task.key, tile);
       usedTiles.add(tile.tileIndex);
+      noteRoute(task.key, 'locked-fingerprint');
     }
   }
 
@@ -209,6 +252,7 @@ function assignTiles(tasks, tiles, claimedFingerprints) {
       if (!tile) break;
       result.set(task.key, tile);
       usedTiles.add(tile.tileIndex);
+      noteRoute(task.key, 'sibling-order');
       freeTiles.splice(freeTiles.indexOf(tile), 1);
     }
   }
@@ -247,6 +291,7 @@ function assignTiles(tasks, tiles, claimedFingerprints) {
     takenTasks.add(c.taskKey);
     takenTiles.add(c.tile.tileIndex);
     result.set(c.taskKey, c.tile);
+    noteRoute(c.taskKey, 'scored');
   }
 
   // Pass 3 (v2.4.0) — ORDER/TIMING FALLBACK for weak-text prompts.
@@ -278,6 +323,7 @@ function assignTiles(tasks, tiles, claimedFingerprints) {
         .sort((a, b) => a.tileIndex - b.tileIndex);
       if (fallbackTiles.length > 0) {
         result.set(task.key, fallbackTiles[0]);
+        noteRoute(task.key, 'order-fallback');
       }
     }
   }

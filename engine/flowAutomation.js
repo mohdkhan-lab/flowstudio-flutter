@@ -953,6 +953,234 @@ function tileMenuDumpSource(tileIndex) {
     + '})()';
 }
 
+/**
+ * v2.48.115 (X119): ⋮ ki PEHCHAN-wali talash — geometry-free.
+ * W8 (.113) ke field dump ne sabit kiya: ⋮ tile ke DOM me
+ * hota hai (aria "More options", icon "more_vert") lekin
+ * hover-reveal haalat me us ka box 0,0,0,0 hota hai, aur
+ * purana finder size shart ki wajah se use "not found"
+ * keh deta tha. Ye source tile ke subtree me ⋮ ko sirf
+ * pehchan (aria-label ya descendant icon text) se
+ * dhoondhta hai — box kitna bhi ho, element MILTA hai.
+ * Mila hua element window.__fsTileMore par stash hota
+ * hai taaki activation (neeche wale sources) usi element
+ * ko dobara dhoondhe baghair chala sake. Box aur tile ka
+ * box sirf khabar ke liye lautte hain, shart ke liye nahi.
+ */
+function tileMoreIdentitySource(tileIndex) {
+  const idx = Number.isFinite(Number(tileIndex)) ? Math.trunc(Number(tileIndex)) : -1;
+  return '(() => {\n'
+    + '/*fsTileMoreIdentity*/\n'
+    + 'try {\n'
+    + '  const idx = ' + JSON.stringify(idx) + ';\n'
+    + '  let scope = document;\n'
+    + '  let tileBox = null;\n'
+    + '  if (idx >= 0) {\n'
+    + '    const tiles = Array.from(document.querySelectorAll(\'flow-grid-tile-container\'));\n'
+    + '    const tile = tiles[idx];\n'
+    + '    if (!tile) return { found: false };\n'
+    + '    scope = tile;\n'
+    + '    try { const tr = tile.getBoundingClientRect(); if (tr) tileBox = { x: (tr.x != null ? tr.x : tr.left) || 0, y: (tr.y != null ? tr.y : tr.top) || 0, w: tr.width || 0, h: tr.height || 0 }; } catch (e) {}\n'
+    + '  }\n'
+    + '  const isMore = (b) => {\n'
+    + '    const aria = (b.getAttribute(\'aria-label\') || \'\').toLowerCase();\n'
+    + '    const icon = b.querySelector(\'mat-icon, [data-icon], svg\');\n'
+    + '    const iconTxt = icon ? (icon.textContent || \'\').trim().toLowerCase() : \'\';\n'
+    + '    const ownTxt = (b.textContent || \'\').trim().toLowerCase();\n'
+    + '    return aria.includes(\'more options\') || aria.includes(\'more actions\') || aria === \'more\'\n'
+    + '      || iconTxt === \'more_vert\' || iconTxt === \'more_horiz\'\n'
+    + '      || ownTxt === \'more_vert\' || ownTxt === \'more_horiz\';\n'
+    + '  };\n'
+    + '  const els = Array.from(scope.querySelectorAll(\'button, [role="button"]\'));\n'
+    + '  for (const b of els) {\n'
+    + '    try { if (b.closest && b.closest(\'.cdk-overlay-pane\')) continue; } catch (e) {}\n'
+    + '    if (!isMore(b)) continue;\n'
+    + '    let box = null;\n'
+    + '    try { const r = b.getBoundingClientRect(); if (r) box = { x: (r.x != null ? r.x : r.left) || 0, y: (r.y != null ? r.y : r.top) || 0, w: r.width || 0, h: r.height || 0 }; } catch (e) {}\n'
+    + '    try { window.__fsTileMore = b; } catch (e) {}\n'
+    + '    return { found: true, box, tileBox };\n'
+    + '  }\n'
+    + '  return { found: false };\n'
+    + '} catch (e) { return { found: false }; }\n'
+    + '})()';
+}
+
+/**
+ * v2.48.115 (X119): stash hue ⋮ ki taaza haalat — asal
+ * mouse ke reveal ke baad box dobara padhne ke liye.
+ * Element page se utar gaya ho to alive=false.
+ */
+function tileMoreStateSource() {
+  return '(() => {\n'
+    + '/*fsTileMoreState*/\n'
+    + 'try {\n'
+    + '  const el = window.__fsTileMore;\n'
+    + '  if (!el || !el.isConnected) return { alive: false };\n'
+    + '  let box = null;\n'
+    + '  try { const r = el.getBoundingClientRect(); if (r) box = { x: (r.x != null ? r.x : r.left) || 0, y: (r.y != null ? r.y : r.top) || 0, w: r.width || 0, h: r.height || 0 }; } catch (e) {}\n'
+    + '  return { alive: true, box };\n'
+    + '} catch (e) { return { alive: false }; }\n'
+    + '})()';
+}
+
+/**
+ * v2.48.115 (X119): stash hue element ko seedha chalana.
+ * kind 'click' = element.click(); kind 'events' = poori
+ * pointer/mouse tartib (pointerdown → mousedown →
+ * pointerup → mouseup → click). Lautta hai true sirf
+ * jab element asal me maujood aur connected tha aur
+ * event bhej diya gaya — "menu khula ya nahi" ka faisla
+ * probe (neeche) karta hai, ye source nahi.
+ */
+function activateStashedSource(stashKey, kind) {
+  const key = String(stashKey || '');
+  const events = kind === 'events';
+  let body = '  const el = window[' + JSON.stringify(key) + '];\n'
+    + '  if (!el || !el.isConnected) return false;\n';
+  if (!events) {
+    body += '  el.click();\n'
+      + '  return true;\n';
+  } else {
+    body += '  const opts = { bubbles: true, cancelable: true, composed: true, view: window };\n'
+      + '  try { el.dispatchEvent(new PointerEvent(\'pointerdown\', opts)); } catch (e) {}\n'
+      + '  el.dispatchEvent(new MouseEvent(\'mousedown\', opts));\n'
+      + '  try { el.dispatchEvent(new PointerEvent(\'pointerup\', opts)); } catch (e) {}\n'
+      + '  el.dispatchEvent(new MouseEvent(\'mouseup\', opts));\n'
+      + '  el.dispatchEvent(new MouseEvent(\'click\', opts));\n'
+      + '  return true;\n';
+  }
+  return '(() => {\n'
+    + '/*fsActivateStashed*/\n'
+    + 'try {\n'
+    + body
+    + '} catch (e) { return false; }\n'
+    + '})()';
+}
+
+/** v2.48.115 (X119): tile ke ⋮ ko stash se chalana. */
+function tileMoreActivateSource(kind) {
+  return activateStashedSource('__fsTileMore', kind);
+}
+
+/** v2.48.115 (X119): menu ke Download item ko stash se chalana. */
+function menuDownloadActivateSource(kind) {
+  return activateStashedSource('__fsMenuDownload', kind);
+}
+
+/**
+ * v2.48.115 (X119): menu khula hai ya nahi — is ka probe.
+ * Sirf asal menu shakal (menu panel / role=menu /
+ * menuitem) gini jati hai; koi aur overlay pane is
+ * probe ko dhoka nahi de sakta.
+ */
+function tileMenuOpenProbeSource() {
+  return '(() => {\n'
+    + '/*fsTileMenuOpenProbe*/\n'
+    + 'try {\n'
+    + '  const panes = Array.from(document.querySelectorAll(\'.cdk-overlay-pane\'));\n'
+    + '  for (const p of panes) {\n'
+    + '    if (p.querySelector(\'.mat-mdc-menu-panel, [role="menu"], [role="menuitem"]\')) return true;\n'
+    + '  }\n'
+    + '  return !!document.querySelector(\'[role="menu"] [role="menuitem"]\');\n'
+    + '} catch (e) { return false; }\n'
+    + '})()';
+}
+
+/**
+ * v2.48.115 (X119): khule menu ke andar Download ki
+ * pehchan-wali talash — bilkul wahi matcher jo pehle
+ * menu poll me tha (v2.10.0 wali saaf pehchan), lekin
+ * BINA size shart ke: zero-box item bhi milta hai aur
+ * window.__fsMenuDownload par stash hota hai, taaki
+ * use seedha chalaya ja sake.
+ */
+function menuDownloadIdentitySource() {
+  return '(() => {\n'
+    + '/*fsMenuDownloadIdentity*/\n'
+    + 'try {\n'
+    + '  const norm = (s) => String(s || \'\').toLowerCase().replace(/_/g, \' \').replace(/\\s+/g, \' \').trim();\n'
+    + '  const hasWord = (s, w) => (\' \' + s + \' \').includes(\' \' + w + \' \');\n'
+    + '  const items = Array.from(document.querySelectorAll(\'.cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane button, .mat-mdc-menu-panel [role="menuitem"], .mat-mdc-menu-panel button, [role="menu"] [role="menuitem"], [role="menu"] button\'));\n'
+    + '  for (const b of items) {\n'
+    + '    const aria = norm(b.getAttribute(\'aria-label\'));\n'
+    + '    const raw = String(b.innerText || b.textContent || \'\');\n'
+    + '    const lines = raw.split(\'\\n\').map(norm).filter(Boolean);\n'
+    + '    const full = norm(raw);\n'
+    + '    const iconTxt = norm((b.querySelector(\'mat-icon\') || {}).textContent || \'\');\n'
+    + '    const hit = aria === \'download\'\n'
+    + '      || lines.some(l => l === \'download\')\n'
+    + '      || full === \'download\'\n'
+    + '      || hasWord(full, \'download\')\n'
+    + '      || iconTxt === \'download\' || iconTxt === \'file download\';\n'
+    + '    if (hit) {\n'
+    + '      let box = null;\n'
+    + '      try { const r = b.getBoundingClientRect(); if (r) box = { x: (r.x != null ? r.x : r.left) || 0, y: (r.y != null ? r.y : r.top) || 0, w: r.width || 0, h: r.height || 0 }; } catch (e) {}\n'
+    + '      try { window.__fsMenuDownload = b; } catch (e) {}\n'
+    + '      return { found: true, box, how: (aria || full || \'download\').substring(0, 60) };\n'
+    + '    }\n'
+    + '  }\n'
+    + '  return { found: false };\n'
+    + '} catch (e) { return { found: false }; }\n'
+    + '})()';
+}
+
+/**
+ * v2.48.115 (X119): khule menu ke items ka dump —
+ * tile dump (tileMenuDumpSource) ka menu-side
+ * counterpart. Geometry-free fehrist: zero-box items
+ * bhi darj hote hain (menu khula lekin Download na
+ * mila — asal me andar THA kya, yehi batata hai).
+ * Cap 20 items.
+ */
+function tileMenuItemsDumpSource() {
+  return '(() => {\n'
+    + '/*fsTileMenuItemsDump*/\n'
+    + 'try {\n'
+    + '  const items = Array.from(document.querySelectorAll(\'.cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane button, .mat-mdc-menu-panel [role="menuitem"], .mat-mdc-menu-panel button, [role="menu"] [role="menuitem"], [role="menu"] button\')).slice(0, 20);\n'
+    + '  const elements = items.map((el) => {\n'
+    + '    let box = null;\n'
+    + '    try { const r = el.getBoundingClientRect(); if (r) box = { x: (r.x != null ? r.x : r.left) || 0, y: (r.y != null ? r.y : r.top) || 0, w: r.width || 0, h: r.height || 0 }; } catch (e) {}\n'
+    + '    let aria = \'\';\n'
+    + '    try { aria = el.getAttribute ? (el.getAttribute(\'aria-label\') || \'\') : \'\'; } catch (e) {}\n'
+    + '    const text = (el.innerText || el.textContent || \'\').replace(/\\s+/g, \' \').trim().slice(0, 60);\n'
+    + '    return { tag: String(el.tagName || \'\').toLowerCase(), aria: String(aria).slice(0, 60), text, box };\n'
+    + '  });\n'
+    + '  return { elements };\n'
+    + '} catch (e) { return { elements: [] }; }\n'
+    + '})()';
+}
+
+/** v2.48.115 (X119): menu-items dump ki ek line. */
+function tileMenuItemsElementLine(el) {
+  const e = el && typeof el === 'object' ? el : {};
+  const tag = String(e.tag == null ? '' : e.tag).trim() || '-';
+  const aria = String(e.aria == null ? '' : e.aria).replace(/\s+/g, ' ').trim().slice(0, 60);
+  const text = String(e.text == null ? '' : e.text).replace(/\s+/g, ' ').trim().slice(0, 60);
+  const box = e.box && typeof e.box === 'object'
+    ? `${Math.round(Number(e.box.x) || 0)},${Math.round(Number(e.box.y) || 0)},${Math.round(Number(e.box.w) || 0)},${Math.round(Number(e.box.h) || 0)}`
+    : '-';
+  return `[ROOT] tile-menu-items el=${tag} aria="${aria}" text="${text}" box=${box}`;
+}
+
+/** v2.48.115 (X119): menu-items dump ki saari lines (khaali menu = elements=0 wali ek line). */
+function tileMenuItemsDumpLines(res) {
+  const els = res && Array.isArray(res.elements) ? res.elements.slice(0, 20) : [];
+  if (!els.length) return ['[ROOT] tile-menu-items elements=0'];
+  return els.map((el) => tileMenuItemsElementLine(el));
+}
+
+/** v2.48.115 (X119): menu kis ranneeti se khula — is ka saboot. */
+function tileMenuOpenLogLine(strategy) {
+  const s = ['hover', 'js-click', 'js-events'].includes(strategy) ? strategy : 'hover';
+  return `[ROOT] tile-menu-open strategy=${s}`;
+}
+
+/** v2.48.115 (X119): Download item kis ranneeti se chala — is ka saboot. */
+function tileDownloadClickLogLine(strategy) {
+  const s = ['mouse', 'js-click', 'js-events'].includes(strategy) ? strategy : 'mouse';
+  return `[ROOT] download-click strategy=${s}`;
+}
+
 /** v2.48.113 (Z2): the tile dump's one element as a [ROOT] line. */
 function tileMenuDumpElementLine(el) {
   const e = el && typeof el === 'object' ? el : {};
@@ -3778,6 +4006,24 @@ class FlowAutomationEngine {
         this.log(tileMenuDumpElementLine(el), 'info');
       }
       return true;
+    } catch (e) {
+      return false;
+    }
+  }
+
+  /**
+   * v2.48.115 (X119): khule menu ke items ka dump —
+   * _dumpTileElements ka menu-side counterpart. Menu
+   * khula lekin Download na mila to andar asal me tha
+   * kya, ye lines batati hain (zero-box items samet).
+   */
+  async _dumpTileMenuItems() {
+    try {
+      const res = await this.page.evaluate(tileMenuItemsDumpSource());
+      for (const line of tileMenuItemsDumpLines(res)) {
+        this.log(line, 'info');
+      }
+      return !!(res && Array.isArray(res.elements) && res.elements.length);
     } catch (e) {
       return false;
     }
@@ -7169,37 +7415,98 @@ class FlowAutomationEngine {
     return ok;
   }
 
+  /**
+   * v2.48.115 (X119): menu khulne ka probe — waitMs tak
+   * har ~150ms par page se poochho ke menu asal me
+   * zahir hua ya nahi. Activation ki har ranneeti ka
+   * faisla yahi karta hai.
+   */
+  async _tileMenuOpenProbe(waitMs = 800) {
+    const deadline = Date.now() + Math.max(0, Number(waitMs) || 0);
+    for (;;) {
+      try {
+        const open = await this.page.evaluate(tileMenuOpenProbeSource());
+        if (open) return true;
+      } catch (e) {}
+      if (Date.now() >= deadline) return false;
+      await sleep(Math.min(150, Math.max(1, deadline - Date.now())));
+    }
+  }
+
+  /**
+   * v2.48.115 (X119): mile hue ⋮ ko chalana — tartib:
+   *   (1) REVEAL: asal mouse tile ke upar-wale daayein
+   *       hisse par ~400ms thaharta hai (markaz wala
+   *       hover hunt se pehle ho chuka hota hai), phir
+   *       button ka box dobara padha jata hai.
+   *   (2) 'hover': box kaam ka ho to asal mouse click,
+   *       probe se tasdeeq.
+   *   (3) 'js-click': box phir bhi zero ho (ya mouse
+   *       click se menu na khula ho) to stash hue
+   *       element par seedha click().
+   *   (4) 'js-events': us se bhi na khule to poori
+   *       pointer/mouse event tartib.
+   * Jeet par ranneeti ka naam lautta hai, warna null.
+   * probeMs sirf teston ke liye hai (asal karobar 800).
+   */
+  async _tileMenuActivate(more, probeMs = 800) {
+    const usable = (b) => !!(b && Number(b.w) > 0 && Number(b.h) > 0);
+    let box = more && more.box ? more.box : null;
+    // (1) Reveal ka dusra hissa: top-right par asal mouse.
+    if (more && more.viaIdentity && more.tileBox && Number(more.tileBox.w) > 40 && Number(more.tileBox.h) > 40) {
+      try {
+        await this.page.mouse.move(Number(more.tileBox.x) + Number(more.tileBox.w) - 20, Number(more.tileBox.y) + 20);
+        await sleep(400);
+      } catch (e) {}
+      try {
+        const st = await this.page.evaluate(tileMoreStateSource());
+        if (st && st.alive && st.box) box = st.box;
+      } catch (e) {}
+    }
+    // (2) Asal mouse click — sirf kaam ke box par.
+    if (usable(box)) {
+      try {
+        await this.page.mouse.click(Number(box.x) + Number(box.w) / 2, Number(box.y) + Number(box.h) / 2);
+        if (await this._tileMenuOpenProbe(probeMs)) return 'hover';
+      } catch (e) {}
+    } else if (more && !more.viaIdentity && Number.isFinite(Number(more.x)) && Number.isFinite(Number(more.y))) {
+      // Overlay scope wala hit: us ke paas pehchan-stash
+      // nahi, lekin asal coordinates hain.
+      try {
+        await this.page.mouse.click(Number(more.x), Number(more.y));
+        if (await this._tileMenuOpenProbe(probeMs)) return 'hover';
+      } catch (e) {}
+    }
+    if (!more || !more.viaIdentity) return null;
+    // (3) Seedha element.click() — geometry ki shart nahi.
+    let dispatched = false;
+    try { dispatched = !!(await this.page.evaluate(tileMoreActivateSource('click'))); } catch (e) {}
+    if (dispatched) {
+      if (await this._tileMenuOpenProbe(probeMs)) return 'js-click';
+    }
+    // (4) Poori pointer/mouse event tartib.
+    dispatched = false;
+    try { dispatched = !!(await this.page.evaluate(tileMoreActivateSource('events'))); } catch (e) {}
+    if (dispatched) {
+      if (await this._tileMenuOpenProbe(probeMs)) return 'js-events';
+    }
+    return null;
+  }
+
   /** Roop C: ⋮ (more options) menu ke andar ka Download item. */
   async _nativeMenuForm(task, prep, downloadFolder, settings, tileIndexHint, attempts, awaitTimeoutMs = 0) {
     const n = task.promptIndex + 1;
+    // v2.48.115 (X119): pehli scope ab PEHCHAN hai -
+    // tile ke subtree me more-options aria/icon se
+    // milta hai, box ki koi shart nahi (zero-box bhi
+    // found hai); mila element stash ho jata hai aur
+    // activation usi par chalti hai. Natije me box aur
+    // tileBox sirf khabar ke liye aate hain.
     const findMoreControl = async (scopeIdx) => {
       try {
-        return await this.page.evaluate(({ idx }) => {
-          const visible = (el) => { const r = el.getBoundingClientRect(); return r.width > 0 && r.height > 0; };
-          const isMore = (b) => {
-            const aria = (b.getAttribute('aria-label') || '').toLowerCase();
-            const icon = b.querySelector('mat-icon, [data-icon], svg');
-            const iconTxt = icon ? (icon.textContent || '').trim().toLowerCase() : '';
-            return aria.includes('more options') || aria.includes('more actions') || aria === 'more'
-              || iconTxt === 'more_vert' || iconTxt === 'more_horiz';
-          };
-          let scope = document;
-          if (typeof idx === 'number' && idx >= 0) {
-            const containers = Array.from(document.querySelectorAll('flow-grid-tile-container'));
-            scope = containers[idx] || null;
-            if (!scope) return { found: false };
-          }
-          const els = Array.from(scope.querySelectorAll('button, [role="button"]'));
-          for (const b of els) {
-            if (!visible(b)) continue;
-            if (b.closest && b.closest('.cdk-overlay-pane')) continue;
-            if (isMore(b)) {
-              const r = b.getBoundingClientRect();
-              return { found: true, x: r.x + r.width / 2, y: r.y + r.height / 2 };
-            }
-          }
-          return { found: false };
-        }, { idx: scopeIdx });
+        const res = await this.page.evaluate(tileMoreIdentitySource(scopeIdx));
+        if (res && res.found) return { found: true, viaIdentity: true, box: res.box || null, tileBox: res.tileBox || null };
+        return { found: false };
       } catch (e) {
         return { found: false };
       }
@@ -7221,22 +7528,20 @@ class FlowAutomationEngine {
 
     let more = { found: false };
     let lastTileIdx = -1;
-    // v2.30.4: ⋮ button ki talash ab 3 koshishon tak chalti hai aur
-    // nakami LOG hoti hai. v2.30.3 tak ye rasta bina ek bhi log line
-    // ke chup-chaap mar jata tha (owner ka 2026-10-25 multi-video
-    // run: Prompt #4 par ⋮ us pal nahi mila — grid usi pal Prompt #5
-    // ke render se badal raha tha — aur engine seedha dheele editor
-    // raste par chala gaya, jahan run atka raha).
+    let openStrategy = null;
+    // v2.30.4: more-options ki talash 3 koshishon tak
+    // chalti hai aur nakami LOG hoti hai (v2.30.3 tak ye
+    // rasta bina log ke chup-chaap mar jata tha).
     // v2.48.113 (Z2): har koshish hunt se PEHLE tile ko
-    // viewport ke markaz me scroll karti hai
-    // (_tileCenterCoords scrollIntoView block:'center'
-    // karta hai), us par hover karti hai aur ~600ms
-    // thaharti hai — Flow ka ⋮ affordance hover par hi
-    // zahir hota hai, aur 50% zoom (Z1) par tile chhoti
-    // hone se hover ka nishana pakka hona chahiye. Phir
-    // pehle tile ka apna subtree, phir us ke hover
+    // viewport ke markaz me scroll karti hai, us par
+    // hover karti hai aur ~600ms thaharti hai; pehle
+    // tile ka apna subtree, phir us ke hover
     // overlay/portal wali scope.
-    for (let hunt = 0; hunt < 3 && !more.found; hunt++) {
+    // v2.48.115 (X119): pehchan milte hi activation ki
+    // tartib (reveal, asal mouse, seedha click, event
+    // tartib) usi koshish ke andar chalti hai - menu
+    // khulna hi koshish ki jeet hai.
+    for (let hunt = 0; hunt < 3 && !openStrategy; hunt++) {
       if (hunt > 0) await sleep(1200);
       let onGrid = false;
       try { onGrid = await this.page.evaluate(() => document.querySelectorAll('flow-grid-tile-container').length > 0); } catch (e) {}
@@ -7253,66 +7558,56 @@ class FlowAutomationEngine {
           if (!more.found) {
             more = await findMoreControlOverlay(idx);
           }
+          if (more.found) {
+            openStrategy = await this._tileMenuActivate(more);
+          }
         }
       } else {
-        // Editor khula hai — uske ⋮ button ko dhoondho (page scope).
+        // Editor khula hai - uske more-options ko
+        // page scope me dhoondho.
         more = await findMoreControl(-1);
+        if (more.found) {
+          openStrategy = await this._tileMenuActivate(more);
+        }
       }
     }
-    if (!more.found) {
+    if (!openStrategy) {
       // v2.48.113 (Z2): aakhri nakami par tile jo kuch
-      // expose karti hai, [ROOT] log me dump karo —
+      // expose karti hai, [ROOT] log me dump karo -
       // agli nakami sirf log se diagnose hogi.
       if (lastTileIdx >= 0) { try { await this._dumpTileElements(lastTileIdx); } catch (e) {} }
-      this.log(`[Prompt #${n}] The ⋮ (more options) button was not found on its tile even after 3 tries — the editor form will be tried.`, 'warn');
-      attempts.push({ strategy: 'native-menu', ok: false, note: 'the ⋮ (more options) button was not found even after 3 tries' });
+      // v2.48.115 (X119): kisi koshish me menu der se
+      // khula ho to us ke items bhi dump karo.
+      try {
+        if (await this.page.evaluate(tileMenuOpenProbeSource())) {
+          await this._dumpTileMenuItems();
+          try { await this.page.keyboard.press('Escape'); } catch (e) {}
+        }
+      } catch (e) {}
+      if (more.found) {
+        this.log(`[Prompt #${n}] The ⋮ (more options) button was found on its tile, but its menu did not open even after 3 tries (real-mouse hover, direct click and pointer events) — the editor form will be tried.`, 'warn');
+        attempts.push({ strategy: 'native-menu', ok: false, note: 'the ⋮ (more options) button was found but its menu did not open even after 3 tries' });
+      } else {
+        this.log(`[Prompt #${n}] The ⋮ (more options) button was not found on its tile even after 3 tries — the editor form will be tried.`, 'warn');
+        attempts.push({ strategy: 'native-menu', ok: false, note: 'the ⋮ (more options) button was not found even after 3 tries' });
+      }
       return false;
     }
     this.log(`[Prompt #${n}] Opening the ⋮ (more options) menu — Download will be searched inside it…`, 'info');
-    await this.page.mouse.click(more.x, more.y);
-    await sleep(800);
+    this.log(tileMenuOpenLogLine(openStrategy), 'info');
 
     // Menu ke render hone ka intezaar (~10s poll): overlay ke andar
     // EXACT "Download" wala item (inspection hissa 2, VERIFIED —
-    // tile ke ⋮ menu me download ka label sirf "Download" hai;
-    // "Download media" wahan NAHI hota, wo sirf editor ki top bar
-    // me hai). Isiliye yahan 'download' shamil-wala dhundhla match
-    // nahi, exact label hi chalega.
+    // tile ke more-options menu me download ka label sirf
+    // "Download" hai; "Download media" wahan NAHI hota, wo sirf
+    // editor ki top bar me hai). Matcher v2.10.0 wali saaf
+    // pehchan hi hai, ab menuDownloadIdentitySource me.
+    // v2.48.115 (X119): poll ab geometry-free hai - zero-box
+    // item bhi milta hai aur stash ho jata hai.
     let item = { found: false };
     for (let r = 0; r < 20; r++) {
       try {
-        item = await this.page.evaluate(() => {
-          // v2.10.0: matcher SAAF karke pehchanta hai. v2.8.0 ka
-          // exact 'download' wala match owner ke PC par mara —
-          // asal Material menu item ke andar icon (mat-icon) ka
-          // ligature text ("file_download" / "download") label ke
-          // saath jud jata hai, to poora text kabhi sirf "download"
-          // banta hi nahi. Ab: underscores saaf, har line alag
-          // ummeedwaar, aur shabd-ke-taur par 'download' bhi chalega
-          // (tile ke ⋮ menu me download wala item EK hi hota hai —
-          // inspection se verified poori list).
-          const norm = (s) => String(s || '').toLowerCase().replace(/_/g, ' ').replace(/\s+/g, ' ').trim();
-          const hasWord = (s, w) => (` ${s} `).includes(` ${w} `);
-          const items = Array.from(document.querySelectorAll('.cdk-overlay-pane [role="menuitem"], .cdk-overlay-pane button, .mat-mdc-menu-panel [role="menuitem"], .mat-mdc-menu-panel button, [role="menu"] [role="menuitem"], [role="menu"] button'));
-          for (const b of items) {
-            const r = b.getBoundingClientRect();
-            if (!(r.width > 0 && r.height > 0)) continue;
-            const aria = norm(b.getAttribute('aria-label'));
-            const raw = String(b.innerText || b.textContent || '');
-            const lines = raw.split('\n').map(norm).filter(Boolean);
-            const full = norm(raw);
-            const iconTxt = norm((b.querySelector('mat-icon') || {}).textContent || '');
-            const hit = aria === 'download'
-              || lines.some(l => l === 'download')
-              || full === 'download'
-              || hasWord(full, 'download')
-              || iconTxt === 'download' || iconTxt === 'file download';
-            if (hit) {
-              return { found: true, x: r.x + r.width / 2, y: r.y + r.height / 2, how: (aria || full || 'download').substring(0, 60) };
-            }
-          }
-          return { found: false };
-        });
+        item = await this.page.evaluate(menuDownloadIdentitySource());
       } catch (e) { item = { found: false }; }
       if (item.found) break;
       await sleep(500);
@@ -7339,6 +7634,11 @@ class FlowAutomationEngine {
         });
         this.log(`[MENU-DIAG] [Prompt #${n}] menu items: ${Array.isArray(menuTexts) && menuTexts.length ? menuTexts.join(', ') : '(none visible)'}`, 'warn');
       } catch (e) {}
+      // v2.48.115 (X119): geometry-free items dump -
+      // zero-box items samet asal fehrist [ROOT] me,
+      // taaki "menu khula lekin Download nahi" wali
+      // nakami sirf log se diagnose ho.
+      try { await this._dumpTileMenuItems(); } catch (e) {}
       attempts.push({ strategy: 'native-menu', ok: false, note: 'the menu opened but it had no Download item' });
       try { await this.page.keyboard.press('Escape'); } catch (e) {}
       await this._returnToProjectGrid();
@@ -7353,7 +7653,31 @@ class FlowAutomationEngine {
       this.log(`[FAST-DL] registry at click: ${regAtClick < 0 ? 'unknown' : regAtClick} entries`, 'info');
     } catch (e) {}
     const clickTime = Date.now();
-    await this.page.mouse.click(item.x, item.y);
+    // v2.48.115 (X119): item ka box kaam ka ho to asal
+    // mouse click; zero-box ho to stash hue element ko
+    // seedha chalana - pehle click(), aur menu phir bhi
+    // khula mile (click laga hi nahi) to event tartib.
+    // Seedha rasta istemal hua ho to us ka saboot
+    // [ROOT] download-click line me jata hai.
+    const itemBox = item.box || null;
+    if (itemBox && Number(itemBox.w) > 0 && Number(itemBox.h) > 0) {
+      await this.page.mouse.click(Number(itemBox.x) + Number(itemBox.w) / 2, Number(itemBox.y) + Number(itemBox.h) / 2);
+    } else {
+      let dlStrategy = null;
+      let dispatched = false;
+      try { dispatched = !!(await this.page.evaluate(menuDownloadActivateSource('click'))); } catch (e) {}
+      if (dispatched) {
+        await sleep(600);
+        let stillOpen = false;
+        try { stillOpen = !!(await this.page.evaluate(tileMenuOpenProbeSource())); } catch (e) {}
+        if (!stillOpen) dlStrategy = 'js-click';
+      }
+      if (!dlStrategy) {
+        try { await this.page.evaluate(menuDownloadActivateSource('events')); } catch (e) {}
+        dlStrategy = 'js-events';
+      }
+      this.log(tileDownloadClickLogLine(dlStrategy), 'info');
+    }
     const res = await this._nativePickResolution(settings && settings.quality);
     // v2.48.31 (MINT-WINDOW): resolution click ke is pal se
     // mint khidki khul gayi — pehli flow-content sighting tak
@@ -14933,4 +15257,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, GENERATION_PAGE_SCALE, browserZoomLogLine, applyBrowserZoom, browserZoomLaunchArg, zoomReadbackVerified, browserZoomVerifyLogLine, tileMoreOverlaySource, tileMenuDumpSource, tileMenuDumpElementLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, GENERATION_PAGE_SCALE, browserZoomLogLine, applyBrowserZoom, browserZoomLaunchArg, zoomReadbackVerified, browserZoomVerifyLogLine, tileMoreOverlaySource, tileMenuDumpSource, tileMenuDumpElementLine, tileMoreIdentitySource, tileMoreStateSource, tileMoreActivateSource, menuDownloadActivateSource, tileMenuOpenProbeSource, menuDownloadIdentitySource, tileMenuItemsDumpSource, tileMenuItemsElementLine, tileMenuItemsDumpLines, tileMenuOpenLogLine, tileDownloadClickLogLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption };

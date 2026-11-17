@@ -14788,6 +14788,262 @@ async function main() {
     ok('X118 Z2b source: the gate math is untouched (refusal)', poolSrc118.includes('knownAccounts > 0 && knownUsable < totalNeeded'));
   }
 
+  // =====================================================================
+  // X119 (v2.48.115) — tile-menu hunt: find the ⋮ by identity, not
+  // geometry (W8 run on .113, owner-pasted log 2026-11-17):
+  // the ⋮ EXISTS in the tile's DOM (aria "More options", icon
+  // "more_vert") but reports box 0,0,0,0 in its hover-reveal state,
+  // and the old size-filtered finder called it "not found" on every
+  // tile. Now: identity find inside the bound tile (no box or
+  // visibility condition) → real-mouse reveal (the centre hover
+  // already precedes the hunt; then a top-right dwell + box re-read)
+  // → activate regardless of geometry (real mouse when the box is
+  // usable, else element.click(), else the pointer/mouse event
+  // sequence). The menu's Download item gets the same geometry-free
+  // treatment; failures dump the opened menu's items; successes log
+  // their strategy. The 3-try cap, park-on-fail, the backend
+  // pre-step, the captured-buffer route and the poison rules are
+  // unchanged.
+  // =====================================================================
+  {
+    const fs119 = require('fs');
+    const path119 = require('path');
+    const flowSrc119 = fs119.readFileSync(path119.join(__dirname, '..', 'engine/flowAutomation.js'), 'utf8');
+    const FA119 = require('../engine/flowAutomation');
+    const idSrc119 = FA119.tileMoreIdentitySource;
+    const stateSrc119 = FA119.tileMoreStateSource;
+    const moreAct119 = FA119.tileMoreActivateSource;
+    const dlAct119 = FA119.menuDownloadActivateSource;
+    const probeSrc119 = FA119.tileMenuOpenProbeSource;
+    const dlIdSrc119 = FA119.menuDownloadIdentitySource;
+    const itemsSrc119 = FA119.tileMenuItemsDumpSource;
+    const itemsLines119 = FA119.tileMenuItemsDumpLines;
+    const openLine119 = FA119.tileMenuOpenLogLine;
+    const dlLine119 = FA119.tileDownloadClickLogLine;
+
+    const zeroRect = { x: 0, y: 0, left: 0, top: 0, width: 0, height: 0, right: 0, bottom: 0 };
+    const mkBtn119 = (aria, text, rect, iconTxt) => ({
+      tagName: 'BUTTON',
+      isConnected: true,
+      textContent: text,
+      innerText: text,
+      getAttribute: (name) => (name === 'aria-label' ? aria : null),
+      querySelector: (sel) => (iconTxt != null && String(sel).includes('mat-icon') ? { textContent: iconTxt } : null),
+      closest: () => null,
+      getBoundingClientRect: () => rect
+    });
+
+    // --- Identity: the W8-shaped tile (⋮ present, zero box) ---
+    {
+      const tileRect = { x: 8, y: 360, left: 8, top: 360, width: 229, height: 210, right: 237, bottom: 570 };
+      const fav = mkBtn119('Favorite', 'favorite', zeroRect, 'favorite');
+      const reuse = mkBtn119('Reuse prompt', 'redo', zeroRect, 'redo');
+      const more = mkBtn119('More options', 'more_vert', zeroRect, 'more_vert');
+      const title = mkBtn119('Man walking in office corridor', 'play_circle Man walking in office corridor',
+        { x: 28, y: 384, left: 28, top: 384, width: 189, height: 18, right: 217, bottom: 402 }, null);
+      const bareTile = { querySelectorAll: () => [fav, reuse], getBoundingClientRect: () => tileRect };
+      const tile = { querySelectorAll: () => [fav, reuse, more, title], getBoundingClientRect: () => tileRect };
+      const stray = mkBtn119('More options', 'more_vert', { x: 900, y: 20, left: 900, top: 20, width: 24, height: 24, right: 924, bottom: 44 }, 'more_vert');
+      const win119 = {};
+      const doc119 = {
+        querySelectorAll: (sel) => (String(sel).includes('flow-grid-tile-container') ? [tile, bareTile] : [stray])
+      };
+      const hit = new Function('document', 'window', `return ${idSrc119(0)};`)(doc119, win119);
+      eq('X119 identity: a zero-box More options inside the tile is FOUND', hit.found, true);
+      eq('X119 identity: the found box is reported as-is (zero)', `${hit.box.w},${hit.box.h}`, '0,0');
+      eq('X119 identity: the tile box rides along for the reveal', hit.tileBox.w, 229);
+      ok('X119 identity: the found element is stashed for activation', win119.__fsTileMore === more);
+      const miss = new Function('document', 'window', `return ${idSrc119(1)};`)(doc119, {});
+      eq('X119 identity: a More options OUTSIDE the bound tile is never taken', miss.found, false);
+      // Icon-only and own-text-only shapes also identify the button.
+      const iconOnly = mkBtn119('', '', zeroRect, 'more_vert');
+      const tileIcon = { querySelectorAll: () => [iconOnly], getBoundingClientRect: () => tileRect };
+      const docIcon = { querySelectorAll: () => [tileIcon] };
+      eq('X119 identity: icon text alone identifies the button',
+        new Function('document', 'window', `return ${idSrc119(0)};`)(docIcon, {}).found, true);
+      const ownText = mkBtn119('', 'more_vert', zeroRect, null);
+      const tileOwn = { querySelectorAll: () => [ownText], getBoundingClientRect: () => tileRect };
+      const docOwn = { querySelectorAll: () => [tileOwn] };
+      eq('X119 identity: the button\'s own more_vert text identifies it',
+        new Function('document', 'window', `return ${idSrc119(0)};`)(docOwn, {}).found, true);
+      // A candidate living in an overlay pane is not the tile's button.
+      const paneMore = mkBtn119('More options', 'more_vert', zeroRect, 'more_vert');
+      paneMore.closest = () => ({});
+      const tilePane = { querySelectorAll: () => [paneMore], getBoundingClientRect: () => tileRect };
+      const docPane = { querySelectorAll: () => [tilePane] };
+      eq('X119 identity: an overlay-pane candidate inside the tile is skipped',
+        new Function('document', 'window', `return ${idSrc119(0)};`)(docPane, {}).found, false);
+    }
+
+    // --- State re-read + direct activation sources ---
+    {
+      const el = {
+        isConnected: true,
+        clicks: 0,
+        events: [],
+        click() { this.clicks++; },
+        dispatchEvent(ev) { this.events.push(ev.type); return true; },
+        getBoundingClientRect: () => ({ x: 270, y: 110, left: 270, top: 110, width: 24, height: 24 })
+      };
+      const win119 = { __fsTileMore: el, __fsMenuDownload: el };
+      const st = new Function('window', `return ${stateSrc119()};`)(win119);
+      eq('X119 state: a connected stashed element reads alive', st.alive, true);
+      eq('X119 state: the re-read box is the live box', st.box.w, 24);
+      const dead = new Function('window', `return ${stateSrc119()};`)({ __fsTileMore: { isConnected: false } });
+      eq('X119 state: a detached element reads not-alive', dead.alive, false);
+      class FakeEv { constructor(type) { this.type = type; } }
+      const runAct = (src, win) => new Function('window', 'PointerEvent', 'MouseEvent', `return ${src};`)(win, FakeEv, FakeEv);
+      eq('X119 activate: element.click() dispatches and reports true', runAct(moreAct119('click'), win119), true);
+      eq('X119 activate: the click landed on the element', el.clicks, 1);
+      el.events = [];
+      eq('X119 activate: the event sequence dispatches and reports true', runAct(moreAct119('events'), win119), true);
+      eq('X119 activate: the sequence order is pointerdown,mousedown,pointerup,mouseup,click',
+        el.events.join(','), 'pointerdown,mousedown,pointerup,mouseup,click');
+      eq('X119 activate: a detached element is a quiet false',
+        runAct(moreAct119('click'), { __fsTileMore: { isConnected: false, click() { throw new Error('must not run'); } } }), false);
+      ok('X119 activate: the Download stash uses the same direct route',
+        dlAct119('click').includes('__fsMenuDownload') && dlAct119('click').includes('el.click()'));
+      ok('X119 activate: the click form carries no event sequence', !moreAct119('click').includes('pointerdown'));
+    }
+
+    // --- Menu-open probe ---
+    {
+      const paneWithMenu = { querySelector: (sel) => (String(sel).includes('menu') ? {} : null) };
+      const paneBare = { querySelector: () => null };
+      const docOpen = {
+        querySelectorAll: (sel) => (String(sel).includes('cdk-overlay-pane') ? [paneBare, paneWithMenu] : []),
+        querySelector: () => null
+      };
+      eq('X119 probe: a pane holding a menu reads open',
+        new Function('document', `return ${probeSrc119()};`)(docOpen), true);
+      const docShut = {
+        querySelectorAll: (sel) => (String(sel).includes('cdk-overlay-pane') ? [paneBare] : []),
+        querySelector: () => null
+      };
+      eq('X119 probe: panes without a menu read closed',
+        new Function('document', `return ${probeSrc119()};`)(docShut), false);
+    }
+
+    // --- Download item: geometry-free identity + items dump ---
+    {
+      const del = mkBtn119('Delete', 'Delete', { x: 20, y: 20, left: 20, top: 20, width: 120, height: 32, right: 140, bottom: 52 }, null);
+      const dl = mkBtn119('', 'file_download\nDownload', zeroRect, 'file_download');
+      dl.innerText = 'file_download\nDownload';
+      const doc119 = { querySelectorAll: () => [del, dl] };
+      const win119 = {};
+      const hit = new Function('document', 'window', `return ${dlIdSrc119()};`)(doc119, win119);
+      eq('X119 download: a zero-box Download item is FOUND', hit.found, true);
+      eq('X119 download: the item is stashed for direct activation', win119.__fsMenuDownload === dl, true);
+      const docNone = { querySelectorAll: () => [del] };
+      eq('X119 download: no Download item reads not-found',
+        new Function('document', 'window', `return ${dlIdSrc119()};`)(docNone, {}).found, false);
+      const dump = new Function('document', `return ${itemsSrc119()};`)(doc119);
+      eq('X119 items dump: every menu item is listed, zero-box included', dump.elements.length, 2);
+      eq('X119 items dump: the zero-box item keeps its zero box', dump.elements[1].box.w, 0);
+      eq('X119 items dump: a line carries tag/aria/text/box',
+        itemsLines119(dump)[0],
+        '[ROOT] tile-menu-items el=button aria="Delete" text="Delete" box=20,20,120,32');
+      eq('X119 items dump: an empty menu is one elements=0 line',
+        JSON.stringify(itemsLines119({ elements: [] })),
+        JSON.stringify(['[ROOT] tile-menu-items elements=0']));
+      eq('X119 items dump: a missing result is the same empty line',
+        JSON.stringify(itemsLines119(null)),
+        JSON.stringify(['[ROOT] tile-menu-items elements=0']));
+    }
+
+    // --- Proof lines ---
+    eq('X119 proof: menu-open line names the js-click strategy', openLine119('js-click'), '[ROOT] tile-menu-open strategy=js-click');
+    eq('X119 proof: menu-open line names the hover strategy', openLine119('hover'), '[ROOT] tile-menu-open strategy=hover');
+    eq('X119 proof: an unknown open strategy falls back to hover', openLine119('bogus'), '[ROOT] tile-menu-open strategy=hover');
+    eq('X119 proof: download-click line names the js-events strategy', dlLine119('js-events'), '[ROOT] download-click strategy=js-events');
+    eq('X119 proof: download-click line names the mouse strategy', dlLine119('mouse'), '[ROOT] download-click strategy=mouse');
+
+    // --- Strategy order through the engine seam (fake page) ---
+    {
+      const Engine119 = FA119.FlowAutomationEngine;
+      const mkEngine = (scenario) => {
+        const eng = Object.create(Engine119.prototype);
+        eng.log = () => {};
+        eng.page = {
+          mouse: {
+            move: async (x, y) => { scenario.moves.push([x, y]); },
+            click: async (x, y) => { scenario.clicks.push([x, y]); if (scenario.openOn === 'mouse') scenario.menuOpen = true; }
+          },
+          evaluate: async (src) => {
+            const s = String(src);
+            if (s.includes('fsTileMoreState')) return scenario.state;
+            if (s.includes('fsActivateStashed')) {
+              const kind = s.includes('pointerdown') ? 'events' : 'click';
+              scenario.actKinds.push(kind);
+              if (scenario.openOn === kind) scenario.menuOpen = true;
+              return true;
+            }
+            if (s.includes('fsTileMenuOpenProbe')) return scenario.menuOpen;
+            return null;
+          }
+        };
+        return eng;
+      };
+      const tileBox = { x: 100, y: 100, w: 200, h: 160 };
+      // A: usable box after the reveal — the real mouse wins.
+      {
+        const sc = { moves: [], clicks: [], actKinds: [], menuOpen: false, openOn: 'mouse', state: { alive: true, box: { x: 270, y: 110, w: 24, h: 24 } } };
+        const got = await mkEngine(sc)._tileMenuActivate({ found: true, viaIdentity: true, box: { x: 270, y: 110, w: 24, h: 24 }, tileBox }, 30);
+        eq('X119 strategy: a usable box opens by hover (real mouse)', got, 'hover');
+        eq('X119 strategy: the reveal dwelled on the tile top-right', JSON.stringify(sc.moves), JSON.stringify([[280, 120]]));
+        eq('X119 strategy: the mouse clicked the button centre', JSON.stringify(sc.clicks), JSON.stringify([[282, 122]]));
+        eq('X119 strategy: no direct activation was needed', sc.actKinds.length, 0);
+      }
+      // B: zero box through the reveal — element.click() wins.
+      {
+        const sc = { moves: [], clicks: [], actKinds: [], menuOpen: false, openOn: 'click', state: { alive: true, box: { x: 0, y: 0, w: 0, h: 0 } } };
+        const got = await mkEngine(sc)._tileMenuActivate({ found: true, viaIdentity: true, box: { x: 0, y: 0, w: 0, h: 0 }, tileBox }, 30);
+        eq('X119 strategy: a zero box opens by js-click', got, 'js-click');
+        eq('X119 strategy: the mouse never clicked a zero box', sc.clicks.length, 0);
+        eq('X119 strategy: only the click form was dispatched', sc.actKinds.join(','), 'click');
+      }
+      // C: click dispatched but no menu — the event sequence wins.
+      {
+        const sc = { moves: [], clicks: [], actKinds: [], menuOpen: false, openOn: 'events', state: { alive: true, box: { x: 0, y: 0, w: 0, h: 0 } } };
+        const got = await mkEngine(sc)._tileMenuActivate({ found: true, viaIdentity: true, box: { x: 0, y: 0, w: 0, h: 0 }, tileBox }, 30);
+        eq('X119 strategy: the event sequence is the last resort', got, 'js-events');
+        eq('X119 strategy: the order was click then events', sc.actKinds.join(','), 'click,events');
+      }
+      // D: nothing opens the menu — an honest null.
+      {
+        const sc = { moves: [], clicks: [], actKinds: [], menuOpen: false, openOn: 'never', state: { alive: true, box: { x: 0, y: 0, w: 0, h: 0 } } };
+        const got = await mkEngine(sc)._tileMenuActivate({ found: true, viaIdentity: true, box: { x: 0, y: 0, w: 0, h: 0 }, tileBox }, 30);
+        eq('X119 strategy: total failure is an honest null', got, null);
+        eq('X119 strategy: both direct forms were tried before failing', sc.actKinds.join(','), 'click,events');
+      }
+      // E: an overlay-scope hit (coordinates only) opens by mouse.
+      {
+        const sc = { moves: [], clicks: [], actKinds: [], menuOpen: false, openOn: 'mouse', state: { alive: false } };
+        const got = await mkEngine(sc)._tileMenuActivate({ found: true, x: 282, y: 122 }, 30);
+        eq('X119 strategy: an overlay hit opens by mouse at its coordinates', got, 'hover');
+        eq('X119 strategy: the overlay coordinates were clicked', JSON.stringify(sc.clicks), JSON.stringify([[282, 122]]));
+      }
+    }
+
+    // --- Source pins ---
+    ok('X119 source: the identity lookup carries no size condition',
+      !idSrc119(0).includes('width > 0') && !idSrc119(0).includes('height > 0'));
+    ok('X119 source: the Download lookup carries no size condition',
+      !dlIdSrc119().includes('width > 0') && !dlIdSrc119().includes('height > 0'));
+    {
+      const start = flowSrc119.indexOf('async _nativeMenuForm(');
+      const slice = flowSrc119.slice(start, start + 14000);
+      ok('X119 source: the form hunts by identity inside the tile', slice.includes('tileMoreIdentitySource(scopeIdx)'));
+      ok('X119 source: the 3-try hunt cap is unchanged', slice.includes('hunt < 3'));
+      ok('X119 source: activation runs inside the hunt', slice.includes('openStrategy = await this._tileMenuActivate(more);'));
+      ok('X119 source: the menu-open proof line is logged', slice.includes('tileMenuOpenLogLine(openStrategy)'));
+      ok('X119 source: the menu poll is the geometry-free identity lookup', slice.includes('this.page.evaluate(menuDownloadIdentitySource())'));
+      ok('X119 source: a failed menu dumps its items', slice.includes('await this._dumpTileMenuItems();'));
+      ok('X119 source: a direct Download activation logs its proof line', slice.includes('tileDownloadClickLogLine(dlStrategy)'));
+      ok('X119 source: the real-mouse reveal lives in the activation step',
+        flowSrc119.includes('Number(more.tileBox.w) - 20'));
+    }
+  }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);
   if (failed > 0) process.exit(1);

@@ -31,7 +31,7 @@ const editorEnhance = require('./editorEnhance');
 const resolutionMemory = require('./resolutionMemory');
 const flowContent = require('./flowContent');
 const downloadEventMatch = require('./downloadEventMatch');
-const zoomPolicy = require('./zoomPolicy');
+const zoomPreset = require('./zoomPreset');
 const downloadGrace = require('./downloadGrace');
 const mintWindow = require('./mintWindow');
 const mintReplay = require('./mintReplay');
@@ -791,120 +791,82 @@ function settingsClickTargetLine(t) {
  * browser ka zoom 50% ho to Flow ki website theek se
  * dikhti hai (zyada tiles nazar aati hain, tile ke
  * controls haath ki pahunch me rehte hain).
- * v2.48.116 (Z3): ye scale ab Chrome ke APNE menu Zoom
- * ki shakal me lagta hai — page ki keyboard se (neeche
- * Z3 wala hissa dekho); CDP page-scale (.113) aur
- * device-scale launch flag (.114) dono menu Zoom nahi
- * the, is liye dono hata diye gaye hain.
+ * v2.48.116 (Z3): ye scale Chrome ke APNE menu Zoom ki
+ * shakal me lagane ki koshish hui — page ki keyboard se.
+ * v2.48.119 (F1): keyboard rasta FIELD me BAND sabit
+ * hua (.116/.117/.118 — har pal par dpr=1 FAILED). Ab
+ * ye scale launch se PEHLE profile ke Preferences me
+ * per-host zoom level ki shakal me likha jata hai
+ * (engine/zoomPreset.js); Chrome use apne HostZoomMap
+ * me uthata hai aur menu me bhi wahi 50% dikhta hai.
+ * DSF hamesha 1.0 hai — launch flag kabhi wapas nahi
+ * aayega (wo menu Zoom tha hi nahi).
  */
 const GENERATION_PAGE_SCALE = 0.5;
 
-/** v2.48.113 (Z1): one browser's zoom proof as a [ROOT] line. */
-function browserZoomLogLine(accountName, scale, applied) {
-  const name = String(accountName == null ? '' : accountName).replace(/\s+/g, ' ').trim() || '-';
-  return `[ROOT] browser-zoom account=${name} scale=${scale} ${applied ? 'applied' : 'FAILED'}`;
+/**
+ * v2.48.119 (F2): resolution menu ka intezaar aur us ki
+ * re-drive ki hadd. Field failure (TEST118-ZOOM,
+ * 2026-11-18): Download click ke baad picker sirf
+ * ~2.4s (6 × 400ms) poll karta tha; menu der se aaya to
+ * 'did not appear' par attempt andha intezaar karke mar
+ * gaya (~28s + 10s grace + poora retry cycle). Ab poll
+ * ~8s hai, aur menu phir bhi na aaye to click ko nakam
+ * CLICK mana jata hai — attempt ko nahi: overlay band
+ * (Escape), ⋮ menu dobara, Download dobara — kul 2
+ * re-drive, usi attempt ke andar. Prompt dobara KABHI
+ * submit nahi hota (download-stage ka sacred usool
+ * barkarar).
+ */
+const RESOLUTION_MENU_WAIT_MS = 8000;
+const RESOLUTION_MENU_POLL_MS = 400;
+const RESOLUTION_MENU_MAX_REDRIVES = 2;
+
+/** v2.48.119 (F2): ek re-drive ki [ROOT] line. */
+function resolutionMenuRedriveLogLine(redrive, taskLabel) {
+  const n = Number.isFinite(Number(redrive)) ? Math.trunc(Number(redrive)) : 0;
+  const label = (taskLabel === null || taskLabel === undefined) ? '-' : taskLabel;
+  return `[ROOT] resolution-menu redrive=${n} task=${label}`;
 }
 
 /**
- * v2.48.116 (Z3 — OWNER CLARIFICATION): owner ka matlab
- * hamesha Chrome ke APNE menu wala Zoom tha ('— 50% +'
- * wali patti). .113 ka CDP page-scale aur .114 ka
- * device-scale launch flag launch flag DONO hi menu
- * Zoom NAHI hain: flag sirf device scale badalta hai —
- * read-back me dpr=0.5 dikha, lekin Chrome ke menu me
- * Zoom 100% hi raha aur owner ko screen par koi zoom
- * nazar nahi aaya. Asal menu Zoom sirf browser ki apni
- * keyboard se lagta hai: Ctrl+0 (100% par wapas) ke
- * baad Ctrl+'-' ke qadam — Chrome ki seedhi
- * 100 → 90 → 80 → 75 → 67 → 50 hai, yani 50% ke liye
- * PAANCH qadam. Ye zoom per-host hota hai aur profile
- * me mehfooz rehta hai.
- * Neeche ki seedhi Chrome ke zoom qadmon ki hai (sirf
- * chhote hone ki taraf; reset hamesha pehla qadam hai).
+ * v2.48.119 (F3 — OWNER ORDER 2026-11-18): run ke
+ * dauraan owner ghalti se us browser me click kar de ya
+ * kahin navigate kar de, to app ko rukna NAHI hai — wo
+ * apna kaam karta rahe. Is ka amal: render-wait aur
+ * download stage par, page ka URL task ke darj-shuda
+ * birth project se bahar gaya ho to wapas usi project
+ * par le jao aur stage wahin se aage badhao. Hadd: har
+ * task par kul 3 recoveries — us ke baad haalat jaisi
+ * hai waisi hi aage chalegi aur nakami imaandaar fail
+ * hi hogi. Sirf app ka apna Stop hi run rokta hai
+ * (isStopping sirf beginStop lagata hai — koi page
+ * event use kabhi nahi lagata).
  */
-const CHROME_ZOOM_LADDER = [1, 0.9, 0.8, 0.75, 0.67, 0.5, 0.33, 0.25];
+const DISTURBANCE_RECOVERY_MAX = 3;
 
 /**
- * v2.48.116 (Z3): kisi target zoom ke liye keyboard
- * qadmon ki fehrist — pehla qadam hamesha '0' (Ctrl+0
- * = 100% reset), phir seedhi par target tak jitne
- * qadam utne '-'. Khalis faisla; test jaali ghadi se
- * parkh sakta hai.
+ * v2.48.119 (F3, khalis): page asal me 'bhatka' hai
+ * kya — yani darj-shuda birth project ke project id se
+ * bahar? Usi project ke andar ki har harkat (grid,
+ * /edit/... editor jo engine khud bhi kholta hai) ye
+ * NAHI hai. Recorded URL hi na ho to faisla nahi hota
+ * (false) — jis task ka ghar hi darj nahi, use kahan
+ * wapas le jayein.
  */
-function menuZoomKeySequence(scale = GENERATION_PAGE_SCALE) {
-  const s = Number(scale);
-  const target = (Number.isFinite(s) && s > 0) ? s : GENERATION_PAGE_SCALE;
-  let steps = 0;
-  for (let i = 1; i < CHROME_ZOOM_LADDER.length; i++) {
-    if (CHROME_ZOOM_LADDER[i] <= target + 0.001) { steps = i; break; }
-    steps = i;
-  }
-  if (target >= 1) steps = 0;
-  const seq = ['0'];
-  for (let i = 0; i < steps; i++) seq.push('-');
-  return seq;
+function disturbanceRecoveryApplies(currentUrl, recordedUrl) {
+  const recordedId = projectIdOfUrl(recordedUrl || '');
+  if (!recordedId) return false;
+  const currentId = projectIdOfUrl(currentUrl || '');
+  return currentId !== recordedId;
 }
 
-/**
- * v2.48.116 (Z3): menu zoom lagane wala khalis helper —
- * `pressFn(key)` ek Ctrl+key chord chalata hai (engine
- * page.keyboard se deta hai; test jaali seam se). Har
- * qadam ke baad chhoti si mohlat (Chrome ko zoom lagu
- * karne ki). Kabhi throw nahi karta: nakami par false,
- * taaki zoom ki nakami kabhi kisi run ko na roke.
- */
-async function applyMenuZoom(pressFn, scale = GENERATION_PAGE_SCALE, opts = {}) {
-  try {
-    if (typeof pressFn !== 'function') return false;
-    const delayMs = Number(opts && opts.delayMs) >= 0 ? Number(opts.delayMs) : 120;
-    const sleepFn = (opts && typeof opts.sleepFn === 'function')
-      ? opts.sleepFn
-      : (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-    const seq = menuZoomKeySequence(scale);
-    for (const key of seq) {
-      await pressFn(key);
-      if (delayMs > 0) await sleepFn(delayMs);
-    }
-    return true;
-  } catch (e) {
-    return false;
-  }
-}
-
-/** v2.48.114 (Z1b): one read-back value as log text. */
-function zoomValueText(v) {
-  if (v === null || v === undefined) return 'n/a';
-  const n = Number(v);
-  if (!Number.isFinite(n)) return 'n/a';
-  return String(Math.round(n * 1000) / 1000);
-}
-
-/**
- * v2.48.114 (Z1b): the read-back verdict.
- * v2.48.116 (Z3): faisla ab SIRF devicePixelRatio par
- * hai. Menu Zoom ke saath asal hisaab hai: DSF (ab
- * hamesha 1.0 — launch flag gaya) × menu zoom (0.5) =
- * dpr 0.5. visualViewport.scale pinch-zoom ka signal
- * hai, menu Zoom ka nahi — wo ab gawahi nahi deta.
- */
-function zoomReadbackVerified(dpr, scale = GENERATION_PAGE_SCALE) {
-  const s = Number(scale);
-  if (!Number.isFinite(s) || s <= 0) return false;
-  if (dpr === null || dpr === undefined) return false;
-  const n = Number(dpr);
-  return Number.isFinite(n) && Math.abs(n - s) <= 0.06;
-}
-
-/**
- * v2.48.116 (Z3): the read-back proof as a [ROOT] line —
- * wahi 'browser-zoom' prefix jo .113/.114 se chala aa
- * raha hai, lekin ab line MENU zoom ki gawahi deti hai
- * (zoom=<target> dpr=<asal naap>).
- */
-function browserZoomVerifyLogLine(accountName, scale, dpr) {
-  const name = String(accountName == null ? '' : accountName).replace(/\s+/g, ' ').trim() || '-';
-  const verdict = zoomReadbackVerified(dpr, scale) ? 'verified' : 'FAILED';
-  return `[ROOT] browser-zoom account=${name} zoom=${scale} dpr=${zoomValueText(dpr)} ${verdict}`;
+/** v2.48.119 (F3): ek disturbance recovery ki [ROOT] line. */
+function disturbanceRecoveryLogLine(taskLabel, stage, n) {
+  const label = (taskLabel === null || taskLabel === undefined) ? '-' : taskLabel;
+  const st = String(stage || '').trim() || '-';
+  const count = Number.isFinite(Number(n)) ? Math.trunc(Number(n)) : 0;
+  return `[ROOT] disturbance-recovery task=${label} stage=${st} n=${count}`;
 }
 
 /**
@@ -2374,73 +2336,28 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.113 (Z1): is engine ke page par generation zoom
-   * (50%) lagao. `logProof` true ho (browser open par) to
-   * [ROOT] browser-zoom wali proof line banti hai; re-assert
-   * (project open / grid wapsi) khamosh rehta hai. Nakami
-   * par sirf warning — zoom ki nakami kabhi kisi run ko
-   * nahi rokti.
-   * v2.48.114 (Z1b): ye CDP call ab SECONDARY hai — asal
-   * zoom launch flag (device-scale launch flag) se aata
-   * hai. Session ka istemal bhi theek kiya gaya: sirf page
-   * ki APNI maujooda automation session (this.cdpSession)
-   * chalegi; throwaway session bana kar detach karna band
-   * (usi detach ke baad .113 ka scale screen par tikta hi
-   * nahi tha). Apni session na ho to khamoshi se skip —
-   * flag window ko pehle hi cover karta hai.
-   * v2.48.116 (Z3): DONO purane raste khatam — owner ka
-   * matlab Chrome ka apna MENU Zoom tha, aur wo sirf
-   * page ki apni keyboard se lagta hai (Ctrl+0, phir
-   * Ctrl+'-' × 5). Ye amal ab wahi hai: page.keyboard
-   * ke chords, applyMenuZoom ki tartib se. Per-host zoom
-   * profile me mehfooz rehta hai, is liye dobara assert
-   * karna sasta aur mehfooz hai. CDP page-scale aur
-   * launch flag is liye bhi gaye ke dono ek saath hote
-   * to asar 0.5 × 0.5 = 0.25 ho jata.
-   */
-  async _applyGenerationZoom(logProof = false) {
-    try {
-      if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return false;
-      const kb = this.page.keyboard;
-      if (!kb || typeof kb.down !== 'function' || typeof kb.press !== 'function' || typeof kb.up !== 'function') return false;
-      const applied = await applyMenuZoom(async (key) => {
-        await kb.down('Control');
-        try { await kb.press(key); } finally { await kb.up('Control'); }
-      }, GENERATION_PAGE_SCALE, { sleepFn: (ms) => sleep(ms) });
-      if (logProof) {
-        this.log(browserZoomLogLine(this.currentAccount ? this.currentAccount.name : null, GENERATION_PAGE_SCALE, applied), applied ? 'info' : 'warn');
-      }
-      return applied;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  /**
-   * v2.48.114 (Z1b): zoom ka READ-BACK saboot — page ka
-   * asal effective scale padho aur [ROOT] line me
-   * verified ya FAILED likho (.116 Z3 se naap sirf
-   * devicePixelRatio hai — menu zoom ki gawahi wahi
-   * deta hai). Ek browser open par sirf EK line
-   * (this._zoomProofLogged, har launch par reset); baad
-   * ke checkpoints (grid wapsi) khamosh rehte hain. Ye
-   * line hukum ki nahi, ASAR ki gawahi hai — .113 ki
-   * 'applied' line hukum par sach thi, asar par nahi.
-   * Nakami par bhi run kabhi nahi rukta.
+   * v2.48.119 (F1): zoom ka READ-BACK saboot — zoom ab
+   * launch se pehle profile preset se lagta hai
+   * (engine/zoomPreset.js), is liye yahan kuch LAGANA
+   * nahi hai, sirf parkhna hai: page ka asal
+   * devicePixelRatio padho aur EK [ROOT] line likho —
+   * 'source=profile-preset ... verified|FAILED'. Ek
+   * browser open par sirf EK line (this._zoomProofLogged,
+   * har launch par reset), aur wo line Flow workspace
+   * ke tayyar hone ke baad banti hai (openFlowStudio ka
+   * aakhri checkpoint). Ye line hukum ki nahi, ASAR ki
+   * gawahi hai. Nakami par bhi run kabhi nahi rukta —
+   * zoom kabhi generation ko block nahi karta.
    */
   async _verifyGenerationZoom() {
     try {
       if (this._zoomProofLogged) return true;
       if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return false;
-      // v2.48.116 (Z3): read-back ab sirf devicePixelRatio
-      // hai — menu zoom 0.5 aur DSF 1.0 ke saath wahi 0.5
-      // padhna chahiye. visualViewport.scale pinch ka
-      // signal tha, menu zoom ka saboot nahi.
       const dpr = await this._readDevicePixelRatio();
-      const verified = zoomReadbackVerified(dpr, GENERATION_PAGE_SCALE);
+      const verified = zoomPreset.zoomPresetVerified(dpr, GENERATION_PAGE_SCALE);
       this._zoomProofLogged = true;
       this.log(
-        browserZoomVerifyLogLine(this.currentAccount ? this.currentAccount.name : null, GENERATION_PAGE_SCALE, dpr),
+        zoomPreset.zoomPresetLogLine(this.currentAccount ? this.currentAccount.name : null, dpr, verified),
         verified ? 'info' : 'warn'
       );
       return verified;
@@ -2467,81 +2384,41 @@ class FlowAutomationEngine {
   }
 
   /**
-   * v2.48.118 (F1 — W10 field failure): zoom ki BINDING
-   * koshish. .116/.117 me zoom launch ke ~5s baad, page
-   * load hote hue lagta tha — keystrokes gum, log me
-   * 'dpr=1 FAILED', aur dobara koshish kabhi nahi hoti
-   * thi; owner ko browser 100% par milta raha. Ab ye
-   * amal Flow workspace ke TAYYAR hone ke baad chalta
-   * hai (prompt box dikhai dene ke baad): keyboard zoom
-   * lagao, dpr padho, '[ROOT] browser-zoom ... attempt=
-   * <n>' line likho; dpr ~0.5 (0.48–0.52) na ho to
-   * settled pal (800ms) ke baad dobara — kul 3 koshishein
-   * (faisla zoomPolicy.nextZoomAction ka hai). Kamyabi
-   * par purani 'scale=0.5 applied' line attempt number
-   * ke saath bhi aati hai. Nakami par run NAHI rukta —
-   * zoom kabhi generation ko block nahi karta.
+   * v2.48.119 (F3 — OWNER ORDER 2026-11-18): DISTURBANCE
+   * RECOVERY. Run ke dauraan owner ghalti se generation
+   * browser me click kar de ya page ko kahin aur le jaye
+   * to stage marna NAHI chahiye: page ka URL task ke
+   * darj-shuda birth project (submit par likha gaya
+   * task.projectUrl, ya tile ki pehli sighting wala
+   * task.observedProjectUrl) se bahar ho to wapas usi
+   * project par navigate karo, [ROOT] line likho, aur
+   * stage wahin se aage badhne do. Hadd har task par
+   * DISTURBANCE_RECOVERY_MAX (3) — us ke baad ye madad
+   * band; stage apne aam usoolon se imaandaar fail hogi.
+   * Browser window band karna / Chrome kill karna is ke
+   * dayre se bahar hai — worker apne mare hue browser
+   * ke saath nahi jee sakta; wo tasks recovery ke liye
+   * park hote hain, jaise hamesha se hote aaye hain.
+   * Kabhi throw nahi karta.
    */
-  async _ensureGenerationZoom() {
+  async _recoverFromDisturbance(task, stage) {
     try {
+      if (!task || this.isStopping) return false;
       if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return false;
-      this._zoomEnsuredOnce = true;
-      const accountName = this.currentAccount ? this.currentAccount.name : null;
-      while (!this.isStopping) {
-        this._zoomAttempts = (this._zoomAttempts || 0) + 1;
-        const attempt = this._zoomAttempts;
-        await this._applyGenerationZoom(false);
-        const dpr = await this._readDevicePixelRatio();
-        const verified = zoomPolicy.zoomDprInBand(dpr, GENERATION_PAGE_SCALE);
-        this.log(
-          zoomPolicy.zoomAttemptLogLine(accountName, attempt, dpr, GENERATION_PAGE_SCALE),
-          verified ? 'info' : 'warn'
-        );
-        if (verified) {
-          this._zoomVerifiedOk = true;
-          this.log(`${browserZoomLogLine(accountName, GENERATION_PAGE_SCALE, true)} attempt=${attempt}`, 'info');
-          return true;
-        }
-        if (zoomPolicy.nextZoomAction(attempt, dpr, GENERATION_PAGE_SCALE) !== 'retry') break;
-        await sleep(zoomPolicy.ZOOM_RETRY_DELAY_MS);
-      }
-      this._zoomVerifiedOk = false;
-      return false;
-    } catch (e) {
-      return false;
-    }
-  }
-
-  /**
-   * v2.48.118 (F1): project grid me daakhil hone par EK
-   * aur mauqa — sirf tab jab workspace-ready wali binding
-   * koshish ho chuki ho aur nakam rahi ho (navigation
-   * focus reset kar sakti hai), aur ye grid wali koshish
-   * pehle na hui ho (faisla zoomPolicy.shouldReapplyZoom
-   * ka hai). Natija attempt line me darj hota hai. Run
-   * kabhi nahi rukta.
-   */
-  async _reassertZoomIfUnverified() {
-    try {
-      const due = zoomPolicy.shouldReapplyZoom({
-        ensuredOnce: !!this._zoomEnsuredOnce,
-        verified: !!this._zoomVerifiedOk,
-        reasserted: !!this._zoomGridReassertDone
-      });
-      if (!due) return false;
-      this._zoomGridReassertDone = true;
-      if (!this.page || (typeof this.page.isClosed === 'function' && this.page.isClosed())) return false;
-      this._zoomAttempts = (this._zoomAttempts || 0) + 1;
-      const attempt = this._zoomAttempts;
-      await this._applyGenerationZoom(false);
-      const dpr = await this._readDevicePixelRatio();
-      const verified = zoomPolicy.zoomDprInBand(dpr, GENERATION_PAGE_SCALE);
-      this.log(
-        zoomPolicy.zoomAttemptLogLine(this.currentAccount ? this.currentAccount.name : null, attempt, dpr, GENERATION_PAGE_SCALE),
-        verified ? 'info' : 'warn'
-      );
-      if (verified) this._zoomVerifiedOk = true;
-      return verified;
+      const recorded = task.observedProjectUrl || task.projectUrl || '';
+      if (!recorded) return false;
+      let current = '';
+      try { current = this.page.url() || ''; } catch (e) { current = ''; }
+      if (!disturbanceRecoveryApplies(current, recorded)) return false;
+      const n = (task._disturbanceRecoveries || 0) + 1;
+      if (n > DISTURBANCE_RECOVERY_MAX) return false;
+      task._disturbanceRecoveries = n;
+      this.log(disturbanceRecoveryLogLine(task.promptIndex, stage, n), 'warn');
+      try {
+        await this.page.goto(recorded, { waitUntil: 'domcontentloaded', timeout: 30000 });
+      } catch (e) {}
+      await sleep(800);
+      return true;
     } catch (e) {
       return false;
     }
@@ -2559,14 +2436,6 @@ class FlowAutomationEngine {
     // v2.48.114 (Z1b): naya browser = zoom read-back ki
     // nayi ek line (purani browser ki line nayi par nahi).
     this._zoomProofLogged = false;
-    // v2.48.118 (F1): naya browser = zoom ki nayi kitab —
-    // koshishon ki ginti, workspace-ready ke baad ki
-    // binding koshish hui ya nahi, natija, aur grid par
-    // ek-mauqa-wali koshish hui ya nahi, sab taaza.
-    this._zoomAttempts = 0;
-    this._zoomVerifiedOk = false;
-    this._zoomEnsuredOnce = false;
-    this._zoomGridReassertDone = false;
     // v2.48.9: a fresh launch = a fresh session — drop the cached
     // fetch inputs (cookies / user-agent) of the previous account.
     this._cookieHeaderCache = null;
@@ -2624,6 +2493,25 @@ class FlowAutomationEngine {
 
     this.log(`Opening [${account.name}]'s own Chrome profile…`, 'info');
 
+    // v2.48.119 (F1 — ZOOM PROFILE PRESET): busy check
+    // guzar gaya — is pal koi Chrome is profile ko nahi
+    // pakde hue, aur launch abhi hona hai. Yahi woh pal
+    // hai jab profile ke Preferences me flow.google.com
+    // ka 50% per-host zoom level likha jata hai
+    // (engine/zoomPreset.js): Chrome startup par use
+    // apne HostZoomMap me uthayega, aur menu me bhi wahi
+    // 50% dikhega. Keyboard wala rasta (.116–.118) field
+    // me band sabit hua — har pal par dpr=1 raha. Write
+    // fail-soft hai: nakami par sirf ek warning, launch
+    // har haal me aage badhta hai (zoom kabhi kisi run
+    // ko nahi rokta).
+    try {
+      const preset = zoomPreset.applyProfileZoomPreset(profilePath, { scale: GENERATION_PAGE_SCALE });
+      if (!preset.applied && !preset.alreadySet) {
+        this.log(`[ROOT] browser-zoom preset account=${account.name} write-failed reason=${preset.reason || 'unknown'} — continuing without it`, 'warn');
+      }
+    } catch (e) {}
+
     // Visibility comes from the browserMode launch plan.
     // `this.headless` is the pool's "background requested" flag (the
     // name is historical): background used to mean Puppeteer headless
@@ -2651,10 +2539,10 @@ class FlowAutomationEngine {
       // v2.48.116 (Z3): yahan .114 ka
       // device-scale launch flag launch flag tha —
       // HATA diya gaya. Wo flag Chrome ka menu Zoom
-      // NAHI hai (sirf device scale hai), aur asal menu
-      // zoom (keyboard se, _applyGenerationZoom) ke
-      // saath hota to asar 0.5 × 0.5 = 0.25 ho jata.
-      // DSF ab hamesha 1.0 hai; zoom sirf menu wala hai.
+      // NAHI hai (sirf device scale hai).
+      // v2.48.119 (F1): zoom ab profile preset se aata
+      // hai (upar wali write) — DSF hamesha 1.0 hai aur
+      // flag kabhi wapas nahi aayega.
       ...browserMode.launchWindowArgs(plan, gridBounds),
       ...(plan.antiThrottleArgs || []),
       '--disable-session-crashed-bubble',
@@ -2852,12 +2740,12 @@ class FlowAutomationEngine {
       } catch (e) {}
 
       this.currentAccount = account;
-      // v2.48.113 (Z1 — owner order): browser khulte hi
-      // 50% zoom, kisi bhi Flow interaction se PEHLE, aur
-      // [ROOT] proof line ke saath. Generation aur
-      // recovery/resume dono ke browser yahin se khulte
-      // hain, is liye ek hi jagah dono ko mil jata hai.
-      await this._applyGenerationZoom(true);
+      // v2.48.119 (F1): browser khulte hi yahan koi zoom
+      // NAHI lagta — 50% zoom launch se pehle profile
+      // preset me likha ja chuka hai (upar), Chrome use
+      // khud uthata hai. Is ka read-back saboot workspace
+      // ke tayyar hone par openFlowStudio me banta hai
+      // ('source=profile-preset' wali [ROOT] line).
       // v2.25.0: the launch plan decides where the window STARTS —
       // background = parked off-screen, visible = on screen.
       this.windowShown = !plan.background;
@@ -3484,16 +3372,6 @@ class FlowAutomationEngine {
     // yahan se aage kahin bhi mare, record reh jayega.
     this._registerCurrentProject(preferFreshCanvas ? 'fresh-entry' : 'recovery-entry');
 
-    // v2.48.113 (Z1): project-open poora — yahan tak aane
-    // wali navigations (Flow home, gallery, recorded URL)
-    // page scale reset kar sakti hain, is liye zoom
-    // khamoshi se dobara assert karo.
-    await this._applyGenerationZoom(false);
-    // v2.48.114 (Z1b): aur yahin pehla read-back saboot —
-    // page ka asal scale padh kar [ROOT] line (ek browser
-    // par ek hi dafa).
-    try { await this._verifyGenerationZoom(); } catch (e) {}
-
     // Dismiss tutorial/welcome overlay and clean up stale failed tiles
     try {
       await this.page.evaluate(() => {
@@ -3579,14 +3457,14 @@ class FlowAutomationEngine {
       this.log('The Flow workspace is ready — prompts can be sent.', 'success');
     } catch (e) {}
 
-    // v2.48.118 (F1): zoom ki BINDING koshish AB hai —
-    // workspace tayyar hai, page settled hai, keystrokes
-    // ke gum hone ki gunjaish sab se kam. Launch/project-
-    // open par lagi koshishein W10 me load hote page par
-    // zaya gayi thin (dpr=1 FAILED, retry kabhi nahi).
+    // v2.48.119 (F1): zoom ka EK read-back saboot AB
+    // hai — workspace tayyar hai, page settled hai.
+    // Zoom launch se pehle profile preset se lag chuka
+    // hai; ye line sirf us ka asar parkhti hai
+    // ('source=profile-preset ... verified|FAILED').
     // Nakami par bhi prep aage badhti hai — zoom kabhi
     // generation ko nahi rokta.
-    try { await this._ensureGenerationZoom(); } catch (e) {}
+    try { await this._verifyGenerationZoom(); } catch (e) {}
 
     // v2.48.106 (Fix F6): the prep's Agent-chip disable is
     // skipped for Agent-mode runs — AGENTTEST12's log showed
@@ -7128,26 +7006,12 @@ class FlowAutomationEngine {
           && document.querySelectorAll('flow-grid-tile-container').length > 0);
       } catch (e) { return false; }
     };
-    // v2.48.113 (Z1): grid par wapsi aksar ek navigation
-    // (goBack / goto) se hoti hai jo page scale reset kar
-    // sakti hai — har KAMYAB wapsi par zoom khamoshi se
-    // dobara assert karo, phir natija waisa hi lauto.
-    const finish = async (ok) => {
-      if (ok) {
-        try { await this._applyGenerationZoom(false); } catch (e) {}
-        // v2.48.114 (Z1b): read-back saboot — project-open
-        // wali line pehle aa chuki ho to ye khamosh rehta
-        // hai (ek browser, ek line); na aayi ho to yahin
-        // banti hai.
-        try { await this._verifyGenerationZoom(); } catch (e) {}
-        // v2.48.118 (F1): workspace-ready wali binding
-        // koshish nakam rahi ho to grid par wapsi par EK
-        // aur mauqa (navigation focus reset kar sakti
-        // hai) — us ke baad nahi.
-        try { await this._reassertZoomIfUnverified(); } catch (e) {}
-      }
-      return ok;
-    };
+    // v2.48.119 (F1): grid wapsi par ab koi zoom amal
+    // NAHI hota — zoom profile preset se lagta hai aur
+    // navigation use reset nahi karti (per-host zoom
+    // profile me mehfooz rehta hai). Purana keyboard
+    // re-assert (.113–.118) yahan se gaya.
+    const finish = async (ok) => ok;
     if (await onGrid()) return finish(true);
 
     try { await this.page.goBack({ waitUntil: 'domcontentloaded', timeout: 10000 }); } catch (e) {}
@@ -7475,11 +7339,19 @@ class FlowAutomationEngine {
       }
       return options.length ? { opt: options[0], exact: false } : null;
     };
+    // v2.48.119 (F2): poll ab ~8s hai (pehle 6 × 400ms ≈
+    // 2.4s tha — TEST118-ZOOM me menu us se der se aaya
+    // aur attempt andha intezaar karke mar gaya). Menu
+    // phir bhi na aaye to caller (tile-menu roop) click
+    // ko re-drive karta hai; ye picker sirf intezaar
+    // lamba karta hai.
     let options = [];
-    for (let r = 0; r < 6; r++) {
+    const pollDeadline = Date.now() + RESOLUTION_MENU_WAIT_MS;
+    for (;;) {
       options = await findOptions();
       if (options.length) break;
-      await sleep(400);
+      if (Date.now() >= pollDeadline) break;
+      await sleep(Math.min(RESOLUTION_MENU_POLL_MS, Math.max(1, pollDeadline - Date.now())));
     }
     const picked = pickFrom(options);
     if (picked) {
@@ -8242,7 +8114,56 @@ class FlowAutomationEngine {
       }
       this.log(tileDownloadClickLogLine(dlStrategy), 'info');
     }
-    const res = await this._nativePickResolution(settings && settings.quality);
+    // v2.48.119 (F2): resolution menu na aaye to ye
+    // attempt ki nakami NAHI hai — CLICK ki nakami hai.
+    // Re-drive: aadha khula overlay Escape se band karo,
+    // tile ke ⋮ menu ko dobara kholo, Download item ko
+    // dobara chalao, phir picker dobara. Kul
+    // RESOLUTION_MENU_MAX_REDRIVES (2) dafa, ISI attempt
+    // ke andar — prompt dobara submit NAHI hota. Har
+    // re-drive par [ROOT] resolution-menu redrive line.
+    const redriveClickDownload = async () => {
+      try { await this.page.keyboard.press('Escape'); } catch (e) {}
+      await sleep(500);
+      const idx = await this._resolveTileIndexForTask(task, tileIndexHint);
+      if (idx < 0) return false;
+      lastTileIdx = idx;
+      const coords = await this._tileCenterCoords(idx);
+      if (coords.found) {
+        await this.page.mouse.move(coords.x, coords.y);
+        await sleep(600);
+      }
+      let m = await findMoreControl(idx);
+      if (!m.found) m = await findMoreControlOverlay(idx);
+      if (!m.found) return false;
+      const strat = await this._tileMenuActivate(m);
+      if (!strat) return false;
+      let it = { found: false };
+      for (let r = 0; r < 20; r++) {
+        try { it = await this.page.evaluate(menuDownloadIdentitySource()); } catch (e) { it = { found: false }; }
+        if (it.found) break;
+        await sleep(500);
+      }
+      if (!it.found) return false;
+      const box = it.box || null;
+      if (box && Number(box.w) > 0 && Number(box.h) > 0) {
+        await this.page.mouse.click(Number(box.x) + Number(box.w) / 2, Number(box.y) + Number(box.h) / 2);
+      } else {
+        let dispatched = false;
+        try { dispatched = !!(await this.page.evaluate(menuDownloadActivateSource('click'))); } catch (e) {}
+        if (!dispatched) {
+          try { await this.page.evaluate(menuDownloadActivateSource('events')); } catch (e) {}
+        }
+      }
+      return true;
+    };
+    let res = await this._nativePickResolution(settings && settings.quality);
+    for (let redrive = 1; !res.found && redrive <= RESOLUTION_MENU_MAX_REDRIVES && !this.isStopping; redrive++) {
+      this.log(resolutionMenuRedriveLogLine(redrive, task.promptIndex), 'warn');
+      const clickedAgain = await redriveClickDownload();
+      if (!clickedAgain) break;
+      res = await this._nativePickResolution(settings && settings.quality);
+    }
     // v2.48.31 (MINT-WINDOW): resolution click ke is pal se
     // mint khidki khul gayi — pehli flow-content sighting tak
     // ki har request [MINT] req line banegi, aur sighting par
@@ -8617,6 +8538,11 @@ class FlowAutomationEngine {
     }
     for (const run of forms) {
       if (this.isStopping) return false;
+      // v2.48.119 (F3): DOWNLOAD stage disturbance
+      // check — har roop se pehle, page task ke birth
+      // project se bahar ho to pehle wapas le aao; roop
+      // phir apna kaam aam tartib se karta hai.
+      try { await this._recoverFromDisturbance(task, 'download'); } catch (e) {}
       let ok = false;
       try { ok = await run(); } catch (e) {
         const t = plainError.translateError(e);
@@ -14929,6 +14855,25 @@ class FlowAutomationEngine {
         break;
       }
 
+      // v2.48.119 (F3): RENDER-WAIT disturbance check —
+      // page is window ke kisi unsettled task ke birth
+      // project me NAHI hai (owner ne ghalti se kahin
+      // click/navigate kar diya) to use pehle wapas le
+      // aao; monitor apna kaam wahin se aage badhata
+      // hai. Bhatakna kabhi fail ki wajah nahi banta.
+      {
+        const unsettled = accountTasks.filter(t => !t.downloaded && !t.completed);
+        const homeTask = unsettled.find(t => projectIdOfUrl(t.observedProjectUrl || t.projectUrl || ''));
+        if (homeTask) {
+          let currentId = '';
+          try { currentId = projectIdOfUrl(this.page && !this.page.isClosed() ? (this.page.url() || '') : ''); } catch (e) {}
+          const isHome = !!currentId && unsettled.some(t => projectIdOfUrl(t.observedProjectUrl || t.projectUrl || '') === currentId);
+          if (!isHome) {
+            try { await this._recoverFromDisturbance(homeTask, 'render-wait'); } catch (e) {}
+          }
+        }
+      }
+
       if ((Date.now() - startMonitorTime) > effectiveMaxWaitSec * 1000) {
         // v2.1.0: the deadline is NOT an instant fail any more. First a
         // FINAL recovery sweep per unfinished task (scroll the grid so
@@ -16021,4 +15966,4 @@ class FlowAutomationEngine {
   }
 }
 
-module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, GENERATION_PAGE_SCALE, browserZoomLogLine, menuZoomKeySequence, applyMenuZoom, zoomReadbackVerified, browserZoomVerifyLogLine, tileMoreOverlaySource, tileMenuDumpSource, tileMenuDumpElementLine, tileMoreIdentitySource, tileMoreStateSource, tileMoreActivateSource, menuDownloadActivateSource, tileMenuOpenProbeSource, menuDownloadIdentitySource, tileMenuItemsDumpSource, tileMenuItemsElementLine, tileMenuItemsDumpLines, tileMenuOpenLogLine, tileDownloadClickLogLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption, birthMarkExistingTilesSource, birthTileProbeSource, tileStampIndexSource, tileMediaSrcsSource, birthMarkLogLine, tileFindLogLine };
+module.exports = { FlowAutomationEngine, mediaBodyState, mediaLoadLogLine, mediaLoadElementPick, attemptSummaryLogLine, netloadLogLine, netloadFailedLogLine, drainNetloadStream, projectIdOfUrl, parseGalleryDateTime, pickGalleryProject, galleryEntryDecision, recoveryEntryPlan, resolutionBtnSelected, resolutionStateSource, skipFirstDownloadApplies, passiveClaimApplies, resizeTriggerApplies, pointerTriggerApplies, belowfloorSampleDecision, belowfloorSampleName, failedVerificationSampleDecision, recoveryGalleryGuard, parseSettingsPill, settingsPillMismatch, SETTINGS_REPAIR_MAX_ATTEMPTS, settingsRepairDecision, SETTINGS_SELECT_WAIT_MS, SETTINGS_SELECT_POLL_MS, settingsOptionsDumpLine, settingsClickLogLine, settingsSkipLogLine, panelOptionTargetSource, resolutionTokenOf, panelDumpSource, settingsPanelDumpTextsLine, settingsPanelDumpElementLine, panelDumpRichSource, settingsPanelRichElementLine, settingsClickTargetLine, GENERATION_PAGE_SCALE, RESOLUTION_MENU_WAIT_MS, RESOLUTION_MENU_POLL_MS, RESOLUTION_MENU_MAX_REDRIVES, resolutionMenuRedriveLogLine, DISTURBANCE_RECOVERY_MAX, disturbanceRecoveryApplies, disturbanceRecoveryLogLine, tileMoreOverlaySource, tileMenuDumpSource, tileMenuDumpElementLine, tileMoreIdentitySource, tileMoreStateSource, tileMoreActivateSource, menuDownloadActivateSource, tileMenuOpenProbeSource, menuDownloadIdentitySource, tileMenuItemsDumpSource, tileMenuItemsElementLine, tileMenuItemsDumpLines, tileMenuOpenLogLine, tileDownloadClickLogLine, TILE_MENU_FILE_WAIT_MS, omni12CreditsPerVideo, modelNameParts, matchModelOption, birthMarkExistingTilesSource, birthTileProbeSource, tileStampIndexSource, tileMediaSrcsSource, birthMarkLogLine, tileFindLogLine };

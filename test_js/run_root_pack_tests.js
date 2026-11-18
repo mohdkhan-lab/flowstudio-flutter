@@ -14538,6 +14538,12 @@ async function main() {
   //      (Ctrl+0, then Ctrl+'-' down the ladder). The Z1 pins below
   //      were updated to the keyboard contract in .116; the scale,
   //      proof line and re-assert points are unchanged.]
+  //      [v2.48.119 (F1): the keyboard contract is REPLACED — the
+  //      CDP keyboard zoom never landed in the field (.116–.118,
+  //      dpr=1 on every attempt). The zoom is now a profile
+  //      preset written before launch (engine/zoomPreset.js);
+  //      the Z1 pins below assert the removal + the preset
+  //      wiring, and X123 pins the new contract in full.]
   // (Z2) The tile-menu ⋮ hunt scrolls the tile into the viewport
   //      centre and hovers it (~600ms settle) before hunting; the
   //      hunt scope is the tile's own subtree first, then the tile's
@@ -14551,43 +14557,33 @@ async function main() {
     const path117 = require('path');
     const read117 = (rel) => fs117.readFileSync(path117.join(__dirname, '..', rel), 'utf8');
     const flowSrc117 = read117('engine/flowAutomation.js');
+    const flowMod117 = require('../engine/flowAutomation');
     const {
       GENERATION_PAGE_SCALE: scale117,
-      browserZoomLogLine: zoomLine117,
-      menuZoomKeySequence: zoomSeq117,
-      applyMenuZoom: applyMenuZoom117,
       tileMoreOverlaySource: overlaySrc117,
       tileMenuDumpSource: tileDumpSrc117,
       tileMenuDumpElementLine: tileDumpLine117
-    } = require('../engine/flowAutomation');
+    } = flowMod117;
 
-    // --- Z1 (as updated by .116 Z3): the zoom helper is the
-    // page's own keyboard — Ctrl+0 reset, then Ctrl+'-' steps ---
+    // --- Z1 (as updated by .116 Z3, REPLACED by .119 F1): the
+    // keyboard setter is GONE — the zoom is a profile preset
+    // written before the launch; the read-back is a single
+    // line after workspace-ready (X123 pins the contract) ---
     eq('X117 Z1: the generation page scale is 0.5', scale117, 0.5);
+    eq('X117 Z1: the keyboard zoom setter no longer exists', typeof flowMod117.applyMenuZoom, 'undefined');
+    eq('X117 Z1: the keyboard sequence helper no longer exists', typeof flowMod117.menuZoomKeySequence, 'undefined');
+    eq('X117 Z1: the old proof-line helper no longer exists', typeof flowMod117.browserZoomLogLine, 'undefined');
+    ok('X117 Z1 source: no keyboard zoom call remains in the engine', !flowSrc117.includes('_applyGenerationZoom'));
     {
-      const pressed = [];
-      const press = async (key) => { pressed.push(key); };
-      eq('X117 Z1: the helper reports success through the seam', await applyMenuZoom117(press, 0.5, { delayMs: 0 }), true);
-      eq('X117 Z1: the sequence is reset + five zoom-out steps (100>90>80>75>67>50)', pressed.join(','), '0,-,-,-,-,-');
-      eq('X117 Z1: the sequence helper agrees', zoomSeq117(0.5).join(','), '0,-,-,-,-,-');
-      eq('X117 Z1: a failing seam is a quiet false, never a throw', await applyMenuZoom117(async () => { throw new Error('keyboard down'); }, 0.5, { delayMs: 0 }), false);
-      eq('X117 Z1: a missing seam is a quiet false', await applyMenuZoom117(null, 0.5, { delayMs: 0 }), false);
-      pressed.length = 0;
-      eq('X117 Z1: a bad scale falls back to the generation scale', await applyMenuZoom117(press, 0, { delayMs: 0 }), true);
-      eq('X117 Z1: the fallback still presses the 50% sequence', pressed.join(','), '0,-,-,-,-,-');
+      const launchAt = flowSrc117.indexOf('async launchBrowserForAccount(');
+      const presetAt = flowSrc117.indexOf('zoomPreset.applyProfileZoomPreset(profilePath', launchAt);
+      const puppAt = flowSrc117.indexOf('puppeteer.launch({', launchAt);
+      ok('X117 Z1 source: the preset is written before the generation launch', presetAt > launchAt && puppAt > presetAt);
     }
-    eq('X117 Z1: the proof line names account, scale and applied',
-      zoomLine117('flow.google.com_cookies (12)', 0.5, true),
-      '[ROOT] browser-zoom account=flow.google.com_cookies (12) scale=0.5 applied');
-    eq('X117 Z1: a failed application reads FAILED in the proof line',
-      zoomLine117('Acc', 0.5, false),
-      '[ROOT] browser-zoom account=Acc scale=0.5 FAILED');
-    ok('X117 Z1 source: zoom is applied at browser open with the proof line', flowSrc117.includes('await this._applyGenerationZoom(true);'));
-    ok('X117 Z1 source: completion points re-assert the zoom silently', (flowSrc117.match(/await this\._applyGenerationZoom\(false\);/g) || []).length >= 2);
     {
       const start = flowSrc117.indexOf('async _returnToProjectGrid()');
       const slice = flowSrc117.slice(start, start + 2600);
-      ok('X117 Z1 source: grid return re-asserts the zoom on success', slice.includes('await this._applyGenerationZoom(false);'));
+      ok('X117 Z1 source: grid return carries no zoom re-assert any more', !slice.includes('_applyGenerationZoom') && !slice.includes('_reassertZoomIfUnverified'));
     }
 
     // --- Z2: the overlay scope finds only the tile's own ⋮ ---
@@ -14691,6 +14687,15 @@ async function main() {
   //      verdict is DPR-only under the line form
   //      'zoom=0.5 dpr=<x> verified|FAILED'. The Z1b pins
   //      below were updated to this contract in .116.
+  // (Z3, v2.48.119 — F1 REPLACEMENT): the keyboard zoom never
+  //      landed in the field (.116–.118: dpr=1 at launch,
+  //      project-open, workspace-ready AND grid-return), so
+  //      the keyboard mechanism is removed entirely. The zoom
+  //      is a profile preset (engine/zoomPreset.js) and the
+  //      read-back line is now
+  //      'source=profile-preset dpr=<x> verified|FAILED',
+  //      logged ONCE, after workspace-ready. The Z3 pins
+  //      below were updated to this contract in .119.
   // =====================================================================
   {
     const fs118 = require('fs');
@@ -14699,10 +14704,11 @@ async function main() {
     const flowSrc118 = read118('engine/flowAutomation.js');
     const poolSrc118 = read118('engine/workerPool.js');
     const flowMod118 = require('../engine/flowAutomation');
+    const zoomPreset118 = require('../engine/zoomPreset');
     const {
-      zoomReadbackVerified: zoomVerified118,
-      browserZoomVerifyLogLine: zoomVerifyLine118
-    } = flowMod118;
+      zoomPresetVerified: zoomVerified118,
+      zoomPresetLogLine: zoomVerifyLine118
+    } = zoomPreset118;
     const creditBreakdown118 = require('../engine/creditBreakdown');
 
     // --- Z3: the device-scale launch flag is GONE ---
@@ -14715,32 +14721,32 @@ async function main() {
     }
     ok('X118 Z3 source: no Emulation page-scale anywhere in the engine', !flowSrc118.includes('Emulation.setPageScaleFactor'));
 
-    // --- Z3: the zoom is set by the page's own keyboard ---
-    {
-      const start = flowSrc118.indexOf('async _applyGenerationZoom(');
-      const slice = flowSrc118.slice(start, start + 2600);
-      ok('X118 Z3 source: the zoom set runs through applyMenuZoom', slice.includes('applyMenuZoom'));
-      ok('X118 Z3 source: the zoom set uses the page keyboard', slice.includes('this.page.keyboard'));
-      ok('X118 Z3 source: the chords hold Control', slice.includes("kb.down('Control')") && slice.includes("kb.up('Control')"));
-    }
+    // --- Z3 (.119 F1): the keyboard mechanism is GONE ---
+    eq('X118 Z3: the keyboard zoom setter no longer exists', typeof flowMod118.applyMenuZoom, 'undefined');
+    eq('X118 Z3: the old read-back helper no longer exists', typeof flowMod118.zoomReadbackVerified, 'undefined');
+    eq('X118 Z3: the old verify-line helper no longer exists', typeof flowMod118.browserZoomVerifyLogLine, 'undefined');
+    ok('X118 Z3 source: no keyboard zoom call remains in the engine', !flowSrc118.includes('_applyGenerationZoom') && !flowSrc118.includes('applyMenuZoom'));
 
-    // --- Z3: the read-back verdict (DPR-only) + line forms ---
+    // --- Z3 (.119 F1): the read-back verdict (DPR-only, preset
+    // band 0.02) + the new line form ---
     eq('X118 Z3: dpr 0.5 verifies', zoomVerified118(0.5), true);
-    eq('X118 Z3: dpr near 0.5 verifies', zoomVerified118(0.53), true);
+    eq('X118 Z3: dpr at the band edge verifies', zoomVerified118(0.52), true);
+    eq('X118 Z3: dpr outside the band fails', zoomVerified118(0.53), false);
     eq('X118 Z3: dpr 1.0 fails (no zoom in effect)', zoomVerified118(1), false);
     eq('X118 Z3: a missing dpr fails honestly', zoomVerified118(null), false);
-    eq('X118 Z3: the verified line uses the zoom= form',
-      zoomVerifyLine118('Acc', 0.5, 0.5),
-      '[ROOT] browser-zoom account=Acc zoom=0.5 dpr=0.5 verified');
+    eq('X118 Z3: the verified line uses the profile-preset form',
+      zoomVerifyLine118('Acc', 0.5, true),
+      '[ROOT] browser-zoom account=Acc source=profile-preset dpr=0.5 verified');
     eq('X118 Z3: the FAILED line carries the real dpr',
-      zoomVerifyLine118('Acc', 0.5, 1),
-      '[ROOT] browser-zoom account=Acc zoom=0.5 dpr=1 FAILED');
+      zoomVerifyLine118('Acc', 1, false),
+      '[ROOT] browser-zoom account=Acc source=profile-preset dpr=1 FAILED');
     eq('X118 Z3: a missing dpr reads n/a and fails',
-      zoomVerifyLine118('Acc', 0.5, null),
-      '[ROOT] browser-zoom account=Acc zoom=0.5 dpr=n/a FAILED');
+      zoomVerifyLine118('Acc', null, false),
+      '[ROOT] browser-zoom account=Acc source=profile-preset dpr=n/a FAILED');
     ok('X118 Z3 source: the read-back reads devicePixelRatio', flowSrc118.includes('window.devicePixelRatio'));
-    ok('X118 Z3 source: the verdict call is DPR-only', flowSrc118.includes('zoomReadbackVerified(dpr, GENERATION_PAGE_SCALE)'));
-    ok('X118 Z1b source: the read-back runs at both checkpoints', (flowSrc118.match(/await this\._verifyGenerationZoom\(\);/g) || []).length >= 2);
+    ok('X118 Z3 source: the verdict call is DPR-only', flowSrc118.includes('zoomPreset.zoomPresetVerified(dpr, GENERATION_PAGE_SCALE)'));
+    ok('X118 Z1b source: the read-back runs ONCE, after workspace-ready', (flowSrc118.match(/await this\._verifyGenerationZoom\(\);/g) || []).length === 1
+      && flowSrc118.indexOf('await this._verifyGenerationZoom();') > flowSrc118.indexOf('The Flow workspace is ready — prompts can be sent.'));
     ok('X118 Z1b source: the one-line guard resets per launch', flowSrc118.includes('this._zoomProofLogged = false;'));
 
     // --- Z2b: the field fixture (usable 94 of 142: 43 resting, 5×1 under) ---
@@ -15328,30 +15334,24 @@ async function main() {
     }
 
     // --- Z3: Chrome's OWN menu zoom (owner clarification) ---------
+    // v2.48.119 (F1): the keyboard contract below is REPLACED —
+    // the CDP keyboard zoom never landed in the field, so the
+    // mechanism is removed and the zoom is a profile preset
+    // (engine/zoomPreset.js, pinned in X123). These pins now
+    // assert the removal and the surviving invariants (no
+    // launch flag; one read-back, after workspace-ready).
     {
-      const { menuZoomKeySequence, applyMenuZoom } = require('../engine/flowAutomation');
-      eq('X120 Z3: the 50% sequence is reset + five zoom-out steps', menuZoomKeySequence(0.5).join(','), '0,-,-,-,-,-');
-      eq('X120 Z3: 100% is just the reset', menuZoomKeySequence(1).join(','), '0');
-      eq('X120 Z3: 75% is reset + three steps', menuZoomKeySequence(0.75).join(','), '0,-,-,-');
-      const pressed = [];
-      const okRun = await applyMenuZoom(async (k) => { pressed.push(k); }, 0.5, { delayMs: 0 });
-      eq('X120 Z3: the setter reports success when every chord lands', okRun, true);
-      eq('X120 Z3: the setter pressed the full sequence in order', pressed.join(','), '0,-,-,-,-,-');
-      const failRun = await applyMenuZoom(async () => { throw new Error('no keyboard'); }, 0.5, { delayMs: 0 });
-      eq('X120 Z3: a broken keyboard is an honest false, never a throw', failRun, false);
-      eq('X120 Z3: no press function is an honest false', await applyMenuZoom(null, 0.5, { delayMs: 0 }), false);
-      // wiring: the set runs at both verify checkpoints (project
-      // open + grid return), immediately around the read-back.
-      // v2.48.118 (F1): do aur istemal jure — workspace-ready wali
-      // binding koshish (_ensureGenerationZoom) aur grid wali
-      // ek-mauqa koshish (_reassertZoomIfUnverified) bhi wahi
-      // keyboard setter chalati hain; Z3 ka contract (keyboard
-      // zoom, koi launch flag nahi) bilkul waisa hi hai.
-      eq('X120 Z3: the zoom set is asserted at launch + both checkpoints + the F1 ensure/re-assert', flowSrc120.split('this._applyGenerationZoom(').length - 1, 5);
-      eq('X120 Z3: the read-back runs at both checkpoints', (flowSrc120.match(/await this\._verifyGenerationZoom\(\);/g) || []).length, 2);
+      const flowMod120 = require('../engine/flowAutomation');
+      eq('X120 Z3: the keyboard sequence helper is gone (.119 F1)', typeof flowMod120.menuZoomKeySequence, 'undefined');
+      eq('X120 Z3: the keyboard setter is gone (.119 F1)', typeof flowMod120.applyMenuZoom, 'undefined');
+      eq('X120 Z3: no keyboard zoom call site remains', flowSrc120.split('this._applyGenerationZoom(').length - 1, 0);
+      eq('X120 Z3: the read-back runs once — after workspace-ready (.119 F1)', (flowSrc120.match(/await this\._verifyGenerationZoom\(\);/g) || []).length, 1);
       const launchStart = flowSrc120.indexOf('async launchBrowserForAccount(');
       const launchSlice = flowSrc120.slice(launchStart, launchStart + 30000);
       ok('X120 Z3: launch args hold no device-scale flag (no 0.5 x 0.5 compounding)', !launchSlice.includes('force-device-scale-factor'));
+      ok('X120 Z3: the profile preset is written inside the launch, before puppeteer.launch',
+        launchSlice.indexOf('zoomPreset.applyProfileZoomPreset(profilePath') > 0
+        && launchSlice.indexOf('puppeteer.launch({') > launchSlice.indexOf('zoomPreset.applyProfileZoomPreset(profilePath'));
     }
 
     // --- Source pins: navigation itself is untouched --------------
@@ -15681,6 +15681,14 @@ async function main() {
   //      the project grid when every earlier attempt failed. Zoom
   //      failure never blocks generation; the launch flag
   //      (--force-device-scale-factor) stays REMOVED.
+  //      [v2.48.119 (F1): this contract is REPLACED — the .118
+  //      field run (TEST118-ZOOM) proved the machinery worked
+  //      and the keyboard zoom STILL never landed (attempts
+  //      1–4 all dpr=1). The whole keyboard mechanism and
+  //      engine/zoomPolicy.js are removed; the F1 pins below
+  //      now assert the removal, and X123 pins the profile-
+  //      preset contract that replaced it. F2/F3 below are
+  //      unchanged.]
   //   F2 download grace: before the honest download-failure verdict,
   //      a 10s grace (500ms polls) waits for THIS task's in-flight
   //      browser download (E1-DL) to complete; a match is saved via
@@ -15697,89 +15705,22 @@ async function main() {
     const flowSrc122 = fs122.readFileSync(path122.join(__dirname, '..', 'engine/flowAutomation.js'), 'utf8');
     const progressSrc122 = fs122.readFileSync(path122.join(__dirname, '..', 'lib/widgets/progress_panel.dart'), 'utf8');
     const FA122 = require('../engine/flowAutomation');
-    const ZP122 = require('../engine/zoomPolicy');
     const DG122 = require('../engine/downloadGrace');
 
-    // --- F1 pure policy: band, retry decision, re-apply gate -------
-    eq('X122 F1: dpr 0.5 is in band', ZP122.zoomDprInBand(0.5), true);
-    eq('X122 F1: dpr 0.49 is in band', ZP122.zoomDprInBand(0.49), true);
-    eq('X122 F1: dpr 0.52 is in band', ZP122.zoomDprInBand(0.52), true);
-    eq('X122 F1: dpr 0.53 is out of band', ZP122.zoomDprInBand(0.53), false);
-    eq('X122 F1: dpr 1 is out of band', ZP122.zoomDprInBand(1), false);
-    eq('X122 F1: missing dpr is never verified', ZP122.zoomDprInBand(null), false);
-    eq('X122 F1: first failure retries', ZP122.nextZoomAction(1, 1), 'retry');
-    eq('X122 F1: second failure retries', ZP122.nextZoomAction(2, 1), 'retry');
-    eq('X122 F1: third failure gives up', ZP122.nextZoomAction(3, 1), 'giveup');
-    eq('X122 F1: verified dpr stops at once', ZP122.nextZoomAction(1, 0.5), 'done');
-    eq('X122 F1: verified dpr stops even at the cap', ZP122.nextZoomAction(3, 0.5), 'done');
-    eq('X122 F1: max attempts is 3', ZP122.ZOOM_MAX_ATTEMPTS, 3);
-    eq('X122 F1: retry delay is 800ms', ZP122.ZOOM_RETRY_DELAY_MS, 800);
-    eq('X122 F1: attempt line (verified)', ZP122.zoomAttemptLogLine('Mohd Khan', 2, 0.5),
-      '[ROOT] browser-zoom account=Mohd Khan attempt=2 dpr=0.5 verified');
-    eq('X122 F1: attempt line (FAILED)', ZP122.zoomAttemptLogLine('Mohd Khan', 1, 1),
-      '[ROOT] browser-zoom account=Mohd Khan attempt=1 dpr=1 FAILED');
-    eq('X122 F1: attempt line (no reading)', ZP122.zoomAttemptLogLine('Mohd Khan', 1, null),
-      '[ROOT] browser-zoom account=Mohd Khan attempt=1 dpr=n/a FAILED');
-    eq('X122 F1: grid re-apply due after a failed ensure', ZP122.shouldReapplyZoom({ ensuredOnce: true, verified: false, reasserted: false }), true);
-    eq('X122 F1: no grid re-apply when verified', ZP122.shouldReapplyZoom({ ensuredOnce: true, verified: true, reasserted: false }), false);
-    eq('X122 F1: no grid re-apply before any ensure', ZP122.shouldReapplyZoom({ ensuredOnce: false, verified: false, reasserted: false }), false);
-    eq('X122 F1: grid re-apply fires only once', ZP122.shouldReapplyZoom({ ensuredOnce: true, verified: false, reasserted: true }), false);
-
-    // --- F1 wiring: scheduling + the removed flag stays removed ----
-    const idxReady122 = flowSrc122.indexOf('The Flow workspace is ready — prompts can be sent.');
-    const idxEnsure122 = flowSrc122.indexOf('await this._ensureGenerationZoom();');
-    ok('X122 F1: the binding zoom attempt is scheduled', idxEnsure122 > 0);
-    ok('X122 F1: the binding attempt runs AFTER workspace-ready', idxReady122 > 0 && idxEnsure122 > idxReady122);
-    ok('X122 F1: grid re-assert is wired into the grid return', flowSrc122.includes('await this._reassertZoomIfUnverified();'));
-    ok('X122 F1: per-launch zoom state resets', flowSrc122.includes('this._zoomEnsuredOnce = false;') && flowSrc122.includes('this._zoomGridReassertDone = false;'));
+    // --- F1 (REPLACED by .119): the keyboard retry policy is
+    // gone — zoomPolicy.js is deleted, the ensure loop and the
+    // grid re-assert are removed, and the zoom is a profile
+    // preset now (X123 pins the new contract) ---------------
+    ok('X122 F1: the zoom policy module is deleted', !fs122.existsSync(path122.join(__dirname, '..', 'engine/zoomPolicy.js')));
+    eq('X122 F1: the ensure retry loop is gone', typeof FA122.FlowAutomationEngine.prototype._ensureGenerationZoom, 'undefined');
+    eq('X122 F1: the grid re-assert is gone', typeof FA122.FlowAutomationEngine.prototype._reassertZoomIfUnverified, 'undefined');
+    eq('X122 F1: the keyboard setter is gone', typeof FA122.FlowAutomationEngine.prototype._applyGenerationZoom, 'undefined');
+    ok('X122 F1: no keyboard-zoom machinery remains in the engine source',
+      !flowSrc122.includes('zoomAttemptLogLine') && !flowSrc122.includes('_ensureGenerationZoom') && !flowSrc122.includes('_reassertZoomIfUnverified'));
     ok('X122 F1: the device-scale launch flag is NOT back', !flowSrc122.includes('force-device-scale-factor'));
-
-    // --- F1 behaviour: fake page, scripted dpr readings ------------
-    const mkZoomEngine122 = (dprSeq) => {
-      const logs = [];
-      const eng = new FA122.FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
-      const seq = dprSeq.slice();
-      eng.currentAccount = { name: 'Mohd Khan' };
-      eng.isStopping = false;
-      eng.page = {
-        isClosed: () => false,
-        keyboard: { down: async () => {}, press: async () => {}, up: async () => {} },
-        evaluate: async () => ({ dpr: seq.length ? seq.shift() : 1 })
-      };
-      return { eng, logs };
-    };
-    {
-      // dpr 1, then 0.5 — verified on the second attempt.
-      const { eng, logs } = mkZoomEngine122([1, 0.5]);
-      const okEnsure = await eng._ensureGenerationZoom();
-      eq('X122 F1: ensure succeeds when a retry lands in band', okEnsure, true);
-      eq('X122 F1: ensure stopped at the first verified attempt', eng._zoomAttempts, 2);
-      ok('X122 F1: attempt 1 logged FAILED', logs.some((m) => m === '[ROOT] browser-zoom account=Mohd Khan attempt=1 dpr=1 FAILED'));
-      ok('X122 F1: attempt 2 logged verified', logs.some((m) => m === '[ROOT] browser-zoom account=Mohd Khan attempt=2 dpr=0.5 verified'));
-      ok('X122 F1: success keeps the applied wording + attempt no', logs.some((m) => m === '[ROOT] browser-zoom account=Mohd Khan scale=0.5 applied attempt=2'));
-    }
-    {
-      // dpr stays 1 — exactly 3 attempts, no throw, run unblocked.
-      const { eng, logs } = mkZoomEngine122([1, 1, 1, 1]);
-      const okEnsure = await eng._ensureGenerationZoom();
-      eq('X122 F1: ensure gives up after 3 attempts without throwing', okEnsure, false);
-      eq('X122 F1: exactly 3 attempts were made', eng._zoomAttempts, 3);
-      eq('X122 F1: three FAILED attempt lines', logs.filter((m) => m.includes('browser-zoom') && m.includes('attempt=') && m.includes('FAILED')).length, 3);
-      // Grid re-apply: one extra shot; now the page reports 0.5.
-      eng.page.evaluate = async () => ({ dpr: 0.5 });
-      const okRe = await eng._reassertZoomIfUnverified();
-      eq('X122 F1: grid re-apply lands the zoom', okRe, true);
-      eq('X122 F1: grid re-apply counted as attempt 4', eng._zoomAttempts, 4);
-      const okRe2 = await eng._reassertZoomIfUnverified();
-      eq('X122 F1: grid re-apply never fires twice', okRe2, false);
-    }
-    {
-      // First attempt already in band — a single attempt.
-      const { eng } = mkZoomEngine122([0.5]);
-      const okEnsure = await eng._ensureGenerationZoom();
-      eq('X122 F1: first-attempt success', okEnsure, true);
-      eq('X122 F1: only one attempt needed', eng._zoomAttempts, 1);
-    }
+    ok('X122 F1: the read-back survives as a single workspace-ready call',
+      (flowSrc122.match(/await this\._verifyGenerationZoom\(\);/g) || []).length === 1
+      && flowSrc122.indexOf('await this._verifyGenerationZoom();') > flowSrc122.indexOf('The Flow workspace is ready — prompts can be sent.'));
 
     // --- F2 pure grace: matching, refusal, timeout -----------------
     eq('X122 F2: grace window is 10s', DG122.GRACE_WINDOW_MS, 10000);
@@ -15873,6 +15814,213 @@ async function main() {
     ok('X122 F3: the card keeps its 8px padding (actions sit inside it)', progressSrc122.includes('padding: const EdgeInsets.all(8)'));
     ok('X122 F3: the failure text still grows the card (maxLines 2 in the column)',
       progressSrc122.includes('item.error!') && progressSrc122.includes('maxLines: 2'));
+  }
+
+  // =====================================================================
+  // X123 (v2.48.119) — ZOOM PROFILE PRESET + RESOLUTION-MENU
+  // RE-DRIVE + DISTURBANCE RECOVERY (owner field reports
+  // 2026-11-18, TEST118-ZOOM run + the owner's own words):
+  //   F1 the CDP keyboard zoom is proven DEAD in the field
+  //      (.116/.117/.118 — launch, project-open, workspace-
+  //      ready and grid-return attempts ALL read back
+  //      dpr=1). The mechanism is REMOVED and replaced by a
+  //      profile preset: before the generation launch,
+  //      Chrome's per-host zoom level for flow.google.com
+  //      (50% → ln(0.5)/ln(1.2) ≈ -3.801784) is written
+  //      into the account profile's Preferences at
+  //      partition.per_host_zoom_levels (engine/
+  //      zoomPreset.js). One read-back after workspace-
+  //      ready logs the 'source=profile-preset' line.
+  //   F2 the resolution picker poll grows ~2.4s → ~8s,
+  //      and a menu that still does not appear is a failed
+  //      CLICK, not a failed attempt: Escape, re-open the
+  //      tile's ⋮ menu, click Download again — up to 2
+  //      re-drives inside the SAME download attempt. The
+  //      prompt is never resubmitted.
+  //   F3 during render-wait and download, if the page URL
+  //      leaves the task's recorded birth project (the
+  //      owner clicked in that browser), the engine
+  //      navigates back and resumes — capped at 3 per
+  //      task. No page event is a stop signal; only the
+  //      app's own Stop (beginStop) sets isStopping.
+  // =====================================================================
+  {
+    const fs123 = require('fs');
+    const path123 = require('path');
+    const os123 = require('os');
+    const read123 = (rel) => fs123.readFileSync(path123.join(__dirname, '..', rel), 'utf8');
+    const flowSrc123 = read123('engine/flowAutomation.js');
+    const FA123 = require('../engine/flowAutomation');
+    const ZPr123 = require('../engine/zoomPreset');
+
+    // --- F1 pure math ---------------------------------------------
+    ok('X123 F1: 50% maps to ≈ -3.801784', Math.abs(ZPr123.zoomLevelForScale(0.5) - (-3.8017840169239305)) < 1e-9);
+    eq('X123 F1: 100% maps to 0', ZPr123.zoomLevelForScale(1), 0);
+    eq('X123 F1: a bad scale maps to 0', ZPr123.zoomLevelForScale(0), 0);
+    eq('X123 F1: the preset host is flow.google.com', ZPr123.ZOOM_PRESET_HOST, 'flow.google.com');
+    eq('X123 F1: the partition key is the default-partition x', ZPr123.ZOOM_PARTITION_KEY, 'x');
+
+    // --- F1 applyHostZoom: purity / idempotence / preservation ----
+    {
+      const before = {
+        partition: {
+          per_host_zoom_levels: { x: { 'other.example.com': { zoom_level: -1.5, last_modified: '123' } } },
+          other_partition_key: true
+        },
+        untouched: { deep: [1, 2, 3] }
+      };
+      const snapshot = JSON.stringify(before);
+      const after = ZPr123.applyHostZoom(before, 'flow.google.com', ZPr123.zoomLevelForScale(0.5), '999');
+      eq('X123 F1: applyHostZoom does not mutate its input', JSON.stringify(before), snapshot);
+      eq('X123 F1: the host entry carries the 50% level', after.partition.per_host_zoom_levels.x['flow.google.com'].zoom_level, ZPr123.zoomLevelForScale(0.5));
+      eq('X123 F1: a fresh entry carries the given last_modified', after.partition.per_host_zoom_levels.x['flow.google.com'].last_modified, '999');
+      eq('X123 F1: other hosts are preserved', after.partition.per_host_zoom_levels.x['other.example.com'].zoom_level, -1.5);
+      eq('X123 F1: unrelated keys are preserved', after.partition.other_partition_key, true);
+      eq('X123 F1: deep unrelated values are preserved', JSON.stringify(after.untouched), '{"deep":[1,2,3]}');
+      const again = ZPr123.applyHostZoom(after, 'flow.google.com', ZPr123.zoomLevelForScale(0.5), '555');
+      eq('X123 F1: applyHostZoom is idempotent', JSON.stringify(again), JSON.stringify(after));
+      const fromEmpty = ZPr123.applyHostZoom({}, 'flow.google.com', -3.8017840169239305);
+      eq('X123 F1: the entry is created when absent', fromEmpty.partition.per_host_zoom_levels.x['flow.google.com'].zoom_level, -3.8017840169239305);
+      const existing = ZPr123.applyHostZoom(after, 'flow.google.com', -2, '777');
+      eq('X123 F1: an existing entry keeps its last_modified', existing.partition.per_host_zoom_levels.x['flow.google.com'].last_modified, '999');
+      eq('X123 F1: an existing entry takes the new level', existing.partition.per_host_zoom_levels.x['flow.google.com'].zoom_level, -2);
+    }
+
+    // --- F1 the file writer (temp profiles) ------------------------
+    {
+      const dir = fs123.mkdtempSync(path123.join(os123.tmpdir(), 'fs-zp-'));
+      const r1 = ZPr123.applyProfileZoomPreset(dir, {});
+      eq('X123 F1: the preset write applies on a fresh profile', r1.applied, true);
+      const written = JSON.parse(fs123.readFileSync(path123.join(dir, 'Default', 'Preferences'), 'utf8'));
+      eq('X123 F1: the written level is the 50% level', written.partition.per_host_zoom_levels.x['flow.google.com'].zoom_level, ZPr123.zoomLevelForScale(0.5));
+      const r2 = ZPr123.applyProfileZoomPreset(dir, {});
+      eq('X123 F1: a second write is a no-op (already set)', r2.alreadySet, true);
+      const dir2 = fs123.mkdtempSync(path123.join(os123.tmpdir(), 'fs-zp-'));
+      fs123.mkdirSync(path123.join(dir2, 'Default'), { recursive: true });
+      fs123.writeFileSync(path123.join(dir2, 'Default', 'Preferences'), '{not json');
+      const r3 = ZPr123.applyProfileZoomPreset(dir2, {});
+      eq('X123 F1: a corrupt Preferences is refused', r3.applied, false);
+      eq('X123 F1: a corrupt Preferences is left byte-identical', fs123.readFileSync(path123.join(dir2, 'Default', 'Preferences'), 'utf8'), '{not json');
+      const dir3 = fs123.mkdtempSync(path123.join(os123.tmpdir(), 'fs-zp-'));
+      fs123.mkdirSync(path123.join(dir3, 'Default'), { recursive: true });
+      fs123.writeFileSync(path123.join(dir3, 'Default', 'Preferences'), JSON.stringify({ background: { enabled: false }, download: { prompt_for_download: false } }));
+      ZPr123.applyProfileZoomPreset(dir3, {});
+      const merged = JSON.parse(fs123.readFileSync(path123.join(dir3, 'Default', 'Preferences'), 'utf8'));
+      eq('X123 F1: the write preserves the background pref', merged.background.enabled, false);
+      eq('X123 F1: the write preserves the download pref', merged.download.prompt_for_download, false);
+      eq('X123 F1: no profile path is an honest refusal', ZPr123.applyProfileZoomPreset('', {}).applied, false);
+    }
+
+    // --- F1 read-back verdict + line -------------------------------
+    eq('X123 F1: dpr 0.5 verifies', ZPr123.zoomPresetVerified(0.5), true);
+    eq('X123 F1: dpr 0.52 verifies (band edge)', ZPr123.zoomPresetVerified(0.52), true);
+    eq('X123 F1: dpr 0.53 fails', ZPr123.zoomPresetVerified(0.53), false);
+    eq('X123 F1: dpr 1 fails', ZPr123.zoomPresetVerified(1), false);
+    eq('X123 F1: a missing dpr fails', ZPr123.zoomPresetVerified(null), false);
+    eq('X123 F1: the preset line (verified)', ZPr123.zoomPresetLogLine('Mohd Khan', 0.5, true),
+      '[ROOT] browser-zoom account=Mohd Khan source=profile-preset dpr=0.5 verified');
+    eq('X123 F1: the preset line (FAILED)', ZPr123.zoomPresetLogLine('Mohd Khan', 1, false),
+      '[ROOT] browser-zoom account=Mohd Khan source=profile-preset dpr=1 FAILED');
+    eq('X123 F1: the preset line (no reading)', ZPr123.zoomPresetLogLine('Mohd Khan', null, false),
+      '[ROOT] browser-zoom account=Mohd Khan source=profile-preset dpr=n/a FAILED');
+
+    // --- F1 wiring pins ---------------------------------------------
+    {
+      const launchAt = flowSrc123.indexOf('async launchBrowserForAccount(');
+      const presetAt = flowSrc123.indexOf('zoomPreset.applyProfileZoomPreset(profilePath', launchAt);
+      const puppAt = flowSrc123.indexOf('puppeteer.launch({', launchAt);
+      const busyAt = flowSrc123.indexOf('if (busyCheck.busy) {', launchAt);
+      ok('X123 F1: the preset write sits inside the generation launch', presetAt > launchAt);
+      ok('X123 F1: the preset is applied BEFORE puppeteer.launch', puppAt > presetAt);
+      ok('X123 F1: the preset is written only after the busy check passes', busyAt > launchAt && presetAt > busyAt);
+    }
+    ok('X123 F1: the keyboard setter is gone from the engine', !flowSrc123.includes('_applyGenerationZoom'));
+    ok('X123 F1: the ensure retry loop is gone from the engine', !flowSrc123.includes('_ensureGenerationZoom'));
+    ok('X123 F1: the grid re-assert is gone from the engine', !flowSrc123.includes('_reassertZoomIfUnverified'));
+    ok('X123 F1: the zoom policy module is gone', !fs123.existsSync(path123.join(__dirname, '..', 'engine/zoomPolicy.js')));
+    ok('X123 F1: no device-scale launch flag anywhere in the engine source', !flowSrc123.includes('force-device-scale-factor'));
+    {
+      const readyAt = flowSrc123.indexOf('The Flow workspace is ready — prompts can be sent.');
+      const verifyAt = flowSrc123.indexOf('await this._verifyGenerationZoom();');
+      ok('X123 F1: the single read-back runs after workspace-ready', readyAt > 0 && verifyAt > readyAt);
+      eq('X123 F1: exactly one read-back call site', (flowSrc123.match(/await this\._verifyGenerationZoom\(\);/g) || []).length, 1);
+    }
+
+    // --- F1 behaviour: the read-back on a fake page -----------------
+    {
+      const logs = [];
+      const eng = new FA123.FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+      eng.currentAccount = { name: 'Mohd Khan' };
+      eng.page = { isClosed: () => false, evaluate: async () => ({ dpr: 0.5 }) };
+      const v = await eng._verifyGenerationZoom();
+      eq('X123 F1: a preset-matching dpr verifies', v, true);
+      ok('X123 F1: the preset line is logged', logs.some((m) => m === '[ROOT] browser-zoom account=Mohd Khan source=profile-preset dpr=0.5 verified'));
+      await eng._verifyGenerationZoom();
+      eq('X123 F1: the read-back fires once per browser (guard)', logs.filter((m) => m.includes('source=profile-preset')).length, 1);
+    }
+
+    // --- F2 wiring pins ---------------------------------------------
+    eq('X123 F2: the resolution poll window is ~8s', FA123.RESOLUTION_MENU_WAIT_MS, 8000);
+    eq('X123 F2: the re-drive cap is 2', FA123.RESOLUTION_MENU_MAX_REDRIVES, 2);
+    eq('X123 F2: the re-drive line', FA123.resolutionMenuRedriveLogLine(1, 0), '[ROOT] resolution-menu redrive=1 task=0');
+    {
+      const pickAt = flowSrc123.indexOf('async _nativePickResolution(');
+      const pickSlice = flowSrc123.slice(pickAt, pickAt + 5200);
+      ok('X123 F2: the picker polls to the 8s deadline', pickSlice.includes('RESOLUTION_MENU_WAIT_MS') && pickSlice.includes('pollDeadline'));
+    }
+    {
+      const formAt = flowSrc123.indexOf('async _nativeMenuForm(');
+      const formSlice = flowSrc123.slice(formAt, formAt + 30000);
+      ok('X123 F2: the re-drive loop is wired in the menu form', formSlice.includes('redrive <= RESOLUTION_MENU_MAX_REDRIVES'));
+      ok('X123 F2: each re-drive leaves its [ROOT] line', formSlice.includes('resolutionMenuRedriveLogLine(redrive, task.promptIndex)'));
+      ok('X123 F2: a re-drive dismisses the overlay with Escape first', formSlice.includes("this.page.keyboard.press('Escape')"));
+      ok('X123 F2: a re-drive re-opens the tile menu', formSlice.includes('redriveClickDownload') && formSlice.includes('this._tileMenuActivate(m)'));
+      ok('X123 F2: the picker runs again after a re-drive', formSlice.includes('res = await this._nativePickResolution(settings && settings.quality);'));
+    }
+
+    // --- F3 pure decision + line ------------------------------------
+    eq('X123 F3: the recovery cap is 3', FA123.DISTURBANCE_RECOVERY_MAX, 3);
+    eq('X123 F3: same project (grid) is not a disturbance', FA123.disturbanceRecoveryApplies('https://flow.google.com/project/abc-123', 'https://flow.google.com/project/abc-123'), false);
+    eq('X123 F3: the same project editor is not a disturbance', FA123.disturbanceRecoveryApplies('https://flow.google.com/project/abc-123/edit/xyz', 'https://flow.google.com/project/abc-123'), false);
+    eq('X123 F3: another project IS a disturbance', FA123.disturbanceRecoveryApplies('https://flow.google.com/project/other-9', 'https://flow.google.com/project/abc-123'), true);
+    eq('X123 F3: the gallery IS a disturbance', FA123.disturbanceRecoveryApplies('https://flow.google.com/', 'https://flow.google.com/project/abc-123'), true);
+    eq('X123 F3: no recorded project means no recovery', FA123.disturbanceRecoveryApplies('https://flow.google.com/', ''), false);
+    eq('X123 F3: the recovery line', FA123.disturbanceRecoveryLogLine(2, 'download', 1), '[ROOT] disturbance-recovery task=2 stage=download n=1');
+
+    // --- F3 behaviour: navigate back, cap, resume -------------------
+    {
+      const logs = [];
+      const eng = new FA123.FlowAutomationEngine({ onLog: (e) => logs.push(e.message) }, {});
+      eng.isStopping = false;
+      const navs = [];
+      let cur = 'https://flow.google.com/project/someone-else';
+      eng.page = {
+        isClosed: () => false,
+        url: () => cur,
+        goto: async (u) => { navs.push(u); cur = u; }
+      };
+      const task = { promptIndex: 2, projectUrl: 'https://flow.google.com/project/home-proj' };
+      const r1 = await eng._recoverFromDisturbance(task, 'render-wait');
+      eq('X123 F3: a disturbed page is recovered', r1, true);
+      eq('X123 F3: recovery navigates to the recorded project', navs[0], 'https://flow.google.com/project/home-proj');
+      ok('X123 F3: the recovery line is logged', logs.some((m) => m === '[ROOT] disturbance-recovery task=2 stage=render-wait n=1'));
+      const r2 = await eng._recoverFromDisturbance(task, 'render-wait');
+      eq('X123 F3: back home, no further recovery', r2, false);
+      cur = 'https://flow.google.com/';
+      eq('X123 F3: recovery n=2 lands', await eng._recoverFromDisturbance(task, 'download'), true);
+      cur = 'https://flow.google.com/';
+      eq('X123 F3: recovery n=3 lands', await eng._recoverFromDisturbance(task, 'download'), true);
+      cur = 'https://flow.google.com/';
+      eq('X123 F3: the cap refuses a 4th recovery', await eng._recoverFromDisturbance(task, 'download'), false);
+      eq('X123 F3: the counter stopped at the cap', task._disturbanceRecoveries, 3);
+      const orphan = { promptIndex: 0 };
+      eq('X123 F3: no recorded project, no recovery', await eng._recoverFromDisturbance(orphan, 'download'), false);
+    }
+
+    // --- F3 wiring pins ---------------------------------------------
+    ok('X123 F3: the render-wait check is wired in the monitor', flowSrc123.includes("await this._recoverFromDisturbance(homeTask, 'render-wait');"));
+    ok('X123 F3: the download check is wired before each form', flowSrc123.includes("await this._recoverFromDisturbance(task, 'download');"));
+    eq('X123 F3: only beginStop sets the stop flag in the engine', (flowSrc123.match(/this\.isStopping = true;/g) || []).length, 1);
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

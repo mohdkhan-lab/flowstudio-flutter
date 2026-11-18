@@ -16038,9 +16038,10 @@ async function main() {
   // =====================================================================
   // X124. PUBLIC v1.0.0 (branch `public`) — THE PUBLIC EDITION:
   // the entry gate (Door B: signed license keys + one-device
-  // fingerprint binding; Door A: account sign-in honestly disabled
-  // while no backend is configured), NO MCP surface in the shipped
-  // set, and the public name/version line. Where Lite-line pins
+  // fingerprint binding; Door A: account sign-in — honestly
+  // disabled in v1.0.0/v1.0.1, LIVE on Firebase from v1.0.2, see
+  // X127), NO MCP surface in the shipped set, and the public
+  // name/version line. Where Lite-line pins
   // asserted an MCP presence in the bridge (X102 endpoint, X110 A
   // broadcast), this branch asserts the ABSENCE instead — see
   // those pins. The signed-key pins use the operator's private
@@ -16061,30 +16062,27 @@ async function main() {
     const bridgeSrc124 = read124('engine_bridge.js');
     const installerSrc124 = read124('installer.iss');
 
-    // --- service identity: configured-off, and a generic name ---
-    eq('X124 the service ships unconfigured (Door A off)', serviceConfig124.isServiceConfigured(serviceConfig124.SERVICE_CONFIG), false);
-    ok('X124 the service name/URL carry no tell-tale words', !/admin|license|flowstudio/i.test(serviceConfig124.SERVICE_CONFIG.serviceName + ' ' + serviceConfig124.SERVICE_CONFIG.baseUrl));
-    eq('X124 Door A reports itself unavailable', authClient124.doorAState().configured, false);
-    eq('X124 Door A unavailable message is the honest one', authClient124.doorAState().message, authClient124.DOOR_A_UNAVAILABLE_MESSAGE);
-    eq('X124 Door A google URL is null while unconfigured', authClient124.googleAuthUrl(), null);
-    const dc124 = await authClient124.sendEmailCode('someone@example.com');
-    ok('X124 Door A send-code refuses honestly (no fake success)', dc124.ok === false && dc124.reason === 'not-configured');
-    const dv124 = await authClient124.verifyEmailCode('someone@example.com', '123456');
-    ok('X124 Door A verify-code refuses honestly', dv124.ok === false && dv124.reason === 'not-configured');
-    const da124 = await authClient124.postActivation({ kid: 'k', fingerprint: 'f' });
-    ok('X124 activation POST refuses while unconfigured', da124.ok === false && da124.reason === 'not-configured');
-
-    // --- activation client against a fake configured backend ---
-    const fakeCfg124 = { serviceName: 'Meridian', baseUrl: 'https://svc.invalid', projectRef: '' };
-    const okFetch124 = async () => ({ status: 200, json: async () => ({ ok: true }) });
-    const boundFetch124 = async () => ({ status: 409, json: async () => ({}) });
-    const downFetch124 = async () => { throw new Error('offline'); };
-    eq('X124 activation: backend OK lets activation proceed', (await authClient124.postActivation({ kid: 'k', fingerprint: 'f' }, { config: fakeCfg124, fetchImpl: okFetch124 })).ok, true);
-    eq('X124 activation: 409 means bound to another device', (await authClient124.postActivation({ kid: 'k', fingerprint: 'f' }, { config: fakeCfg124, fetchImpl: boundFetch124 })).reason, 'bound-to-other-device');
-    eq('X124 activation: network failure is reported, never faked', (await authClient124.postActivation({ kid: 'k', fingerprint: 'f' }, { config: fakeCfg124, fetchImpl: downFetch124 })).reason, 'network-error');
-    const sessFetch124 = async () => ({ status: 200, json: async () => ({ ok: true, token: 'tok', plan: 'Pro', exp: '2030-01-01', trial: false }) });
-    const sess124 = await authClient124.verifyEmailCode('a@b.c', '123456', { config: fakeCfg124, fetchImpl: sessFetch124 });
-    ok('X124 Door A verify returns the session when a backend exists', sess124.ok === true && sess124.session.plan === 'Pro');
+    // --- service identity: CONFIGURED (v1.0.2, Firebase), and a
+    // generic name. (v1.0.0/v1.0.1 pinned the unconfigured state;
+    // Phase 2 turned the backend on — the honest state is now
+    // "configured", and the detailed Firebase request shapes are
+    // pinned in X127.) ---
+    eq('X124 the service ships configured (Door A live, Firebase)', serviceConfig124.isServiceConfigured(serviceConfig124.SERVICE_CONFIG), true);
+    ok('X124 the service config carries the Firebase project values', serviceConfig124.SERVICE_CONFIG.projectId === 'arcane-airport-k5xj8' && serviceConfig124.SERVICE_CONFIG.databaseId === 'ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50' && typeof serviceConfig124.SERVICE_CONFIG.apiKey === 'string' && serviceConfig124.SERVICE_CONFIG.apiKey.length > 10 && typeof serviceConfig124.SERVICE_CONFIG.googleClientId === 'string' && serviceConfig124.SERVICE_CONFIG.googleClientId.endsWith('.apps.googleusercontent.com'));
+    ok('X124 the service name/domain carry no tell-tale words', !/admin|license|flowstudio/i.test(serviceConfig124.SERVICE_CONFIG.serviceName + ' ' + serviceConfig124.SERVICE_CONFIG.authDomain));
+    eq('X124 Door A reports itself configured', authClient124.doorAState().configured, true);
+    eq('X124 Door A configured message is empty', authClient124.doorAState().message, '');
+    const gUrl124 = authClient124.googleStartUrl();
+    ok('X124 Door A google URL is the system-browser OAuth URL (PKCE)', typeof gUrl124 === 'string' && gUrl124.startsWith('https://accounts.google.com/o/oauth2/v2/auth?') && gUrl124.includes('code_challenge_method=S256') && gUrl124.includes('redirect_uri=http%3A%2F%2F127.0.0.1%3A48290%2Fauth%2Fcallback'));
+    // An unconfigured config still refuses honestly (no fake success).
+    const unconf124 = { serviceName: 'Meridian', apiKey: '', projectId: '', databaseId: '', googleClientId: '' };
+    eq('X124 Door A google URL is null while unconfigured', authClient124.googleStartUrl({ config: unconf124 }), null);
+    const dc124 = await authClient124.signIn('someone@example.com', 'secret1', { config: unconf124 });
+    ok('X124 Door A sign-in refuses honestly while unconfigured', dc124.ok === false && dc124.reason === 'not-configured');
+    const dv124 = await authClient124.signUp('someone@example.com', 'secret1', { config: unconf124 });
+    ok('X124 Door A sign-up refuses honestly while unconfigured', dv124.ok === false && dv124.reason === 'not-configured');
+    const df124 = await authClient124.forgotPassword('someone@example.com', { config: unconf124 });
+    ok('X124 Door A forgot-password refuses honestly while unconfigured', df124.ok === false && df124.reason === 'not-configured');
 
     // --- malformed keys never need the private key ---
     eq('X124 a garbage key is malformed', licenseKey124.verifyLicenseKey('not-a-key').reason, 'malformed');
@@ -16159,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.1+2 (public line)', read124('pubspec.yaml').includes('version: 1.0.1+2'));
-    eq('X124 package.json version is 1.0.1', JSON.parse(read124('package.json')).version, '1.0.1');
-    ok('X124 the bridge reports version 1.0.1 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.1';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.2+3 (public line)', read124('pubspec.yaml').includes('version: 1.0.2+3'));
+    eq('X124 package.json version is 1.0.2', JSON.parse(read124('package.json')).version, '1.0.2');
+    ok('X124 the bridge reports version 1.0.2 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.2';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the public release line', bridgeSrc124.includes("startsWith('public-v')") && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16169,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.1 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.1'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.2 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.2'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16233,18 +16231,18 @@ async function main() {
     ok('X125 the provider retries once via the shared recovery',
       entryProviderSrc125.includes('_callWithEngineRetry') &&
       entryProviderSrc125.includes('AutomationBridge.engineNotAnsweringError'));
-    eq('X125 all three gate actions use the recovery',
-      (entryProviderSrc125.match(/_callWithEngineRetry\(/g) || []).length, 4); // helper def + 3 call sites
+    eq('X125 all four gate actions use the recovery',
+      (entryProviderSrc125.match(/_callWithEngineRetry\(/g) || []).length, 5); // helper def + 4 call sites (activate, sign-in, sign-up, forgot — v1.0.2 replaced send/verify-code)
 
     // --- the bridge: shared sentence, timeouts, start log ---
     ok('X125 the bridge owns the not-answering sentence',
       bridgeDartSrc125.includes('static const String engineNotAnsweringError') &&
       bridgeDartSrc125.includes("'The engine is not answering — try again in a moment.'"));
-    eq('X125 the three gate calls return the shared sentence',
-      (bridgeDartSrc125.match(/'error': engineNotAnsweringError,/g) || []).length, 3);
+    eq('X125 the four gate calls return the shared sentence',
+      (bridgeDartSrc125.match(/'error': engineNotAnsweringError,/g) || []).length, 4);
     const gateSection125 = bridgeDartSrc125.slice(bridgeDartSrc125.indexOf('entry gate (the app'));
-    eq('X125 all four gate HTTP calls carry the timeout',
-      (gateSection125.match(/\.timeout\(_entryCallTimeout\)/g) || []).length, 4);
+    eq('X125 all five gate HTTP calls carry the timeout',
+      (gateSection125.match(/\.timeout\(_entryCallTimeout\)/g) || []).length, 5);
     ok('X125 the gate timeout is 10 seconds',
       bridgeDartSrc125.includes('static const Duration _entryCallTimeout = Duration(seconds: 10);'));
     ok('X125 engine starts are logged to engine-start.log in the app data folder',
@@ -16269,6 +16267,339 @@ async function main() {
     const rp125 = Buffer.from(JSON.stringify({ kid: 'rogue', plan: 'Pro', exp: '2030-06-15' }), 'utf8').toString('base64url');
     const rogueKey125 = rp125 + '.' + crypto125.sign(null, Buffer.from(rp125, 'utf8'), rogue125.privateKey).toString('base64url');
     eq('X125 a key signed by any other keypair still fails', licenseKey125.verifyLicenseKey(rogueKey125).reason, 'bad-signature');
+  }
+
+  // =====================================================================
+  // X127. PUBLIC v1.0.2 — FIREBASE PHASE 2: Door A on Firebase Auth
+  // REST (email + password, Google via system-browser PKCE +
+  // signInWithIdp, anonymous for reporting), plan state in
+  // Firestore (users/{uid}, 7-day trial created on first sign-in),
+  // reporting (account max-merge; license activations under a
+  // deterministic id), the password gate copy, the held startup
+  // splash, and Item B (filter-chip overflow). Everything below
+  // runs on a FAKE fetch — URLs, bodies, headers and Firestore
+  // value encoding are pinned exactly; no real account is touched.
+  // Google sign-in against a real Google account stays a FIELD
+  // check (the exchange shape is pinned here, the live round trip
+  // cannot be proven without one).
+  // =====================================================================
+  {
+    const fs127 = require('fs');
+    const path127 = require('path');
+    const crypto127 = require('crypto');
+    const read127 = (rel) => fs127.readFileSync(path127.join(__dirname, '..', rel), 'utf8');
+    const cfg127 = require('../engine/serviceConfig').SERVICE_CONFIG;
+    const auth127 = require('../engine/authClient');
+    const fsClient127 = require('../engine/firestoreClient');
+    const report127 = require('../engine/reportClient');
+    const entryGate127 = require('../engine/entryGate');
+
+    // --- fake backend: identitytoolkit + securetoken + Google
+    // token endpoint + Firestore, with an in-memory doc store ---
+    const calls127 = [];
+    const docs127 = new Map(); // docPath -> encoded fields object
+    const reset127 = () => { calls127.length = 0; docs127.clear(); report127.resetAnonymousSessionCache(); };
+    const fakeFetch127 = async (url, init) => {
+      const method = (init && init.method) || 'GET';
+      const headers = (init && init.headers) || {};
+      const rawBody = init && init.body;
+      const body = typeof rawBody === 'string' && headers['Content-Type'] === 'application/json'
+        ? JSON.parse(rawBody) : rawBody;
+      calls127.push({ url, method, headers, body, rawBody });
+      const json = (status, data) => ({ status, json: async () => data });
+      if (url.includes('identitytoolkit.googleapis.com')) {
+        if (url.includes('accounts:signInWithPassword')) {
+          if (body.password === 'wrong-pass') return json(400, { error: { message: 'INVALID_PASSWORD' } });
+          return json(200, { idToken: 'ID-1', refreshToken: 'RF-1', expiresIn: '3600', localId: 'uid-1', email: body.email });
+        }
+        if (url.includes('accounts:signUp')) {
+          if (body && body.email) {
+            if (body.email === 'taken@example.com') return json(400, { error: { message: 'EMAIL_EXISTS' } });
+            return json(200, { idToken: 'ID-NEW', refreshToken: 'RF-NEW', expiresIn: '3600', localId: 'uid-new', email: body.email });
+          }
+          return json(200, { idToken: 'ID-ANON', refreshToken: 'RF-ANON', expiresIn: '3600', localId: 'uid-anon' });
+        }
+        if (url.includes('accounts:sendOobCode')) return json(200, { email: body && body.email });
+        if (url.includes('accounts:lookup')) return json(200, { users: [{ localId: 'uid-1', email: 'a@b.c', emailVerified: true }] });
+        if (url.includes('accounts:signInWithIdp')) {
+          return json(200, { idToken: 'ID-G', refreshToken: 'RF-G', expiresIn: '3600', localId: 'uid-g', email: 'g@example.com' });
+        }
+        return json(404, {});
+      }
+      if (url.includes('securetoken.googleapis.com')) {
+        return json(200, { id_token: 'ID-2', refresh_token: 'RF-2', expires_in: '3600', user_id: 'uid-1' });
+      }
+      if (url.includes('oauth2.googleapis.com/token')) {
+        return json(200, { id_token: 'GOOG-ID', access_token: 'GOOG-AT', token_type: 'Bearer' });
+      }
+      if (url.startsWith('https://firestore.googleapis.com/v1/')) {
+        const docPath = decodeURIComponent(url.split('/documents/')[1].split('?')[0]);
+        if (method === 'GET') {
+          if (!docs127.has(docPath)) return json(404, {});
+          return json(200, { name: docPath, fields: docs127.get(docPath) });
+        }
+        if (method === 'PATCH') {
+          const merged = { ...(docs127.get(docPath) || {}), ...(body.fields || {}) };
+          docs127.set(docPath, merged);
+          return json(200, { name: docPath, fields: merged });
+        }
+        return json(405, {});
+      }
+      return json(404, {});
+    };
+    const opts127 = { fetchImpl: fakeFetch127 };
+    const findCall127 = (frag) => calls127.find(c => c.url.includes(frag));
+    const countCalls127 = (frag) => calls127.filter(c => c.url.includes(frag)).length;
+
+    // --- Firestore addressing + value encoding ---
+    eq('X127 the Firestore base names the project + named database',
+      fsClient127.firestoreBase(cfg127),
+      'https://firestore.googleapis.com/v1/projects/arcane-airport-k5xj8/databases/ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50/documents');
+    eq('X127 value encoding: string/integer/timestamp',
+      JSON.stringify(fsClient127.encodeFields({ s: 'x', n: 5, t: fsClient127.timestampValue('2026-11-18T00:00:00.000Z') })),
+      JSON.stringify({ s: { stringValue: 'x' }, n: { integerValue: '5' }, t: { timestampValue: '2026-11-18T00:00:00.000Z' } }));
+
+    // --- email + password sign-in against an EXISTING user doc ---
+    reset127();
+    docs127.set('users/uid-1', {
+      email: { stringValue: 'a@b.c' }, plan: { stringValue: 'Limited' },
+      trialEndsAt: { timestampValue: '2026-12-01T00:00:00.000Z' }, videosMade: { integerValue: '3' }
+    });
+    const si127 = await auth127.signIn('a@b.c', 'secret1', opts127);
+    ok('X127 sign-in succeeds and carries the stored plan state',
+      si127.ok === true && si127.session.idToken === 'ID-1' && si127.session.uid === 'uid-1' &&
+      si127.session.plan === 'Limited' && si127.session.trialEndsAt === '2026-12-01T00:00:00.000Z' && si127.session.isNew === false);
+    const siCall127 = findCall127('accounts:signInWithPassword');
+    eq('X127 sign-in URL is identitytoolkit with the api key',
+      siCall127.url, `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${cfg127.apiKey}`);
+    eq('X127 sign-in body is email/password/returnSecureToken',
+      JSON.stringify(siCall127.body), JSON.stringify({ email: 'a@b.c', password: 'secret1', returnSecureToken: true }));
+    const siGet127 = findCall127('/documents/users/uid-1');
+    ok('X127 sign-in reads the user doc with the session ID token',
+      !!siGet127 && siGet127.method === 'GET' && siGet127.headers.Authorization === 'Bearer ID-1');
+    eq('X127 an existing user doc is never re-created on sign-in', countCalls127('/documents/users/uid-1'), 1);
+
+    // --- sign-up creates the trial doc (first sign-in) ---
+    reset127();
+    const fixedNow127 = Date.UTC(2026, 10, 18, 0, 0, 0);
+    const su127 = await auth127.signUp('new@example.com', 'secret1', { fetchImpl: fakeFetch127, nowMs: fixedNow127 });
+    ok('X127 sign-up succeeds as a new Free trial',
+      su127.ok === true && su127.session.isNew === true && su127.session.plan === 'Free' &&
+      su127.session.trialEndsAt === '2026-11-25T00:00:00.000Z' && su127.verifyEmailSent === true);
+    const oob127 = findCall127('accounts:sendOobCode');
+    eq('X127 after sign-up a VERIFY_EMAIL code is sent with the ID token',
+      JSON.stringify(oob127.body), JSON.stringify({ requestType: 'VERIFY_EMAIL', idToken: 'ID-NEW' }));
+    const create127 = calls127.find(c => c.method === 'PATCH' && c.url.includes('/documents/users/uid-new'));
+    ok('X127 the trial doc is created via PATCH on users/{uid}', !!create127);
+    eq('X127 trial creation fields (encoded, 7-day window)',
+      JSON.stringify(create127.body.fields),
+      JSON.stringify({
+        email: { stringValue: 'new@example.com' }, plan: { stringValue: 'Free' },
+        trialStartedAt: { timestampValue: '2026-11-18T00:00:00.000Z' },
+        trialEndsAt: { timestampValue: '2026-11-25T00:00:00.000Z' },
+        videosMade: { integerValue: '0' },
+        createdAt: { timestampValue: '2026-11-18T00:00:00.000Z' },
+        lastSeenAt: { timestampValue: '2026-11-18T00:00:00.000Z' }
+      }));
+    ok('X127 the create PATCH masks exactly the trial fields',
+      ['email', 'plan', 'trialStartedAt', 'trialEndsAt', 'videosMade', 'createdAt', 'lastSeenAt']
+        .every(f => create127.url.includes(`updateMask.fieldPaths=${f}`)));
+
+    // --- error mapping + network honesty ---
+    const bad127 = await auth127.signIn('a@b.c', 'wrong-pass', opts127);
+    ok('X127 a wrong password maps to the plain sentence',
+      bad127.ok === false && bad127.message === 'Email or password is not correct.');
+    const taken127 = await auth127.signUp('taken@example.com', 'secret1', opts127);
+    ok('X127 EMAIL_EXISTS maps to the plain sentence',
+      taken127.ok === false && taken127.message === 'That email already has an account — try signing in instead.');
+    const down127 = await auth127.signIn('a@b.c', 'secret1', { fetchImpl: async () => { throw new Error('offline'); } });
+    eq('X127 a network failure is reported, never faked', down127.reason, 'network-error');
+
+    // --- forgot password ---
+    reset127();
+    const fp127 = await auth127.forgotPassword('a@b.c', opts127);
+    const fpCall127 = findCall127('accounts:sendOobCode');
+    ok('X127 forgot-password sends a PASSWORD_RESET code',
+      fp127.ok === true && JSON.stringify(fpCall127.body) === JSON.stringify({ requestType: 'PASSWORD_RESET', email: 'a@b.c' }));
+
+    // --- anonymous session (reporting identity) ---
+    reset127();
+    const anon127 = await auth127.signInAnonymously(opts127);
+    const anonCall127 = findCall127('accounts:signUp');
+    ok('X127 the anonymous session is a bare signUp (no email/password)',
+      anon127.ok === true && anon127.session.uid === 'uid-anon' &&
+      JSON.stringify(anonCall127.body) === JSON.stringify({ returnSecureToken: true }));
+
+    // --- refresh (securetoken, form body) + lookup ---
+    reset127();
+    docs127.set('users/uid-1', {
+      email: { stringValue: 'a@b.c' }, plan: { stringValue: 'Limited' },
+      trialEndsAt: { timestampValue: '2026-12-01T00:00:00.000Z' }, videosMade: { integerValue: '3' }
+    });
+    const rf127 = await auth127.refreshSession('RF-1', opts127);
+    const rfCall127 = findCall127('securetoken.googleapis.com');
+    ok('X127 refresh posts the form grant to securetoken',
+      rf127.ok === true && rf127.session.idToken === 'ID-2' && rf127.accountInitOk === true &&
+      rfCall127.url === `https://securetoken.googleapis.com/v1/token?key=${cfg127.apiKey}` &&
+      rfCall127.headers['Content-Type'] === 'application/x-www-form-urlencoded' &&
+      rfCall127.rawBody === 'grant_type=refresh_token&refresh_token=RF-1');
+    const lk127 = await auth127.lookupSession('ID-1', opts127);
+    ok('X127 lookup returns the account identity',
+      lk127.ok === true && lk127.uid === 'uid-1' && lk127.emailVerified === true &&
+      JSON.stringify(findCall127('accounts:lookup').body) === JSON.stringify({ idToken: 'ID-1' }));
+
+    // --- Google: start URL + PKCE derivation ---
+    const gUrl127 = auth127.googleStartUrl();
+    const gParams127 = new URLSearchParams(gUrl127.split('?')[1]);
+    eq('X127 the PKCE challenge is the S256 of the verifier',
+      auth127.pkceChallengeFor('test-verifier'),
+      crypto127.createHash('sha256').update('test-verifier', 'utf8').digest('base64url'));
+    ok('X127 the Google start URL carries client, redirect, PKCE + state',
+      gUrl127.startsWith('https://accounts.google.com/o/oauth2/v2/auth?') &&
+      gParams127.get('client_id') === cfg127.googleClientId &&
+      gParams127.get('redirect_uri') === 'http://127.0.0.1:48290/auth/callback' &&
+      gParams127.get('response_type') === 'code' &&
+      gParams127.get('scope') === 'openid email profile' &&
+      gParams127.get('code_challenge_method') === 'S256' &&
+      gParams127.get('code_challenge') === auth127.pkceChallengeFor(auth127.pendingGoogleVerifier()) &&
+      gParams127.get('state') === auth127.pendingGoogleState());
+
+    // --- Google: callback exchange + signInWithIdp ---
+    reset127();
+    const verifier127 = auth127.pendingGoogleVerifier();
+    const state127 = auth127.pendingGoogleState();
+    const gc127 = await auth127.handleGoogleCallback('AUTHCODE', state127, opts127);
+    const gx127 = findCall127('oauth2.googleapis.com/token');
+    const gxBody127 = new URLSearchParams(typeof gx127.rawBody === 'string' ? gx127.rawBody : '');
+    ok('X127 the code exchange is PKCE form with NO client secret',
+      !!gx127 && gxBody127.get('code') === 'AUTHCODE' &&
+      gxBody127.get('client_id') === cfg127.googleClientId &&
+      gxBody127.get('redirect_uri') === 'http://127.0.0.1:48290/auth/callback' &&
+      gxBody127.get('grant_type') === 'authorization_code' &&
+      gxBody127.get('code_verifier') === verifier127 &&
+      !gx127.rawBody.includes('client_secret'));
+    const idp127 = findCall127('accounts:signInWithIdp');
+    eq('X127 signInWithIdp postBody carries the Google ID token',
+      idp127.body.postBody, 'id_token=GOOG-ID&providerId=google.com');
+    ok('X127 signInWithIdp request shape (requestUri + flags)',
+      idp127.body.requestUri === 'http://127.0.0.1:48290/auth/callback' &&
+      idp127.body.returnIdpCredential === true && idp127.body.returnSecureToken === true);
+    ok('X127 the Google sign-in lands with a trial doc for its uid',
+      gc127.ok === true && gc127.session.uid === 'uid-g' && docs127.has('users/uid-g'));
+    const noPend127 = await auth127.handleGoogleCallback('AUTHCODE', state127, opts127);
+    eq('X127 a consumed Google attempt cannot be replayed', noPend127.reason, 'no-pending-google');
+    auth127.googleStartUrl();
+    const tokenCallsBefore127 = countCalls127('oauth2.googleapis.com/token');
+    const mm127 = await auth127.handleGoogleCallback('AUTHCODE', 'WRONG-STATE', opts127);
+    ok('X127 a state mismatch refuses before any exchange',
+      mm127.ok === false && mm127.reason === 'google-state-mismatch' &&
+      countCalls127('oauth2.googleapis.com/token') === tokenCallsBefore127);
+    ok('X127 no client_secret is embedded in the auth client',
+      !read127('engine/authClient.js').includes('client_secret') &&
+      !read127('engine/serviceConfig.js').includes('client_secret'));
+
+    // --- reporting: account max-merge ---
+    reset127();
+    docs127.set('users/uid-1', {
+      email: { stringValue: 'a@b.c' }, plan: { stringValue: 'Free' },
+      videosMade: { integerValue: '9' }
+    });
+    const ra127 = await report127.reportAccountUsage({ uid: 'uid-1', idToken: 'ID-1', videosMade: 4 }, opts127);
+    const raPatch127 = calls127.find(c => c.method === 'PATCH' && c.url.includes('/documents/users/uid-1'));
+    ok('X127 account reporting max-merges (stored 9 beats local 4)',
+      ra127.ok === true && ra127.videosMade === 9 && raPatch127.body.fields.videosMade.integerValue === '9');
+    ok('X127 account reporting masks only videosMade + lastSeenAt',
+      raPatch127.url.includes('updateMask.fieldPaths=videosMade') &&
+      raPatch127.url.includes('updateMask.fieldPaths=lastSeenAt') &&
+      !raPatch127.url.includes('fieldPaths=plan'));
+    const ra2_127 = await report127.reportAccountUsage({ uid: 'uid-1', idToken: 'ID-1', videosMade: 12 }, opts127);
+    eq('X127 account reporting moves up when the local total is ahead', ra2_127.videosMade, 12);
+
+    // --- reporting: license activations, deterministic id ---
+    eq('X127 the key prefix is the first 14 characters',
+      report127.keyPrefixOf('ABCDEFGHIJKLMNOP.rest'), 'ABCDEFGHIJKLMN');
+    const expectActId127 = crypto127.createHash('sha256').update('ABCDEFGHIJKLMN' + 'FP-9', 'utf8').digest('hex');
+    eq('X127 the activation id is sha256hex(keyPrefix + fingerprint)',
+      report127.activationIdFor('ABCDEFGHIJKLMN', 'FP-9'), expectActId127);
+    reset127();
+    const rl127 = await report127.reportLicenseUsage(
+      { key: 'ABCDEFGHIJKLMNOP.rest', fingerprint: 'FP-9', appVersion: '1.0.2', videosMade: 7 }, opts127);
+    const rlPatch127 = calls127.find(c => c.method === 'PATCH' && c.url.includes('/documents/activations/'));
+    ok('X127 a license report writes the deterministic activations doc',
+      rl127.ok === true && rl127.docId === expectActId127 && !!rlPatch127 &&
+      rlPatch127.url.includes(`/documents/activations/${expectActId127}`));
+    ok('X127 a NEW activation doc carries firstSeenAt + the report fields',
+      !!rlPatch127.body.fields.firstSeenAt && rlPatch127.body.fields.keyPrefix.stringValue === 'ABCDEFGHIJKLMN' &&
+      rlPatch127.body.fields.fingerprint.stringValue === 'FP-9' &&
+      rlPatch127.body.fields.appVersion.stringValue === '1.0.2' &&
+      rlPatch127.body.fields.videosMade.integerValue === '7' && !!rlPatch127.body.fields.lastSeenAt);
+    ok('X127 the license report rides an anonymous token',
+      calls127.some(c => c.url.includes('/documents/activations/') && c.headers.Authorization === 'Bearer ID-ANON'));
+    const rl2_127 = await report127.reportLicenseUsage(
+      { key: 'ABCDEFGHIJKLMNOP.rest', fingerprint: 'FP-9', appVersion: '1.0.2', videosMade: 8 }, opts127);
+    const rlPatch2_127 = calls127.filter(c => c.method === 'PATCH' && c.url.includes('/documents/activations/')).pop();
+    ok('X127 an EXISTING activation doc is merged WITHOUT firstSeenAt',
+      rl2_127.ok === true && rl2_127.isNew === false && !('firstSeenAt' in rlPatch2_127.body.fields) &&
+      rlPatch2_127.body.fields.videosMade.integerValue === '8');
+    eq('X127 the anonymous session is cached across reports', countCalls127('accounts:signUp'), 1);
+
+    // --- gate decisions on the Firebase session shape ---
+    const now127 = Date.now();
+    const acctOk127 = entryGate127.decideEntry(
+      { type: 'account', idToken: 'ID', refreshToken: 'RF', uid: 'uid-1', expiresAt: now127 + 3600000, email: 'a@b.c', plan: 'Free', trialEndsAt: new Date(now127 + 5 * 86400000).toISOString(), lastVerifiedAt: now127 },
+      { nowMs: now127, fingerprint: 'F' });
+    ok('X127 gate: a live Firebase session on trial enters',
+      acctOk127.allowed === true && acctOk127.trial === true && acctOk127.daysLeft === 5);
+    const acctGrace127 = entryGate127.decideEntry(
+      { type: 'account', idToken: 'ID', refreshToken: 'RF', uid: 'uid-1', expiresAt: now127 - 1000, email: 'a@b.c', plan: 'Free', trialEndsAt: new Date(now127 + 5 * 86400000).toISOString(), lastVerifiedAt: now127 - 86400000 },
+      { nowMs: now127, fingerprint: 'F', networkFailed: true });
+    ok('X127 gate: expired token + network down + verified 1d ago = offline grace',
+      acctGrace127.allowed === true && acctGrace127.statusText.includes('offline'));
+    const acctStale127 = entryGate127.decideEntry(
+      { type: 'account', idToken: 'ID', refreshToken: 'RF', uid: 'uid-1', expiresAt: now127 - 1000, email: 'a@b.c', plan: 'Free', trialEndsAt: new Date(now127 + 5 * 86400000).toISOString(), lastVerifiedAt: now127 - 4 * 86400000 },
+      { nowMs: now127, fingerprint: 'F', networkFailed: true });
+    eq('X127 gate: the grace ends after 3 days', acctStale127.reason, 'session-expired');
+    const acctTrialEnd127 = entryGate127.decideEntry(
+      { type: 'account', idToken: 'ID', refreshToken: 'RF', uid: 'uid-1', expiresAt: now127 + 3600000, email: 'a@b.c', plan: 'Free', trialEndsAt: new Date(now127 - 1000).toISOString(), lastVerifiedAt: now127 },
+      { nowMs: now127, fingerprint: 'F' });
+    eq('X127 gate: an ended trial on the Free plan is refused', acctTrialEnd127.reason, 'trial-expired');
+
+    // --- gate copy + bridge routes + splash + Item B (source pins) ---
+    const gateDart127 = read127('lib/widgets/entry_gate.dart');
+    const providerDart127 = read127('lib/providers/entry_provider.dart');
+    const bridgeDart127 = read127('lib/services/automation_bridge.dart');
+    const bridgeJs127 = read127('engine_bridge.js');
+    ok('X127 the gate offers email + password with sign-in/sign-up/forgot',
+      gateDart127.includes("hint: 'Password'") && gateDart127.includes('Forgot password?') &&
+      gateDart127.includes('Create account') && gateDart127.includes("'Sign in'") &&
+      providerDart127.includes('Future<bool> signIn(') && providerDart127.includes('Future<bool> signUp(') &&
+      providerDart127.includes('Future<bool> forgotPassword('));
+    ok('X127 no code/OTP wording survives anywhere in the gate flow',
+      !/Send code|6-digit|sendEntryCode|verifyEntryCode|sendEmailCode|verifyEmailCode/.test(
+        gateDart127 + providerDart127 + bridgeDart127 + bridgeJs127 + read127('engine/authClient.js')));
+    ok('X127 the bridge serves the password routes and not the code routes',
+      bridgeJs127.includes("'/api/entry/sign-in'") && bridgeJs127.includes("'/api/entry/sign-up'") &&
+      bridgeJs127.includes("'/api/entry/forgot-password'") &&
+      !bridgeJs127.includes("'/api/entry/send-code'") && !bridgeJs127.includes("'/api/entry/verify-code'"));
+    ok('X127 the startup splash is in the gate (progress + real status lines)',
+      gateDart127.includes('_buildStartupScreen') && gateDart127.includes('LinearProgressIndicator') &&
+      gateDart127.includes('Starting the engine…') && gateDart127.includes('Checking your entry…') &&
+      gateDart127.includes('entry.engineStarted'));
+    const sidebar127 = read127('lib/widgets/sidebar_accounts.dart');
+    const chipSection127 = sidebar127.slice(
+      sidebar127.indexOf('class _HoverFilterBtn'),
+      sidebar127.indexOf('class _HoverableAccountCard'));
+    ok('X127 Item B: the filter chip label cannot wrap and the count stays on the chip',
+      chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
+      chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
+      chipSection127.includes('height: 36'));
+    ok('X127 the remaining version sites carry 1.0.2',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.2"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.2'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.2';"));
+    ok('X127 reporting hooks ride entry + generation in the bridge',
+      bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
+      bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('storeAccountSession'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

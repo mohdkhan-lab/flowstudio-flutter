@@ -82,6 +82,42 @@ class _SettingsViewState extends State<SettingsView> {
   /// out, but it does NOT unbind this device.
   Widget _buildLicensePanel() {
     final entry = context.watch<EntryProvider>();
+    // Phase 2: an account session gets the ACCOUNT card (who is
+    // signed in, the plan line, Sign out); a license key keeps
+    // the LICENSE card below.
+    if (entry.isAccount) {
+      return _buildPanel(
+        title: '👤 ACCOUNT',
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              entry.email.isNotEmpty
+                  ? 'Signed in as ${entry.email}'
+                  : 'Signed in with an account',
+              style: TextStyle(fontSize: 11.5, color: AppTheme.textMain),
+            ),
+            const SizedBox(height: 6),
+            Text(
+              entry.statusText.isNotEmpty
+                  ? entry.statusText
+                  : 'Account session active.',
+              style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+            ),
+            const SizedBox(height: 10),
+            TactileButton(
+              type: TactileType.danger,
+              height: 30,
+              borderRadius: 6,
+              bevelDepth: 2.0,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              label: 'Sign out',
+              onTap: () => context.read<EntryProvider>().signOut(),
+            ),
+          ],
+        ),
+      );
+    }
     return _buildPanel(
       title: '🔑 LICENSE',
       child: Column(

@@ -145,20 +145,25 @@ async function main() {
     if (child.exitCode !== null) {
       refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
     }
-    check('status version is 1.0.1', status && status.version === '1.0.1', JSON.stringify(status));
+    check('status version is 1.0.2', status && status.version === '1.0.2', JSON.stringify(status));
 
     // PUBLIC v1.0.0: ENTRY GATE — a fresh install (throwaway
-    // APPDATA, no credential stored) must be CLOSED, Door A must
-    // honestly report itself unconfigured, a garbage key must be
-    // refused, and — when the operator's key file is on this
-    // machine — a real generated key must open the gate and the
-    // Settings removal must close it again.
+    // APPDATA, no credential stored) must be CLOSED, a garbage
+    // key must be refused, and — when the operator's key file is
+    // on this machine — a real generated key must open the gate
+    // and the Settings removal must close it again.
+    // PUBLIC v1.0.2: Door A is CONFIGURED now (the Firebase
+    // backend is live) — the status must say so honestly. The
+    // smoke does NOT attempt a real sign-in (no test account
+    // exists); the Firebase request shapes are pinned with fake
+    // fetch in the root pack (X127), and a real sign-in is a
+    // field check.
     const entry0 = await req('GET', '/api/entry/status');
     check('entry gate closed on a fresh install',
       entry0.status === 200 && entry0.data && entry0.data.entry && entry0.data.entry.allowed === false,
       JSON.stringify(entry0.data));
-    check('entry gate: Door A honestly unconfigured',
-      entry0.data && entry0.data.doorA && entry0.data.doorA.configured === false,
+    check('entry gate: Door A configured (Firebase backend live)',
+      entry0.data && entry0.data.doorA && entry0.data.doorA.configured === true,
       JSON.stringify(entry0.data && entry0.data.doorA));
     const badKey = await req('POST', '/api/entry/activate-key', { key: 'not-a-key' });
     check('entry gate: a garbage key is refused',

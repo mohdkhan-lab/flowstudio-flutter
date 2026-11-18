@@ -133,8 +133,8 @@ const { ensureBridgePort } = require('./engine/portTakeover');
 const licenseKey = require('./engine/licenseKey');
 const entryGate = require('./engine/entryGate');
 const authClient = require('./engine/authClient');
+const reportClient = require('./engine/reportClient');
 const machineFingerprint = require('./engine/machineFingerprint');
-const { SERVICE_CONFIG, isServiceConfigured } = require('./engine/serviceConfig');
 
 // PUBLIC v1.0.0: this machine's one-device binding fingerprint,
 // computed once per engine process (the registry read is a
@@ -149,6 +149,73 @@ function cachedMachineFingerprint() {
     }
   }
   return machineFingerprintCache;
+}
+
+// PUBLIC v1.0.2 — app → panel reporting (fire-and-forget; see
+// engine/reportClient.js). The videos total is the usage-stats
+// all-time saved count — the same number the History header
+// shows. Every helper swallows every failure: reporting must
+// never block or fail entry or generation.
+function currentVideosMade() {
+  try {
+    const stats = getStats(dbService);
+    return stats && typeof stats.total === 'number' ? stats.total : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+function reportEntrySoon() {
+  try {
+    const credential = entryGate.loadCredential(appDataDataDir);
+    if (!credential) return;
+    const result = reportClient.reportForCredential({
+      credential,
+      fingerprint: cachedMachineFingerprint(),
+      appVersion: APP_VERSION,
+      videosMade: currentVideosMade()
+    });
+    if (result && typeof result.catch === 'function') result.catch(() => {});
+  } catch (e) {}
+}
+
+function reportActivationSoon(keyText) {
+  try {
+    if (typeof keyText !== 'string' || !keyText) return;
+    // The credential was saved just before this call; the report
+    // routes on it (license → activations doc, see reportClient).
+    reportEntrySoon();
+  } catch (e) {}
+}
+
+function reportStatsSoon() {
+  reportEntrySoon();
+}
+
+// PUBLIC v1.0.2 — store a fresh Firebase account session as the
+// entry credential (one shape for email sign-in, sign-up and the
+// Google callback): tokens for refresh, the uid the Firestore
+// user doc hangs off, the backend-confirmed plan state, and the
+// verification stamp the offline grace measures from.
+function storeAccountSession(session, fallbackEmail) {
+  entryGate.saveCredential(appDataDataDir, {
+    type: 'account',
+    idToken: session.idToken,
+    refreshToken: session.refreshToken,
+    uid: session.uid,
+    expiresAt: session.expiresAt,
+    email: session.email || fallbackEmail || '',
+    plan: session.plan,
+    trialEndsAt: session.trialEndsAt,
+    lastVerifiedAt: Date.now()
+  });
+}
+
+// Once per engine start: a stored entry credential re-reports
+// itself (the backend merge-writes — repeats just move the
+// last-seen stamp and the videos total).
+function reportStartupSoon() {
+  reportEntrySoon();
 }
 const { getStats } = require('./engine/usageStats');
 const { parseCookieText } = require('./engine/cookieParser');
@@ -246,7 +313,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '1.0.1';
+const APP_VERSION = '1.0.2';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -759,13 +826,83 @@ async function startBridge() {
       // app's front door — on start the app asks for the entry
       // status and shows ONLY the gate screen until one of these
       // routes has stored a valid credential (the decision logic
-      // lives in engine/entryGate.js). Door A (account sign-in)
-      // answers honestly while no backend is configured in
+      // lives in engine/entryGate.js). Phase 2 (v1.0.2): Door A
+      // is a REAL account sign-in against the backend named in
       // engine/serviceConfig.js — there is no mock success path.
       if (pathname === '/api/entry/status' && req.method === 'GET') {
+        let credential = entryGate.loadCredential(appDataDataDir);
+        let networkFailed = false;
+        // Phase 2 (Firebase): an account session is verified
+        // against its Firestore user document here. An expired ID
+        // token is refreshed ONCE first; then the doc is GET with
+        // the session's ID token (a 401/403 answer earns one
+        // refresh + one retry). A successful read syncs the plan
+        // state and stamps lastVerifiedAt — the offline grace in
+        // entryGate measures from that stamp. A network failure
+        // is reported to the decision, never hidden.
+        if (credential && credential.type === 'account' &&
+            typeof credential.refreshToken === 'string' && credential.refreshToken &&
+            typeof credential.uid === 'string' && credential.uid) {
+          let refreshed = false;
+          const tokenExpired = typeof credential.expiresAt !== 'number' ||
+            Date.now() >= credential.expiresAt;
+          const tryRefresh = async () => {
+            const r = await authClient.refreshSession(credential.refreshToken);
+            if (r.ok) {
+              credential = {
+                ...credential,
+                idToken: r.session.idToken,
+                refreshToken: r.session.refreshToken || credential.refreshToken,
+                expiresAt: r.session.expiresAt,
+                uid: r.session.uid || credential.uid,
+                email: r.session.email || credential.email,
+                plan: typeof r.session.plan === 'string' ? r.session.plan : credential.plan,
+                trialEndsAt: typeof r.session.trialEndsAt === 'string' ? r.session.trialEndsAt : credential.trialEndsAt
+              };
+              refreshed = true;
+              return true;
+            }
+            if (r.reason === 'network-error') networkFailed = true;
+            return false;
+          };
+          if (tokenExpired) await tryRefresh();
+          if (!networkFailed && typeof credential.idToken === 'string' && credential.idToken) {
+            let state = await authClient.fetchUserState(credential);
+            if (!state.ok && (state.status === 401 || state.status === 403) && !refreshed) {
+              if (await tryRefresh()) {
+                state = await authClient.fetchUserState(credential);
+              }
+            }
+            if (state.ok && state.exists) {
+              credential = {
+                ...credential,
+                plan: state.plan || credential.plan,
+                trialEndsAt: state.trialEndsAt || credential.trialEndsAt,
+                lastVerifiedAt: Date.now()
+              };
+              entryGate.saveCredential(appDataDataDir, credential);
+            } else if (state.ok && !state.exists) {
+              // The doc is missing (e.g. the very first status
+              // after a sign-in whose creation step was cut off):
+              // create it now — creation starts the trial once.
+              const created = await authClient.createUserDoc(credential);
+              if (created.ok) {
+                credential = {
+                  ...credential,
+                  plan: created.plan,
+                  trialEndsAt: created.trialEndsAt,
+                  lastVerifiedAt: Date.now()
+                };
+                entryGate.saveCredential(appDataDataDir, credential);
+              }
+            } else if (!state.ok && state.reason === 'network-error') {
+              networkFailed = true;
+            }
+          }
+        }
         const decision = entryGate.decideEntry(
-          entryGate.loadCredential(appDataDataDir),
-          { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
+          credential,
+          { nowMs: Date.now(), fingerprint: cachedMachineFingerprint(), networkFailed }
         );
         return sendJson(200, { ok: true, entry: decision, doorA: authClient.doorAState() });
       }
@@ -784,26 +921,14 @@ async function startBridge() {
           return sendJson(200, { ok: false, error: messages[verdict.reason] || 'This license key is not valid.' });
         }
         const fingerprint = cachedMachineFingerprint();
-        // One-device binding: when a backend is configured it owns
-        // the global record and must answer OK before the key is
-        // stored; without one (this phase) the activation completes
-        // locally and binds this machine in the stored credential.
-        if (isServiceConfigured(SERVICE_CONFIG)) {
-          let act = null;
-          try {
-            act = await authClient.postActivation({ kid: verdict.kid, fingerprint });
-          } catch (e) {
-            act = null;
-          }
-          if (!act || !act.ok) {
-            return sendJson(200, {
-              ok: false,
-              error: act && act.reason === 'bound-to-other-device'
-                ? 'This license key is already bound to another device.'
-                : 'Activation could not be completed — check your internet connection and try again.'
-            });
-          }
-        }
+        // One-device binding is LOCAL: the activation completes
+        // here and binds this machine in the stored credential.
+        // (The Phase 2 account backend owns ACCOUNTS, not key
+        // bindings — it has no key-activation endpoint, so key
+        // activation never waits on it. The v1.0.0 draft called a
+        // placeholder endpoint here; against the real backend
+        // that call could only fail and would have broken Door B
+        // the moment Door A's backend went live.)
         entryGate.saveCredential(appDataDataDir, {
           type: 'key',
           key,
@@ -815,6 +940,9 @@ async function startBridge() {
           entryGate.loadCredential(appDataDataDir),
           { nowMs: Date.now(), fingerprint }
         );
+        // Phase 2 reporting: the panel learns of this activation
+        // (fire-and-forget — the answer above never waits on it).
+        reportActivationSoon(key);
         return sendJson(200, { ok: true, entry: decision });
       }
 
@@ -827,42 +955,93 @@ async function startBridge() {
         return sendJson(200, { ok: true, entry: decision });
       }
 
-      if (pathname === '/api/entry/send-code' && req.method === 'POST') {
+      if (pathname === '/api/entry/sign-in' && req.method === 'POST') {
         const body = await readBody();
-        const result = await authClient.sendEmailCode(typeof body.email === 'string' ? body.email : '');
-        if (!result.ok) {
-          return sendJson(200, {
-            ok: false,
-            error: result.reason === 'not-configured'
-              ? authClient.DOOR_A_UNAVAILABLE_MESSAGE
-              : 'The code could not be sent — check the email address and your internet connection, then try again.'
-          });
-        }
-        return sendJson(200, { ok: true });
-      }
-
-      if (pathname === '/api/entry/verify-code' && req.method === 'POST') {
-        const body = await readBody();
-        const result = await authClient.verifyEmailCode(
+        const result = await authClient.signIn(
           typeof body.email === 'string' ? body.email : '',
-          typeof body.code === 'string' ? body.code : ''
+          typeof body.password === 'string' ? body.password : ''
         );
         if (!result.ok) {
           return sendJson(200, {
             ok: false,
             error: result.reason === 'not-configured'
               ? authClient.DOOR_A_UNAVAILABLE_MESSAGE
-              : 'That code was not accepted — check it and try again.'
+              : result.reason === 'network-error'
+                ? 'Sign-in could not reach the account service \u2014 check your internet connection and try again.'
+                : result.reason === 'account-init-failed'
+                  ? 'Sign-in could not be completed \u2014 please try again in a moment.'
+                  : (result.message || 'Sign-in could not be completed \u2014 check the email and password and try again.')
           });
         }
-        entryGate.saveCredential(appDataDataDir, {
-          type: 'account',
-          token: result.session.token,
-          plan: result.session.plan,
-          exp: result.session.exp,
-          trial: result.session.trial,
-          email: typeof body.email === 'string' ? body.email.trim() : ''
+        storeAccountSession(result.session,
+          typeof body.email === 'string' ? body.email.trim() : '');
+        const decision = entryGate.decideEntry(
+          entryGate.loadCredential(appDataDataDir),
+          { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
+        );
+        reportEntrySoon();
+        return sendJson(200, { ok: true, entry: decision });
+      }
+
+      if (pathname === '/api/entry/sign-up' && req.method === 'POST') {
+        const body = await readBody();
+        const result = await authClient.signUp(
+          typeof body.email === 'string' ? body.email : '',
+          typeof body.password === 'string' ? body.password : ''
+        );
+        if (!result.ok) {
+          return sendJson(200, {
+            ok: false,
+            error: result.reason === 'not-configured'
+              ? authClient.DOOR_A_UNAVAILABLE_MESSAGE
+              : result.reason === 'network-error'
+                ? 'Sign-up could not reach the account service \u2014 check your internet connection and try again.'
+                : result.reason === 'account-init-failed'
+                  ? 'Sign-up could not be completed \u2014 please try again in a moment.'
+                  : (result.message || 'Sign-up could not be completed \u2014 check the email and password and try again.')
+          });
+        }
+        storeAccountSession(result.session,
+          typeof body.email === 'string' ? body.email.trim() : '');
+        const decision = entryGate.decideEntry(
+          entryGate.loadCredential(appDataDataDir),
+          { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
+        );
+        reportEntrySoon();
+        return sendJson(200, { ok: true, entry: decision });
+      }
+
+      if (pathname === '/api/entry/forgot-password' && req.method === 'POST') {
+        const body = await readBody();
+        const result = await authClient.forgotPassword(
+          typeof body.email === 'string' ? body.email : '');
+        if (!result.ok && result.reason === 'not-configured') {
+          return sendJson(200, { ok: false, error: authClient.DOOR_A_UNAVAILABLE_MESSAGE });
+        }
+        if (!result.ok && result.reason === 'network-error') {
+          return sendJson(200, {
+            ok: false,
+            error: 'The reset email could not be sent \u2014 check your internet connection and try again.'
+          });
+        }
+        // Honest and non-revealing: the same answer whether or
+        // not the email has an account.
+        return sendJson(200, {
+          ok: true,
+          message: 'If that email has an account, a password reset email is on its way.'
         });
+      }
+
+      if (pathname === '/api/entry/sign-out' && req.method === 'POST') {
+        // Settings → Sign out (account sessions only). Firebase
+        // sign-out is local — there is no server session to end —
+        // so this just clears the stored credential. A license-key
+        // credential is NOT touched here \u2014 removing a key is
+        // /api/entry/remove-key's job.
+        const credential = entryGate.loadCredential(appDataDataDir);
+        if (credential && credential.type === 'account') {
+          entryGate.clearCredential(appDataDataDir);
+        }
         const decision = entryGate.decideEntry(
           entryGate.loadCredential(appDataDataDir),
           { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
@@ -871,10 +1050,45 @@ async function startBridge() {
       }
 
       if (pathname === '/api/entry/google-url' && req.method === 'GET') {
-        const url = authClient.googleAuthUrl();
+        const url = authClient.googleStartUrl();
         return sendJson(200, url
           ? { ok: true, url }
           : { ok: false, error: authClient.DOOR_A_UNAVAILABLE_MESSAGE });
+      }
+
+      // Phase 2: the Google sign-in lands HERE, in the system
+      // browser, after the backend redirects back with a code.
+      // The engine exchanges it (PKCE) and stores the account
+      // session; the app's gate notices on its next status poll
+      // (the gate starts a watch when it opens the Google URL).
+      // The page shown is deliberately plain and names nothing
+      // about the backend.
+      if (pathname === '/auth/callback' && req.method === 'GET') {
+        const sendHtml = (html) => {
+          res.writeHead(200, { 'Content-Type': 'text/html; charset=utf-8' });
+          res.end(html);
+        };
+        const pageShell = (title, line) => '<!doctype html><html><head><meta charset="utf-8">' +
+          `<title>${title}</title></head>` +
+          '<body style="font-family: system-ui, sans-serif; background:#171310; color:#f3e9d7; display:flex; align-items:center; justify-content:center; height:100vh; margin:0">' +
+          `<div style="text-align:center"><h2 style="font-weight:600">${title}</h2>` +
+          `<p style="color:#c9b995">${line}</p></div></body></html>`;
+        const authError = reqUrl.searchParams.get('error');
+        const code = reqUrl.searchParams.get('code');
+        const state = reqUrl.searchParams.get('state');
+        if (authError || !code) {
+          return sendHtml(pageShell('Sign-in did not complete',
+            'You can close this tab and try again from the app.'));
+        }
+        const result = await authClient.handleGoogleCallback(code, state);
+        if (!result.ok) {
+          return sendHtml(pageShell('Sign-in did not complete',
+            'You can close this tab and try again from the app.'));
+        }
+        storeAccountSession(result.session, '');
+        reportEntrySoon();
+        return sendHtml(pageShell('Signed in',
+          'Signed in \u2014 you can close this tab and return to the app.'));
       }
 
       // 3c. v2.31.4: app update check + install trigger. CHECK
@@ -1905,6 +2119,7 @@ async function startBridge() {
           activeWorkerPool = null;
           activeRunStarted = null;
           broadcastEvent('automation-log', { message: 'Generation queue finished.', level: 'success' });
+          reportStatsSoon();
         });
 
         // v2.48.112 (C): the caller sees the parallel count the
@@ -1999,6 +2214,7 @@ async function startBridge() {
           activeWorkerPool = null;
           activeRunStarted = null;
           broadcastEvent('automation-log', { message: 'Generation queue finished.', level: 'success' });
+          reportStatsSoon();
         });
         return sendJson(200, { ok: true, started: true, missing: report.missing.length, parallelBrowsers: pool.concurrency });
       }
@@ -2071,6 +2287,7 @@ async function startBridge() {
         }).finally(() => {
           activeWorkerPool = null;
           broadcastEvent('automation-log', { message: 'Generation queue finished.', level: 'success' });
+          reportStatsSoon();
         });
         return sendJson(200, { ok: true, resumed: true, mode: 'recovery', count: recoveryRows.length, parallelBrowsers: pool.concurrency });
       }
@@ -2131,6 +2348,7 @@ async function startBridge() {
         }).finally(() => {
           activeWorkerPool = null;
           broadcastEvent('automation-log', { message: 'Parked recovery finished.', level: 'success' });
+          reportStatsSoon();
         });
         return sendJson(200, { ok: true, started: true, count: rows.length, parallelBrowsers: pool.concurrency });
       }
@@ -2260,6 +2478,9 @@ async function startBridge() {
   });
   server.listen(PORT, '127.0.0.1', () => {
     console.log(`[FlowStudio Engine Bridge] Listening on http://127.0.0.1:${PORT}`);
+    // Phase 2 reporting: a stored entry credential re-reports
+    // itself once per app start (fire-and-forget).
+    reportStartupSoon();
   });
 }
 

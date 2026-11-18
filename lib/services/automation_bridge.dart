@@ -17,7 +17,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '1.0.1';
+  static const String appVersion = '1.0.2';
 
   // PUBLIC v1.0.1: the one "engine is not answering" sentence the
   // entry-gate calls return when the bridge cannot be reached at
@@ -1264,22 +1264,43 @@ class AutomationBridge {
     return null;
   }
 
-  /// Door A: ask the backend to email a 6-digit sign-in code.
-  /// While no backend is configured the bridge answers with the
-  /// honest not-available message — there is no fake success.
-  Future<Map<String, dynamic>> sendEntryCode(String email) async {
+  /// Settings → Sign out (account sessions): the bridge clears
+  /// the local account session (Firebase sign-out is local — there
+  /// is no server session to end). A license-key credential is not
+  /// touched by this call.
+  Future<Map<String, dynamic>?> signOutAccount() async {
+    try {
+      final res = await http.post(Uri.parse('$baseUrl/api/entry/sign-out'));
+      if (res.statusCode == 200) {
+        final data = json.decode(res.body);
+        if (data['ok'] == true) {
+          return Map<String, dynamic>.from(data as Map);
+        }
+      }
+    } catch (e) {
+      debugPrint('[signOutAccount Error] $e');
+    }
+    return null;
+  }
+
+  /// Door A: sign in with email + password. On success the bridge
+  /// stores the account session and the answer carries the entry
+  /// decision. While no backend is configured the bridge answers
+  /// with the honest not-available message — no fake success.
+  Future<Map<String, dynamic>> signInAccount(
+      String email, String password) async {
     try {
       final res = await http
           .post(
-            Uri.parse('$baseUrl/api/entry/send-code'),
+            Uri.parse('$baseUrl/api/entry/sign-in'),
             headers: {'Content-Type': 'application/json'},
-            body: json.encode({'email': email}),
+            body: json.encode({'email': email, 'password': password}),
           )
           .timeout(_entryCallTimeout);
       final data = json.decode(res.body);
       return Map<String, dynamic>.from(data as Map);
     } catch (e) {
-      debugPrint('[sendEntryCode Error] $e');
+      debugPrint('[signInAccount Error] $e');
       return {
         'ok': false,
         'error': engineNotAnsweringError,
@@ -1287,21 +1308,43 @@ class AutomationBridge {
     }
   }
 
-  /// Door A: verify the emailed code. On success the bridge stores
-  /// the account session and the answer carries the entry decision.
-  Future<Map<String, dynamic>> verifyEntryCode(String email, String code) async {
+  /// Door A: create an account with email + password (a first
+  /// sign-in starts the 7-day trial). Same answer shape as sign-in.
+  Future<Map<String, dynamic>> signUpAccount(
+      String email, String password) async {
     try {
       final res = await http
           .post(
-            Uri.parse('$baseUrl/api/entry/verify-code'),
+            Uri.parse('$baseUrl/api/entry/sign-up'),
             headers: {'Content-Type': 'application/json'},
-            body: json.encode({'email': email, 'code': code}),
+            body: json.encode({'email': email, 'password': password}),
           )
           .timeout(_entryCallTimeout);
       final data = json.decode(res.body);
       return Map<String, dynamic>.from(data as Map);
     } catch (e) {
-      debugPrint('[verifyEntryCode Error] $e');
+      debugPrint('[signUpAccount Error] $e');
+      return {
+        'ok': false,
+        'error': engineNotAnsweringError,
+      };
+    }
+  }
+
+  /// Door A: ask the backend to email a password-reset link.
+  Future<Map<String, dynamic>> forgotEntryPassword(String email) async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$baseUrl/api/entry/forgot-password'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'email': email}),
+          )
+          .timeout(_entryCallTimeout);
+      final data = json.decode(res.body);
+      return Map<String, dynamic>.from(data as Map);
+    } catch (e) {
+      debugPrint('[forgotEntryPassword Error] $e');
       return {
         'ok': false,
         'error': engineNotAnsweringError,

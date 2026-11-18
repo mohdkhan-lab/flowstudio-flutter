@@ -1286,27 +1286,42 @@ class _HoverFilterBtn extends StatelessWidget {
           bevelDepth: 1.5,
           padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 3),
           onTap: onTap,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Text(
-                label,
-                style: TextStyle(
-                  fontSize: 9,
-                  fontWeight: FontWeight.w700,
-                  color: isActive ? activeTint : AppTheme.textDim,
+          // v1.0.2 (Item B): at the narrow sidebar width the old
+          // column let the longest label ("Checking") wrap
+          // mid-word, which pushed the count below the chip. The
+          // label is now single-line (softWrap off, never wraps)
+          // and the whole label+count column rides a scale-down
+          // FittedBox, so both always fit INSIDE the 36px chip —
+          // the count badge can no longer drop below it. Theme
+          // tokens and the chip height are unchanged (FIT law).
+          child: FittedBox(
+            fit: BoxFit.scaleDown,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  label,
+                  maxLines: 1,
+                  softWrap: false,
+                  style: TextStyle(
+                    fontSize: 9,
+                    fontWeight: FontWeight.w700,
+                    color: isActive ? activeTint : AppTheme.textDim,
+                  ),
                 ),
-              ),
-              const SizedBox(height: 1),
-              Text(
-                '$count',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w800,
-                  color: isActive ? activeTint : (accentColor ?? AppTheme.textDim),
+                const SizedBox(height: 1),
+                Text(
+                  '$count',
+                  maxLines: 1,
+                  softWrap: false,
+                  style: TextStyle(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w800,
+                    color: isActive ? activeTint : (accentColor ?? AppTheme.textDim),
+                  ),
                 ),
-              ),
-            ],
+              ],
+            ),
           ),
         ),
       ),

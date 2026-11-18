@@ -1,6 +1,7 @@
 'use strict';
 
 // PUBLIC v1.0.0 — the entry gate's decision + credential store.
+// (Phase 2, v1.0.2: real account sessions — see the account branch.)
 //
 // The gate is the app's front door: on start, when no valid entry
 // credential exists, ONLY the gate screen is shown and the main UI
@@ -8,7 +9,10 @@
 // in <dataDir>/entry-credential.json:
 //
 //   { type: 'key',     key, kid, fingerprint, activatedAt }
-//   { type: 'account', token, plan, exp, trial, email }
+//   { type: 'account', idToken, refreshToken, uid, expiresAt,
+//     email, plan, trialEndsAt, lastVerifiedAt }        (Phase 2)
+//   { type: 'account', token, plan, exp, trial, email } (v1.0.0
+//     shape — never written anymore, still honoured on read)
 //
 // decideEntry is the single pure decision both the bridge and the
 // tests use:
@@ -17,13 +21,18 @@
 //   key, expired             → gate ('key-expired')
 //   key, other device's bind → gate ('device-mismatch')
 //   key, valid + this device → app
+//   account, plan inactive   → gate ('trial-expired') — the trial
+//     window has ended and no paid plan is recorded
 //   account, token expired   → gate ('session-expired')
-//   account, token live      → app
+//   account, plan active + token live → app
+//   account, plan active + token expired BUT the last successful
+//     online check is < 3 days old and this check failed on the
+//     network (ctx.networkFailed) → app, on the offline grace —
+//     the status line says it is running on a recent check
 //
 // Removing the credential from the app (Settings) deletes this
 // file. It does NOT unbind the device: the binding recorded here
-// (and, when a backend is configured, on the backend) still names
-// this machine, and only the operator can release it.
+// still names this machine, and only the operator can release it.
 
 const fs = require('fs');
 const path = require('path');
@@ -31,6 +40,18 @@ const { verifyLicenseKey, keyExpiryMs } = require('./licenseKey');
 
 const ENTRY_CREDENTIAL_FILE = 'entry-credential.json';
 const DAY_MS = 86400000;
+// The offline grace: an account whose plan state was verified
+// online less than this long ago may still enter while offline.
+const ACCOUNT_GRACE_MS = 3 * DAY_MS;
+
+// A recorded plan counts as a PAID (standing) plan when it names
+// one — anything other than the free/trial labels. Paid plans do
+// not depend on the trial window.
+function isPaidPlan(plan) {
+  if (typeof plan !== 'string') return false;
+  const p = plan.trim().toLowerCase();
+  return p !== '' && p !== 'free' && p !== 'trial';
+}
 
 function credentialPath(dataDir) {
   return path.join(dataDir, ENTRY_CREDENTIAL_FILE);
@@ -93,8 +114,13 @@ function gateDecision(reason) {
     exp: '',
     trial: false,
     daysLeft: 0,
-    statusText: ''
+    statusText: '',
+    email: ''
   };
+}
+
+function accountDecision(fields) {
+  return { screen: 'app', reason: 'account', exp: '', ...fields };
 }
 
 function decideEntry(credential, ctx) {
@@ -124,6 +150,64 @@ function decideEntry(credential, ctx) {
   }
 
   if (credential.type === 'account') {
+    const email = typeof credential.email === 'string' ? credential.email : '';
+
+    // Phase 2 session shape: real backend tokens (the Firebase
+    // ID token + refresh token) + the plan state the backend
+    // confirmed (trial window / paid plan). The held Phase-2
+    // draft's accessToken spelling is accepted on read too.
+    if (typeof credential.idToken === 'string' ||
+        typeof credential.accessToken === 'string' ||
+        typeof credential.refreshToken === 'string' ||
+        typeof credential.expiresAt === 'number' ||
+        typeof credential.trialEndsAt === 'string') {
+      const plan = typeof credential.plan === 'string' ? credential.plan : '';
+      const trialEndsMs = typeof credential.trialEndsAt === 'string'
+        ? Date.parse(credential.trialEndsAt) : NaN;
+      const trialActive = !Number.isNaN(trialEndsMs) && nowMs < trialEndsMs;
+      const planActive = trialActive || isPaidPlan(plan);
+      if (!planActive) {
+        const refused = gateDecision('trial-expired');
+        refused.email = email;
+        refused.plan = plan;
+        return refused;
+      }
+      const planLine = trialActive
+        ? statusTextFor(plan, credential.trialEndsAt, true, trialEndsMs, nowMs)
+        : plan;
+      const planFields = {
+        allowed: true,
+        plan,
+        trial: trialActive,
+        daysLeft: trialActive ? daysLeftUntil(trialEndsMs, nowMs) : 0,
+        exp: trialActive ? credential.trialEndsAt : '',
+        email
+      };
+      const tokenLive = typeof credential.expiresAt === 'number' && nowMs < credential.expiresAt;
+      if (tokenLive) {
+        return accountDecision({ ...planFields, statusText: planLine });
+      }
+      // Token expired. The bridge refreshes online before it
+      // asks; reaching here with ctx.networkFailed means that
+      // refresh could not run — the offline grace may apply.
+      const lastVerifiedAt = typeof credential.lastVerifiedAt === 'number'
+        ? credential.lastVerifiedAt : NaN;
+      const grace = ctx && ctx.networkFailed === true &&
+        !Number.isNaN(lastVerifiedAt) &&
+        nowMs - lastVerifiedAt < ACCOUNT_GRACE_MS;
+      if (grace) {
+        return accountDecision({
+          ...planFields,
+          statusText: `${planLine} · offline — running on a recent check`
+        });
+      }
+      const refused = gateDecision('session-expired');
+      refused.email = email;
+      refused.plan = plan;
+      return refused;
+    }
+
+    // v1.0.0 shape (token + exp): honoured as written.
     const exp = typeof credential.exp === 'string' ? credential.exp : '';
     const expiryMs = keyExpiryMs({ exp });
     if (!exp || Number.isNaN(expiryMs) || nowMs > expiryMs) {
@@ -139,7 +223,8 @@ function decideEntry(credential, ctx) {
       exp,
       trial,
       daysLeft: daysLeftUntil(expiryMs, nowMs),
-      statusText: statusTextFor(plan, exp, trial, expiryMs, nowMs)
+      statusText: statusTextFor(plan, exp, trial, expiryMs, nowMs),
+      email
     };
   }
 
@@ -148,6 +233,8 @@ function decideEntry(credential, ctx) {
 
 module.exports = {
   ENTRY_CREDENTIAL_FILE,
+  ACCOUNT_GRACE_MS,
+  isPaidPlan,
   credentialPath,
   loadCredential,
   saveCredential,

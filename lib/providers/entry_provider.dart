@@ -7,11 +7,11 @@ import '../services/automation_bridge.dart';
 /// The app opens on the gate and shows nothing else until the
 /// engine's gate decision (engine/entryGate.js, served by the
 /// bridge at /api/entry/status) says entry is allowed. Two doors:
-///   A — an account (Google sign-in, or email + a 6-digit code).
-///       The backend behind it is a later phase; while it is not
-///       configured the bridge answers with an honest
-///       not-available message and this provider simply shows it —
-///       there is no fake sign-in anywhere in this flow.
+///   A — an account (Google sign-in, or email + password).
+///       Phase 2 (v1.0.2): the backend is LIVE (Firebase) —
+///       sign-in is real, a first sign-in starts a 7-day trial,
+///       and the engine refreshes the session and honours a
+///       3-day offline grace from the last successful check.
 ///   B — a license key: signed, checked by the engine offline,
 ///       bound to this one device on activation.
 /// The plan line for the top strip comes from the same decision
@@ -25,8 +25,17 @@ class EntryProvider extends ChangeNotifier {
       'Account sign-in is not available yet — please use a license key';
   bool _busy = false;
   String _error = '';
-  bool _codeSent = false;
+  String _notice = '';
   Timer? _poll;
+
+  // Phase 2: the account side of the current decision, for the
+  // Settings account card (signed-in email, plan, trial days).
+  String _email = '';
+  String _plan = '';
+  int _daysLeft = 0;
+  bool _trial = false;
+  bool _isAccount = false;
+  Timer? _accountWatch;
 
   // PUBLIC v1.0.1: the engine-start watchdog. If the engine has
   // not answered within this window the gate stops polling and
@@ -34,6 +43,12 @@ class EntryProvider extends ChangeNotifier {
   // sitting on "Starting the engine…" forever.
   static const Duration _engineWatchdog = Duration(seconds: 20);
   bool _engineFailed = false;
+
+  // v1.0.2 (startup screen): true once the engine PROCESS is up
+  // (ensureEngineRunning has completed) — the splash's status
+  // line moves from "Starting engine…" to "Checking your entry…"
+  // on it, while the first entry answer is still on its way.
+  bool _engineStarted = false;
   DateTime _pollStartedAt = DateTime.now();
 
   EntryProvider() {
@@ -46,7 +61,11 @@ class EntryProvider extends ChangeNotifier {
     // engine is not answering". Fire-and-forget: ensureEngine-
     // Running adopts a healthy engine or spawns one, and the
     // poll below picks up its first answer.
-    AutomationBridge.instance.ensureEngineRunning();
+    final started = AutomationBridge.instance.ensureEngineRunning();
+    started.then((_) {
+      _engineStarted = true;
+      notifyListeners();
+    });
     refresh();
     _startPoll();
   }
@@ -76,8 +95,13 @@ class EntryProvider extends ChangeNotifier {
   /// engine again and resume polling for its first answer.
   void retryEngine() {
     _engineFailed = false;
+    _engineStarted = false;
     notifyListeners();
-    AutomationBridge.instance.ensureEngineRunning();
+    final started = AutomationBridge.instance.ensureEngineRunning();
+    started.then((_) {
+      _engineStarted = true;
+      notifyListeners();
+    });
     refresh();
     _startPoll();
   }
@@ -89,8 +113,29 @@ class EntryProvider extends ChangeNotifier {
   String get doorAMessage => _doorAMessage;
   bool get busy => _busy;
   String get error => _error;
-  bool get codeSent => _codeSent;
+  String get notice => _notice;
   bool get engineFailed => _engineFailed;
+
+  /// v1.0.2: true once the engine process is up (the entry
+  /// answer may still be on its way) — the startup screen's
+  /// status line keys off this.
+  bool get engineStarted => _engineStarted;
+
+  /// Phase 2: the signed-in account's email ('' for key entry).
+  String get email => _email;
+
+  /// Phase 2: the account's plan name ('' for key entry).
+  String get plan => _plan;
+
+  /// Phase 2: whole days left on the trial (0 when not trialing).
+  int get daysLeft => _daysLeft;
+
+  /// Phase 2: true while the entry is a trial.
+  bool get trial => _trial;
+
+  /// Phase 2: true when the current entry is an account session
+  /// (Settings shows the account card instead of the license card).
+  bool get isAccount => _isAccount;
 
   Future<void> refresh() async {
     final data = await AutomationBridge.instance.getEntryStatus();
@@ -99,6 +144,13 @@ class EntryProvider extends ChangeNotifier {
     if (entry is Map) {
       _allowed = entry['allowed'] == true;
       _statusText = entry['statusText']?.toString() ?? '';
+      _isAccount = entry['reason']?.toString() == 'account';
+      _email = entry['email']?.toString() ?? '';
+      _plan = entry['plan']?.toString() ?? '';
+      _trial = entry['trial'] == true;
+      final dl = entry['daysLeft'];
+      _daysLeft = dl is num ? dl.toInt() : 0;
+      if (_allowed) _stopAccountWatch();
     }
     final doorA = data['doorA'];
     if (doorA is Map) {
@@ -145,41 +197,100 @@ class EntryProvider extends ChangeNotifier {
     return false;
   }
 
-  /// Door A: email the 6-digit sign-in code.
-  Future<bool> sendCode(String email) async {
+  /// Door A: sign in with email + password.
+  Future<bool> signIn(String email, String password) async {
     if (_busy) return false;
     _busy = true;
     _error = '';
-    notifyListeners();
-    final res = await _callWithEngineRetry(
-        () => AutomationBridge.instance.sendEntryCode(email.trim()));
-    _busy = false;
-    if (res['ok'] == true) {
-      _codeSent = true;
-      notifyListeners();
-      return true;
-    }
-    _error = res['error']?.toString() ?? 'The code could not be sent.';
-    notifyListeners();
-    return false;
-  }
-
-  /// Door A: verify the emailed code and store the session.
-  Future<bool> verifyCode(String email, String code) async {
-    if (_busy) return false;
-    _busy = true;
-    _error = '';
+    _notice = '';
     notifyListeners();
     final res = await _callWithEngineRetry(() => AutomationBridge.instance
-        .verifyEntryCode(email.trim(), code.trim()));
+        .signInAccount(email.trim(), password));
     _busy = false;
     if (res['ok'] == true) {
       await refresh();
       return true;
     }
-    _error = res['error']?.toString() ?? 'That code was not accepted.';
+    _error = res['error']?.toString() ?? 'Sign-in failed — try again.';
     notifyListeners();
     return false;
+  }
+
+  /// Door A: create an account with email + password.
+  Future<bool> signUp(String email, String password) async {
+    if (_busy) return false;
+    _busy = true;
+    _error = '';
+    _notice = '';
+    notifyListeners();
+    final res = await _callWithEngineRetry(() => AutomationBridge.instance
+        .signUpAccount(email.trim(), password));
+    _busy = false;
+    if (res['ok'] == true) {
+      await refresh();
+      return true;
+    }
+    _error = res['error']?.toString() ?? 'Sign-up failed — try again.';
+    notifyListeners();
+    return false;
+  }
+
+  /// Door A: email a password-reset link. The bridge answers the
+  /// same way whether or not the email has an account; the gate
+  /// shows that sentence as a notice, not an error.
+  Future<bool> forgotPassword(String email) async {
+    if (_busy) return false;
+    _busy = true;
+    _error = '';
+    _notice = '';
+    notifyListeners();
+    final res = await _callWithEngineRetry(() =>
+        AutomationBridge.instance.forgotEntryPassword(email.trim()));
+    _busy = false;
+    if (res['ok'] == true) {
+      _notice = res['message']?.toString() ??
+          'If that email has an account, a password reset email is on its way.';
+      notifyListeners();
+      return true;
+    }
+    _error = res['error']?.toString() ?? 'The reset email could not be sent.';
+    notifyListeners();
+    return false;
+  }
+
+  /// Phase 2: while the Google sign-in runs in the system
+  /// browser, watch the entry status — when the browser flow
+  /// stores the session on the bridge's callback, the next poll
+  /// flips the gate open on its own. The watch gives up after
+  /// about three minutes; the gate's own controls stay live.
+  void startAccountWatch() {
+    _stopAccountWatch();
+    var ticks = 0;
+    _accountWatch = Timer.periodic(const Duration(seconds: 2), (_) {
+      ticks++;
+      if (_allowed || ticks > 90) {
+        _stopAccountWatch();
+      } else {
+        refresh();
+      }
+    });
+  }
+
+  void _stopAccountWatch() {
+    _accountWatch?.cancel();
+    _accountWatch = null;
+  }
+
+  /// Settings → Sign out (account sessions). The bridge clears
+  /// the local session; the gate comes back on the next refresh.
+  Future<void> signOut() async {
+    await AutomationBridge.instance.signOutAccount();
+    _allowed = false;
+    _statusText = '';
+    _email = '';
+    _plan = '';
+    _isAccount = false;
+    await refresh();
   }
 
   /// Settings → "Remove license key from this app". Clears the
@@ -194,6 +305,7 @@ class EntryProvider extends ChangeNotifier {
   @override
   void dispose() {
     _poll?.cancel();
+    _stopAccountWatch();
     super.dispose();
   }
 }

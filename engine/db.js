@@ -35,7 +35,10 @@ if (!fs.existsSync(DATA_DIR)) {
   fs.mkdirSync(DATA_DIR, { recursive: true });
 }
 
-const DB_PATH = path.join(DATA_DIR, 'flow_studio_lite.db');
+// PUBLIC v1.0.0: the public edition's database file is its own
+// ('flow_studio.db'), distinct from the Lite edition's, so the two
+// editions never open each other's data.
+const DB_PATH = path.join(DATA_DIR, 'flow_studio.db');
 const PERSIST_DEBOUNCE_MS = 2000;
 
 let db = null;

@@ -5,6 +5,8 @@ import 'package:media_kit/media_kit.dart';
 import 'theme/app_theme.dart';
 import 'providers/accounts_provider.dart';
 import 'providers/activity_provider.dart';
+import 'providers/entry_provider.dart';
+import 'widgets/entry_gate.dart';
 import 'providers/settings_provider.dart';
 import 'providers/generator_provider.dart';
 import 'providers/notifications_provider.dart';
@@ -39,6 +41,10 @@ class FlowStudioApp extends StatelessWidget {
         // providers publish events to it through its static
         // `shared` reference, set in its constructor.
         ChangeNotifierProvider(create: (_) => NotificationsProvider()),
+        // PUBLIC v1.0.0: the entry gate's state — polled from the
+        // engine from the moment the app starts, so the gate can
+        // open the moment a stored credential checks out.
+        ChangeNotifierProvider(create: (_) => EntryProvider()),
         ChangeNotifierProvider(create: (_) => AccountsProvider()),
         ChangeNotifierProvider(create: (_) => SettingsProvider()),
         ChangeNotifierProvider(create: (_) => ActivityProvider()),
@@ -58,7 +64,7 @@ class FlowStudioApp extends StatelessWidget {
               appearance == 'dark' || (appearance == 'system' && platformDark);
           AppTheme.applyTheme(settingsProv.settings.theme, useDark);
           return MaterialApp(
-            title: 'FlowStudio Lite',
+            title: 'FlowStudio',
             debugShowCheckedModeBanner: false,
             theme: AppTheme.lightTheme,
             darkTheme: AppTheme.darkTheme,
@@ -126,11 +132,28 @@ class FlowStudioApp extends StatelessWidget {
                 },
               );
             },
-            home: const MainStudioScreen(),
+            home: const EntryGateHome(),
           );
         },
       ),
     );
+  }
+}
+
+/// PUBLIC v1.0.0: the app's front door. Until the entry gate's
+/// decision says entry is allowed, the app shows ONLY the gate
+/// screen — the studio behind it is not even built. Once a valid
+/// credential is in place (account session or license key), the
+/// gate steps aside and the studio takes over; removing the key
+/// in Settings brings the gate straight back.
+class EntryGateHome extends StatelessWidget {
+  const EntryGateHome({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = context.watch<EntryProvider>();
+    if (entry.allowed) return const MainStudioScreen();
+    return const EntryGateScreen();
   }
 }
 

@@ -1,4 +1,4 @@
-// FlowStudio Lite — real per-video credit costs (owner's own
+// FlowStudio — real per-video credit costs (owner's own
 // Flow panel, verified 2026-10-27).
 //
 // The Generate bar used to estimate `promptCount × 7` — a

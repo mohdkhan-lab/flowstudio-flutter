@@ -7,7 +7,7 @@
 // the live app's download_folder to a fs-smoke temp dir
 // and spent real accounts' credits.
 //
-// Phase 1: a dummy "live" bridge occupies 48190. The
+// Phase 1: a dummy "live" bridge occupies 48290. The
 //   smoke must REFUSE — exit code 2 with 'SMOKE REFUSED',
 //   naming the foreign bridge's version — and must send
 //   NO mutating request at all (no POST of any kind).
@@ -20,7 +20,7 @@ const { spawn } = require('child_process');
 const path = require('path');
 
 const REPO = path.join(__dirname, '..');
-const PORT = 48190;
+const PORT = 48290;
 
 let passed = 0;
 let failed = 0;

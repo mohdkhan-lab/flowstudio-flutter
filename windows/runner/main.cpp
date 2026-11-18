@@ -28,7 +28,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // Target 2560x1080 (21:9 UltraWide Studio Canvas)
   Win32Window::Point origin(0, 0);
   Win32Window::Size size(2560, 1080);
-  if (!window.Create(L"FlowStudio Lite", origin, size)) {
+  if (!window.Create(L"FlowStudio", origin, size)) {
     return EXIT_FAILURE;
   }
   window.SetQuitOnClose(true);

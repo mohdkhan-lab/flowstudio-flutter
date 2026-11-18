@@ -4,9 +4,8 @@ import 'package:file_picker/file_picker.dart';
 import '../theme/app_theme.dart';
 import '../models/app_settings.dart';
 import '../providers/notifications_provider.dart';
+import '../providers/entry_provider.dart';
 import '../providers/settings_provider.dart';
-import 'package:flutter/services.dart';
-import '../services/automation_bridge.dart';
 import 'panel_entrance.dart';
 import 'tactile_components.dart';
 
@@ -30,14 +29,6 @@ class _SettingsViewState extends State<SettingsView> {
   final TextEditingController _chatController = TextEditingController();
   final TextEditingController _supportController = TextEditingController();
 
-  // v2.31.0: MCP connector state (Settings → Muse AI — MCP).
-  Map<String, dynamic>? _mcpStatus;
-  bool _mcpBusy = false;
-  String _mcpFeedback = '';
-
-  // v2.48.5: CONNECTION card — live chain status + 1-Click repair.
-  Map<String, dynamic>? _connStatus;
-  bool _repairBusy = false;
 
   @override
   void initState() {
@@ -48,7 +39,6 @@ class _SettingsViewState extends State<SettingsView> {
     _whatsappController.text = s.whatsAppLink;
     _chatController.text = s.chatLink;
     _supportController.text = s.supportLink;
-    _loadMcpStatus();
   }
 
   @override
@@ -83,370 +73,40 @@ class _SettingsViewState extends State<SettingsView> {
   }
 
 
-  // --- v2.31.0: MCP connector (approved design Option 2 — grid card) ---
+  // --- PUBLIC v1.0.0: License (this app's entry credential) ---
 
-  Future<void> _loadMcpStatus() async {
-    final st = await AutomationBridge.instance.getMcpStatus();
-    if (mounted && st != null) setState(() => _mcpStatus = st);
-    final cs = await AutomationBridge.instance.getConnectionStatus();
-    if (mounted && cs != null) setState(() => _connStatus = cs);
-  }
-
-  /// v2.48.5: the 1-Click Connect / Fix Connection button — one
-  /// repair pass over the whole chain in the engine, then a status
-  /// refresh and a plain-language result line.
-  Future<void> _repairConnection() async {
-    if (_repairBusy) return;
-    setState(() => _repairBusy = true);
-    final res = await AutomationBridge.instance.repairConnection();
-    if (!mounted) return;
-    await _loadMcpStatus();
-    if (!mounted) return;
-    setState(() {
-      _repairBusy = false;
-      if (res == null) {
-        _mcpFeedback = 'Repair could not run — is the engine running?';
-      } else if (res['connected'] == true) {
-        _mcpFeedback = 'Connection repaired and tested — Muse can connect now.';
-      } else {
-        final bad = <String>[];
-        final steps = res['steps'];
-        if (steps is List) {
-          for (final s in steps) {
-            if (s is Map && s['ok'] != true) bad.add('${s['id']}: ${s['detail']}');
-          }
-        }
-        _mcpFeedback = 'Still not fully connected — ${bad.join(' · ')}';
-      }
-    });
-    _mcpSnack(_mcpFeedback);
-  }
-
-  /// v2.48.5: one status row of the CONNECTION card (approved sample
-  /// v2): dot + label on the left, bold state on the right — green
-  /// when healthy, red when broken, faint when unknown.
-  Widget _connRow(String label, String value, bool? ok) {
-    final color = ok == null ? AppTheme.textFaint : (ok ? AppTheme.green : AppTheme.red);
-    return Container(
-      margin: const EdgeInsets.only(bottom: 4),
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-      decoration: BoxDecoration(color: AppTheme.overlay08, borderRadius: BorderRadius.circular(6)),
-      child: Row(
-        children: [
-          Container(width: 8, height: 8, decoration: BoxDecoration(color: color, shape: BoxShape.circle)),
-          const SizedBox(width: 8),
-          Text(label, style: TextStyle(fontSize: 11, color: AppTheme.textMain)),
-          const Spacer(),
-          Flexible(
-            child: Text(
-              value,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              textAlign: TextAlign.right,
-              style: TextStyle(fontSize: 11, fontWeight: FontWeight.bold, color: color),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  void _mcpSnack(String msg) {
-    if (!mounted) return;
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(msg), duration: const Duration(seconds: 3)),
-    );
-  }
-
-  Future<void> _toggleMcp(bool v) async {
-    if (_mcpBusy) return;
-    setState(() => _mcpBusy = true);
-    final st = await AutomationBridge.instance.setMcpEnabled(v);
-    if (!mounted) return;
-    setState(() {
-      if (st != null) _mcpStatus = st;
-      _mcpBusy = false;
-      _mcpFeedback = v ? 'MCP server is running — Muse can connect now.' : 'MCP server stopped.';
-    });
-  }
-
-  Future<void> _regenMcpToken() async {
-    if (_mcpBusy) return;
-    setState(() => _mcpBusy = true);
-    final st = await AutomationBridge.instance.regenerateMcpToken();
-    if (!mounted) return;
-    setState(() {
-      if (st != null) _mcpStatus = st;
-      _mcpBusy = false;
-      _mcpFeedback = 'New token generated — copy the new Muse config for Muse.';
-    });
-    _mcpSnack('New MCP token generated');
-  }
-
-  Future<void> _copyMcpUrl() async {
-    final url = _mcpStatus?['url']?.toString() ?? '';
-    if (url.isEmpty) return;
-    await Clipboard.setData(ClipboardData(text: url));
-    _mcpSnack('Connection URL copied');
-  }
-
-  Future<void> _copyMcpToken() async {
-    final token = await AutomationBridge.instance.getMcpToken();
-    if (token == null || token.isEmpty) {
-      _mcpSnack('Could not load the token — is the engine running?');
-      return;
-    }
-    await Clipboard.setData(ClipboardData(text: token));
-    _mcpSnack('Access token copied');
-  }
-
-  Future<void> _copyMcpConfig() async {
-    final json = await AutomationBridge.instance.getMcpConfigJson();
-    if (json == null) {
-      _mcpSnack('Could not load the config — is the engine running?');
-      return;
-    }
-    await Clipboard.setData(ClipboardData(text: json));
-    _mcpSnack('Muse config copied — paste it into Muse to connect');
-  }
-
-  String _mcpLastConnectedText() {
-    final raw = _mcpStatus?['lastConnectedAt'];
-    final client = _mcpStatus?['lastClient']?.toString() ?? '';
-    if (raw == null) return 'Not connected yet';
-    final ms = raw is num ? raw.toInt() : int.tryParse(raw.toString()) ?? 0;
-    if (ms <= 0) return 'Not connected yet';
-    final dt = DateTime.fromMillisecondsSinceEpoch(ms);
-    var hour = dt.hour % 12;
-    if (hour == 0) hour = 12;
-    final ampm = dt.hour >= 12 ? 'PM' : 'AM';
-    final minute = dt.minute.toString().padLeft(2, '0');
-    final who = client.isEmpty ? 'Muse (MK)' : client;
-    return 'Last connected: ${dt.day}/${dt.month}, $hour:$minute $ampm · $who';
-  }
-
-  Widget _buildMcpPanel() {
-    final st = _mcpStatus;
-    final enabled = st == null ? true : st['enabled'] == true;
-    final running = st != null && st['running'] == true;
-    final url = st?['url']?.toString() ?? 'http://127.0.0.1:48191/mcp';
-    final tokenMasked = st?['tokenMasked']?.toString() ?? '••••••••••••';
-    // v2.48.5: CONNECTION card status rows (approved sample v2).
-    final conn = _connStatus;
-    final chainRaw = conn?['chain'];
-    final chain = chainRaw is Map ? Map<String, dynamic>.from(chainRaw) : null;
-    final engineVersion = conn?['engineVersion']?.toString();
-    final lastRaw = st?['lastConnectedAt'];
-    final lastMs = lastRaw is num ? lastRaw.toInt() : (lastRaw == null ? 0 : int.tryParse(lastRaw.toString()) ?? 0);
-    const toolLabels = [
-      'Status', 'Accounts', 'Credits', 'History', 'Outputs',
-      'Generate', 'Pause / Resume', 'Stop', 'Sync Credits', 'Check Cookies',
-      'Update App',
-    ];
+  /// The License card: the current plan line (from the entry
+  /// gate's decision, via EntryProvider) and the one action the
+  /// brief allows here — removing the key from THIS app. The
+  /// caption states the limit honestly: removal signs this app
+  /// out, but it does NOT unbind this device.
+  Widget _buildLicensePanel() {
+    final entry = context.watch<EntryProvider>();
     return _buildPanel(
-      title: '🔌 CONNECTION',
+      title: '🔑 LICENSE',
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Row(
-            children: [
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: running ? AppTheme.green.withValues(alpha: 0.16) : AppTheme.overlay08,
-                  borderRadius: BorderRadius.circular(999),
-                  border: Border.all(color: running ? AppTheme.green : AppTheme.borderSoft),
-                ),
-                child: Text(
-                  running ? '● REMOTE: ON' : '○ REMOTE: OFF',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.w800,
-                    color: running ? AppTheme.green : AppTheme.textFaint,
-                  ),
-                ),
-              ),
-              const SizedBox(width: 8),
-              Expanded(
-                child: Text(
-                  _mcpLastConnectedText(),
-                  overflow: TextOverflow.ellipsis,
-                  style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
-                ),
-              ),
-            ],
+          Text(
+            entry.statusText.isNotEmpty
+                ? entry.statusText
+                : 'No active license on this app.',
+            style: TextStyle(fontSize: 11.5, color: AppTheme.textMain),
           ),
           const SizedBox(height: 6),
           Text(
-            'Claude (MK) remote access — status & repair',
-            style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
-          ),
-          const SizedBox(height: 8),
-          // v2.48.5: live status rows (approved sample v2).
-          Column(
-            children: [
-              _connRow('App version', 'v${AutomationBridge.appVersion}', true),
-              _connRow(
-                'Engine',
-                engineVersion == null
-                    ? '—'
-                    : engineVersion == AutomationBridge.appVersion
-                        ? 'v$engineVersion — running, same version'
-                        : 'v$engineVersion — STALE, restart the app',
-                engineVersion == null ? null : engineVersion == AutomationBridge.appVersion,
-              ),
-              _connRow(
-                'Remote server (MCP)',
-                running ? 'On — port 48191' : (enabled ? 'Stopped' : 'Off'),
-                running,
-              ),
-              _connRow(
-                'Tailscale',
-                chain == null ? '—' : chain['exeFound'] != true ? 'Not found' : chain['backendRunning'] == true ? 'Connected' : 'Not connected',
-                chain == null ? null : chain['backendRunning'] == true,
-              ),
-              _connRow(
-                'Internet route (Funnel)',
-                chain == null ? '—' : chain['funnelAsserted'] == true ? 'On' : 'DOWN — needs repair',
-                chain == null ? null : chain['funnelAsserted'] == true,
-              ),
-              _connRow(
-                'Muse connected',
-                lastMs <= 0 ? 'Not yet' : _mcpLastConnectedText().replaceFirst('Last connected: ', ''),
-                lastMs <= 0 ? null : true,
-              ),
-            ],
-          ),
-          const SizedBox(height: 6),
-          // v2.48.5: the 1-Click Connect / Fix Connection button (Tactile 3D)
-          TactileButton(
-            type: TactileType.primary,
-            height: 42,
-            width: double.infinity,
-            borderRadius: 8,
-            bevelDepth: 3.0,
-            enabled: !_repairBusy,
-            onTap: _repairBusy ? null : _repairConnection,
-            child: Text(
-              _repairBusy ? 'WORKING…' : '1-CLICK CONNECT / FIX CONNECTION',
-              style: const TextStyle(fontSize: 12.5, fontWeight: FontWeight.bold, color: Colors.white),
-            ),
-          ),
-          const SizedBox(height: 4),
-          Text(
-            'One click checks everything above and repairs what is broken, then tests the connection itself.',
+            'Removing the key signs this app out and brings back the entry screen. It does not unbind this device — only the operator can release a device.',
             style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
           ),
           const SizedBox(height: 10),
-          _buildToggleRow(
-            title: 'Enable MCP Server',
-            subtitle: 'Port 48191 · Muse can use 27 tools',
-            value: enabled,
-            onChanged: _toggleMcp,
-          ),
-          const SizedBox(height: 10),
-          Text('CONNECTION URL (TAILSCALE)', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8, color: AppTheme.textFaint)),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Expanded(
-                child: Container(
-                  height: 32,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  decoration: BoxDecoration(
-                    color: AppTheme.inputBg,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: AppTheme.borderSoft),
-                  ),
-                  alignment: Alignment.centerLeft,
-                  child: Text(url, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: AppTheme.textMain)),
-                ),
-              ),
-              const SizedBox(width: 8),
-              TactileButton(
-                type: TactileType.secondary,
-                height: 32,
-                borderRadius: 6,
-                bevelDepth: 2.0,
-                padding: const EdgeInsets.symmetric(horizontal: 12),
-                onTap: _copyMcpUrl,
-                label: 'Copy',
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Text('ACCESS TOKEN', style: TextStyle(fontSize: 10, fontWeight: FontWeight.bold, letterSpacing: 0.8, color: AppTheme.textFaint)),
-          const SizedBox(height: 4),
-          Row(
-            children: [
-              Expanded(
-                child: Container(
-                  height: 32,
-                  padding: const EdgeInsets.symmetric(horizontal: 8),
-                  decoration: BoxDecoration(
-                    color: AppTheme.inputBg,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: AppTheme.borderSoft),
-                  ),
-                  alignment: Alignment.centerLeft,
-                  child: Text(tokenMasked, maxLines: 1, overflow: TextOverflow.ellipsis, style: TextStyle(fontSize: 11, color: AppTheme.textMain)),
-                ),
-              ),
-              const SizedBox(width: 6),
-              TactileButton(
-                type: TactileType.secondary,
-                height: 32,
-                borderRadius: 6,
-                bevelDepth: 2.0,
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                onTap: _copyMcpToken,
-                label: 'Copy Token',
-              ),
-              const SizedBox(width: 5),
-              TactileButton(
-                type: TactileType.secondary,
-                height: 32,
-                borderRadius: 6,
-                bevelDepth: 2.0,
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                enabled: !_mcpBusy,
-                onTap: _mcpBusy ? null : _regenMcpToken,
-                label: 'Regenerate',
-              ),
-            ],
-          ),
-          const SizedBox(height: 10),
-          Wrap(
-            spacing: 6,
-            runSpacing: 6,
-            children: toolLabels.map((t) {
-              return Container(
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
-                decoration: BoxDecoration(
-                  color: AppTheme.accentGold.withValues(alpha: 0.10),
-                  borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: AppTheme.borderSoft),
-                ),
-                child: Text(t, style: TextStyle(fontSize: 10.5, fontWeight: FontWeight.w600, color: AppTheme.accentText)),
-              );
-            }).toList(),
-          ),
-          const SizedBox(height: 12),
           TactileButton(
-            type: TactileType.gold,
-            height: 36,
-            width: double.infinity,
+            type: TactileType.danger,
+            height: 30,
             borderRadius: 6,
-            bevelDepth: 2.5,
-            onTap: _copyMcpConfig,
-            label: 'Copy Muse Config',
-          ),
-          const SizedBox(height: 8),
-          Text(
-            _mcpFeedback.isNotEmpty
-                ? _mcpFeedback
-                : 'Cookies & passwords are never shared. Starting a generation always asks for approval.',
-            style: TextStyle(fontSize: 9.5, color: AppTheme.textFaint),
+            bevelDepth: 2.0,
+            padding: const EdgeInsets.symmetric(horizontal: 14),
+            label: 'Remove license key from this app',
+            onTap: () => context.read<EntryProvider>().removeKey(),
           ),
         ],
       ),
@@ -467,7 +127,7 @@ class _SettingsViewState extends State<SettingsView> {
     // existing control is kept, only redistributed.
     // v2.34.0 (Problem 13, owner-FINAL Sample A): the grid is now
     // Appearance | Defaults, Automation | Files & Paths, Updates |
-    // MCP Connection, with an About BAR along the bottom — each
+    // License, with an About BAR along the bottom — each
     // row's two cards share one height and one heading style.
     final appearancePanel = PanelEntrance(index: 0, child: _buildPanel(
             title: '🎨 APPEARANCE',
@@ -914,7 +574,7 @@ class _SettingsViewState extends State<SettingsView> {
           ),
     );
 
-    final mcpPanel = PanelEntrance(index: 5, child: _buildMcpPanel());
+    final licensePanel = PanelEntrance(index: 5, child: _buildLicensePanel());
 
     // v2.34.0 (Problem 13, Sample A): About is a full-width BAR
     // along the bottom — logo + version on the left, the account /
@@ -976,7 +636,7 @@ class _SettingsViewState extends State<SettingsView> {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text(
-                    'FlowStudio Lite ${s.currentVersion}',
+                    'FlowStudio ${s.currentVersion}',
                     style: TextStyle(fontSize: 13, fontWeight: FontWeight.bold, color: AppTheme.textMain),
                   ),
                   Text(
@@ -1158,7 +818,7 @@ class _SettingsViewState extends State<SettingsView> {
               // v2.34.0 (Problem 13, owner-FINAL Sample A): the
               // wide layout is a strict two-column GRID —
               // Appearance | Defaults, Automation | Files & Paths,
-              // Updates | MCP Connection — and each row's two cards
+              // Updates | License — and each row's two cards
               // share the SAME height, with identical
               // padding/radius/heading style and aligned tops.
               // v2.34.1 HOTFIX: the equal height comes from a
@@ -1200,7 +860,7 @@ class _SettingsViewState extends State<SettingsView> {
                     const SizedBox(height: _sectionGap),
                     updatesPanel,
                     const SizedBox(height: _sectionGap),
-                    mcpPanel,
+                    licensePanel,
                   ],
                 );
               }
@@ -1211,7 +871,7 @@ class _SettingsViewState extends State<SettingsView> {
                   const SizedBox(height: _sectionGap),
                   pair(automationPanel, filesPathsPanel),
                   const SizedBox(height: _sectionGap),
-                  pair(updatesPanel, mcpPanel),
+                  pair(updatesPanel, licensePanel),
                 ],
               );
             },

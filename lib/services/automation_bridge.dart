@@ -8,13 +8,16 @@ import '../models/activity_log.dart';
 import '../models/account.dart';
 
 class AutomationBridge {
-  static const int port = 48190;
+  // PUBLIC v1.0.0: the public edition's bridge port is its own
+  // (48290), distinct from the Lite edition's 48190, so both
+  // editions can run side by side on one PC.
+  static const int port = 48290;
   static const String baseUrl = 'http://127.0.0.1:$port';
 
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '2.48.119';
+  static const String appVersion = '1.0.0';
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();
@@ -42,11 +45,11 @@ class AutomationBridge {
   // v2.25.0 (parked browser): [{ 'id': ..., 'windowShown': bool }] for
   // every account with a live generation browser right now.
   Function(List<Map<String, dynamic>> accounts)? onActiveBrowsers;
-  // v2.31.4: Muse asked (through the MCP connector) for the app to
-  // update itself. The bridge broadcasts 'mcp-update-request' after
-  // its own guards pass; the settings provider consumes it by
-  // running its existing in-app updater end to end.
-  Function(Map<String, dynamic> data)? onMcpUpdateRequest;
+  // v2.31.4: an update install was requested through the bridge.
+  // The bridge broadcasts 'update-request' after its own guards
+  // pass; the settings provider consumes it by running its
+  // existing in-app updater end to end.
+  Function(Map<String, dynamic> data)? onUpdateRequest;
   // v2.32.2: Muse asked (through the MCP connector) for a run to
   // start FROM this app's own screen. The bridge broadcasts
   // 'mcp-ui-generate-request' ({prompts, tag}) after its guards
@@ -241,7 +244,7 @@ class AutomationBridge {
           '-ExecutionPolicy',
           'Bypass',
           '-Command',
-          r'$c = Get-NetTCPConnection -LocalPort 48190 -State Listen -ErrorAction SilentlyContinue; if ($c) { $c.OwningProcess | Select-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }',
+          r'$c = Get-NetTCPConnection -LocalPort 48290 -State Listen -ErrorAction SilentlyContinue; if ($c) { $c.OwningProcess | Select-Object -Unique | ForEach-Object { Stop-Process -Id $_ -Force -ErrorAction SilentlyContinue } }',
         ]);
       } catch (_) {}
       for (int i = 0; i < 12; i++) {
@@ -464,10 +467,10 @@ class AutomationBridge {
                   );
                 }
                 break;
-              case 'mcp-update-request':
+              case 'update-request':
                 // v2.31.4: hand the update request to the settings
                 // provider, which runs its own updater flow.
-                onMcpUpdateRequest?.call(data);
+                onUpdateRequest?.call(data);
                 break;
               case 'mcp-ui-generate-request':
                 // v2.32.2: hand the in-app generate request to the
@@ -1151,49 +1154,53 @@ class AutomationBridge {
     }
   }
 
-  // --- v2.31.0: MCP connector (Settings → Muse AI — MCP) ---
+  // --- PUBLIC v1.0.0: entry gate (the app's front door) ---
 
-  /// Current MCP connector state from the bridge: enabled, running,
-  /// port, connection URL, masked token, last connection, tool names.
-  Future<Map<String, dynamic>?> getMcpStatus() async {
+  /// The entry gate's current state from the bridge:
+  /// { ok, entry: { allowed, screen, reason, plan, exp, trial,
+  ///   daysLeft, statusText }, doorA: { configured, message } }.
+  /// Null while the engine is not answering yet.
+  Future<Map<String, dynamic>?> getEntryStatus() async {
     try {
-      final res = await http.get(Uri.parse('$baseUrl/api/mcp/status'));
+      final res = await http.get(Uri.parse('$baseUrl/api/entry/status'));
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
-        if (data['ok'] == true && data['mcp'] is Map) {
-          return Map<String, dynamic>.from(data['mcp'] as Map);
+        if (data['ok'] == true) {
+          return Map<String, dynamic>.from(data as Map);
         }
       }
     } catch (e) {
-      debugPrint('[getMcpStatus Error] $e');
+      debugPrint('[getEntryStatus Error] $e');
     }
     return null;
   }
 
-  Future<Map<String, dynamic>?> setMcpEnabled(bool enabled) async {
+  /// Door B: activate a license key. Returns the bridge's decoded
+  /// answer — { ok: true, entry: {...} } on success, or
+  /// { ok: false, error: '...' } with a plain-language reason.
+  Future<Map<String, dynamic>> activateLicenseKey(String key) async {
     try {
       final res = await http.post(
-        Uri.parse('$baseUrl/api/mcp/enable'),
+        Uri.parse('$baseUrl/api/entry/activate-key'),
         headers: {'Content-Type': 'application/json'},
-        body: json.encode({'enabled': enabled}),
+        body: json.encode({'key': key}),
       );
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        if (data['ok'] == true && data['mcp'] is Map) {
-          return Map<String, dynamic>.from(data['mcp'] as Map);
-        }
-      }
+      final data = json.decode(res.body);
+      return Map<String, dynamic>.from(data as Map);
     } catch (e) {
-      debugPrint('[setMcpEnabled Error] $e');
+      debugPrint('[activateLicenseKey Error] $e');
+      return {
+        'ok': false,
+        'error': 'The engine is not answering — try again in a moment.',
+      };
     }
-    return null;
   }
 
-  /// v2.48.5: CONNECTION card data — engine version, MCP state and
-  /// the live Tailscale/Funnel chain state from the bridge.
-  Future<Map<String, dynamic>?> getConnectionStatus() async {
+  /// Settings → "Remove license key from this app": clears the
+  /// local entry credential. It does NOT unbind this device.
+  Future<Map<String, dynamic>?> removeLicenseKey() async {
     try {
-      final res = await http.get(Uri.parse('$baseUrl/api/mcp/connection-status'));
+      final res = await http.post(Uri.parse('$baseUrl/api/entry/remove-key'));
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         if (data['ok'] == true) {
@@ -1201,80 +1208,63 @@ class AutomationBridge {
         }
       }
     } catch (e) {
-      debugPrint('[getConnectionStatus Error] $e');
+      debugPrint('[removeLicenseKey Error] $e');
     }
     return null;
   }
 
-  /// v2.48.5: the 1-Click Connect repair pass — engine, MCP server,
-  /// Tailscale, Funnel and a full self-test. Tailscale commands can
-  /// take a while, so the timeout is generous.
-  Future<Map<String, dynamic>?> repairConnection() async {
+  /// Door A: ask the backend to email a 6-digit sign-in code.
+  /// While no backend is configured the bridge answers with the
+  /// honest not-available message — there is no fake success.
+  Future<Map<String, dynamic>> sendEntryCode(String email) async {
     try {
-      final res = await http
-          .post(Uri.parse('$baseUrl/api/mcp/repair'))
-          .timeout(const Duration(seconds: 90));
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        if (data['ok'] == true) {
-          return Map<String, dynamic>.from(data as Map);
-        }
-      }
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/entry/send-code'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'email': email}),
+      );
+      final data = json.decode(res.body);
+      return Map<String, dynamic>.from(data as Map);
     } catch (e) {
-      debugPrint('[repairConnection Error] $e');
+      debugPrint('[sendEntryCode Error] $e');
+      return {
+        'ok': false,
+        'error': 'The engine is not answering — try again in a moment.',
+      };
     }
-    return null;
   }
 
-  Future<Map<String, dynamic>?> regenerateMcpToken() async {
+  /// Door A: verify the emailed code. On success the bridge stores
+  /// the account session and the answer carries the entry decision.
+  Future<Map<String, dynamic>> verifyEntryCode(String email, String code) async {
     try {
-      final res = await http.post(Uri.parse('$baseUrl/api/mcp/regenerate-token'));
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        if (data['ok'] == true && data['mcp'] is Map) {
-          return Map<String, dynamic>.from(data['mcp'] as Map);
-        }
-      }
+      final res = await http.post(
+        Uri.parse('$baseUrl/api/entry/verify-code'),
+        headers: {'Content-Type': 'application/json'},
+        body: json.encode({'email': email, 'code': code}),
+      );
+      final data = json.decode(res.body);
+      return Map<String, dynamic>.from(data as Map);
     } catch (e) {
-      debugPrint('[regenerateMcpToken Error] $e');
+      debugPrint('[verifyEntryCode Error] $e');
+      return {
+        'ok': false,
+        'error': 'The engine is not answering — try again in a moment.',
+      };
     }
-    return null;
   }
 
-  /// The full ready-to-paste Muse config JSON (contains the access
-  /// token — it comes from the bridge on this PC only, for the
-  /// Settings "Copy Muse Config" button).
-  Future<String?> getMcpConfigJson() async {
+  /// Door A: the Google sign-in URL, or null while no backend is
+  /// configured.
+  Future<String?> getGoogleAuthUrl() async {
     try {
-      final res = await http.get(Uri.parse('$baseUrl/api/mcp/config'));
+      final res = await http.get(Uri.parse('$baseUrl/api/entry/google-url'));
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
-        if (data['ok'] == true && data['config'] != null) {
-          return const JsonEncoder.withIndent('  ').convert(data['config']);
-        }
+        if (data['ok'] == true) return data['url']?.toString();
       }
     } catch (e) {
-      debugPrint('[getMcpConfigJson Error] $e');
-    }
-    return null;
-  }
-
-  /// v2.31.1: The raw MCP access token only (Settings "Copy Token"
-  /// button). Read from the same localhost-only bridge endpoint as
-  /// the config JSON — the token never leaves the owner's PC except
-  /// into the owner's own clipboard.
-  Future<String?> getMcpToken() async {
-    try {
-      final res = await http.get(Uri.parse('$baseUrl/api/mcp/config'));
-      if (res.statusCode == 200) {
-        final data = json.decode(res.body);
-        final auth = data['config']?['mcpServers']?['flowstudio']?['headers']?['Authorization']?.toString() ?? '';
-        if (auth.startsWith('Bearer ') && auth.length > 7) {
-          return auth.substring(7);
-        }
-      }
-    } catch (e) {
-      debugPrint('[getMcpToken Error] $e');
+      debugPrint('[getGoogleAuthUrl Error] $e');
     }
     return null;
   }

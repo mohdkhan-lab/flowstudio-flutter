@@ -6,8 +6,14 @@ const os = require('os');
 const { exec } = require('child_process');
 
 // Environment setup - Persist data in user's AppData directory so all accounts, cookies, and database are kept
+// PUBLIC v1.0.0: the public edition keeps its data in its OWN
+// AppData folder ('flowstudio'), distinct from the Lite edition's,
+// so the two editions install and run side by side on one PC and
+// never share accounts, settings, or databases. The public edition
+// ships with an empty account store — a fresh folder simply means
+// a fresh, empty database on first run.
 const appDataRoot = process.env.APPDATA
-  ? path.join(process.env.APPDATA, 'google-flow-studio-lite')
+  ? path.join(process.env.APPDATA, 'flowstudio')
   : path.join(__dirname);
 
 const appDataDataDir = path.join(appDataRoot, 'data');
@@ -23,8 +29,8 @@ try {
     fs.mkdirSync(appDataProfilesDir, { recursive: true });
   }
 
-  const appDataDb = path.join(appDataDataDir, 'flow_studio_lite.db');
-  const localDb = path.join(localDataDir, 'flow_studio_lite.db');
+  const appDataDb = path.join(appDataDataDir, 'flow_studio.db');
+  const localDb = path.join(localDataDir, 'flow_studio.db');
   if (!fs.existsSync(appDataDb) && fs.existsSync(localDb)) {
     fs.copyFileSync(localDb, appDataDb);
     console.log('[FlowStudio Engine] Migrated database to AppData');
@@ -118,9 +124,32 @@ function outputFolderGuardWarning(resolved, storedRaw) {
   return `⚠️ OUTPUT FOLDER GUARD: the saved output folder "${storedRaw}" is inside a temporary/smoke folder — videos would silently save there and could be deleted by the system. Saving into "${resolved.folder}" instead (the last known good folder / Downloads). Set the output folder in Settings to fix this permanently.`;
 }
 const agentRules = require('./engine/agentRules');
-const mcp = require('./mcp_server');
+// PUBLIC v1.0.0: the MCP server is NOT part of the public edition —
+// this bridge never loads mcp_server.js, and no Tailscale/Funnel
+// remote-control path exists here (funnelKeeper is gone too). The
+// only way in is the app's own entry gate (see the /api/entry/*
+// routes and engine/entryGate.js).
 const { ensureBridgePort } = require('./engine/portTakeover');
-const { createFunnelKeeper, inspectChain, repairChain, selfTestFunnelUrl } = require('./engine/funnelKeeper');
+const licenseKey = require('./engine/licenseKey');
+const entryGate = require('./engine/entryGate');
+const authClient = require('./engine/authClient');
+const machineFingerprint = require('./engine/machineFingerprint');
+const { SERVICE_CONFIG, isServiceConfigured } = require('./engine/serviceConfig');
+
+// PUBLIC v1.0.0: this machine's one-device binding fingerprint,
+// computed once per engine process (the registry read is a
+// subprocess on Windows — the gate does not need it per call).
+let machineFingerprintCache = null;
+function cachedMachineFingerprint() {
+  if (machineFingerprintCache === null) {
+    try {
+      machineFingerprintCache = machineFingerprint.getMachineFingerprint();
+    } catch (e) {
+      machineFingerprintCache = '';
+    }
+  }
+  return machineFingerprintCache;
+}
 const { getStats } = require('./engine/usageStats');
 const { parseCookieText } = require('./engine/cookieParser');
 const crypto = require('crypto');
@@ -209,12 +238,15 @@ function mergeDuplicateByEmail(newAccount) {
   } catch (e) {}
 }
 
-const PORT = 48190;
+// PUBLIC v1.0.0: the public edition's bridge listens on its OWN
+// port (48290), distinct from the Lite edition's 48190, so both
+// editions' engines can run side by side on one PC.
+const PORT = 48290;
 // The app version this bridge ships with — bumped with every release,
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '2.48.119';
+const APP_VERSION = '1.0.0';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -287,11 +319,18 @@ function isNewerVersion(latest, current) {
   return false;
 }
 
+// PUBLIC v1.0.0: the public edition updates ONLY from its own
+// release line — tags named 'public-v*' carrying the asset
+// 'FlowStudio_Setup.exe'. The same repo also hosts the Lite
+// edition's releases ('v*' tags, FlowStudio_Lite_* assets); those
+// must never be offered to a public install (and vice versa), so
+// this scans the release list and picks the newest public tag
+// instead of trusting GitHub's repo-wide "latest".
 function fetchLatestRelease() {
   return new Promise((resolve, reject) => {
     const req = https.get(
-      'https://api.github.com/repos/mohdkhan-lab/flowstudio-flutter/releases/latest',
-      { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'FlowStudioLite' } },
+      'https://api.github.com/repos/mohdkhan-lab/flowstudio-flutter/releases?per_page=30',
+      { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'FlowStudio' } },
       (res) => {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
@@ -300,20 +339,28 @@ function fetchLatestRelease() {
             return reject(new Error(`GitHub answered ${res.statusCode}`));
           }
           try {
-            const data = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            const tag = String(data.tag_name || '');
+            const list = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            let tag = '';
             let asset = null;
-            if (Array.isArray(data.assets)) {
-              for (const a of data.assets) {
-                const name = String((a && a.name) || '');
-                if (name.toLowerCase().endsWith('.exe')) {
-                  asset = {
-                    name,
-                    downloadUrl: String(a.browser_download_url || ''),
-                    sizeBytes: Number(a.size) || 0,
-                  };
-                  break;
+            if (Array.isArray(list)) {
+              for (const rel of list) {
+                const relTag = String((rel && rel.tag_name) || '');
+                if (!relTag.startsWith('public-v')) continue;
+                tag = relTag;
+                if (Array.isArray(rel.assets)) {
+                  for (const a of rel.assets) {
+                    const name = String((a && a.name) || '');
+                    if (name === 'FlowStudio_Setup.exe') {
+                      asset = {
+                        name,
+                        downloadUrl: String(a.browser_download_url || ''),
+                        sizeBytes: Number(a.size) || 0,
+                      };
+                      break;
+                    }
+                  }
                 }
+                break;
               }
             }
             resolve({ tag, asset });
@@ -338,7 +385,6 @@ async function startBridge() {
   // from a second copy of the app answered for days). A healthy
   // engine of THIS version already serving is fine: exit quietly and
   // let the app adopt that one, as before.
-  let funnelKeeper = null;
   let staleEngineNote = null;
   try {
     const takeover = await ensureBridgePort({
@@ -359,21 +405,12 @@ async function startBridge() {
     console.warn('[FlowStudio Engine] Port takeover check failed:', e.message);
   }
 
-  // v2.31.0: start the MCP server at boot when the connector is on.
-  try {
-    if (mcp.mcpEnabled(dbService)) {
-      mcp.startMcpServer({ dbService, broadcastEvent });
-    }
-  } catch (e) {
-    console.warn('[FlowStudio MCP] Boot start failed:', e.message);
-  }
+  // PUBLIC v1.0.0: no MCP server starts at boot and no Funnel
+  // keeper runs — the public edition has no remote-control surface
+  // at all (see the note at the requires above).
 
   // v2.48.4: record the takeover in the Activity history the owner
-  // sees, and start the in-app Funnel keeper — while the app is open
-  // it re-asserts the Tailscale Funnel for the MCP port whenever that
-  // route silently drops (2026-10-28 / 2026-11-01 failures), so the
-  // remote connection repairs itself instead of dying until someone
-  // retypes a command by hand.
+  // sees.
   if (staleEngineNote) {
     try { recordActivity({ message: staleEngineNote, category: 'system', level: 'warning' }); } catch (e) {}
     try { broadcastEvent('automation-log', { message: staleEngineNote, level: 'warning' }); } catch (e) {}
@@ -409,21 +446,6 @@ async function startBridge() {
       try { broadcastEvent('automation-log', { message: warn, level: 'warning' }); } catch (e) {}
     }
   } catch (e) {}
-
-  try {
-    if (mcp.mcpEnabled(dbService)) {
-      funnelKeeper = createFunnelKeeper({
-        port: mcp.MCP_PORT,
-        log: (message, level) => {
-          try { recordActivity({ message, category: 'system', level: level || 'info' }); } catch (e) {}
-          try { broadcastEvent('automation-log', { message, level: level || 'info' }); } catch (e) {}
-        },
-      });
-      funnelKeeper.start();
-    }
-  } catch (e) {
-    console.warn('[FlowStudio FunnelKeeper] Start failed:', e.message);
-  }
 
   // v2.33.0: ONE pool factory for fresh generation starts AND the
   // missing-scene redo, so a redo run emits exactly the same events
@@ -668,36 +690,6 @@ async function startBridge() {
         return sendJson(200, agentDoctor.doctorPayload(APP_VERSION));
       }
 
-      // 2c. MCP agent-mode switch (v2.48.99): set or clear the
-      // engine-level Agent-mode override for MCP-originated runs
-      // (stored in engine/agentDoctor, reported by the doctor).
-      // Body { enabled: true | false } sets it; { enabled: null }
-      // or a missing field clears it back to "follow the app".
-      // Returns the resulting state. Manual runs started in the
-      // app are never affected by this override.
-      if (pathname === '/api/mcp/agent-mode' && req.method === 'POST') {
-        const body = await readBody();
-        const next = agentDoctor.setAgentModeOverride(
-          typeof body.enabled === 'boolean' ? body.enabled : null
-        );
-        broadcastEvent('automation-log', {
-          message: next === null
-            ? '🔌 MCP • Agent-mode override cleared — chat runs follow the app toggle again.'
-            : `🔌 MCP • Agent-mode override ${next ? 'ON — chat runs will use Flow\u2019s Agent' : 'OFF — chat runs will use the direct route'}.`,
-          level: 'info',
-        });
-        // v2.48.106 (Fix A): the app UI must SHOW the same mode
-        // the engine will use — the override used to live only
-        // in the engine, so the Bulk / Agent Prompt chips kept
-        // showing Bulk while chat runs went through the Agent
-        // (owner's live report, 2026-11-15). The Dart side
-        // flips its mode chips on this event. A cleared
-        // override (null) carries no boolean — the app then
-        // simply follows its own chips again, untouched here.
-        broadcastEvent('agent-mode-override', { enabled: next });
-        return sendJson(200, { ok: true, agentModeOverride: next });
-      }
-
       // 3. Settings Endpoints
       if (pathname === '/api/settings' && req.method === 'GET') {
         const keys = [
@@ -717,8 +709,10 @@ async function startBridge() {
           // (account id -> { alias, source }) and the persisted
           // parallel-browsers count.
           'account_aliases', 'parallel_browsers',
-          // v2.31.0: MCP connector on/off (the token itself is only
-          // ever served by the /api/mcp/* endpoints below).
+          // v2.31.0: a stored settings key kept for data
+          // compatibility. PUBLIC v1.0.0: the public edition has
+          // no connector surface — nothing reads or serves this
+          // key here; it simply round-trips with the settings.
           'mcp_enabled',
           // v2.48.104: UI zoom (top-strip − / + buttons) — the app
           // reads it back at startup so the owner's scale persists.
@@ -761,147 +755,137 @@ async function startBridge() {
         return sendJson(200, { ok: true });
       }
 
-      // 3b. v2.31.0: MCP connector management (local UI only — this
-      // bridge listens on 127.0.0.1, so the full token served by
-      // /api/mcp/config never leaves the owner's PC).
-      if (pathname === '/api/mcp/status' && req.method === 'GET') {
-        return sendJson(200, { ok: true, mcp: mcp.getStatus(dbService) });
+      // 3d. PUBLIC v1.0.0: ENTRY GATE routes. The gate is the
+      // app's front door — on start the app asks for the entry
+      // status and shows ONLY the gate screen until one of these
+      // routes has stored a valid credential (the decision logic
+      // lives in engine/entryGate.js). Door A (account sign-in)
+      // answers honestly while no backend is configured in
+      // engine/serviceConfig.js — there is no mock success path.
+      if (pathname === '/api/entry/status' && req.method === 'GET') {
+        const decision = entryGate.decideEntry(
+          entryGate.loadCredential(appDataDataDir),
+          { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
+        );
+        return sendJson(200, { ok: true, entry: decision, doorA: authClient.doorAState() });
       }
 
-      if (pathname === '/api/mcp/enable' && req.method === 'POST') {
+      if (pathname === '/api/entry/activate-key' && req.method === 'POST') {
         const body = await readBody();
-        const enabled = !!body.enabled;
-        dbService.setSetting('mcp_enabled', enabled ? '1' : '0');
-        if (enabled) {
-          mcp.startMcpServer({ dbService, broadcastEvent });
-        } else {
-          mcp.stopMcpServer();
+        const key = typeof body.key === 'string' ? body.key.trim() : '';
+        const verdict = licenseKey.verifyLicenseKey(key, Date.now());
+        if (!verdict.ok) {
+          const messages = {
+            malformed: 'That does not look like a license key — check the key and try again.',
+            'bad-signature': 'This license key is not genuine.',
+            'missing-fields': 'This license key is incomplete.',
+            expired: 'This license key has expired.'
+          };
+          return sendJson(200, { ok: false, error: messages[verdict.reason] || 'This license key is not valid.' });
         }
-        broadcastEvent('automation-log', {
-          message: enabled ? '🔌 MCP • Muse connector started (port 48191)' : '🔌 MCP • Muse connector stopped',
-          level: 'info',
-        });
-        return sendJson(200, { ok: true, mcp: mcp.getStatus(dbService) });
-      }
-
-      if (pathname === '/api/mcp/regenerate-token' && req.method === 'POST') {
-        mcp.regenerateToken(dbService);
-        broadcastEvent('automation-log', { message: '🔌 MCP • New access token generated — Muse must use the new config', level: 'warning' });
-        return sendJson(200, { ok: true, mcp: mcp.getStatus(dbService) });
-      }
-
-      if (pathname === '/api/mcp/config' && req.method === 'GET') {
-        const status = mcp.getStatus(dbService);
-        const token = mcp.ensureToken(dbService);
-        return sendJson(200, {
-          ok: true,
-          config: {
-            mcpServers: {
-              flowstudio: {
-                url: status.url,
-                headers: { Authorization: `Bearer ${token}` },
-              },
-            },
-          },
-        });
-      }
-
-      // 3b2. v2.48.5: CONNECTION card data — this engine's version,
-      // the MCP server state, and the live Tailscale/Funnel chain
-      // state (fresh inspection; tailscale CLI reads take a second
-      // or two, which a Settings screen can afford).
-      if (pathname === '/api/mcp/connection-status' && req.method === 'GET') {
-        let chain;
-        try {
-          chain = funnelKeeper ? await funnelKeeper.refresh() : await inspectChain(mcp.MCP_PORT);
-        } catch (e) {
-          chain = { supported: process.platform === 'win32', exeFound: false, backendRunning: false, funnelAsserted: false, dnsName: '' };
-        }
-        return sendJson(200, {
-          ok: true,
-          appVersion: APP_VERSION,
-          engineVersion: APP_VERSION,
-          mcp: mcp.getStatus(dbService),
-          chain,
-        });
-      }
-
-      // 3b3. v2.48.5: the 1-Click Connect / Fix Connection button.
-      // One pass over the whole chain, in order: MCP server on and
-      // freshly restarted → Tailscale backend up → Funnel asserted →
-      // end-to-end self-test against this PC's own public Funnel URL
-      // with the real token (the exact call Muse makes from
-      // outside). Every step reports { id, ok, detail }; `connected`
-      // is true only when the self-test passed.
-      if (pathname === '/api/mcp/repair' && req.method === 'POST') {
-        const steps = [];
-        steps.push({ id: 'engine', ok: true, detail: `v${APP_VERSION} running` });
-        try {
-          let note = 'restarted';
-          if (!mcp.mcpEnabled(dbService)) {
-            dbService.setSetting('mcp_enabled', '1');
-            note = 'was off — turned on and started';
+        const fingerprint = cachedMachineFingerprint();
+        // One-device binding: when a backend is configured it owns
+        // the global record and must answer OK before the key is
+        // stored; without one (this phase) the activation completes
+        // locally and binds this machine in the stored credential.
+        if (isServiceConfigured(SERVICE_CONFIG)) {
+          let act = null;
+          try {
+            act = await authClient.postActivation({ kid: verdict.kid, fingerprint });
+          } catch (e) {
+            act = null;
           }
-          try { mcp.stopMcpServer(); } catch (e) {}
-          await new Promise((r) => setTimeout(r, 400));
-          mcp.startMcpServer({ dbService, broadcastEvent });
-          await new Promise((r) => setTimeout(r, 700));
-          const running = mcp.getStatus(dbService).running === true;
-          steps.push({ id: 'mcp', ok: running, detail: running ? `on, port ${mcp.MCP_PORT} (${note})` : 'failed to start' });
-        } catch (e) {
-          steps.push({ id: 'mcp', ok: false, detail: e.message });
+          if (!act || !act.ok) {
+            return sendJson(200, {
+              ok: false,
+              error: act && act.reason === 'bound-to-other-device'
+                ? 'This license key is already bound to another device.'
+                : 'Activation could not be completed — check your internet connection and try again.'
+            });
+          }
         }
-        let chain = null;
-        try {
-          chain = funnelKeeper ? await funnelKeeper.repairNow() : await repairChain(mcp.MCP_PORT);
-          steps.push({
-            id: 'tailscale',
-            ok: !!chain.backendRunning,
-            detail: !chain.supported ? 'not supported on this system' : !chain.exeFound ? 'Tailscale not found on this PC' : chain.backendRunning ? 'connected' : 'could not be connected',
-          });
-          steps.push({
-            id: 'funnel',
-            ok: !!chain.funnelAsserted,
-            detail: chain.funnelAsserted ? `serving port ${mcp.MCP_PORT}` : 'could not be restored',
-          });
-        } catch (e) {
-          steps.push({ id: 'tailscale', ok: false, detail: e.message });
-          steps.push({ id: 'funnel', ok: false, detail: 'skipped' });
-        }
-        let self = { ok: false, detail: 'skipped — no Tailscale name' };
-        if (chain && chain.funnelAsserted && chain.dnsName) {
-          self = await selfTestFunnelUrl(chain.dnsName, mcp.ensureToken(dbService), mcp.MCP_PORT);
-        } else if (chain && !chain.funnelAsserted) {
-          self = { ok: false, detail: 'skipped — route is down' };
-        }
-        steps.push({ id: 'selftest', ok: self.ok, detail: self.detail });
-        const connected = steps.every((s) => s.ok);
-        try {
-          recordActivity({
-            message: connected
-              ? '🌐 1-Click Connect: full chain repaired and self-test passed — Muse can connect now.'
-              : `🌐 1-Click Connect: still not fully connected — ${steps.filter((s) => !s.ok).map((s) => `${s.id}: ${s.detail}`).join(' · ')}`,
-            category: 'system',
-            level: connected ? 'success' : 'warning',
-          });
-        } catch (e) {}
-        try {
-          broadcastEvent('automation-log', {
-            message: connected ? '🌐 Connection repaired — self-test passed' : '🌐 Connection repair finished — some steps still failing (see Settings → Connection)',
-            level: connected ? 'success' : 'warning',
-          });
-        } catch (e) {}
-        return sendJson(200, { ok: true, connected, steps, chain, mcp: mcp.getStatus(dbService) });
+        entryGate.saveCredential(appDataDataDir, {
+          type: 'key',
+          key,
+          kid: verdict.kid,
+          fingerprint,
+          activatedAt: new Date().toISOString()
+        });
+        const decision = entryGate.decideEntry(
+          entryGate.loadCredential(appDataDataDir),
+          { nowMs: Date.now(), fingerprint }
+        );
+        return sendJson(200, { ok: true, entry: decision });
       }
 
-      // 3c. v2.31.4: app update check + install trigger (MCP tool
-      // backend). CHECK answers from the same GitHub releases source
-      // as Settings → Updates. INSTALL is only a *request*: it guards
+      if (pathname === '/api/entry/remove-key' && req.method === 'POST') {
+        // Settings → "Remove license key from this app": clears the
+        // local credential only. It does NOT unbind this device —
+        // the stored binding record is the operator's to release.
+        entryGate.clearCredential(appDataDataDir);
+        const decision = entryGate.decideEntry(null, { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() });
+        return sendJson(200, { ok: true, entry: decision });
+      }
+
+      if (pathname === '/api/entry/send-code' && req.method === 'POST') {
+        const body = await readBody();
+        const result = await authClient.sendEmailCode(typeof body.email === 'string' ? body.email : '');
+        if (!result.ok) {
+          return sendJson(200, {
+            ok: false,
+            error: result.reason === 'not-configured'
+              ? authClient.DOOR_A_UNAVAILABLE_MESSAGE
+              : 'The code could not be sent — check the email address and your internet connection, then try again.'
+          });
+        }
+        return sendJson(200, { ok: true });
+      }
+
+      if (pathname === '/api/entry/verify-code' && req.method === 'POST') {
+        const body = await readBody();
+        const result = await authClient.verifyEmailCode(
+          typeof body.email === 'string' ? body.email : '',
+          typeof body.code === 'string' ? body.code : ''
+        );
+        if (!result.ok) {
+          return sendJson(200, {
+            ok: false,
+            error: result.reason === 'not-configured'
+              ? authClient.DOOR_A_UNAVAILABLE_MESSAGE
+              : 'That code was not accepted — check it and try again.'
+          });
+        }
+        entryGate.saveCredential(appDataDataDir, {
+          type: 'account',
+          token: result.session.token,
+          plan: result.session.plan,
+          exp: result.session.exp,
+          trial: result.session.trial,
+          email: typeof body.email === 'string' ? body.email.trim() : ''
+        });
+        const decision = entryGate.decideEntry(
+          entryGate.loadCredential(appDataDataDir),
+          { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
+        );
+        return sendJson(200, { ok: true, entry: decision });
+      }
+
+      if (pathname === '/api/entry/google-url' && req.method === 'GET') {
+        const url = authClient.googleAuthUrl();
+        return sendJson(200, url
+          ? { ok: true, url }
+          : { ok: false, error: authClient.DOOR_A_UNAVAILABLE_MESSAGE });
+      }
+
+      // 3c. v2.31.4: app update check + install trigger. CHECK
+      // answers from the same GitHub releases source as Settings →
+      // Updates (public-edition releases only — see
+      // fetchLatestRelease). INSTALL is only a *request*: it guards
       // (no active run, a newer release with a Setup file must
       // exist), then signals the Dart app over the existing SSE
-      // channel — 'mcp-update-request' — and the app's own updater
+      // channel — 'update-request' — and the app's own updater
       // (SettingsProvider) downloads the Setup and runs it silently,
-      // exactly as if the owner had pressed the buttons. This bridge
+      // exactly as if the user had pressed the buttons. This bridge
       // never downloads or launches an installer itself.
       if (pathname === '/api/update/check' && req.method === 'GET') {
         try {
@@ -936,10 +920,10 @@ async function startBridge() {
           return sendJson(200, { ok: false, error: `Release ${rel.tag} has no Setup file attached — cannot install it.` });
         }
         broadcastEvent('automation-log', {
-          message: `🔌 MCP • Muse started the app update to ${rel.tag}`,
+          message: `App update to ${rel.tag} requested — the app will download and install it.`,
           level: 'info',
         });
-        broadcastEvent('mcp-update-request', { latestVersion: rel.tag });
+        broadcastEvent('update-request', { latestVersion: rel.tag });
         return sendJson(200, {
           ok: true,
           started: true,
@@ -2234,8 +2218,6 @@ async function startBridge() {
         sendJson(200, { ok: true, note: 'Engine shutting down.' });
         setTimeout(() => {
           try { recordActivity({ message: 'Engine shutting down for an app update.', category: 'system', level: 'info' }); } catch (e) {}
-          try { if (funnelKeeper) funnelKeeper.stop(); } catch (e) {}
-          try { mcp.stopMcpServer(); } catch (e) {}
           try { server.close(); } catch (e) {}
           process.exit(0);
         }, 200);

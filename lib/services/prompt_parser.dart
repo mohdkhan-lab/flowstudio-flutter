@@ -1,6 +1,6 @@
 import 'dart:convert';
 
-// FlowStudio Lite — prompt syntax parser (v2.33.0, owner's order).
+// FlowStudio — prompt syntax parser (v2.33.0, owner's order).
 // Dart mirror of engine/promptParser.js — the two implementations
 // are ONE spec, pinned together by the shared fixture suite in
 // test/fixtures/prompt_syntax_fixtures.json (run by

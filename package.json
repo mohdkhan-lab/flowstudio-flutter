@@ -5,14 +5,14 @@
     "sql.js": "^1.14.2",
     "electron-updater": "^6.3.9"
   },
-  "description": "FlowStudio Lite - ZDola-style simple multi-account Google Flow video generator",
+  "description": "FlowStudio - simple multi-account Google Flow video generator",
   "devDependencies": {
     "electron": "^31.0.0",
     "electron-builder": "^24.13.3"
   },
   "license": "ISC",
   "main": "main.js",
-  "name": "google-flow-studio-lite",
+  "name": "flowstudio",
   "scripts": {
     "start": "electron main.js",
     "test": "node tests/smoke.js",
@@ -20,10 +20,10 @@
     "test:ui": "node tests/uitest.js",
     "dist": "electron-builder --win nsis"
   },
-  "version": "2.48.119",
+  "version": "1.0.0",
   "build": {
-    "appId": "com.mk.flowstudiolite",
-    "productName": "FlowStudio Lite",
+    "appId": "com.mk.flowstudio",
+    "productName": "FlowStudio",
     "files": [
       "main.js",
       "preload.js",
@@ -43,7 +43,7 @@
       "oneClick": false,
       "perMachine": false,
       "allowToChangeInstallationDirectory": true,
-      "shortcutName": "FlowStudio Lite",
+      "shortcutName": "FlowStudio",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
     },

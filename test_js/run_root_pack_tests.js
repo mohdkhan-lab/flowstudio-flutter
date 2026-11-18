@@ -10241,7 +10241,13 @@ async function main() {
     ok('X102 the doctor tool text names the override field', mcpSrc102.includes('agentModeOverride'));
 
     // --- source pins: bridge wiring at the real decision point ---
-    ok('X102 the bridge serves the agent-mode switch endpoint', bridgeSrc102.includes("'/api/mcp/agent-mode'") && bridgeSrc102.includes('agentDoctor.setAgentModeOverride('));
+    // PUBLIC v1.0.0 (branch public): the Lite-line pin here asserted
+    // the bridge SERVES '/api/mcp/agent-mode'. The public edition
+    // has no MCP surface at all, so the pin's public equivalent
+    // asserts the route's ABSENCE (the mcp_server.js source pins
+    // above stay green because the file remains in the repo for
+    // the Lite line — it is simply never loaded or packaged here).
+    ok('X102 PUBLIC: the bridge serves NO mcp agent-mode switch endpoint', !bridgeSrc102.includes("'/api/mcp/agent-mode'") && !bridgeSrc102.includes("'/api/mcp/"));
     ok('X102 start-ui resolves the run mode (param over override)', bridgeSrc102.includes('const uiAgentMode = agentDoctor.resolveAgentMode({'));
     ok('X102 start-ui stashes a decided mode for the follow-up start', bridgeSrc102.includes('pendingMcpUiAgentMode = { agentMode: uiRunAgentMode, count: prompts.length, tag, at: Date.now() }'));
     ok('X102 the start handler honours the MCP-origin precedence', bridgeSrc102.includes('if (config.mcpOrigin === true)') && bridgeSrc102.includes('override: agentDoctor.getAgentModeOverride(),'));
@@ -13260,7 +13266,13 @@ async function main() {
     const tileIdentity110 = require('../engine/tileIdentity');
 
     // --- (A) source pins: the mode switch wiring ---
-    ok('X110 A: the bridge broadcasts the override change to the app', bridgeSrc110.includes("broadcastEvent('agent-mode-override', { enabled: next })"));
+    // PUBLIC v1.0.0 (branch public): the Lite-line pin here asserted
+    // the bridge broadcasts the override change from its MCP
+    // agent-mode route. That route does not exist in the public
+    // edition, so the public equivalent asserts the broadcast's
+    // ABSENCE from the bridge (the Dart-side pins below stay: the
+    // app's inert event case and chip handler remain in place).
+    ok('X110 A PUBLIC: the bridge never broadcasts an override change (no MCP route)', !bridgeSrc110.includes("broadcastEvent('agent-mode-override'"));
     ok('X110 A: the Dart bridge routes the override event with a bool guard', autoBridgeSrc110.includes("case 'agent-mode-override':") && autoBridgeSrc110.includes('onAgentModeOverride'));
     ok('X110 A: the main screen flips its chips on the override event', mainSrc110.includes('_handleAgentModeOverride') && mainSrc110.includes('setPromptMode(!enabled)'));
     ok('X110 A: an MCP run switches the mode from its payload BEFORE the prompts land', mainSrc110.includes('generator.setPromptMode(!agentModeFlag)') && mainSrc110.indexOf('generator.setPromptMode(!agentModeFlag)') < mainSrc110.indexOf('generator.setMcpPrompts('));
@@ -16021,6 +16033,144 @@ async function main() {
     ok('X123 F3: the render-wait check is wired in the monitor', flowSrc123.includes("await this._recoverFromDisturbance(homeTask, 'render-wait');"));
     ok('X123 F3: the download check is wired before each form', flowSrc123.includes("await this._recoverFromDisturbance(task, 'download');"));
     eq('X123 F3: only beginStop sets the stop flag in the engine', (flowSrc123.match(/this\.isStopping = true;/g) || []).length, 1);
+  }
+
+  // =====================================================================
+  // X124. PUBLIC v1.0.0 (branch `public`) — THE PUBLIC EDITION:
+  // the entry gate (Door B: signed license keys + one-device
+  // fingerprint binding; Door A: account sign-in honestly disabled
+  // while no backend is configured), NO MCP surface in the shipped
+  // set, and the public name/version line. Where Lite-line pins
+  // asserted an MCP presence in the bridge (X102 endpoint, X110 A
+  // broadcast), this branch asserts the ABSENCE instead — see
+  // those pins. The signed-key pins use the operator's private
+  // key file (outside the repo); without it they skip with a NOTE
+  // and the malformed/tamper paths still pin the verifier.
+  // =====================================================================
+  {
+    const fs124 = require('fs');
+    const path124 = require('path');
+    const os124 = require('os');
+    const crypto124 = require('crypto');
+    const read124 = (rel) => fs124.readFileSync(path124.join(__dirname, '..', rel), 'utf8');
+    const licenseKey124 = require('../engine/licenseKey');
+    const fingerprint124 = require('../engine/machineFingerprint');
+    const entryGate124 = require('../engine/entryGate');
+    const serviceConfig124 = require('../engine/serviceConfig');
+    const authClient124 = require('../engine/authClient');
+    const bridgeSrc124 = read124('engine_bridge.js');
+    const installerSrc124 = read124('installer.iss');
+
+    // --- service identity: configured-off, and a generic name ---
+    eq('X124 the service ships unconfigured (Door A off)', serviceConfig124.isServiceConfigured(serviceConfig124.SERVICE_CONFIG), false);
+    ok('X124 the service name/URL carry no tell-tale words', !/admin|license|flowstudio/i.test(serviceConfig124.SERVICE_CONFIG.serviceName + ' ' + serviceConfig124.SERVICE_CONFIG.baseUrl));
+    eq('X124 Door A reports itself unavailable', authClient124.doorAState().configured, false);
+    eq('X124 Door A unavailable message is the honest one', authClient124.doorAState().message, authClient124.DOOR_A_UNAVAILABLE_MESSAGE);
+    eq('X124 Door A google URL is null while unconfigured', authClient124.googleAuthUrl(), null);
+    const dc124 = await authClient124.sendEmailCode('someone@example.com');
+    ok('X124 Door A send-code refuses honestly (no fake success)', dc124.ok === false && dc124.reason === 'not-configured');
+    const dv124 = await authClient124.verifyEmailCode('someone@example.com', '123456');
+    ok('X124 Door A verify-code refuses honestly', dv124.ok === false && dv124.reason === 'not-configured');
+    const da124 = await authClient124.postActivation({ kid: 'k', fingerprint: 'f' });
+    ok('X124 activation POST refuses while unconfigured', da124.ok === false && da124.reason === 'not-configured');
+
+    // --- activation client against a fake configured backend ---
+    const fakeCfg124 = { serviceName: 'Meridian', baseUrl: 'https://svc.invalid', projectRef: '' };
+    const okFetch124 = async () => ({ status: 200, json: async () => ({ ok: true }) });
+    const boundFetch124 = async () => ({ status: 409, json: async () => ({}) });
+    const downFetch124 = async () => { throw new Error('offline'); };
+    eq('X124 activation: backend OK lets activation proceed', (await authClient124.postActivation({ kid: 'k', fingerprint: 'f' }, { config: fakeCfg124, fetchImpl: okFetch124 })).ok, true);
+    eq('X124 activation: 409 means bound to another device', (await authClient124.postActivation({ kid: 'k', fingerprint: 'f' }, { config: fakeCfg124, fetchImpl: boundFetch124 })).reason, 'bound-to-other-device');
+    eq('X124 activation: network failure is reported, never faked', (await authClient124.postActivation({ kid: 'k', fingerprint: 'f' }, { config: fakeCfg124, fetchImpl: downFetch124 })).reason, 'network-error');
+    const sessFetch124 = async () => ({ status: 200, json: async () => ({ ok: true, token: 'tok', plan: 'Pro', exp: '2030-01-01', trial: false }) });
+    const sess124 = await authClient124.verifyEmailCode('a@b.c', '123456', { config: fakeCfg124, fetchImpl: sessFetch124 });
+    ok('X124 Door A verify returns the session when a backend exists', sess124.ok === true && sess124.session.plan === 'Pro');
+
+    // --- malformed keys never need the private key ---
+    eq('X124 a garbage key is malformed', licenseKey124.verifyLicenseKey('not-a-key').reason, 'malformed');
+    eq('X124 an empty key is malformed', licenseKey124.verifyLicenseKey('').reason, 'malformed');
+    eq('X124 a date-only expiry means end of that day (UTC)', licenseKey124.keyExpiryMs({ exp: '2030-06-15' }), Date.UTC(2030, 5, 15, 23, 59, 59, 999));
+
+    // --- the machine fingerprint is a pure, stable hash ---
+    const fpA124 = fingerprint124.computeFingerprint('ABC-123', 'MyPC');
+    eq('X124 fingerprint ignores case', fpA124, fingerprint124.computeFingerprint('abc-123', 'mypc'));
+    ok('X124 fingerprint differs for a different machine', fpA124 !== fingerprint124.computeFingerprint('XYZ-999', 'MyPC'));
+    ok('X124 fingerprint is a sha-256 hex', /^[0-9a-f]{64}$/.test(fpA124));
+
+    // --- gate decisions that need no signed key ---
+    eq('X124 gate: no credential, no entry', entryGate124.decideEntry(null, { nowMs: Date.now(), fingerprint: 'F' }).reason, 'no-credential');
+    eq('X124 gate: a stored garbage key is invalid', entryGate124.decideEntry({ type: 'key', key: 'junk', fingerprint: 'F' }, { nowMs: Date.now(), fingerprint: 'F' }).reason, 'key-invalid');
+    const future124 = new Date(Date.now() + 30 * 86400000).toISOString();
+    const acct124 = entryGate124.decideEntry({ type: 'account', token: 't', plan: 'Pro', exp: future124 }, { nowMs: Date.now(), fingerprint: 'F' });
+    ok('X124 gate: a live account session enters', acct124.allowed === true && acct124.statusText.includes('Pro'));
+    eq('X124 gate: an expired account session is refused', entryGate124.decideEntry({ type: 'account', token: 't', plan: 'Pro', exp: '2020-01-01' }, { nowMs: Date.now(), fingerprint: 'F' }).reason, 'session-expired');
+    const trial124 = entryGate124.decideEntry({ type: 'account', token: 't', plan: 'Trial', exp: new Date(Date.now() + 5 * 86400000).toISOString(), trial: true }, { nowMs: Date.now(), fingerprint: 'F' });
+    ok('X124 gate: the trial line counts whole days left', trial124.allowed === true && trial124.daysLeft === 5 && trial124.statusText.startsWith('Trial'));
+    ok('X124 the plan line names the validity date', entryGate124.statusTextFor('Pro', '2030-06-15', false, licenseKey124.keyExpiryMs({ exp: '2030-06-15' }), Date.now()).includes('valid until 2030-06-15'));
+    {
+      const dir124 = fs124.mkdtempSync(path124.join(os124.tmpdir(), 'fs-entry-'));
+      entryGate124.saveCredential(dir124, { type: 'account', token: 't', plan: 'Pro', exp: future124 });
+      eq('X124 credential file round-trips', (entryGate124.loadCredential(dir124) || {}).plan, 'Pro');
+      entryGate124.clearCredential(dir124);
+      eq('X124 credential file clears', entryGate124.loadCredential(dir124), null);
+    }
+
+    // --- signed keys (operator private key, outside the repo) ---
+    const privPath124 = process.env.FS_LICENSE_PRIVATE_KEY ||
+      path124.join(os124.homedir(), 'workspace', 'license-keys', 'flowstudio-license-private.pem');
+    if (!fs124.existsSync(privPath124)) {
+      console.log('NOTE  X124 operator private key not on this machine — signed-key pins skipped');
+    } else {
+      const priv124 = crypto124.createPrivateKey(fs124.readFileSync(privPath124, 'utf8'));
+      const sign124 = (payloadObj) => {
+        const p64 = Buffer.from(JSON.stringify(payloadObj), 'utf8').toString('base64url');
+        return p64 + '.' + crypto124.sign(null, Buffer.from(p64, 'utf8'), priv124).toString('base64url');
+      };
+      const goodKey124 = sign124({ kid: 'x124-a', plan: 'Pro', exp: '2030-06-15' });
+      const good124 = licenseKey124.verifyLicenseKey(goodKey124);
+      ok('X124 a generated key verifies', good124.ok === true && good124.plan === 'Pro' && good124.kid === 'x124-a');
+      eq('X124 an expired key is refused as expired', licenseKey124.verifyLicenseKey(sign124({ kid: 'x', plan: 'Pro', exp: '2020-01-01' })).reason, 'expired');
+      eq('X124 a key missing fields is refused', licenseKey124.verifyLicenseKey(sign124({ kid: 'x', plan: 'Pro' })).reason, 'missing-fields');
+      const parts124 = goodKey124.split('.');
+      const tamperedPayload124 = JSON.parse(Buffer.from(parts124[0], 'base64url').toString('utf8'));
+      tamperedPayload124.plan = 'Forged';
+      const forged124 = Buffer.from(JSON.stringify(tamperedPayload124), 'utf8').toString('base64url') + '.' + parts124[1];
+      eq('X124 a tampered payload fails the signature', licenseKey124.verifyLicenseKey(forged124).reason, 'bad-signature');
+      const sigChars124 = parts124[1].split('');
+      sigChars124[10] = sigChars124[10] === 'A' ? 'B' : 'A';
+      eq('X124 a tampered signature fails', licenseKey124.verifyLicenseKey(parts124[0] + '.' + sigChars124.join('')).reason, 'bad-signature');
+      const bound124 = entryGate124.decideEntry({ type: 'key', key: goodKey124, kid: 'x124-a', fingerprint: 'FP-1' }, { nowMs: Date.now(), fingerprint: 'FP-1' });
+      ok('X124 gate: a valid key on its bound device enters', bound124.allowed === true && bound124.statusText.includes('Pro'));
+      eq('X124 gate: the same key on another device is refused', entryGate124.decideEntry({ type: 'key', key: goodKey124, kid: 'x124-a', fingerprint: 'FP-1' }, { nowMs: Date.now(), fingerprint: 'FP-2' }).reason, 'device-mismatch');
+      ok('X124 gate: an unbound key record adopts the current device', entryGate124.decideEntry({ type: 'key', key: goodKey124, kid: 'x124-a', fingerprint: null }, { nowMs: Date.now(), fingerprint: 'FP-9' }).allowed === true);
+      const expiredKey124 = sign124({ kid: 'x', plan: 'Pro', exp: '2020-01-01' });
+      eq('X124 gate: an expired stored key is refused as expired', entryGate124.decideEntry({ type: 'key', key: expiredKey124, fingerprint: 'FP-1' }, { nowMs: Date.now(), fingerprint: 'FP-1' }).reason, 'key-expired');
+    }
+
+    // --- NO MCP surface in the shipped set ---
+    ok('X124 the bridge never loads an MCP server module', !bridgeSrc124.includes("require('./mcp_server')") && !bridgeSrc124.includes('startMcpServer'));
+    ok('X124 the bridge serves no /api/mcp routes', !bridgeSrc124.includes("'/api/mcp/"));
+    ok('X124 the bridge never loads the funnel keeper', !bridgeSrc124.includes("require('./engine/funnelKeeper')"));
+    ok('X124 the funnel keeper module is gone from the engine', !fs124.existsSync(path124.join(__dirname, '..', 'engine', 'funnelKeeper.js')));
+    ok('X124 the installer packages no MCP server file', !/Source:[^\\n]*mcp_server/i.test(installerSrc124));
+    ok('X124 the installer packages no tools folder (key generator stays out)', !/Source:[^\\n]*tools/i.test(installerSrc124));
+    ok('X124 the key generator exists in the repo for the operator', fs124.existsSync(path124.join(__dirname, '..', 'tools', 'make_license_key.js')));
+
+    // --- public identity: name, version, ports, storage ---
+    ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
+    ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
+    ok('X124 pubspec version restarts at 1.0.0+1', read124('pubspec.yaml').includes('version: 1.0.0+1'));
+    eq('X124 package.json version is 1.0.0', JSON.parse(read124('package.json')).version, '1.0.0');
+    ok('X124 the bridge reports version 1.0.0 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.0';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
+    ok('X124 updates come only from the public release line', bridgeSrc124.includes("startsWith('public-v')") && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
+    const mainDart124 = read124('lib/main.dart');
+    ok('X124 the app title is FlowStudio and the gate wraps the studio', mainDart124.includes("title: 'FlowStudio'") && !mainDart124.includes('FlowStudio Lite') && mainDart124.includes('EntryGateHome'));
+    ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
+    const settingsView124 = read124('lib/widgets/settings_view.dart');
+    ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
+    ok('X124 the top strip carries v1.0.0 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.0'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

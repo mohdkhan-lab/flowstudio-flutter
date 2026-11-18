@@ -98,28 +98,27 @@ class SettingsProvider with ChangeNotifier {
   }
 
   SettingsProvider() {
-    // v2.31.4: an MCP "install update" request (Muse, through the
-    // connector) arrives over the bridge's event stream. It runs
-    // through THIS provider's own updater below — the same check,
-    // download and silent install as Settings → Updates — never a
-    // second update path.
-    AutomationBridge.instance.onMcpUpdateRequest = (_) {
-      unawaited(runMcpRequestedUpdate());
+    // v2.31.4: an "install update" request arrives over the bridge's
+    // event stream. It runs through THIS provider's own updater
+    // below — the same check, download and silent install as
+    // Settings → Updates — never a second update path.
+    AutomationBridge.instance.onUpdateRequest = (_) {
+      unawaited(runRequestedUpdate());
     };
     loadSettingsFromEngine();
   }
 
-  /// v2.31.4: app update requested by Muse through the MCP
-  /// connector. Chains the existing updater steps exactly as the
-  /// Settings buttons do: checkForUpdates → downloadUpdate →
-  /// installDownloadedUpdate (which closes the app so the Setup can
-  /// replace its files). Does nothing when an update flow is
-  /// already in flight, when no newer version exists, or when the
-  /// download did not produce a Setup file — the Updates card's
-  /// status line explains each outcome, as it does for manual use.
-  /// If a Setup from an earlier check is already downloaded, it is
-  /// installed directly (it is the latest release by construction).
-  Future<void> runMcpRequestedUpdate() async {
+  /// v2.31.4: app update requested through the bridge. Chains the
+  /// existing updater steps exactly as the Settings buttons do:
+  /// checkForUpdates → downloadUpdate → installDownloadedUpdate
+  /// (which closes the app so the Setup can replace its files).
+  /// Does nothing when an update flow is already in flight, when
+  /// no newer version exists, or when the download did not produce
+  /// a Setup file — the Updates card's status line explains each
+  /// outcome, as it does for manual use. If a Setup from an earlier
+  /// check is already downloaded, it is installed directly (it is
+  /// the latest release by construction).
+  Future<void> runRequestedUpdate() async {
     if (_isCheckingUpdates || _isDownloadingUpdate) return;
     if (_downloadedSetupPath.isEmpty) {
       await checkForUpdates();
@@ -544,28 +543,42 @@ class SettingsProvider with ChangeNotifier {
       final res = await http
           .get(
             Uri.parse(
-              'https://api.github.com/repos/mohdkhan-lab/flowstudio-flutter/releases/latest',
+              'https://api.github.com/repos/mohdkhan-lab/flowstudio-flutter/releases?per_page=30',
             ),
             headers: {
               'Accept': 'application/vnd.github+json',
-              'User-Agent': 'FlowStudioLite',
+              'User-Agent': 'FlowStudio',
             },
           )
           .timeout(const Duration(seconds: 10));
       if (res.statusCode == 200) {
-        final data = json.decode(res.body) as Map<String, dynamic>;
-        final tag = (data['tag_name']?.toString() ?? '');
+        // PUBLIC v1.0.0: the public edition updates ONLY from its
+        // own release line — tags named 'public-v*' carrying the
+        // asset 'FlowStudio_Setup.exe'. The same repo also hosts
+        // another edition's releases; those are never offered here.
+        final list = json.decode(res.body);
+        Map<String, dynamic>? data;
+        if (list is List) {
+          for (final rel in list) {
+            if (rel is Map<String, dynamic> &&
+                (rel['tag_name']?.toString() ?? '').startsWith('public-v')) {
+              data = rel;
+              break;
+            }
+          }
+        }
+        final tag = (data?['tag_name']?.toString() ?? '');
         if (tag.isNotEmpty && _isNewerVersion(tag, _settings.currentVersion)) {
           _updateAvailable = true;
           _latestVersion = tag;
           _downloadedSetupPath = '';
           _updateDownloadUrl = '';
           _updateSizeBytes = 0;
-          final assets = data['assets'];
+          final assets = data?['assets'];
           if (assets is List) {
             for (final a in assets) {
               final name = a['name']?.toString() ?? '';
-              if (name.toLowerCase().endsWith('.exe')) {
+              if (name == 'FlowStudio_Setup.exe') {
                 _updateDownloadUrl = a['browser_download_url']?.toString() ?? '';
                 _updateSizeBytes = (a['size'] as num?)?.toInt() ?? 0;
                 break;
@@ -603,12 +616,12 @@ class SettingsProvider with ChangeNotifier {
 
     HttpClient? client;
     try {
-      final dir = await Directory.systemTemp.createTemp('fslite_update');
-      final fileName = 'FlowStudio_Lite_${_latestVersion}_Setup.exe';
+      final dir = await Directory.systemTemp.createTemp('flowstudio_update');
+      final fileName = 'FlowStudio_Setup.exe';
       final file = File('${dir.path}${Platform.pathSeparator}$fileName');
 
       client = HttpClient();
-      client.userAgent = 'FlowStudioLite';
+      client.userAgent = 'FlowStudio';
       final request = await client.getUrl(Uri.parse(_updateDownloadUrl));
       final response = await request.close();
       if (response.statusCode != 200) {

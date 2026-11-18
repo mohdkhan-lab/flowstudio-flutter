@@ -1,17 +1,23 @@
-; Script generated for FlowStudio Lite Inno Setup Installer
-#define MyAppName "FlowStudio Lite"
-#define MyAppVersion "2.48.119"
+; Script generated for the FlowStudio (public edition) Inno Setup Installer
+; PUBLIC v1.0.0: this branch ships the PUBLIC edition — the name is
+; "FlowStudio" (no "Lite" anywhere user-visible), the version line
+; restarts at 1.0.0, and the AppId below is the public edition's
+; own, distinct from the Lite edition's, so both editions install
+; side by side on the same PC.
+#define MyAppName "FlowStudio"
+#define MyAppVersion "1.0.0"
 #define MyAppPublisher "MK"
 ; v2.22.0 fix: the Flutter Windows build produces "flutter_flow.exe"
 ; (BINARY_NAME in windows/CMakeLists.txt). The old script pointed the
-; shortcuts and the post-install Run entry at "FlowStudio Lite.exe",
-; a file that does not exist unless someone renamed it by hand — so a
-; fresh install could not be launched from its own shortcuts.
+; shortcuts and the post-install Run entry at a hand-renamed exe
+; name, a file that does not exist unless someone renamed it by
+; hand — so a fresh install could not be launched from its own
+; shortcuts.
 #define MyAppExeName "flutter_flow.exe"
 #define MyAppIcon "assets\app_icon.ico"
 
 [Setup]
-AppId={{9F7B12C8-356A-4A73-B28E-692B8851410D}
+AppId={{7F0245ED-D0FA-4056-A75D-D72B3549DB8E}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
@@ -19,7 +25,7 @@ DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
 OutputDir=dist
-OutputBaseFilename=FlowStudio_Lite_v{#MyAppVersion}_Setup
+OutputBaseFilename=FlowStudio_Setup
 SetupIconFile={#MyAppIcon}
 Compression=lzma/fast
 SolidCompression=yes
@@ -53,8 +59,11 @@ Source: "node_modules\*"; DestDir: "{app}\node_modules"; Excludes: "*electron*,*
 Source: "assets\*"; DestDir: "{app}\assets"; Flags: ignoreversion recursesubdirs createallsubdirs
 ; Root Engine Bridge & Config
 Source: "engine_bridge.js"; DestDir: "{app}"; Flags: ignoreversion
-; v2.31.0: the MCP server module the bridge requires at startup.
-Source: "mcp_server.js"; DestDir: "{app}"; Flags: ignoreversion
+; PUBLIC v1.0.0: NO mcp_server.js is packaged — the public edition
+; has no MCP server and the bridge never loads one. (The file may
+; exist in the repo for the Lite line; it is deliberately absent
+; from this [Files] list, as is the tools\ folder with the
+; license-key generator.)
 Source: "package.json"; DestDir: "{app}"; Flags: ignoreversion
 ; Embedded Node Runtime (self-contained, no external dependencies required)
 ; v2.22.0 fix: node.exe is staged NEXT TO this script before compiling
@@ -70,7 +79,9 @@ Source: "node.exe"; DestDir: "{app}"; Flags: ignoreversion
 ; v2.22.0 fix: NO pre-seeded database is shipped any more. The old script
 ; bundled the developer's own data\ folder — including a real account
 ; database — into every installer. The engine creates a fresh database
-; in %APPDATA%\google-flow-studio-lite on first run instead.
+; in %APPDATA%\flowstudio on first run instead. PUBLIC v1.0.0: the
+; public edition therefore ships with an EMPTY account store — no
+; owner profiles, cookies, or accounts are in this installer.
 
 [InstallDelete]
 ; v2.43.0 cleanup: remove the v2.42.0 watchdog scripts if an earlier

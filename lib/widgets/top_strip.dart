@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:provider/provider.dart';
 import '../theme/app_theme.dart';
 import '../providers/accounts_provider.dart';
+import '../providers/entry_provider.dart';
 import '../providers/notifications_provider.dart';
 import '../providers/settings_provider.dart';
 import 'tactile_components.dart';
@@ -114,11 +115,34 @@ class TopStrip extends StatelessWidget {
                 // Version Pill — Tactile 3D
                 TactileChip(
                   color: AppTheme.accentText,
-                  label: 'v2.48.119',
+                  label: 'v1.0.0',
                   height: 22,
                   borderRadius: 11,
                   bevelDepth: 1.5,
                   padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                ),
+                // PUBLIC v1.0.0: the entry status line — the plan
+                // and its validity, straight from the gate decision
+                // (e.g. "Pro · valid until 2027-01-31", or "Trial —
+                // 5 days left"), so the signed-in state is visible
+                // at a glance next to the version.
+                Consumer<EntryProvider>(
+                  builder: (context, entryProv, _) {
+                    if (entryProv.statusText.isEmpty) {
+                      return const SizedBox.shrink();
+                    }
+                    return Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: Text(
+                        entryProv.statusText,
+                        style: TextStyle(
+                          fontSize: 9.5,
+                          color: AppTheme.textDim,
+                          fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    );
+                  },
                 ),
               ],
             ),

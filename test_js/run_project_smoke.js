@@ -19,8 +19,8 @@
 //
 // v2.48.83 (P2 — SMOKE ISOLATION, field incident 2026-11-10):
 // this smoke runs ONLY against the isolated bridge child it
-// spawns itself (throwaway APPDATA, loopback port 48190). The
-// old version trusted WHATEVER answered on 48190 — run on a
+// spawns itself (throwaway APPDATA, loopback port 48290). The
+// old version trusted WHATEVER answered on 48290 — run on a
 // machine where the live app was already up, its child died
 // (EADDRINUSE), every call landed on the LIVE bridge, and its
 // start call rewrote the live app's download_folder to a
@@ -35,7 +35,7 @@ const os = require('os');
 const path = require('path');
 
 const REPO = path.join(__dirname, '..');
-const BASE = 'http://127.0.0.1:48190';
+const BASE = 'http://127.0.0.1:48290';
 
 let passed = 0;
 let failed = 0;
@@ -77,7 +77,7 @@ async function probeStatus(timeoutMs = 1500) {
 // and above all NO mutating call has been or will be made.
 function refuse(reason) {
   console.error(`SMOKE REFUSED: ${reason}`);
-  console.error('The smoke runs ONLY against the isolated bridge it spawns itself (throwaway APPDATA on 127.0.0.1:48190). It never attaches to an already-running instance: doing so would mutate that instance\'s real settings (the 2026-11-10 incident left the live app\'s download folder pointing at a fs-smoke temp dir) and could spend real accounts\' credits. Close the live app / free port 48190, then re-run.');
+  console.error('The smoke runs ONLY against the isolated bridge it spawns itself (throwaway APPDATA on 127.0.0.1:48290). It never attaches to an already-running instance: doing so would mutate that instance\'s real settings (the 2026-11-10 incident left the live app\'s download folder pointing at a fs-smoke temp dir) and could spend real accounts\' credits. Close the live app / free port 48290, then re-run.');
   process.exit(2);
 }
 
@@ -95,7 +95,7 @@ async function waitStatus(timeoutMs = 20000) {
 
 async function main() {
   // v2.48.83 (P2): PRE-FLIGHT — if anything already answers
-  // on 48190, a bridge is already running on this machine
+  // on 48290, a bridge is already running on this machine
   // (most likely the LIVE app). Refuse before spawning or
   // sending anything at all.
   const pre = await probeStatus();
@@ -131,7 +131,52 @@ async function main() {
     if (child.exitCode !== null) {
       refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
     }
-    check('status version is 2.48.119', status && status.version === '2.48.119', JSON.stringify(status));
+    check('status version is 1.0.0', status && status.version === '1.0.0', JSON.stringify(status));
+
+    // PUBLIC v1.0.0: ENTRY GATE — a fresh install (throwaway
+    // APPDATA, no credential stored) must be CLOSED, Door A must
+    // honestly report itself unconfigured, a garbage key must be
+    // refused, and — when the operator's key file is on this
+    // machine — a real generated key must open the gate and the
+    // Settings removal must close it again.
+    const entry0 = await req('GET', '/api/entry/status');
+    check('entry gate closed on a fresh install',
+      entry0.status === 200 && entry0.data && entry0.data.entry && entry0.data.entry.allowed === false,
+      JSON.stringify(entry0.data));
+    check('entry gate: Door A honestly unconfigured',
+      entry0.data && entry0.data.doorA && entry0.data.doorA.configured === false,
+      JSON.stringify(entry0.data && entry0.data.doorA));
+    const badKey = await req('POST', '/api/entry/activate-key', { key: 'not-a-key' });
+    check('entry gate: a garbage key is refused',
+      badKey.status === 200 && badKey.data && badKey.data.ok === false,
+      JSON.stringify(badKey.data));
+    const fsKeyPath = process.env.FS_LICENSE_PRIVATE_KEY ||
+      path.join(os.homedir(), 'workspace', 'license-keys', 'flowstudio-license-private.pem');
+    if (fs.existsSync(fsKeyPath)) {
+      const { spawnSync } = require('child_process');
+      const gen = spawnSync('node', ['tools/make_license_key.js', '--plan', 'Smoke', '--days', '30'],
+        { cwd: REPO, encoding: 'utf8', env: { ...process.env, FS_LICENSE_PRIVATE_KEY: fsKeyPath } });
+      const keyLine = (gen.stdout || '').split('\n').map(l => l.trim())
+        .find(l => /^[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+$/.test(l));
+      check('entry gate: key generator produced a key', !!keyLine, (gen.stderr || ''));
+      if (keyLine) {
+        const act = await req('POST', '/api/entry/activate-key', { key: keyLine });
+        check('entry gate: a generated key activates',
+          act.status === 200 && act.data && act.data.ok === true && act.data.entry && act.data.entry.allowed === true,
+          JSON.stringify(act.data));
+        const entry1 = await req('GET', '/api/entry/status');
+        check('entry gate: status shows the plan line after activation',
+          entry1.data && entry1.data.entry && entry1.data.entry.allowed === true &&
+          typeof entry1.data.entry.statusText === 'string' && entry1.data.entry.statusText.includes('Smoke'),
+          JSON.stringify(entry1.data && entry1.data.entry));
+        const rm = await req('POST', '/api/entry/remove-key', {});
+        check('entry gate: removing the key closes the gate again',
+          rm.status === 200 && rm.data && rm.data.entry && rm.data.entry.allowed === false,
+          JSON.stringify(rm.data));
+      }
+    } else {
+      console.log('NOTE  entry gate: no operator key file on this machine — signed-key round trip skipped (X124 pins cover the key logic)');
+    }
 
     const redoEarly = await req('POST', '/api/generation/redo-missing', {});
     check('redo before any run -> 400', redoEarly.status === 400, JSON.stringify(redoEarly.data));
@@ -160,7 +205,7 @@ async function main() {
     const projDir = path.join(outDir, 'My Film');
     check('project subfolder created', fs.existsSync(projDir));
 
-    const dbPath = path.join(appData, 'google-flow-studio-lite', 'data', 'flow_studio_lite.db');
+    const dbPath = path.join(appData, 'flowstudio', 'data', 'flow_studio.db');
     check('stub DB exists', fs.existsSync(dbPath), dbPath);
     if (fs.existsSync(dbPath)) {
       const initSqlJs = require('sql.js');

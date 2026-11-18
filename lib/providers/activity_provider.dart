@@ -20,7 +20,7 @@ class ActivityProvider with ChangeNotifier {
     // uninstalled/reinstalled/restarted chasing a ghost). Now it
     // reads the one true version constant, so it can never freeze
     // again.
-    addLog('FlowStudio Lite v${AutomationBridge.appVersion} started');
+    addLog('FlowStudio v${AutomationBridge.appVersion} started');
 
     // v2.29.0: the bridge's DETAIL flag now flows end-to-end into
     // addLog(isDetail:) — before this, no log was ever marked

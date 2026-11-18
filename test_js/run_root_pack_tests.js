@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.5+6 (public line)', read124('pubspec.yaml').includes('version: 1.0.5+6'));
-    eq('X124 package.json version is 1.0.5', JSON.parse(read124('package.json')).version, '1.0.5');
-    ok('X124 the bridge reports version 1.0.5 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.5';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.6+7 (public line)', read124('pubspec.yaml').includes('version: 1.0.6+7'));
+    eq('X124 package.json version is 1.0.6', JSON.parse(read124('package.json')).version, '1.0.6');
+    ok('X124 the bridge reports version 1.0.6 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.6';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the public release line', bridgeSrc124.includes("startsWith('public-v')") && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.5 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.5'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.6 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.6'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16209,7 +16209,7 @@ async function main() {
     ok('X125 Door A controls are gated on entry.loaded',
       entryGateSrc125.includes('entry.loaded && entry.doorAConfigured && !entry.busy'));
     eq('X125 the key field and Activate are gated on entry.loaded',
-      (entryGateSrc125.match(/entry\.loaded && !entry\.busy/g) || []).length, 5); // + v1.0.5: Activate-this-key, the OTP field, the verification card's shared enabled
+      (entryGateSrc125.match(/entry\.loaded && !entry\.busy/g) || []).length, 5); // + v1.0.5: Activate-this-key, the OTP field, the verification card's shared enabled · v1.0.6: the check-email block's shared enabled replaces Activate-this-key
 
     // --- watchdog + visible failed state + retry ---
     ok('X125 the watchdog window is 20 seconds',
@@ -16241,8 +16241,8 @@ async function main() {
     eq('X125 the eight gate calls return the shared sentence',
       (bridgeDartSrc125.match(/'error': engineNotAnsweringError,/g) || []).length, 8); // + v1.0.5: my-key, verification link, send-otp, verify-otp
     const gateSection125 = bridgeDartSrc125.slice(bridgeDartSrc125.indexOf('entry gate (the app'));
-    eq('X125 all nine gate HTTP calls carry the timeout',
-      (gateSection125.match(/\.timeout\(_entryCallTimeout\)/g) || []).length, 9);
+    eq('X125 all ten gate HTTP calls carry the timeout',
+      (gateSection125.match(/\.timeout\(_entryCallTimeout\)/g) || []).length, 10); // + v1.0.6: the window-phase call
     ok('X125 the gate timeout is 10 seconds',
       bridgeDartSrc125.includes('static const Duration _entryCallTimeout = Duration(seconds: 10);'));
     ok('X125 engine starts are logged to engine-start.log in the app data folder',
@@ -16596,7 +16596,7 @@ async function main() {
     ok('X127 the startup splash is in the gate (progress + real status lines)',
       gateDart127.includes('_buildStartupScreen') && gateDart127.includes('LinearProgressIndicator') &&
       gateDart127.includes('Starting the engine…') && gateDart127.includes('Checking your entry…') &&
-      gateDart127.includes('entry.engineStarted'));
+      gateDart127.includes('entry.engineStage'));
     const sidebar127 = read127('lib/widgets/sidebar_accounts.dart');
     const chipSection127 = sidebar127.slice(
       sidebar127.indexOf('class _HoverFilterBtn'),
@@ -16605,10 +16605,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.5',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.5"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.5'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.5';"));
+    ok('X127 the remaining version sites carry 1.0.6',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.6"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.6'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.6';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('setPendingAccountSession'));
@@ -16665,18 +16665,18 @@ async function main() {
       gateDart128.indexOf("'Continue with Google'") > gateDart128.indexOf("'Activate'"));
     ok('X128 the doors are split by an "or" divider',
       gateDart128.includes("'or'") && gateDart128.includes('Multi-Account AI Video Engine'));
-    ok('X128 a signed-in account lands on the key fetch (v1.0.5)',
-      gateDart128.includes('showStrip') && gateDart128.includes('your license key below') &&
+    ok('X128 a signed-in account lands on the key step (v1.0.5; v1.0.6: by email)',
+      gateDart128.includes('showStrip') && gateDart128.includes('comes by email') &&
       gateDart128.includes('Signed in as') && gateDart128.includes('GET MY FREE KEY'));
     ok('X128 the card closes with the free-trial line',
       gateDart128.includes('No license key? Sign in above to get your free trial key.'));
 
     // --- the dark splash: state-driven progress, ready line, version ---
-    ok('X128 the splash is dark with a state-filled progress bar',
-      gateDart128.includes('0xFF07070C') && gateDart128.includes('value: progress') &&
-      gateDart128.includes('entry.engineStarted ? 0.65 : 0.25'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.5',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.5'"));
+    ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold)',
+      gateDart128.includes('0xFF0B0B10') && gateDart128.includes('value: progress') &&
+      gateDart128.includes('entry.engineStage / 3'));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.6',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.6'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
@@ -16698,6 +16698,13 @@ async function main() {
   // (sendotp/verifyotp on the key service; the code honestly
   // reports itself unavailable until the sender is configured).
   // The key service's wire shape is pinned against a fake fetch.
+  //
+  // v1.0.6 AMENDMENT (owner's orders): the key is NEVER shown in
+  // the app again — mykey now EMAILS the account's SHORT key and
+  // answers only { emailed: true }; the gate's fetched-key block
+  // became a "Check your email" state (the block itself, the
+  // short-key helpers and the redeem wire are pinned in X130).
+  // The pins below follow the amended contract.
   // =====================================================================
   {
     const fs129 = require('fs');
@@ -16718,14 +16725,18 @@ async function main() {
       return { ok: status >= 200 && status < 300, status, json: async () => payload, text: async () => JSON.stringify(payload) };
     };
     calls129.length = 0;
-    const mk1 = await auth129.fetchMyKey('ID-T', { fetchImpl: mkFetch129(200, { ok: true, key: 'KEY-ONE', kid: 'k1', plan: 'Trial', exp: '2026-11-25', reused: false }) });
-    ok('X129 mykey returns the freshly issued key',
-      mk1.ok === true && mk1.key === 'KEY-ONE' && mk1.plan === 'Trial' && mk1.reused === false);
+    const mk1 = await auth129.fetchMyKey('ID-T', { fetchImpl: mkFetch129(200, { ok: true, emailed: true, plan: 'Trial', exp: '2026-11-25', reused: false }) });
+    ok('X129 mykey now asks the service to EMAIL the key (v1.0.6 — no key comes back)',
+      mk1.ok === true && mk1.emailed === true && mk1.plan === 'Trial' && mk1.reused === false && !('key' in mk1));
     eq('X129 mykey posts {action:mykey} to the key function with apikey + Bearer',
       JSON.stringify({ url: calls129[0].url, method: calls129[0].method, body: calls129[0].body, apikey: calls129[0].headers.apikey, auth: calls129[0].headers.Authorization }),
       JSON.stringify({ url: cfg129.keyFunctionUrl, method: 'POST', body: { action: 'mykey' }, apikey: cfg129.keyFunctionApiKey, auth: 'Bearer ID-T' }));
-    const mk2 = await auth129.fetchMyKey('ID-T', { fetchImpl: mkFetch129(200, { ok: true, key: 'KEY-ONE', kid: 'k1', plan: 'Trial', exp: '2026-11-25', reused: true }) });
-    ok('X129 mykey returns the SAME key on a later sign-in (reused)', mk2.ok === true && mk2.key === 'KEY-ONE' && mk2.reused === true);
+    const mk2 = await auth129.fetchMyKey('ID-T', { fetchImpl: mkFetch129(200, { ok: true, emailed: true, plan: 'Trial', exp: '2026-11-25', reused: true }) });
+    ok('X129 a later sign-in re-sends the SAME key by email (reused)', mk2.ok === true && mk2.emailed === true && mk2.reused === true);
+    const mkMail = await auth129.fetchMyKey('ID-T', { fetchImpl: mkFetch129(502, { error: 'key-email-failed' }) });
+    ok('X129 a failed key email maps to the honest sentence (no in-app fallback)',
+      mkMail.ok === false && mkMail.reason === 'key-email-failed' &&
+      mkMail.message === 'We could not email your key. Please try again later.');
     const mkNv = await auth129.fetchMyKey('ID-T', { fetchImpl: mkFetch129(403, { error: 'email-not-verified' }) });
     ok('X129 an unverified email gets NO key — the verification card takes over',
       mkNv.ok === false && mkNv.reason === 'email-not-verified');
@@ -16756,23 +16767,139 @@ async function main() {
     const providerDart129 = read129('lib/providers/entry_provider.dart');
     const bridgeDart129 = read129('lib/services/automation_bridge.dart');
     const bridgeJs129 = read129('engine_bridge.js');
-    ok('X129 the gate shows the fetched key with Copy + Activate this key',
-      gateDart129.includes('YOUR LICENSE KEY') && gateDart129.includes('Activate this key') &&
-      gateDart129.includes('Save this key — from now on you log in with this key only.') &&
-      gateDart129.includes('_myKeyBlock'));
+    ok('X129 the gate shows the CHECK-YOUR-EMAIL state, never the key (v1.0.6)',
+      gateDart129.includes('has been sent to') && gateDart129.includes('Resend key email') &&
+      gateDart129.includes('_checkEmailBlock') && !gateDart129.includes('_myKeyBlock') &&
+      !gateDart129.includes('Activate this key') &&
+      !gateDart129.includes('Save this key — from now on you log in with this key only.'));
     ok('X129 the gate carries BOTH verification routes',
       gateDart129.includes('VERIFY YOUR EMAIL') && gateDart129.includes('Send verification link') &&
       gateDart129.includes('Send code') && gateDart129.includes('Verify code') &&
       gateDart129.includes('_otpCodeInput'));
     ok('X129 the provider drives the key flow',
       providerDart129.includes('Future<bool> fetchMyKey()') &&
-      providerDart129.includes('Future<bool> activateFetchedKey()') &&
+      providerDart129.includes('bool get keyEmailed') &&
+      !providerDart129.includes('activateFetchedKey') &&
       providerDart129.includes('Future<bool> sendVerificationLink()') &&
       providerDart129.includes("res['reason']?.toString() == 'email-not-verified'"));
     ok('X129 the Dart bridge + JS bridge serve the key flow routes',
       bridgeDart129.includes('fetchMyKey()') && bridgeDart129.includes('api/entry/my-key') &&
       bridgeJs129.includes("'/api/entry/my-key'") && bridgeJs129.includes("'/api/entry/send-verification-link'") &&
       bridgeJs129.includes('setPendingAccountSession') && !bridgeJs129.includes('storeAccountSession(session, { activate: true })'));
+  }
+
+  // =====================================================================
+  // X130. PUBLIC v1.0.6 — MIDNIGHT GOLD + SHORT KEYS + KEY BY EMAIL
+  // + SMALL WINDOW + ENGINE-START FIX (owner's orders, 2026-11-18):
+  // F1 the gate/splash wear the approved Midnight Gold sample
+  // (bg #0B0B10, card #14141C, gold #F5B83D, white Google button,
+  // radius 16, card sized for the small window). F2 the user key
+  // is SHORT — FS-XXXX-XXXX-XXXX; the signed token stays
+  // server-side and the bridge's activate-key exchanges a short
+  // key through the key service's redeem action before running
+  // the unchanged legacy verify/save flow. F3 mykey emails the
+  // key and never returns it (X129 pins the wire; here the bridge
+  // answer shape). F4 the window opens 420x620 fixed (runner) and
+  // the engine resizes it per phase (gate/studio plans pinned
+  // functionally). F5 ensureEngineRunning completes at spawn —
+  // the old 25x400ms health-wait loop is gone from its body and
+  // the splash runs on the provider's determinate engineStage.
+  // =====================================================================
+  {
+    const fs130 = require('fs');
+    const path130 = require('path');
+    const read130 = (rel) => fs130.readFileSync(path130.join(__dirname, '..', rel), 'utf8');
+    const licenseKey130 = require('../engine/licenseKey');
+    const auth130 = require('../engine/authClient');
+    const cfg130 = require('../engine/serviceConfig').SERVICE_CONFIG;
+    const windowStyle130 = require('../engine/windowStyle');
+    const gateDart130 = read130('lib/widgets/entry_gate.dart');
+    const providerDart130 = read130('lib/providers/entry_provider.dart');
+    const bridgeDart130 = read130('lib/services/automation_bridge.dart');
+    const bridgeJs130 = read130('engine_bridge.js');
+    const mainCpp130 = read130('windows/runner/main.cpp');
+
+    // --- F2: the short-key helpers (pure) ---
+    eq('X130 a canonical short key normalizes to itself', licenseKey130.normalizeShortKey('FS-31D8-CCB0-BDC8'), 'FS-31D8-CCB0-BDC8');
+    eq('X130 a lowercase dashless short key normalizes', licenseKey130.normalizeShortKey('fs31d8ccb0bdc8'), 'FS-31D8-CCB0-BDC8');
+    eq('X130 a bare 12-hex string normalizes', licenseKey130.normalizeShortKey('31D8-CCB0-BDC8'), 'FS-31D8-CCB0-BDC8');
+    eq('X130 a long signed key is NOT a short key', licenseKey130.normalizeShortKey('eyJraWQiOiJrZXktMTIzNDU2NzgifQ.c2lnbmF0dXJl'), '');
+    eq('X130 garbage is not a short key', licenseKey130.normalizeShortKey('not-a-key'), '');
+    ok('X130 isShortKey agrees with the truth table',
+      licenseKey130.isShortKey('FS-AAAA-BBBB-CCCC') === true &&
+      licenseKey130.isShortKey('hello') === false);
+    eq('X130 the legacy verify still judges a garbage key malformed', licenseKey130.verifyLicenseKey('not-a-key').reason, 'malformed');
+
+    // --- F2: the redeem wire (fake fetch) ---
+    const calls130 = [];
+    const rdFetch130 = (status, payload) => async (url, init) => {
+      calls130.push({ url, method: (init && init.method) || 'GET', headers: (init && init.headers) || {}, body: init && init.body ? JSON.parse(init.body) : null });
+      return { ok: status >= 200 && status < 300, status, json: async () => payload, text: async () => JSON.stringify(payload) };
+    };
+    calls130.length = 0;
+    const rd1 = await auth130.redeemKey('FS-31D8-CCB0-BDC8', 'FP-HEX', '1.0.6', { fetchImpl: rdFetch130(200, { signedKey: 'SIGNED.TOKEN', kid: 'k1', plan: 'Trial', exp: '2026-11-25' }) });
+    ok('X130 redeem returns the signed token on success',
+      rd1.ok === true && rd1.signedKey === 'SIGNED.TOKEN' && rd1.plan === 'Trial');
+    eq('X130 redeem posts {action:redeem,...} with the apikey and NO bearer token',
+      JSON.stringify({ url: calls130[0].url, method: calls130[0].method, body: calls130[0].body, apikey: calls130[0].headers.apikey, auth: calls130[0].headers.Authorization }),
+      JSON.stringify({ url: cfg130.keyFunctionUrl, method: 'POST', body: { action: 'redeem', shortKey: 'FS-31D8-CCB0-BDC8', deviceFingerprint: 'FP-HEX', appVersion: '1.0.6' }, apikey: cfg130.keyFunctionApiKey, auth: undefined }));
+    const rd404 = await auth130.redeemKey('FS-0000-0000-0000', 'FP-HEX', '1.0.6', { fetchImpl: rdFetch130(404, { error: 'key-not-found' }) });
+    eq('X130 an unknown short key maps to key-not-found', rd404.reason, 'key-not-found');
+    const rd403 = await auth130.redeemKey('FS-31D8-CCB0-BDC8', 'FP-OTHER', '1.0.6', { fetchImpl: rdFetch130(403, { error: 'key-bound-elsewhere' }) });
+    eq('X130 a key bound elsewhere maps to key-bound-elsewhere', rd403.reason, 'key-bound-elsewhere');
+
+    // --- F2/F3: the bridge wiring ---
+    ok('X130 activate-key exchanges a short key BEFORE the legacy verify',
+      bridgeJs130.indexOf('licenseKey.normalizeShortKey(key)') > bridgeJs130.indexOf("'/api/entry/activate-key'") &&
+      bridgeJs130.indexOf('authClient.redeemKey(') > bridgeJs130.indexOf('licenseKey.normalizeShortKey(key)') &&
+      bridgeJs130.indexOf('licenseKey.verifyLicenseKey(key') > bridgeJs130.indexOf('authClient.redeemKey(') &&
+      bridgeJs130.includes("'key-bound-elsewhere': 'This key is already in use on another computer.'"));
+    ok('X130 the my-key answer carries emailed:true and NO key',
+      bridgeJs130.includes('emailed: true') && !bridgeJs130.includes('key: result.key'));
+
+    // --- F1: Midnight Gold on the gate ---
+    ok('X130 the gate wears Midnight Gold (bg, card, gold)',
+      gateDart130.includes('0xFF0B0B10') && gateDart130.includes('0xFF14141C') &&
+      gateDart130.includes('0xFFF5B83D') && gateDart130.includes('0xFF26262F'));
+    ok('X130 the Google button is white and the card fits the small window',
+      gateDart130.includes('white: true') && gateDart130.includes('0xFFF7F5F0') &&
+      gateDart130.includes('width: 392') && gateDart130.includes('BorderRadius.circular(16)'));
+    ok('X130 the key field invites the short format and auto-formats it',
+      gateDart130.includes('Paste your license key — FS-XXXX-XXXX-XXXX') &&
+      gateDart130.includes('_onKeyChanged') && gateDart130.includes('onChanged: _onKeyChanged'));
+
+    // --- F4: window phases ---
+    eq('X130 the gate phase plan is the small fixed panel',
+      JSON.stringify(windowStyle130.appWindowPhasePlan('gate')),
+      JSON.stringify({ width: 420, height: 620, resizable: false }));
+    eq('X130 the studio phase plan is the real size, resizable',
+      JSON.stringify(windowStyle130.appWindowPhasePlan('studio')),
+      JSON.stringify({ width: 1280, height: 800, resizable: true }));
+    eq('X130 an unknown phase has no plan', windowStyle130.appWindowPhasePlan('bogus'), null);
+    eq('X130 setAppWindowPhase is a safe no-op off Windows', await windowStyle130.setAppWindowPhase(123, 'gate'), false);
+    ok('X130 the runner opens at 420x620 and the bridge serves the phase route',
+      mainCpp130.includes('Win32Window::Size size(420, 620)') &&
+      bridgeJs130.includes("'/api/entry/window-phase'") && bridgeJs130.includes('setAppWindowPhase(process.ppid, phase)'));
+    ok('X130 the Dart side reports phase transitions from the entry state',
+      bridgeDart130.includes('Future<void> setEntryWindowPhase(String phase)') &&
+      providerDart130.includes("AutomationBridge.instance.setEntryWindowPhase(phase)") &&
+      providerDart130.includes("_allowed ? 'studio' : 'gate'"));
+
+    // --- F5: the engine start no longer waits inside the future ---
+    const ensure130 = bridgeDart130.slice(
+      bridgeDart130.indexOf('Future<void> ensureEngineRunning()'),
+      bridgeDart130.indexOf('Future<bool> checkHealth()'));
+    ok('X130 ensureEngineRunning has NO health-wait loop any more',
+      !ensure130.includes('i < 25') && !ensure130.includes('Wait up to 10 seconds') &&
+      ensure130.includes('_engineStartCompleter'));
+    ok('X130 the provider owns readiness: engineStage + a health probe',
+      providerDart130.includes('int get engineStage') && providerDart130.includes('_startStageProbe') &&
+      providerDart130.includes('AutomationBridge.instance.checkHealth()'));
+    ok('X130 the gate paints before the engine answers (no await on readiness)',
+      providerDart130.includes('ensureEngineRunning();') &&
+      !/await AutomationBridge\.instance\.ensureEngineRunning\(\)/.test(providerDart130.slice(providerDart130.indexOf('EntryProvider()'), providerDart130.indexOf('EntryProvider()') + 1600)));
+    ok('X130 the splash progress is the determinate stage, not the old steps',
+      gateDart130.includes('entry.engineStage / 3') && !gateDart130.includes('0.65'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

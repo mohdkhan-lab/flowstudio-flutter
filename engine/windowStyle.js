@@ -137,7 +137,108 @@ async function getWorkArea() {
   return { left, top, width, height };
 }
 
+// ---------------------------------------------------------------------
+// PUBLIC v1.0.6 — THE APP'S OWN WINDOW PHASES (owner's order): the
+// app opens as a SMALL fixed panel (420x620, centered) while the
+// splash / entry gate is up — the OmniFlow shape the owner approved —
+// and only takes its real studio size (1280x800, resizable) once the
+// entry check passes and the main screen opens. Signing out returns
+// it to the small panel. The runner creates the window small; this
+// shim performs the phase switches afterwards, on the Flutter
+// runner window of the app process (the bridge's parent pid).
+// Sizes in the plan are LOGICAL pixels; the shim converts with the
+// window's own DPI. Best-effort like everything here: never rejects.
+// ---------------------------------------------------------------------
+const APP_WINDOW_PHASES = {
+  gate: { width: 420, height: 620, resizable: false },
+  studio: { width: 1280, height: 800, resizable: true }
+};
+
+/* Pure: the phase plan, or null for an unknown phase. */
+function appWindowPhasePlan(phase) {
+  const plan = APP_WINDOW_PHASES[phase];
+  if (!plan) return null;
+  return { width: plan.width, height: plan.height, resizable: plan.resizable };
+}
+
+const APP_PHASE_CSHARP = `
+using System;
+using System.Text;
+using System.Runtime.InteropServices;
+public static class AppPhaseWin {
+  public delegate bool EnumProc(IntPtr h, IntPtr l);
+  [DllImport("user32.dll")] public static extern bool EnumWindows(EnumProc cb, IntPtr l);
+  [DllImport("user32.dll")] public static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
+  [DllImport("user32.dll", CharSet = CharSet.Auto)] public static extern int GetClassName(IntPtr h, StringBuilder s, int n);
+  [DllImport("user32.dll")] public static extern bool IsWindowVisible(IntPtr h);
+  [DllImport("user32.dll")] public static extern int GetWindowLong(IntPtr h, int i);
+  [DllImport("user32.dll")] public static extern int SetWindowLong(IntPtr h, int i, int v);
+  [DllImport("user32.dll")] public static extern bool SetWindowPos(IntPtr h, IntPtr after, int x, int y, int cx, int cy, uint flags);
+  [DllImport("user32.dll")] public static extern bool ShowWindow(IntPtr h, int cmd);
+  [DllImport("user32.dll")] public static extern bool IsZoomed(IntPtr h);
+  [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr h);
+  [StructLayout(LayoutKind.Sequential)] public struct RECT { public int Left; public int Top; public int Right; public int Bottom; }
+  [DllImport("user32.dll")] public static extern bool SystemParametersInfo(uint action, uint param, ref RECT rect, uint flags);
+  public static int Apply(uint targetPid, int logicalW, int logicalH, bool resizable) {
+    IntPtr found = IntPtr.Zero;
+    IntPtr fallback = IntPtr.Zero;
+    EnumWindows((h, l) => {
+      uint pid;
+      GetWindowThreadProcessId(h, out pid);
+      if (pid != targetPid) return true;
+      StringBuilder sb = new StringBuilder(256);
+      GetClassName(h, sb, 256);
+      if (sb.ToString() == "FLUTTER_RUNNER_WIN32_WINDOW") { found = h; return false; }
+      if (fallback == IntPtr.Zero && IsWindowVisible(h)) fallback = h;
+      return true;
+    }, IntPtr.Zero);
+    IntPtr hwnd = found != IntPtr.Zero ? found : fallback;
+    if (hwnd == IntPtr.Zero) return 0;
+    if (IsZoomed(hwnd)) ShowWindow(hwnd, 9);
+    int style = GetWindowLong(hwnd, -16);
+    int next = resizable ? (style | 0x00040000 | 0x00010000)
+                         : (style & ~0x00040000 & ~0x00010000);
+    if (next != style) SetWindowLong(hwnd, -16, next);
+    uint dpi = 96;
+    try { uint d = GetDpiForWindow(hwnd); if (d > 0) dpi = d; } catch {}
+    int cx = (int)Math.Round(logicalW * dpi / 96.0);
+    int cy = (int)Math.Round(logicalH * dpi / 96.0);
+    RECT wa = new RECT();
+    int wx = 0, wy = 0;
+    if (SystemParametersInfo(0x0030, 0, ref wa, 0)) {
+      wx = wa.Left + Math.Max(0, ((wa.Right - wa.Left) - cx) / 2);
+      wy = wa.Top + Math.Max(0, ((wa.Bottom - wa.Top) - cy) / 2);
+    }
+    SetWindowPos(hwnd, IntPtr.Zero, wx, wy, cx, cy, 0x0004 | 0x0020);
+    return 1;
+  }
+}
+`;
+
+/**
+ * Move the APP's own window (the process [pid] — the bridge passes
+ * its parent pid) into a phase: 'gate' (420x620 fixed, centered) or
+ * 'studio' (1280x800 resizable, centered). Resolves true when the
+ * window was adjusted. Never rejects.
+ */
+async function setAppWindowPhase(pid, phase) {
+  if (!IS_WIN32) return false;
+  const plan = appWindowPhasePlan(phase);
+  if (!plan) return false;
+  const targetPid = Number(pid);
+  if (!Number.isFinite(targetPid) || targetPid <= 0) return false;
+  const script =
+    `Add-Type -TypeDefinition @'\n${APP_PHASE_CSHARP}'@ -Language CSharp; ` +
+    `[AppPhaseWin]::Apply(${targetPid}, ${plan.width}, ${plan.height}, ${plan.resizable ? '$true' : '$false'})`;
+  const out = await runPowerShell(script);
+  const n = parseInt(out, 10);
+  return Number.isFinite(n) && n > 0;
+}
+
 module.exports = {
   setTaskbarButton,
-  getWorkArea
+  getWorkArea,
+  APP_WINDOW_PHASES,
+  appWindowPhasePlan,
+  setAppWindowPhase
 };

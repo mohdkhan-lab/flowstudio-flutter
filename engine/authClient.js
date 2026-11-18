@@ -582,6 +582,9 @@ async function handleGoogleTokenCallback(firebaseToken, state, opts) {
 // The app never signs keys and never decides who deserves one —
 // it carries the user's Firebase ID token to the key service and
 // reports what the service answered, in plain reasons.
+// v1.0.6: mykey no longer RETURNS a key — the service EMAILS the
+// account's short key and answers { emailed: true }. The redeem
+// action below is the reverse trip: short key in, signed key out.
 
 async function callKeyFunction(fetchImpl, config, body, idToken) {
   const headers = {
@@ -608,12 +611,17 @@ function keyServiceConfigured(config) {
     typeof config.keyFunctionApiKey === 'string' && config.keyFunctionApiKey.length > 0;
 }
 
-// Ask the key service for THIS signed-in user's license key.
-//   { ok: true, key, kid, plan, exp, reused } — reused says the
-//     service returned the key it had already issued this email
-//     (the normal case on every ask after the first).
+// Ask the key service to EMAIL this signed-in user their license
+// key (v1.0.6: the key travels by email only — it is never in the
+// response, and this client never sees it).
+//   { ok: true, emailed: true, plan, exp, reused } — reused says
+//     the email's key already existed (the normal case on every
+//     ask after the first; the SAME key is re-sent).
 //   { ok: false, reason: 'email-not-verified' } — the email door
 //     still owes a verification (link or code) first.
+//   { ok: false, reason: 'key-email-failed' } — the service could
+//     not send the email; the gate shows that honestly. There is
+//     no fallback that displays the key.
 //   { ok: false, reason: 'session-expired' } — the token was
 //     refused; the bridge refreshes and retries once before this
 //     reaches the gate.
@@ -628,14 +636,19 @@ async function fetchMyKey(idToken, opts) {
   try {
     const { status, data } = await callKeyFunction(
       fetchImpl, config, { action: 'mykey' }, cleanToken);
-    if (status === 200 && data && typeof data.key === 'string' && data.key) {
+    if (status === 200 && data && data.emailed === true) {
       return {
         ok: true,
-        key: data.key,
-        kid: typeof data.kid === 'string' ? data.kid : '',
+        emailed: true,
         plan: typeof data.plan === 'string' ? data.plan : '',
         exp: typeof data.exp === 'string' ? data.exp : '',
         reused: data.reused === true
+      };
+    }
+    if (status === 502 && data && data.error === 'key-email-failed') {
+      return {
+        ok: false, reason: 'key-email-failed', status,
+        message: 'We could not email your key. Please try again later.'
       };
     }
     if (status === 403 && data && data.error === 'email-not-verified') {
@@ -651,6 +664,53 @@ async function fetchMyKey(idToken, opts) {
       ok: false, reason: 'my-key-failed', status,
       message: 'Your key could not be fetched — try again in a moment.'
     };
+  } catch (e) {
+    return { ok: false, reason: 'network-error' };
+  }
+}
+
+// PUBLIC v1.0.6 — redeem: exchange a SHORT key (FS-XXXX-XXXX-XXXX)
+// for the signed license token the service holds. Open action (the
+// short key is the credential — no Firebase token is sent), like
+// sendotp. The first use binds the key to this device fingerprint
+// server-side; the bridge then verifies + stores the signed token
+// exactly like a pasted long key.
+//   { ok: true, signedKey, kid, plan, exp }
+//   { ok: false, reason: 'key-not-found' }       — no such short key
+//   { ok: false, reason: 'key-bound-elsewhere' } — bound to another PC
+//   { ok: false, reason: 'network-error' }       — no answer at all
+async function redeemKey(shortKey, deviceFingerprint, appVersion, opts) {
+  const config = resolveConfig(opts);
+  if (!isServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  if (!keyServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  const fetchImpl = resolveFetch(opts);
+  if (!fetchImpl) return { ok: false, reason: 'network-unavailable' };
+  const cleanShort = typeof shortKey === 'string' ? shortKey.trim() : '';
+  const cleanFp = typeof deviceFingerprint === 'string' ? deviceFingerprint.trim() : '';
+  if (!cleanShort) return { ok: false, reason: 'key-not-found' };
+  if (!cleanFp) return { ok: false, reason: 'device-required' };
+  try {
+    const { status, data } = await callKeyFunction(
+      fetchImpl, config,
+      {
+        action: 'redeem',
+        shortKey: cleanShort,
+        deviceFingerprint: cleanFp,
+        appVersion: typeof appVersion === 'string' ? appVersion : ''
+      },
+      null);
+    if (status === 200 && data && typeof data.signedKey === 'string' && data.signedKey) {
+      return {
+        ok: true,
+        signedKey: data.signedKey,
+        kid: typeof data.kid === 'string' ? data.kid : '',
+        plan: typeof data.plan === 'string' ? data.plan : '',
+        exp: typeof data.exp === 'string' ? data.exp : ''
+      };
+    }
+    if (status === 404) return { ok: false, reason: 'key-not-found', status };
+    if (status === 403) return { ok: false, reason: 'key-bound-elsewhere', status };
+    return { ok: false, reason: 'redeem-failed', status };
   } catch (e) {
     return { ok: false, reason: 'network-error' };
   }
@@ -766,6 +826,7 @@ module.exports = {
   sessionFromAuthData,
   firebaseErrorCode,
   fetchMyKey,
+  redeemKey,
   sendVerificationEmail,
   sendOtp,
   verifyOtp

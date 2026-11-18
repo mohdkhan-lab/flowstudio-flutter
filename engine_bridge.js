@@ -135,6 +135,7 @@ const entryGate = require('./engine/entryGate');
 const authClient = require('./engine/authClient');
 const reportClient = require('./engine/reportClient');
 const machineFingerprint = require('./engine/machineFingerprint');
+const windowStyle = require('./engine/windowStyle');
 
 // PUBLIC v1.0.0: this machine's one-device binding fingerprint,
 // computed once per engine process (the registry read is a
@@ -196,8 +197,9 @@ function reportStatsSoon() {
 // sign-up or the Google callback) no longer stores an entry
 // credential: an account alone never opens the app now. The
 // session is held in memory only, just long enough for the gate
-// to fetch the user's license key from the key service with it
-// (/api/entry/my-key); the key's own activation is what stores
+// to ask the key service to EMAIL the user's license key with it
+// (/api/entry/my-key; v1.0.6 — the key itself never comes back
+// through this bridge); the key's own activation is what stores
 // the entry credential (Door B, as always). An engine restart
 // forgets the pending session — the user simply signs in again.
 let pendingAccountSession = null;
@@ -337,7 +339,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '1.0.5';
+const APP_VERSION = '1.0.6';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -885,7 +887,34 @@ async function startBridge() {
 
       if (pathname === '/api/entry/activate-key' && req.method === 'POST') {
         const body = await readBody();
-        const key = typeof body.key === 'string' ? body.key.trim() : '';
+        let key = typeof body.key === 'string' ? body.key.trim() : '';
+        // PUBLIC v1.0.6 — a SHORT key (FS-XXXX-XXXX-XXXX) is not a
+        // license key: exchange it at the key service for the signed
+        // token it holds, then run the exact same verify + save +
+        // report flow below with that token. First use binds the
+        // short key to this machine server-side (the redeem
+        // action); the local one-device binding below still applies
+        // to the signed key itself. A long signed key skips this
+        // step entirely — the legacy path is unchanged.
+        const shortKey = licenseKey.normalizeShortKey(key);
+        if (shortKey) {
+          const redeemed = await authClient.redeemKey(
+            shortKey, cachedMachineFingerprint(), APP_VERSION);
+          if (!redeemed.ok) {
+            const redeemMessages = {
+              'key-not-found': 'That key was not found — check the key and try again.',
+              'key-bound-elsewhere': 'This key is already in use on another computer.',
+              'network-error': 'Activation needs the internet — check your connection and try again.',
+              'network-unavailable': 'Activation needs the internet — check your connection and try again.',
+              'not-configured': 'Activation is not available right now — try again later.'
+            };
+            return sendJson(200, {
+              ok: false, reason: redeemed.reason,
+              error: redeemMessages[redeemed.reason] || 'This license key could not be activated — try again in a moment.'
+            });
+          }
+          key = redeemed.signedKey;
+        }
         const verdict = licenseKey.verifyLicenseKey(key, Date.now());
         if (!verdict.ok) {
           const messages = {
@@ -913,7 +942,7 @@ async function startBridge() {
           activatedAt: new Date().toISOString()
         });
         // v1.0.5: the key is the entry now — the pending account
-        // session (if the key was just fetched with it) is done.
+        // session (if this key was emailed on its sign-in) is done.
         pendingAccountSession = null;
         const decision = entryGate.decideEntry(
           entryGate.loadCredential(appDataDataDir),
@@ -932,6 +961,27 @@ async function startBridge() {
         entryGate.clearCredential(appDataDataDir);
         const decision = entryGate.decideEntry(null, { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() });
         return sendJson(200, { ok: true, entry: decision });
+      }
+
+      // PUBLIC v1.0.6 — the app window's phase (owner's order): the
+      // Dart side reports 'studio' once the entry check passes and
+      // 'gate' when the gate comes back (sign-out / key removal);
+      // windowStyle then moves + resizes the app's own window (the
+      // bridge's parent process) and toggles its fixed size.
+      // Fire-and-forget by design — the answer never waits on the
+      // PowerShell round trip.
+      if (pathname === '/api/entry/window-phase' && req.method === 'POST') {
+        const body = await readBody();
+        const phase = typeof body.phase === 'string' ? body.phase : '';
+        if (!windowStyle.appWindowPhasePlan(phase)) {
+          return sendJson(200, { ok: false, error: 'Unknown window phase.' });
+        }
+        windowStyle.setAppWindowPhase(process.ppid, phase)
+          .then((applied) => {
+            if (applied) console.log(`[FlowStudio Engine] App window phase: ${phase}.`);
+          })
+          .catch(() => {});
+        return sendJson(200, { ok: true, phase });
       }
 
       if (pathname === '/api/entry/sign-in' && req.method === 'POST') {
@@ -999,6 +1049,10 @@ async function startBridge() {
       // refresh + one retry, and a not-verified answer earns the
       // same — a freshly clicked verification link only shows up
       // in a refreshed token's claims.
+      // v1.0.6: the service EMAILS the key — the success answer is
+      // { emailed: true } and NO key ever travels in this response;
+      // the gate shows a "Check your email" state and the user
+      // pastes the short key from the email into the key box.
       if (pathname === '/api/entry/my-key' && req.method === 'POST') {
         if (!pendingAccountSession || !pendingAccountSession.idToken) {
           return sendJson(200, {
@@ -1025,8 +1079,7 @@ async function startBridge() {
         }
         return sendJson(200, {
           ok: true,
-          key: result.key,
-          kid: result.kid,
+          emailed: true,
           plan: result.plan,
           exp: result.exp,
           reused: result.reused,

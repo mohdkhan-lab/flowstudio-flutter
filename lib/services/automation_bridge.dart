@@ -17,7 +17,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '1.0.5';
+  static const String appVersion = '1.0.6';
 
   // PUBLIC v1.0.1: the one "engine is not answering" sentence the
   // entry-gate calls return when the bridge cannot be reached at
@@ -35,6 +35,11 @@ class AutomationBridge {
 
   Process? _nodeProcess;
   bool _isConnecting = false;
+  // PUBLIC v1.0.6 (F5): completes when the in-flight engine START
+  // finishes (process spawned / engine adopted) — NOT when the
+  // engine answers. Joiners wait on this instead of polling health,
+  // so no caller ever sits inside a health-wait loop.
+  Completer<void>? _engineStartCompleter;
   bool _copyCheckDone = false;
   StreamSubscription? _sseSubscription;
 
@@ -140,21 +145,31 @@ class AutomationBridge {
   }
 
   /// Starts the Node.js bridge server if not already running, and connects to SSE stream
+  ///
+  /// PUBLIC v1.0.6 (F5 — the startup hang): this future now completes
+  /// as soon as the engine PROCESS exists (spawned here, or a healthy
+  /// same-version engine adopted) — it NO LONGER waits for the
+  /// engine to answer HTTP. v1.0.5 and earlier ran a 25 x 400 ms
+  /// health-wait loop inside this future (and joiners ran their own
+  /// 20 x 250 ms adopt poll), so the entry gate's first answer sat
+  /// behind up to ~10 s of serial waiting and the splash showed one
+  /// frozen step. Readiness is discovered by the callers' own polls
+  /// (the entry status poll, the health probe) while the UI paints.
   Future<void> ensureEngineRunning() async {
     if (await _adoptIfHealthy()) {
       _listenToSse();
       return;
     }
     if (_isConnecting) {
-      for (int i = 0; i < 20; i++) {
-        await Future.delayed(const Duration(milliseconds: 250));
-        if (await _adoptIfHealthy()) {
-          _listenToSse();
-          return;
-        }
-      }
+      // A start is already in flight: wait only for the SPAWN to
+      // finish, never for the engine to answer.
+      final inFlight = _engineStartCompleter;
+      if (inFlight != null) await inFlight.future;
+      return;
     }
     _isConnecting = true;
+    final completer = Completer<void>();
+    _engineStartCompleter = completer;
 
     try {
       if (await _adoptIfHealthy()) {
@@ -217,18 +232,20 @@ class AutomationBridge {
         _logEngineStart('[exit] engine process exited with code $code');
       });
 
-      // Wait up to 10 seconds for it to start
-      for (int i = 0; i < 25; i++) {
-        await Future.delayed(const Duration(milliseconds: 400));
-        if (await checkHealth()) break;
-      }
-
+      // v1.0.6 (F5): NO health-wait loop here any more — the future
+      // completes with the spawn. The engine takes a moment to
+      // bind its port; the gate's status poll and health probe
+      // discover readiness while the splash animates its stages.
       _listenToSse();
     } catch (e) {
       debugPrint('[AutomationBridge] Init error: $e');
       _logEngineStart('[init error] $e');
     } finally {
       _isConnecting = false;
+      if (!completer.isCompleted) completer.complete();
+      if (identical(_engineStartCompleter, completer)) {
+        _engineStartCompleter = null;
+      }
     }
   }
 
@@ -1353,11 +1370,13 @@ class AutomationBridge {
   }
 
   /// v1.0.5: fetch the pending sign-in's license key from the key
-  /// service (the bridge's /api/entry/my-key). On success the
-  /// answer carries { key, kid, plan, exp, reused, email }; on
-  /// refusal { ok: false, reason, error } — reason
+  /// service (the bridge's /api/entry/my-key). v1.0.6: the key is
+  /// EMAILED by the service — on success the answer carries
+  /// { emailed: true, plan, exp, reused, email } and NEVER a key;
+  /// on refusal { ok: false, reason, error } — reason
   /// 'email-not-verified' is the gate's cue for its verification
-  /// card, 'no-account' means nobody is signed in.
+  /// card, 'key-email-failed' means the email could not be sent,
+  /// 'no-account' means nobody is signed in.
   Future<Map<String, dynamic>> fetchMyKey() async {
     try {
       final res = await http
@@ -1437,6 +1456,25 @@ class AutomationBridge {
         'ok': false,
         'error': engineNotAnsweringError,
       };
+    }
+  }
+
+  /// PUBLIC v1.0.6 (F4): tell the engine which window phase the app
+  /// is in — 'gate' (the small fixed panel) or 'studio' (the real
+  /// size). The engine resizes the app's own window. Fire-and-forget:
+  /// the result is ignored and every failure is swallowed — window
+  /// dressing must never break entry.
+  Future<void> setEntryWindowPhase(String phase) async {
+    try {
+      await http
+          .post(
+            Uri.parse('$baseUrl/api/entry/window-phase'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'phase': phase}),
+          )
+          .timeout(_entryCallTimeout);
+    } catch (e) {
+      debugPrint('[setEntryWindowPhase Error] $e');
     }
   }
 

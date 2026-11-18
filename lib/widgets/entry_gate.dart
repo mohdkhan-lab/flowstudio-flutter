@@ -14,21 +14,26 @@ import '../services/automation_bridge.dart';
 ///   live (Firebase) and sign-in is real. v1.0.5: THE ACCOUNT IS
 ///   NOT AN ENTRY any more — the "Get my free key" section below
 ///   the divider signs the user in ONLY to fetch their license
-///   key from the key service; the key is then shown on this
-///   card, and activating it (Door B) is what opens the app.
-///   An email user whose address is not verified yet gets the
-///   verification card instead: a verification LINK (Firebase's
-///   email) and, as the second route, a 6-digit email CODE (the
-///   key service's — which honestly reports itself unavailable
-///   until its sender is set up). If the backend were ever
-///   unconfigured, the door would show the honest not-available
-///   message and stay disabled — no mock sign-in.
+///   key from the key service. v1.0.6: the key is never shown in
+///   the app — the service EMAILS the account's short key
+///   (FS-XXXX-XXXX-XXXX), the card shows a "Check your email"
+///   state, and the user pastes the key from the email into
+///   Door B. An email user whose address is not verified yet gets
+///   the verification card instead: a verification LINK
+///   (Firebase's email) and, as the second route, a 6-digit email
+///   CODE (the key service's — which honestly reports itself
+///   unavailable until its sender is set up). If the backend were
+///   ever unconfigured, the door would show the honest
+///   not-available message and stay disabled — no mock sign-in.
 ///
-///   DOOR B — LICENSE KEY: a signed key, checked by the engine,
-///   bound to this one device on activation. The notice above the
-///   field — "Internet is required to activate your license key."
-///   — is shown BEFORE the first activation attempt, so nobody is
-///   surprised by it (the owner's explicit order).
+///   DOOR B — LICENSE KEY: a short key (exchanged with the key
+///   service for the signed token it holds — the redeem step in
+///   the bridge) or a legacy long signed key (checked by the
+///   engine offline), bound to this one device on activation.
+///   The notice above the field — "Internet is required to
+///   activate your license key." — is shown BEFORE the first
+///   activation attempt, so nobody is surprised by it (the
+///   owner's explicit order).
 ///
 /// v1.0.4: the gate and the startup screen were redesigned as ONE
 /// dark, professional entry (the owner's reference: a competitor
@@ -40,24 +45,33 @@ import '../services/automation_bridge.dart';
 /// below is deliberately local to this screen: the entry is dark
 /// even though the studio behind it is not.
 ///
+/// v1.0.6: the look is the owner's approved "Midnight Gold"
+/// design (live sample, picked 2026-11-18): deep charcoal-black,
+/// gold accent, white Google button, radius 16 card. The window
+/// itself is the small fixed 420×620 panel during this phase
+/// (see the engine's window phases) — the card is sized for it,
+/// with a scroll fallback so no state can overflow.
+///
 /// STARTUP: while the engine starts and the first entry answer is
 /// on its way, a splash screen shows instead of the gate card
-/// (see _buildStartupScreen).
-///
-/// FIT LAW: the whole gate fits 1024×768 — one centered card, no
-/// scrolling at that size.
+/// (see _buildStartupScreen). v1.0.6 (F5): its progress is the
+/// provider's determinate engineStage (start → process up → port
+/// answering → entry answer), never a fake bar.
 
-// The entry's own dark palette (v1.0.4) — splash + gate card.
-const Color _entryBg = Color(0xFF07070C);
-const Color _entryCard = Color(0xFF101016);
-const Color _entryPanel = Color(0xFF17171F);
-const Color _entryBorder = Color(0xFF262633);
+// The entry's own dark palette — "Midnight Gold" (v1.0.6) —
+// splash + gate card.
+const Color _entryBg = Color(0xFF0B0B10);
+const Color _entryCard = Color(0xFF14141C);
+const Color _entryPanel = Color(0xFF1B1B25);
+const Color _entryBorder = Color(0xFF26262F);
 const Color _entryText = Color(0xFFF2F2F5);
 const Color _entryDim = Color(0xFF9A9AAD);
 const Color _entryFaint = Color(0xFF6D6D80);
-const Color _entryGold = Color(0xFFF0A832);
-const Color _entryGoldText = Color(0xFF1C1503);
-const Color _entryBtn = Color(0xFF1B1B24);
+const Color _entryGold = Color(0xFFF5B83D);
+const Color _entryGoldText = Color(0xFF221500);
+const Color _entryBtn = Color(0xFF1A1A23);
+const Color _entryWhite = Color(0xFFF7F5F0);
+const Color _entryWhiteText = Color(0xFF1C1C22);
 const Color _entryRed = Color(0xFFFF8585);
 const Color _entryRedBg = Color(0xFF2A1215);
 
@@ -81,10 +95,8 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
   bool _idCopied = false;
   Timer? _copiedTimer;
 
-  // v1.0.5: fetched-key copy feedback + the verification card's
-  // code (the six boxes render this string; the hidden field
-  // behind them owns the keyboard).
-  bool _keyCopied = false;
+  // v1.0.5: the verification card's code (the six boxes render
+  // this string; the hidden field behind them owns the keyboard).
   String _otpCode = '';
 
   @override
@@ -97,16 +109,6 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     super.dispose();
   }
 
-  void _copyFetchedKey(String key) {
-    if (key.isEmpty) return;
-    Clipboard.setData(ClipboardData(text: key));
-    setState(() => _keyCopied = true);
-    _copiedTimer?.cancel();
-    _copiedTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) setState(() => _keyCopied = false);
-    });
-  }
-
   void _copyMachineId(String machineId) {
     if (machineId.isEmpty) return;
     Clipboard.setData(ClipboardData(text: machineId));
@@ -117,18 +119,50 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     });
   }
 
+  /// v1.0.6: keep a SHORT key tidy while it is typed or pasted —
+  /// uppercase, grouped FS-XXXX-XXXX-XXXX. Only input that is
+  /// short-key shaped is touched (an FS-prefixed entry, or a bare
+  /// 12-hex paste); a long legacy key is left exactly as typed.
+  void _onKeyChanged(String value) {
+    final compact =
+        value.toUpperCase().replaceAll(RegExp(r'[^0-9A-Z]'), '');
+    String hex;
+    if (compact.startsWith('FS')) {
+      hex = compact.substring(2);
+    } else if (compact.length == 12) {
+      hex = compact;
+    } else {
+      return;
+    }
+    if (hex.isEmpty || hex.length > 12) return;
+    if (!RegExp(r'^[0-9A-F]+$').hasMatch(hex)) return;
+    final buf = StringBuffer('FS');
+    for (var i = 0; i < hex.length; i++) {
+      if (i % 4 == 0) buf.write('-');
+      buf.write(hex[i]);
+    }
+    final formatted = buf.toString();
+    if (formatted != value) {
+      _keyController.value = TextEditingValue(
+        text: formatted,
+        selection: TextSelection.collapsed(offset: formatted.length),
+      );
+    }
+  }
+
   Widget _field({
     required TextEditingController controller,
     required String hint,
     bool enabled = true,
     int maxLines = 1,
     bool obscureText = false,
+    ValueChanged<String>? onChanged,
   }) {
     return Container(
       padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
         color: _entryPanel,
-        borderRadius: BorderRadius.circular(9),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: _entryBorder),
       ),
       child: TextField(
@@ -136,6 +170,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
         enabled: enabled,
         maxLines: maxLines,
         obscureText: obscureText,
+        onChanged: onChanged,
         style: const TextStyle(fontSize: 12.5, color: _entryText),
         decoration: InputDecoration(
           hintText: hint,
@@ -153,31 +188,53 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     required bool enabled,
     required VoidCallback onTap,
     bool gold = false,
+    bool white = false,
     double height = 38,
   }) {
+    // Midnight Gold: gold buttons carry the sample's vertical
+    // gold gradient; the Google button is white; the rest are
+    // quiet dark buttons with the hairline border.
+    final BoxDecoration decoration = gold
+        ? BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0xFFF2B544), Color(0xFFDD941F)],
+            ),
+            borderRadius: BorderRadius.circular(12),
+          )
+        : white
+            ? BoxDecoration(
+                color: _entryWhite,
+                borderRadius: BorderRadius.circular(12),
+              )
+            : BoxDecoration(
+                color: _entryBtn,
+                border: Border.all(color: _entryBorder),
+                borderRadius: BorderRadius.circular(12),
+              );
     return Opacity(
       opacity: enabled ? 1 : 0.45,
-      child: Material(
-        color: gold ? _entryGold : _entryBtn,
-        borderRadius: BorderRadius.circular(9),
-        child: InkWell(
-          onTap: enabled ? onTap : null,
-          borderRadius: BorderRadius.circular(9),
-          child: Container(
-            height: height,
-            alignment: Alignment.center,
-            decoration: gold
-                ? null
-                : BoxDecoration(
-                    border: Border.all(color: _entryBorder),
-                    borderRadius: BorderRadius.circular(9),
-                  ),
-            child: Text(
-              label,
-              style: TextStyle(
-                fontSize: 13,
-                fontWeight: FontWeight.bold,
-                color: gold ? _entryGoldText : _entryText,
+      child: Container(
+        decoration: decoration,
+        child: Material(
+          color: Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          child: InkWell(
+            onTap: enabled ? onTap : null,
+            borderRadius: BorderRadius.circular(12),
+            child: Container(
+              height: height,
+              alignment: Alignment.center,
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: 13,
+                  fontWeight: FontWeight.bold,
+                  color: gold
+                      ? _entryGoldText
+                      : (white ? _entryWhiteText : _entryText),
+                ),
               ),
             ),
           ),
@@ -228,7 +285,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
       padding: const EdgeInsets.fromLTRB(14, 10, 10, 11),
       decoration: BoxDecoration(
         color: _entryPanel,
-        borderRadius: BorderRadius.circular(10),
+        borderRadius: BorderRadius.circular(12),
         border: Border.all(color: _entryBorder),
       ),
       child: Column(
@@ -296,91 +353,60 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     );
   }
 
-  /// v1.0.5 — the FETCHED KEY block: the key the service issued
-  /// this signed-in email, shown big with a Copy chip, the
-  /// save-this-key line (from now on the key is the only login),
-  /// and the one button that activates it on this device.
-  Widget _myKeyBlock(EntryProvider entry) {
+  /// v1.0.6 — the CHECK-YOUR-EMAIL block: the key service has
+  /// emailed this sign-in's short key. The key is NEVER shown in
+  /// the app (the owner's order) — the user pastes it into the
+  /// key box above. "Resend key email" re-sends the SAME key;
+  /// Sign out drops the pending sign-in.
+  Widget _checkEmailBlock(EntryProvider entry) {
+    final enabled = entry.loaded && !entry.busy;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _sectionLabel('YOUR LICENSE KEY'),
         const SizedBox(height: 7),
         Container(
-          padding: const EdgeInsets.fromLTRB(14, 11, 10, 11),
+          padding: const EdgeInsets.fromLTRB(14, 11, 14, 11),
           decoration: BoxDecoration(
             color: _entryPanel,
-            borderRadius: BorderRadius.circular(10),
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(color: _entryBorder),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Row(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Expanded(
-                    child: Text(
-                      entry.myKey,
-                      style: const TextStyle(
-                        fontSize: 13.5,
-                        fontWeight: FontWeight.bold,
-                        letterSpacing: 0.4,
-                        color: _entryText,
-                        fontFamily: 'Consolas',
-                      ),
-                    ),
-                  ),
-                  Material(
-                    color: _entryBtn,
-                    borderRadius: BorderRadius.circular(6),
-                    child: InkWell(
-                      onTap: () => _copyFetchedKey(entry.myKey),
-                      borderRadius: BorderRadius.circular(6),
-                      child: Container(
-                        padding: const EdgeInsets.symmetric(
-                            horizontal: 10, vertical: 5),
-                        decoration: BoxDecoration(
-                          border: Border.all(color: _entryBorder),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          _keyCopied ? 'Copied' : 'Copy',
-                          style: const TextStyle(
-                            fontSize: 10.5,
-                            fontWeight: FontWeight.bold,
-                            color: _entryText,
-                          ),
-                        ),
-                      ),
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 6),
               Text(
-                entry.myKeyReused
-                    ? 'This is the same key as before — it belongs to ${entry.accountEmail}.'
-                    : 'Plan: ${entry.myKeyPlan} · valid until ${entry.myKeyExp}',
+                'Your license key has been sent to ${entry.accountEmail}. '
+                'Paste it above to activate.',
+                style: const TextStyle(fontSize: 12, color: _entryText),
+              ),
+              const SizedBox(height: 5),
+              Text(
+                entry.keyEmailedReused
+                    ? 'It is the same key as before — one key for this account.'
+                    : 'Plan: ${entry.keyEmailedPlan} · valid until ${entry.keyEmailedExp}',
                 style: const TextStyle(fontSize: 10.5, color: _entryFaint),
               ),
             ],
           ),
         ),
-        const SizedBox(height: 8),
-        const Text(
-          'Save this key — from now on you log in with this key only.',
-          style: TextStyle(fontSize: 11.5, color: _entryDim),
-        ),
-        const SizedBox(height: 9),
-        _btn(
-          gold: true,
-          height: 42,
-          label: entry.busy ? 'Working…' : 'Activate this key',
-          enabled: entry.loaded && !entry.busy,
-          onTap: () {
-            context.read<EntryProvider>().activateFetchedKey();
-          },
+        const SizedBox(height: 4),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _linkButton(
+              'Resend key email',
+              enabled
+                  ? () => context.read<EntryProvider>().fetchMyKey()
+                  : null,
+            ),
+            _linkButton(
+              'Sign out',
+              entry.busy
+                  ? null
+                  : () => context.read<EntryProvider>().signOut(),
+            ),
+          ],
         ),
       ],
     );
@@ -402,7 +428,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: _entryPanel,
-                borderRadius: BorderRadius.circular(9),
+                borderRadius: BorderRadius.circular(12),
                 border: Border.all(
                   color: active ? _entryGold : _entryBorder,
                   width: active ? 1.4 : 1,
@@ -516,19 +542,25 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
 
   /// v1.0.4 — the STARTUP SCREEN, rebuilt dark and centred like
   /// a market app's splash: big logo, the app name, the tagline,
-  /// a progress bar that fills with the real engine state
-  /// (starting → checking → ready), a status line that follows
-  /// it, and the version at the bottom. The watchdog's
-  /// engineFailed state lives here too, with its Retry button
-  /// (v1.0.1 behaviour, kept).
+  /// a progress bar that fills with the real engine state, a
+  /// status line that follows it, and the version at the bottom.
+  /// The watchdog's engineFailed state lives here too, with its
+  /// Retry button (v1.0.1 behaviour, kept).
+  /// v1.0.6 (F5): the progress is DETERMINATE — the provider's
+  /// engineStage (0 start requested → 1 process up → 2 port
+  /// answering → 3 entry answer in) over 3, with a status line
+  /// per stage. The old two hard-coded steps made the whole
+  /// engine-start wait look like one frozen bar.
   Widget _buildStartupScreen(BuildContext context, EntryProvider entry) {
     final double progress =
-        entry.engineFailed ? 0 : (entry.engineStarted ? 0.65 : 0.25);
+        entry.engineFailed ? 0 : entry.engineStage / 3;
     final String status = entry.loaded
         ? 'Workspace ready!'
-        : entry.engineStarted
+        : entry.engineStage >= 2
             ? 'Checking your entry…'
-            : 'Starting the engine…';
+            : entry.engineStage >= 1
+                ? 'Engine is up — waiting for it to answer…'
+                : 'Starting the engine…';
     return Scaffold(
       backgroundColor: _entryBg,
       body: Stack(
@@ -619,7 +651,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
             right: 0,
             bottom: 18,
             child: Text(
-              'v1.0.5',
+              'v1.0.6',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 10.5, color: _entryFaint),
             ),
@@ -649,21 +681,27 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     // v1.0.5: a landed sign-in (Google watch, email sign-in, or
     // a legacy account adopted by the bridge) shows as the
     // signed-in strip at the top — the sign-in's only job is the
-    // key fetch, and the strip carries that step. It hides while
-    // the fetched key or the verification card is on show (both
-    // name the email themselves).
+    // key step, and the strip carries that step. It hides while
+    // the check-email block or the verification card is on show
+    // (both name the email themselves). v1.0.6: the strip's
+    // action asks the service to EMAIL the key.
     final signedIn = entry.accountEmail.isNotEmpty;
     final showStrip =
-        signedIn && entry.myKey.isEmpty && !entry.needsVerification;
+        signedIn && !entry.keyEmailed && !entry.needsVerification;
     return Scaffold(
       backgroundColor: _entryBg,
       body: Center(
-        child: Container(
-          width: 470,
-          padding: const EdgeInsets.fromLTRB(26, 20, 26, 16),
+        // v1.0.6: the window is the small 420×620 panel in this
+        // phase — the scroll view is only a safety net so no card
+        // state can ever overflow it; at the designed sizes the
+        // card fits whole and nothing scrolls.
+        child: SingleChildScrollView(
+          child: Container(
+          width: 392,
+          padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
           decoration: BoxDecoration(
             color: _entryCard,
-            borderRadius: BorderRadius.circular(18),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(color: _entryBorder),
           ),
           child: Column(
@@ -673,21 +711,21 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
               Center(
                 child: Image.asset(
                   'assets/icon.png',
-                  width: 48,
-                  height: 48,
+                  width: 40,
+                  height: 40,
                   errorBuilder: (_, _, _) => const Icon(
                     Icons.auto_awesome,
-                    size: 48,
+                    size: 40,
                     color: _entryGold,
                   ),
                 ),
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 7),
               const Text(
                 'FlowStudio',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontSize: 23,
+                  fontSize: 21,
                   fontWeight: FontWeight.bold,
                   color: _entryText,
                 ),
@@ -699,27 +737,27 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
                 style: TextStyle(fontSize: 11.5, color: _entryDim),
               ),
               if (showStrip) ...[
-                const SizedBox(height: 12),
+                const SizedBox(height: 10),
                 Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
                   decoration: BoxDecoration(
                     color: _entryPanel,
-                    borderRadius: BorderRadius.circular(9),
+                    borderRadius: BorderRadius.circular(12),
                     border: Border.all(color: _entryBorder),
                   ),
                   child: Row(
                     children: [
                       Expanded(
                         child: Text(
-                          'Signed in as ${entry.accountEmail} — fetch '
-                          'your license key below.',
+                          'Signed in as ${entry.accountEmail} — your '
+                          'license key comes by email.',
                           style: const TextStyle(
                               fontSize: 11, color: _entryDim),
                         ),
                       ),
                       _linkButton(
-                        'Get my key',
+                        'Email my key',
                         entry.busy
                             ? null
                             : () =>
@@ -736,9 +774,9 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
                   ),
                 ),
               ],
-              const SizedBox(height: 14),
+              const SizedBox(height: 11),
               _machineIdBox(entry),
-              const SizedBox(height: 14),
+              const SizedBox(height: 11),
               _sectionLabel('LICENSE KEY'),
               const SizedBox(height: 5),
               // The activation notice comes FIRST, above the field,
@@ -750,9 +788,10 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
               const SizedBox(height: 7),
               _field(
                 controller: _keyController,
-                hint: 'Paste your license key',
+                hint: 'Paste your license key — FS-XXXX-XXXX-XXXX',
                 enabled: entry.loaded && !entry.busy,
                 maxLines: 2,
+                onChanged: _onKeyChanged,
               ),
               const SizedBox(height: 9),
               _btn(
@@ -766,7 +805,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
                       .activateKey(_keyController.text);
                 },
               ),
-              const SizedBox(height: 13),
+              const SizedBox(height: 11),
               const Row(
                 children: [
                   Expanded(child: Divider(height: 1, color: _entryBorder)),
@@ -780,18 +819,21 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
                   Expanded(child: Divider(height: 1, color: _entryBorder)),
                 ],
               ),
-              const SizedBox(height: 11),
+              const SizedBox(height: 9),
               // v1.0.5: below the divider the card is in exactly
               // one of three states — the fetched key, the
               // verification card, or the get-my-key sign-in.
-              if (entry.myKey.isNotEmpty)
-                _myKeyBlock(entry)
+              // v1.0.6: the first state is now the check-email
+              // block (the key arrives by email, never in-app).
+              if (entry.keyEmailed)
+                _checkEmailBlock(entry)
               else if (entry.needsVerification)
                 _verificationCard(entry)
               else ...[
                 _sectionLabel('GET MY FREE KEY'),
                 const SizedBox(height: 8),
                 _btn(
+                  white: true,
                   height: 38,
                   enabled: doorAEnabled,
                   label: 'Continue with Google',
@@ -902,6 +944,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
                 style: TextStyle(fontSize: 10.5, color: _entryFaint),
               ),
             ],
+          ),
           ),
         ),
       ),

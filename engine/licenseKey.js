@@ -128,10 +128,35 @@ function verifyLicenseKey(key, nowMs) {
   return { ok: true, kid, plan, exp, trial: payload.trial === true };
 }
 
+// ---------------------------------------------------------------------
+// PUBLIC v1.0.6 — SHORT user keys: FS-XXXX-XXXX-XXXX (12 uppercase hex
+// chars). The short key is NOT a license key: it is only a lookup
+// handle the key service's `redeem` action exchanges for the signed
+// token (which stays server-side until that moment). These helpers
+// are pure so the gate/bridge and the tests share one definition.
+// Accepts the canonical dashed form, a bare 12-hex string, any case,
+// stray spaces — returns the canonical form, or '' when the input is
+// not short-key shaped (a long signed key never matches: it contains
+// '.' and far more than 14 alphanumeric chars).
+// ---------------------------------------------------------------------
+function normalizeShortKey(text) {
+  const raw = typeof text === 'string' ? text : '';
+  let compact = raw.toUpperCase().replace(/[^0-9A-Z]/g, '');
+  if (compact.startsWith('FS')) compact = compact.slice(2);
+  if (!/^[0-9A-F]{12}$/.test(compact)) return '';
+  return `FS-${compact.slice(0, 4)}-${compact.slice(4, 8)}-${compact.slice(8, 12)}`;
+}
+
+function isShortKey(text) {
+  return normalizeShortKey(text) !== '';
+}
+
 module.exports = {
   LICENSE_PUBLIC_KEY_PEM,
   LICENSE_PUBLIC_KEY_PEMS,
   parseLicenseKey,
   keyExpiryMs,
-  verifyLicenseKey
+  verifyLicenseKey,
+  normalizeShortKey,
+  isShortKey
 };

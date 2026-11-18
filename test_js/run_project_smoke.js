@@ -145,7 +145,7 @@ async function main() {
     if (child.exitCode !== null) {
       refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
     }
-    check('status version is 1.0.5', status && status.version === '1.0.5', JSON.stringify(status));
+    check('status version is 1.0.6', status && status.version === '1.0.6', JSON.stringify(status));
 
     // PUBLIC v1.0.0: ENTRY GATE — a fresh install (throwaway
     // APPDATA, no credential stored) must be CLOSED, a garbage
@@ -172,6 +172,19 @@ async function main() {
     check('entry gate: a garbage key is refused',
       badKey.status === 200 && badKey.data && badKey.data.ok === false,
       JSON.stringify(badKey.data));
+    // v1.0.6: a well-formed but unknown SHORT key goes down the
+    // redeem path and is refused too (key-not-found once the new
+    // function is deployed; a mapped refusal before it).
+    const badShort = await req('POST', '/api/entry/activate-key', { key: 'FS-0000-0000-0000' });
+    check('entry gate: an unknown short key is refused',
+      badShort.status === 200 && badShort.data && badShort.data.ok === false,
+      JSON.stringify(badShort.data));
+    // v1.0.6: the window-phase route exists and answers (the
+    // resize itself is Windows-only; off Windows it is a no-op).
+    const phase = await req('POST', '/api/entry/window-phase', { phase: 'gate' });
+    check('entry gate: the window-phase route answers',
+      phase.status === 200 && phase.data && phase.data.ok === true,
+      JSON.stringify(phase.data));
     // v1.0.5: the key fetch with no pending sign-in refuses
     // honestly — no key is ever invented locally.
     const myKey = await req('POST', '/api/entry/my-key', {});

@@ -11,9 +11,11 @@ import '../services/automation_bridge.dart';
 ///       Phase 2 (v1.0.2): the backend is LIVE (Firebase) and
 ///       sign-in is real. v1.0.5: the account is NOT an entry
 ///       any more — signing in exists only to fetch the user's
-///       license key from the key service (fetchMyKey below);
-///       the key is shown on the gate, and activating it is
-///       what opens the app.
+///       license key from the key service (fetchMyKey below).
+///       v1.0.6: the key is never fetched INTO the app — the
+///       service EMAILS it (a short FS-XXXX-XXXX-XXXX key), the
+///       gate shows a "Check your email" state, and the user
+///       pastes the key from the email into Door B.
 ///   B — a license key: signed, checked by the engine offline,
 ///       bound to this one device on activation.
 /// The plan line for the top strip comes from the same decision
@@ -46,17 +48,20 @@ class EntryProvider extends ChangeNotifier {
 
   // v1.0.5: the key-fetch flow. _accountEmail is the pending
   // sign-in the bridge is holding ('' when nobody is signed in);
-  // the sign-in exists only so fetchMyKey can run with it. The
-  // fetched key waits in _myKey until the user activates it —
-  // showing the key is the point: from now on it is the ONLY
-  // login. _needsVerification is the key service's answer for an
+  // the sign-in exists only so fetchMyKey can run with it.
+  // _needsVerification is the key service's answer for an
   // unverified email; the gate answers it with its verification
   // card (link half + code half).
+  // v1.0.6: the key itself NEVER enters the app — the service
+  // emails it. _keyEmailed is the whole state: the gate shows
+  // "Check your email" and the user pastes the short key from
+  // the email into the key box. Plan/exp/reused ride along for
+  // the gate's confirmation line.
   String _accountEmail = '';
-  String _myKey = '';
-  String _myKeyPlan = '';
-  String _myKeyExp = '';
-  bool _myKeyReused = false;
+  bool _keyEmailed = false;
+  String _keyEmailedPlan = '';
+  String _keyEmailedExp = '';
+  bool _keyEmailedReused = false;
   bool _needsVerification = false;
   bool _otpSent = false;
   bool _myKeyInFlight = false;
@@ -76,6 +81,19 @@ class EntryProvider extends ChangeNotifier {
   bool _engineStarted = false;
   DateTime _pollStartedAt = DateTime.now();
 
+  // v1.0.6 (F5): the splash's DETERMINATE stage — real milestones,
+  // not a fake bar: 0 = engine start requested, 1 = the engine
+  // process is up (ensureEngineRunning completed), 2 = the bridge
+  // port answers (the health probe below saw it), 3 = the first
+  // entry answer is in (loaded). The splash paints stage/3.
+  int _engineStage = 0;
+  Timer? _stageProbe;
+
+  // v1.0.6 (F4): the window phase last sent to the engine —
+  // 'gate' (small fixed panel) or 'studio' (real size). The
+  // runner opens in 'gate', so it starts there.
+  String _windowPhase = 'gate';
+
   EntryProvider() {
     // PUBLIC v1.0.1 — THE v1.0.0 BUG FIX: the gate itself starts
     // its engine. In v1.0.0 the only engine spawn lived in
@@ -86,13 +104,39 @@ class EntryProvider extends ChangeNotifier {
     // engine is not answering". Fire-and-forget: ensureEngine-
     // Running adopts a healthy engine or spawns one, and the
     // poll below picks up its first answer.
+    // v1.0.6 (F5): the future completes at SPAWN time now — the
+    // splash stage moves to 1 there, and the probe below owns
+    // readiness (stage 2) while the gate paints immediately.
     final started = AutomationBridge.instance.ensureEngineRunning();
     started.then((_) {
       _engineStarted = true;
+      if (_engineStage < 1) _engineStage = 1;
+      _startStageProbe();
       notifyListeners();
     });
     refresh();
     _startPoll();
+  }
+
+  /// v1.0.6 (F5): probe the bridge port every 500 ms until it
+  /// answers — splash stage 2. Readiness discovery lives here,
+  /// NOT inside ensureEngineRunning's future (that serial wait
+  /// was the startup hang). Stops at stage 2 or when the first
+  /// entry answer lands.
+  void _startStageProbe() {
+    _stageProbe?.cancel();
+    _stageProbe =
+        Timer.periodic(const Duration(milliseconds: 500), (_) async {
+      if (_loaded || _engineStage >= 2) {
+        _stageProbe?.cancel();
+        return;
+      }
+      if (await AutomationBridge.instance.checkHealth()) {
+        if (_engineStage < 2) _engineStage = 2;
+        _stageProbe?.cancel();
+        notifyListeners();
+      }
+    });
   }
 
   /// The engine takes a few seconds to come up after launch; keep
@@ -121,10 +165,14 @@ class EntryProvider extends ChangeNotifier {
   void retryEngine() {
     _engineFailed = false;
     _engineStarted = false;
+    _engineStage = 0;
+    _stageProbe?.cancel();
     notifyListeners();
     final started = AutomationBridge.instance.ensureEngineRunning();
     started.then((_) {
       _engineStarted = true;
+      if (_engineStage < 1) _engineStage = 1;
+      _startStageProbe();
       notifyListeners();
     });
     refresh();
@@ -145,6 +193,10 @@ class EntryProvider extends ChangeNotifier {
   /// answer may still be on its way) — the startup screen's
   /// status line keys off this.
   bool get engineStarted => _engineStarted;
+
+  /// v1.0.6 (F5): the splash's determinate stage, 0–3 (see the
+  /// field comment). 3 means the first entry answer is in.
+  int get engineStage => _engineStage;
 
   /// Phase 2: the signed-in account's email ('' for key entry).
   String get email => _email;
@@ -169,16 +221,19 @@ class EntryProvider extends ChangeNotifier {
   /// v1.0.5: the pending sign-in's email ('' when signed out).
   String get accountEmail => _accountEmail;
 
-  /// v1.0.5: the fetched license key ('' until fetchMyKey lands).
-  String get myKey => _myKey;
+  /// v1.0.6: true once the key service has EMAILED the pending
+  /// sign-in's key — the gate shows its "Check your email" state.
+  /// The key itself is never in the app.
+  bool get keyEmailed => _keyEmailed;
 
-  /// v1.0.5: the fetched key's plan / expiry lines.
-  String get myKeyPlan => _myKeyPlan;
-  String get myKeyExp => _myKeyExp;
+  /// v1.0.6: the emailed key's plan / expiry lines.
+  String get keyEmailedPlan => _keyEmailedPlan;
+  String get keyEmailedExp => _keyEmailedExp;
 
-  /// v1.0.5: true when the key service returned the key it had
-  /// already issued this email (the normal repeat case).
-  bool get myKeyReused => _myKeyReused;
+  /// v1.0.6: true when the emailed key is the one the service had
+  /// already issued this email (the normal repeat case — a
+  /// re-sign-in re-sends the SAME key).
+  bool get keyEmailedReused => _keyEmailedReused;
 
   /// v1.0.5: true when the key fetch is waiting on an email
   /// verification — the gate shows its verification card.
@@ -223,13 +278,25 @@ class EntryProvider extends ChangeNotifier {
     }
     _loaded = true;
     _engineFailed = false;
+    if (_engineStage < 3) _engineStage = 3;
+    _stageProbe?.cancel();
     notifyListeners();
+    // v1.0.6 (F4): the window follows the entry — studio size
+    // once entry is allowed, back to the small panel when it is
+    // not (sign-out, key removal). Fire-and-forget; only on a
+    // real transition.
+    final phase = _allowed ? 'studio' : 'gate';
+    if (phase != _windowPhase) {
+      _windowPhase = phase;
+      AutomationBridge.instance.setEntryWindowPhase(phase);
+    }
     // v1.0.5: a landed sign-in fetches its key on its own — once
     // per sign-in (the guard is the attempted-for email; a manual
-    // retry from the gate always runs).
+    // retry from the gate always runs). v1.0.6: "fetch" now means
+    // the service EMAILS the key; the guard is the emailed state.
     if (!_allowed &&
         _accountEmail.isNotEmpty &&
-        _myKey.isEmpty &&
+        !_keyEmailed &&
         !_needsVerification &&
         !_myKeyInFlight &&
         _myKeyAttemptedFor != _accountEmail) {
@@ -286,6 +353,7 @@ class EntryProvider extends ChangeNotifier {
     if (res['ok'] == true) {
       _accountEmail = email.trim();
       _myKeyAttemptedFor = '';
+      _keyEmailed = false;
       await refresh();
       return true;
     }
@@ -310,6 +378,7 @@ class EntryProvider extends ChangeNotifier {
     if (res['ok'] == true) {
       _accountEmail = email.trim();
       _myKeyAttemptedFor = '';
+      _keyEmailed = false;
       await refresh();
       return true;
     }
@@ -318,11 +387,14 @@ class EntryProvider extends ChangeNotifier {
     return false;
   }
 
-  /// v1.0.5: ask the key service for the pending sign-in's
-  /// license key. On success the key waits in [myKey] for the
-  /// gate to show and the user to activate; on
-  /// 'email-not-verified' the gate's verification card takes
-  /// over (needsVerification) — that answer is not an error.
+  /// v1.0.6: ask the key service to EMAIL the pending sign-in's
+  /// license key. The key never comes back to the app — on
+  /// success [keyEmailed] flips and the gate shows its "Check
+  /// your email" state; the user pastes the short key from the
+  /// email into the key box. On 'email-not-verified' the gate's
+  /// verification card takes over (needsVerification) — that
+  /// answer is not an error. This is also the gate's "Resend key
+  /// email" action: calling it again re-sends the SAME key.
   Future<bool> fetchMyKey() async {
     if (_myKeyInFlight) return false;
     _myKeyInFlight = true;
@@ -333,13 +405,13 @@ class EntryProvider extends ChangeNotifier {
         await _callWithEngineRetry(() => AutomationBridge.instance.fetchMyKey());
     _myKeyInFlight = false;
     if (res['ok'] == true) {
-      _myKey = res['key']?.toString() ?? '';
-      _myKeyPlan = res['plan']?.toString() ?? '';
-      _myKeyExp = res['exp']?.toString() ?? '';
-      _myKeyReused = res['reused'] == true;
+      _keyEmailed = true;
+      _keyEmailedPlan = res['plan']?.toString() ?? '';
+      _keyEmailedExp = res['exp']?.toString() ?? '';
+      _keyEmailedReused = res['reused'] == true;
       _needsVerification = false;
       notifyListeners();
-      return _myKey.isNotEmpty;
+      return true;
     }
     if (res['reason']?.toString() == 'email-not-verified') {
       _needsVerification = true;
@@ -349,22 +421,6 @@ class EntryProvider extends ChangeNotifier {
     _error = res['error']?.toString() ?? 'Your key could not be fetched.';
     notifyListeners();
     return false;
-  }
-
-  /// v1.0.5: activate the fetched key — the same Door B
-  /// activation as a pasted key, with the fetched text.
-  Future<bool> activateFetchedKey() async {
-    if (_myKey.isEmpty) return false;
-    final ok = await activateKey(_myKey);
-    if (ok) {
-      _myKey = '';
-      _myKeyPlan = '';
-      _myKeyExp = '';
-      _myKeyReused = false;
-      _accountEmail = '';
-      notifyListeners();
-    }
-    return ok;
   }
 
   /// v1.0.5: the verification card's LINK half — (re)send the
@@ -497,10 +553,10 @@ class EntryProvider extends ChangeNotifier {
     _plan = '';
     _isAccount = false;
     _accountEmail = '';
-    _myKey = '';
-    _myKeyPlan = '';
-    _myKeyExp = '';
-    _myKeyReused = false;
+    _keyEmailed = false;
+    _keyEmailedPlan = '';
+    _keyEmailedExp = '';
+    _keyEmailedReused = false;
     _needsVerification = false;
     _otpSent = false;
     _myKeyAttemptedFor = '';
@@ -519,6 +575,7 @@ class EntryProvider extends ChangeNotifier {
   @override
   void dispose() {
     _poll?.cancel();
+    _stageProbe?.cancel();
     _stopAccountWatch();
     super.dispose();
   }

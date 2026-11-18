@@ -145,7 +145,7 @@ async function main() {
     if (child.exitCode !== null) {
       refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
     }
-    check('status version is 1.0.4', status && status.version === '1.0.4', JSON.stringify(status));
+    check('status version is 1.0.5', status && status.version === '1.0.5', JSON.stringify(status));
 
     // PUBLIC v1.0.0: ENTRY GATE — a fresh install (throwaway
     // APPDATA, no credential stored) must be CLOSED, a garbage
@@ -172,6 +172,12 @@ async function main() {
     check('entry gate: a garbage key is refused',
       badKey.status === 200 && badKey.data && badKey.data.ok === false,
       JSON.stringify(badKey.data));
+    // v1.0.5: the key fetch with no pending sign-in refuses
+    // honestly — no key is ever invented locally.
+    const myKey = await req('POST', '/api/entry/my-key', {});
+    check('entry gate: my-key without a sign-in refuses honestly',
+      myKey.status === 200 && myKey.data && myKey.data.ok === false && myKey.data.reason === 'no-account',
+      JSON.stringify(myKey.data));
     const fsKeyPath = process.env.FS_LICENSE_PRIVATE_KEY ||
       path.join(os.homedir(), 'workspace', 'license-keys', 'flowstudio-license-private.pem');
     if (fs.existsSync(fsKeyPath)) {

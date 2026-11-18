@@ -32,9 +32,30 @@
 // Plan state (Firestore, via engine/firestoreClient.js):
 //   users/{uid} { email, plan, trialStartedAt, trialEndsAt,
 //                 videosMade, createdAt, lastSeenAt }
-//   The FIRST sign-in creates the doc with plan 'Free' and a
-//   7-day trial (trialEndsAt = now + 7 days); later sign-ins read
-//   the stored state and never reset it.
+//   v1.0.2–v1.0.4: the first sign-in created this doc with plan
+//   'Free' and a 7-day trial, and the account session itself
+//   opened the app. v1.0.5 REPLACES that flow (owner's order):
+//   an account session alone no longer opens anything — sign-in
+//   exists only to fetch the user's license key (see the key
+//   service below), and from then on entry is by key only. The
+//   user-doc helpers stay for the reporting/refresh paths that
+//   still read them; sign-in no longer creates the doc.
+//
+// Key service (v1.0.5, serviceConfig.keyFunctionUrl):
+//   POST { action: 'mykey' }     Bearer <Firebase ID token>
+//        → 200 { key, kid, plan, exp, reused } — the caller's
+//          one key (a fresh 7-day Trial the first time, the
+//          SAME key on every later ask)
+//        → 403 { error: 'email-not-verified' } — the email is
+//          not verified yet (Google sign-ins always are)
+//        → 401 — the token is not a valid session
+//   POST { action: 'sendotp', email }    (no token — pre-signup)
+//        → 200 { ok: true } | 503 { error: 'otp-unavailable' }
+//          when the sender is not set up on the service yet
+//   POST { action: 'verifyotp', email, code }
+//        → 200 { ok: true } | 400 { error: 'otp-…' }
+//   The gateway also wants the publishable api key header
+//   (serviceConfig.keyFunctionApiKey) on every call.
 //
 // Google sign-in (v1.0.3): the gate opens a hosted sign-in page
 // (serviceConfig.authPageUrl) in the system browser with a
@@ -238,9 +259,12 @@ async function ensureUserState(session, opts) {
   return createUserDoc(session, opts);
 }
 
-// Attach the backend-confirmed plan state to a fresh session. A
-// sign-in is only complete once this confirms — no plan state is
-// ever invented on this side.
+// Attach the backend-confirmed plan state to a fresh session.
+// v1.0.2–v1.0.4 sign-in routed through here (the account itself
+// was the entry). v1.0.5 no longer calls this on the sign-in
+// path — entry is by license key only — but the helper stays:
+// the user-doc read/create it wraps is still the reporting
+// path's vocabulary, and the pins keep it honest.
 async function withAccountState(session, opts) {
   const state = await ensureUserState(session, opts);
   if (!state.ok) {
@@ -310,9 +334,10 @@ async function signUp(email, password, opts) {
   } catch (e) {
     verifyEmailSent = false;
   }
-  const withState = await withAccountState(session, opts);
-  if (!withState.ok) return withState;
-  return { ...withState, verifyEmailSent };
+  // v1.0.5: sign-up returns the bare session — entry is decided
+  // by the license key the session fetches next (fetchMyKey),
+  // never by the account itself.
+  return { ok: true, session, verifyEmailSent };
 }
 
 // Sign in (email + password).
@@ -343,7 +368,8 @@ async function signIn(email, password, opts) {
     return { ok: false, reason: 'network-error' };
   }
   if (!session.email) session.email = creds.email;
-  return withAccountState(session, opts);
+  // v1.0.5: the bare session, as in signUp — the key decides.
+  return { ok: true, session };
 }
 
 // Forgot password: Firebase emails a reset link (sendOobCode with
@@ -546,7 +572,177 @@ async function handleGoogleTokenCallback(firebaseToken, state, opts) {
     email: looked.email,
     expiresAt: idTokenExpiryMs(cleanToken) || (Date.now() + 3600000)
   };
-  return withAccountState(session, opts);
+  // v1.0.5: the bare session, as in email sign-in — the gate
+  // fetches this user's key with it next; the account itself
+  // opens nothing.
+  return { ok: true, session };
+}
+
+// --- Key service (v1.0.5): mykey + email OTP -------------------
+// The app never signs keys and never decides who deserves one —
+// it carries the user's Firebase ID token to the key service and
+// reports what the service answered, in plain reasons.
+
+async function callKeyFunction(fetchImpl, config, body, idToken) {
+  const headers = {
+    'Content-Type': 'application/json',
+    apikey: config.keyFunctionApiKey
+  };
+  if (idToken) headers.Authorization = `Bearer ${idToken}`;
+  const res = await fetchImpl(config.keyFunctionUrl, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify(body || {})
+  });
+  let data = null;
+  try {
+    data = await res.json();
+  } catch (e) {
+    data = null;
+  }
+  return { status: res && typeof res.status === 'number' ? res.status : 0, data };
+}
+
+function keyServiceConfigured(config) {
+  return typeof config.keyFunctionUrl === 'string' && config.keyFunctionUrl.length > 0 &&
+    typeof config.keyFunctionApiKey === 'string' && config.keyFunctionApiKey.length > 0;
+}
+
+// Ask the key service for THIS signed-in user's license key.
+//   { ok: true, key, kid, plan, exp, reused } — reused says the
+//     service returned the key it had already issued this email
+//     (the normal case on every ask after the first).
+//   { ok: false, reason: 'email-not-verified' } — the email door
+//     still owes a verification (link or code) first.
+//   { ok: false, reason: 'session-expired' } — the token was
+//     refused; the bridge refreshes and retries once before this
+//     reaches the gate.
+async function fetchMyKey(idToken, opts) {
+  const config = resolveConfig(opts);
+  if (!isServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  if (!keyServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  const fetchImpl = resolveFetch(opts);
+  if (!fetchImpl) return { ok: false, reason: 'network-unavailable' };
+  const cleanToken = typeof idToken === 'string' ? idToken.trim() : '';
+  if (!cleanToken) return { ok: false, reason: 'token-required' };
+  try {
+    const { status, data } = await callKeyFunction(
+      fetchImpl, config, { action: 'mykey' }, cleanToken);
+    if (status === 200 && data && typeof data.key === 'string' && data.key) {
+      return {
+        ok: true,
+        key: data.key,
+        kid: typeof data.kid === 'string' ? data.kid : '',
+        plan: typeof data.plan === 'string' ? data.plan : '',
+        exp: typeof data.exp === 'string' ? data.exp : '',
+        reused: data.reused === true
+      };
+    }
+    if (status === 403 && data && data.error === 'email-not-verified') {
+      return { ok: false, reason: 'email-not-verified', status };
+    }
+    if (status === 401) {
+      return {
+        ok: false, reason: 'session-expired', status,
+        message: 'Your session has expired — sign in again.'
+      };
+    }
+    return {
+      ok: false, reason: 'my-key-failed', status,
+      message: 'Your key could not be fetched — try again in a moment.'
+    };
+  } catch (e) {
+    return { ok: false, reason: 'network-error' };
+  }
+}
+
+// The verification card's LINK route for a live session: ask
+// Firebase to (re)send the VERIFY_EMAIL email for this token.
+// (Sign-up already sends one automatically; this covers the
+// sign-in path and the "send it again" tap.)
+async function sendVerificationEmail(idToken, opts) {
+  const config = resolveConfig(opts);
+  if (!isServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  const fetchImpl = resolveFetch(opts);
+  if (!fetchImpl) return { ok: false, reason: 'network-unavailable' };
+  const cleanToken = typeof idToken === 'string' ? idToken.trim() : '';
+  if (!cleanToken) return { ok: false, reason: 'token-required' };
+  try {
+    const { status, data } = await callJson(
+      fetchImpl,
+      identityUrl(config, 'sendOobCode'),
+      { requestType: 'VERIFY_EMAIL', idToken: cleanToken }
+    );
+    if (status === 200) return { ok: true };
+    return {
+      ok: false, reason: 'verify-email-failed', status,
+      message: plainError(data, 'The verification email could not be sent — try again in a moment.')
+    };
+  } catch (e) {
+    return { ok: false, reason: 'network-error' };
+  }
+}
+
+// The verification card's CODE route, step 1: ask the key
+// service to email a 6-digit code. The service answers
+// 'otp-unavailable' until its email sender is set up — the gate
+// shows exactly that, never a pretend "code sent".
+async function sendOtp(email, opts) {
+  const config = resolveConfig(opts);
+  if (!isServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  if (!keyServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  const fetchImpl = resolveFetch(opts);
+  if (!fetchImpl) return { ok: false, reason: 'network-unavailable' };
+  const cleanEmail = typeof email === 'string' ? email.trim() : '';
+  if (!cleanEmail) return { ok: false, reason: 'email-required' };
+  try {
+    const { status, data } = await callKeyFunction(
+      fetchImpl, config, { action: 'sendotp', email: cleanEmail }, null);
+    if (status === 200 && data && data.ok === true) return { ok: true };
+    if (data && data.error === 'otp-unavailable') {
+      return {
+        ok: false, reason: 'otp-unavailable', status,
+        message: 'Email codes are not available yet — please use the verification link instead.'
+      };
+    }
+    return {
+      ok: false, reason: 'otp-send-failed', status,
+      message: 'The code could not be sent — try again in a moment.'
+    };
+  } catch (e) {
+    return { ok: false, reason: 'network-error' };
+  }
+}
+
+// The CODE route, step 2: check the typed code with the service.
+// A pass marks the email verified on the service side, so the
+// next fetchMyKey succeeds.
+async function verifyOtp(email, code, opts) {
+  const config = resolveConfig(opts);
+  if (!isServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  if (!keyServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  const fetchImpl = resolveFetch(opts);
+  if (!fetchImpl) return { ok: false, reason: 'network-unavailable' };
+  const cleanEmail = typeof email === 'string' ? email.trim() : '';
+  if (!cleanEmail) return { ok: false, reason: 'email-required' };
+  const cleanCode = typeof code === 'string' ? code.trim() : '';
+  if (!cleanCode) return { ok: false, reason: 'code-required' };
+  try {
+    const { status, data } = await callKeyFunction(
+      fetchImpl, config, { action: 'verifyotp', email: cleanEmail, code: cleanCode }, null);
+    if (status === 200 && data && data.ok === true) return { ok: true };
+    const messages = {
+      'otp-invalid': 'That code is not correct — check the email and try again.',
+      'otp-expired': 'That code has expired — send a new code.',
+      'otp-too-many-attempts': 'Too many wrong codes — send a new code and try again.'
+    };
+    return {
+      ok: false, reason: 'otp-invalid', status,
+      message: (data && messages[data.error]) || 'That code could not be verified — try again.'
+    };
+  } catch (e) {
+    return { ok: false, reason: 'network-error' };
+  }
 }
 
 module.exports = {
@@ -568,5 +764,9 @@ module.exports = {
   ensureUserState,
   createUserDoc,
   sessionFromAuthData,
-  firebaseErrorCode
+  firebaseErrorCode,
+  fetchMyKey,
+  sendVerificationEmail,
+  sendOtp,
+  verifyOtp
 };

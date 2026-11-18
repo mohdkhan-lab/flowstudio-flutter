@@ -16068,12 +16068,12 @@ async function main() {
     // "configured", and the detailed Firebase request shapes are
     // pinned in X127.) ---
     eq('X124 the service ships configured (Door A live, Firebase)', serviceConfig124.isServiceConfigured(serviceConfig124.SERVICE_CONFIG), true);
-    ok('X124 the service config carries the Firebase project values', serviceConfig124.SERVICE_CONFIG.projectId === 'arcane-airport-k5xj8' && serviceConfig124.SERVICE_CONFIG.databaseId === 'ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50' && typeof serviceConfig124.SERVICE_CONFIG.apiKey === 'string' && serviceConfig124.SERVICE_CONFIG.apiKey.length > 10 && typeof serviceConfig124.SERVICE_CONFIG.authPageUrl === 'string' && serviceConfig124.SERVICE_CONFIG.authPageUrl === 'https://meridian-entry.vercel.app/auth.html' && !('googleClientId' in serviceConfig124.SERVICE_CONFIG));
+    ok('X124 the service config carries the Firebase project values', serviceConfig124.SERVICE_CONFIG.projectId === 'arcane-airport-k5xj8' && serviceConfig124.SERVICE_CONFIG.databaseId === 'ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50' && typeof serviceConfig124.SERVICE_CONFIG.apiKey === 'string' && serviceConfig124.SERVICE_CONFIG.apiKey.length > 10 && typeof serviceConfig124.SERVICE_CONFIG.authPageUrl === 'string' && serviceConfig124.SERVICE_CONFIG.authPageUrl === 'https://fs-entry-aa2dwk693-mk-59e0.vercel.app/auth.html' && !('googleClientId' in serviceConfig124.SERVICE_CONFIG));
     ok('X124 the service name/domain carry no tell-tale words', !/admin|license|flowstudio/i.test(serviceConfig124.SERVICE_CONFIG.serviceName + ' ' + serviceConfig124.SERVICE_CONFIG.authDomain));
     eq('X124 Door A reports itself configured', authClient124.doorAState().configured, true);
     eq('X124 Door A configured message is empty', authClient124.doorAState().message, '');
     const gUrl124 = authClient124.googleStartUrl();
-    ok('X124 Door A google URL is the hosted sign-in page + one-time state (v1.0.3)', typeof gUrl124 === 'string' && gUrl124.startsWith('https://meridian-entry.vercel.app/auth.html?state=') && gUrl124.split('state=')[1] === authClient124.pendingGoogleState() && !gUrl124.includes('accounts.google.com') && !gUrl124.includes('code_challenge'));
+    ok('X124 Door A google URL is the hosted sign-in page + one-time state (v1.0.3)', typeof gUrl124 === 'string' && gUrl124.startsWith('https://fs-entry-aa2dwk693-mk-59e0.vercel.app/auth.html?state=') && gUrl124.split('state=')[1] === authClient124.pendingGoogleState() && !gUrl124.includes('accounts.google.com') && !gUrl124.includes('code_challenge'));
     // An unconfigured config still refuses honestly (no fake success).
     const unconf124 = { serviceName: 'Meridian', apiKey: '', projectId: '', databaseId: '', authPageUrl: '' };
     eq('X124 Door A google URL is null while unconfigured', authClient124.googleStartUrl({ config: unconf124 }), null);
@@ -16099,11 +16099,11 @@ async function main() {
     eq('X124 gate: no credential, no entry', entryGate124.decideEntry(null, { nowMs: Date.now(), fingerprint: 'F' }).reason, 'no-credential');
     eq('X124 gate: a stored garbage key is invalid', entryGate124.decideEntry({ type: 'key', key: 'junk', fingerprint: 'F' }, { nowMs: Date.now(), fingerprint: 'F' }).reason, 'key-invalid');
     const future124 = new Date(Date.now() + 30 * 86400000).toISOString();
-    const acct124 = entryGate124.decideEntry({ type: 'account', token: 't', plan: 'Pro', exp: future124 }, { nowMs: Date.now(), fingerprint: 'F' });
-    ok('X124 gate: a live account session enters', acct124.allowed === true && acct124.statusText.includes('Pro'));
-    eq('X124 gate: an expired account session is refused', entryGate124.decideEntry({ type: 'account', token: 't', plan: 'Pro', exp: '2020-01-01' }, { nowMs: Date.now(), fingerprint: 'F' }).reason, 'session-expired');
-    const trial124 = entryGate124.decideEntry({ type: 'account', token: 't', plan: 'Trial', exp: new Date(Date.now() + 5 * 86400000).toISOString(), trial: true }, { nowMs: Date.now(), fingerprint: 'F' });
-    ok('X124 gate: the trial line counts whole days left', trial124.allowed === true && trial124.daysLeft === 5 && trial124.statusText.startsWith('Trial'));
+    const acct124 = entryGate124.decideEntry({ type: 'account', token: 't', plan: 'Pro', exp: future124, email: 'a@b.c' }, { nowMs: Date.now(), fingerprint: 'F' });
+    ok('X124 gate: an account record alone never enters (v1.0.5 — the key is the entry)', acct124.allowed === false && acct124.reason === 'key-required' && acct124.email === 'a@b.c');
+    eq('X124 gate: an expired account record is refused the same way', entryGate124.decideEntry({ type: 'account', token: 't', plan: 'Pro', exp: '2020-01-01' }, { nowMs: Date.now(), fingerprint: 'F' }).reason, 'key-required');
+    const trial124 = entryGate124.decideEntry({ type: 'account', idToken: 'ID', refreshToken: 'RF', uid: 'u', plan: 'Free', trialEndsAt: new Date(Date.now() + 5 * 86400000).toISOString() }, { nowMs: Date.now(), fingerprint: 'F' });
+    ok('X124 gate: a live trial session is refused too — sign-in only fetches the key', trial124.allowed === false && trial124.reason === 'key-required');
     ok('X124 the plan line names the validity date', entryGate124.statusTextFor('Pro', '2030-06-15', false, licenseKey124.keyExpiryMs({ exp: '2030-06-15' }), Date.now()).includes('valid until 2030-06-15'));
     {
       const dir124 = fs124.mkdtempSync(path124.join(os124.tmpdir(), 'fs-entry-'));
@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.4+5 (public line)', read124('pubspec.yaml').includes('version: 1.0.4+5'));
-    eq('X124 package.json version is 1.0.4', JSON.parse(read124('package.json')).version, '1.0.4');
-    ok('X124 the bridge reports version 1.0.4 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.4';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.5+6 (public line)', read124('pubspec.yaml').includes('version: 1.0.5+6'));
+    eq('X124 package.json version is 1.0.5', JSON.parse(read124('package.json')).version, '1.0.5');
+    ok('X124 the bridge reports version 1.0.5 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.5';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the public release line', bridgeSrc124.includes("startsWith('public-v')") && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.4 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.4'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.5 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.5'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16209,7 +16209,7 @@ async function main() {
     ok('X125 Door A controls are gated on entry.loaded',
       entryGateSrc125.includes('entry.loaded && entry.doorAConfigured && !entry.busy'));
     eq('X125 the key field and Activate are gated on entry.loaded',
-      (entryGateSrc125.match(/entry\.loaded && !entry\.busy/g) || []).length, 2);
+      (entryGateSrc125.match(/entry\.loaded && !entry\.busy/g) || []).length, 5); // + v1.0.5: Activate-this-key, the OTP field, the verification card's shared enabled
 
     // --- watchdog + visible failed state + retry ---
     ok('X125 the watchdog window is 20 seconds',
@@ -16231,18 +16231,18 @@ async function main() {
     ok('X125 the provider retries once via the shared recovery',
       entryProviderSrc125.includes('_callWithEngineRetry') &&
       entryProviderSrc125.includes('AutomationBridge.engineNotAnsweringError'));
-    eq('X125 all four gate actions use the recovery',
-      (entryProviderSrc125.match(/_callWithEngineRetry\(/g) || []).length, 5); // helper def + 4 call sites (activate, sign-in, sign-up, forgot — v1.0.2 replaced send/verify-code)
+    eq('X125 all eight gate actions use the recovery',
+      (entryProviderSrc125.match(/_callWithEngineRetry\(/g) || []).length, 9); // helper def + 8 call sites (activate, sign-in, sign-up, forgot + v1.0.5: my-key, verification link, send-otp, verify-otp)
 
     // --- the bridge: shared sentence, timeouts, start log ---
     ok('X125 the bridge owns the not-answering sentence',
       bridgeDartSrc125.includes('static const String engineNotAnsweringError') &&
       bridgeDartSrc125.includes("'The engine is not answering — try again in a moment.'"));
-    eq('X125 the four gate calls return the shared sentence',
-      (bridgeDartSrc125.match(/'error': engineNotAnsweringError,/g) || []).length, 4);
+    eq('X125 the eight gate calls return the shared sentence',
+      (bridgeDartSrc125.match(/'error': engineNotAnsweringError,/g) || []).length, 8); // + v1.0.5: my-key, verification link, send-otp, verify-otp
     const gateSection125 = bridgeDartSrc125.slice(bridgeDartSrc125.indexOf('entry gate (the app'));
-    eq('X125 all five gate HTTP calls carry the timeout',
-      (gateSection125.match(/\.timeout\(_entryCallTimeout\)/g) || []).length, 5);
+    eq('X125 all nine gate HTTP calls carry the timeout',
+      (gateSection125.match(/\.timeout\(_entryCallTimeout\)/g) || []).length, 9);
     ok('X125 the gate timeout is 10 seconds',
       bridgeDartSrc125.includes('static const Duration _entryCallTimeout = Duration(seconds: 10);'));
     ok('X125 engine starts are logged to engine-start.log in the app data folder',
@@ -16361,51 +16361,40 @@ async function main() {
       JSON.stringify(fsClient127.encodeFields({ s: 'x', n: 5, t: fsClient127.timestampValue('2026-11-18T00:00:00.000Z') })),
       JSON.stringify({ s: { stringValue: 'x' }, n: { integerValue: '5' }, t: { timestampValue: '2026-11-18T00:00:00.000Z' } }));
 
-    // --- email + password sign-in against an EXISTING user doc ---
+    // --- email + password sign-in: a BARE session (v1.0.5) ---
     reset127();
     docs127.set('users/uid-1', {
       email: { stringValue: 'a@b.c' }, plan: { stringValue: 'Limited' },
       trialEndsAt: { timestampValue: '2026-12-01T00:00:00.000Z' }, videosMade: { integerValue: '3' }
     });
     const si127 = await auth127.signIn('a@b.c', 'secret1', opts127);
-    ok('X127 sign-in succeeds and carries the stored plan state',
+    ok('X127 sign-in succeeds as a bare session (v1.0.5 — no plan state)',
       si127.ok === true && si127.session.idToken === 'ID-1' && si127.session.uid === 'uid-1' &&
-      si127.session.plan === 'Limited' && si127.session.trialEndsAt === '2026-12-01T00:00:00.000Z' && si127.session.isNew === false);
+      si127.session.email === 'a@b.c' && si127.session.plan === undefined &&
+      si127.session.trialEndsAt === undefined && si127.session.isNew === undefined);
     const siCall127 = findCall127('accounts:signInWithPassword');
     eq('X127 sign-in URL is identitytoolkit with the api key',
       siCall127.url, `https://identitytoolkit.googleapis.com/v1/accounts:signInWithPassword?key=${cfg127.apiKey}`);
     eq('X127 sign-in body is email/password/returnSecureToken',
       JSON.stringify(siCall127.body), JSON.stringify({ email: 'a@b.c', password: 'secret1', returnSecureToken: true }));
-    const siGet127 = findCall127('/documents/users/uid-1');
-    ok('X127 sign-in reads the user doc with the session ID token',
-      !!siGet127 && siGet127.method === 'GET' && siGet127.headers.Authorization === 'Bearer ID-1');
-    eq('X127 an existing user doc is never re-created on sign-in', countCalls127('/documents/users/uid-1'), 1);
+    eq('X127 sign-in touches NO Firestore doc (the key service owns plans now)',
+      countCalls127('firestore.googleapis.com'), 0);
 
-    // --- sign-up creates the trial doc (first sign-in) ---
+    // --- sign-up: bare session + the verification email (v1.0.5) ---
     reset127();
     const fixedNow127 = Date.UTC(2026, 10, 18, 0, 0, 0);
     const su127 = await auth127.signUp('new@example.com', 'secret1', { fetchImpl: fakeFetch127, nowMs: fixedNow127 });
-    ok('X127 sign-up succeeds as a new Free trial',
-      su127.ok === true && su127.session.isNew === true && su127.session.plan === 'Free' &&
-      su127.session.trialEndsAt === '2026-11-25T00:00:00.000Z' && su127.verifyEmailSent === true);
+    ok('X127 sign-up succeeds as a bare session and sends the verification email',
+      su127.ok === true && su127.session.uid === 'uid-new' && su127.session.plan === undefined &&
+      su127.session.isNew === undefined && su127.verifyEmailSent === true);
     const oob127 = findCall127('accounts:sendOobCode');
     eq('X127 after sign-up a VERIFY_EMAIL code is sent with the ID token',
       JSON.stringify(oob127.body), JSON.stringify({ requestType: 'VERIFY_EMAIL', idToken: 'ID-NEW' }));
-    const create127 = calls127.find(c => c.method === 'PATCH' && c.url.includes('/documents/users/uid-new'));
-    ok('X127 the trial doc is created via PATCH on users/{uid}', !!create127);
-    eq('X127 trial creation fields (encoded, 7-day window)',
-      JSON.stringify(create127.body.fields),
-      JSON.stringify({
-        email: { stringValue: 'new@example.com' }, plan: { stringValue: 'Free' },
-        trialStartedAt: { timestampValue: '2026-11-18T00:00:00.000Z' },
-        trialEndsAt: { timestampValue: '2026-11-25T00:00:00.000Z' },
-        videosMade: { integerValue: '0' },
-        createdAt: { timestampValue: '2026-11-18T00:00:00.000Z' },
-        lastSeenAt: { timestampValue: '2026-11-18T00:00:00.000Z' }
-      }));
-    ok('X127 the create PATCH masks exactly the trial fields',
-      ['email', 'plan', 'trialStartedAt', 'trialEndsAt', 'videosMade', 'createdAt', 'lastSeenAt']
-        .every(f => create127.url.includes(`updateMask.fieldPaths=${f}`)));
+    eq('X127 sign-up writes NO Firestore trial doc (v1.0.5 — the trial is the issued key)',
+      countCalls127('/documents/users/uid-new'), 0);
+    ok('X127 the trial-doc helper still exists for the reporting vocabulary',
+      typeof auth127.ensureUserState === 'function' &&
+      typeof auth127.fetchUserState === 'function');
 
     // --- error mapping + network honesty ---
     const bad127 = await auth127.signIn('a@b.c', 'wrong-pass', opts127);
@@ -16478,8 +16467,9 @@ async function main() {
       gc127.ok === true && gc127.session.uid === 'uid-g' && gc127.session.email === 'g@example.com' &&
       gc127.session.idToken === 'FB-GOOG' && gc127.session.refreshToken === '' &&
       gc127.session.expiresAt > Date.now() && gc127.session.expiresAt <= Date.now() + 3600000);
-    ok('X127 the Google sign-in lands with a trial doc for its uid',
-      gc127.session.isNew === true && gc127.session.plan === 'Free' && docs127.has('users/uid-g'));
+    ok('X127 the Google sign-in lands as a bare session (v1.0.5 — no trial doc)',
+      gc127.session.isNew === undefined && gc127.session.plan === undefined &&
+      !docs127.has('users/uid-g') && countCalls127('firestore.googleapis.com') === 0);
     const noPend127 = await auth127.handleGoogleTokenCallback('FB-GOOG', state127, opts127);
     eq('X127 a consumed Google attempt cannot be replayed', noPend127.reason, 'no-pending-google');
     auth127.googleStartUrl();
@@ -16553,26 +16543,28 @@ async function main() {
       rlPatch2_127.body.fields.videosMade.integerValue === '8');
     eq('X127 the anonymous session is cached across reports', countCalls127('accounts:signUp'), 1);
 
-    // --- gate decisions on the Firebase session shape ---
+    // --- gate decisions on the Firebase session shape (v1.0.5) ---
+    // An account record NEVER opens the app now, whatever its
+    // plan/trial/expiry state — the decision only carries the
+    // email so the gate can show whose key to fetch.
     const now127 = Date.now();
     const acctOk127 = entryGate127.decideEntry(
       { type: 'account', idToken: 'ID', refreshToken: 'RF', uid: 'uid-1', expiresAt: now127 + 3600000, email: 'a@b.c', plan: 'Free', trialEndsAt: new Date(now127 + 5 * 86400000).toISOString(), lastVerifiedAt: now127 },
       { nowMs: now127, fingerprint: 'F' });
-    ok('X127 gate: a live Firebase session on trial enters',
-      acctOk127.allowed === true && acctOk127.trial === true && acctOk127.daysLeft === 5);
+    ok('X127 gate: a live Firebase session on trial still needs its key',
+      acctOk127.allowed === false && acctOk127.reason === 'key-required' && acctOk127.email === 'a@b.c');
     const acctGrace127 = entryGate127.decideEntry(
       { type: 'account', idToken: 'ID', refreshToken: 'RF', uid: 'uid-1', expiresAt: now127 - 1000, email: 'a@b.c', plan: 'Free', trialEndsAt: new Date(now127 + 5 * 86400000).toISOString(), lastVerifiedAt: now127 - 86400000 },
       { nowMs: now127, fingerprint: 'F', networkFailed: true });
-    ok('X127 gate: expired token + network down + verified 1d ago = offline grace',
-      acctGrace127.allowed === true && acctGrace127.statusText.includes('offline'));
+    eq('X127 gate: the offline grace is gone — no account entry at all', acctGrace127.reason, 'key-required');
     const acctStale127 = entryGate127.decideEntry(
       { type: 'account', idToken: 'ID', refreshToken: 'RF', uid: 'uid-1', expiresAt: now127 - 1000, email: 'a@b.c', plan: 'Free', trialEndsAt: new Date(now127 + 5 * 86400000).toISOString(), lastVerifiedAt: now127 - 4 * 86400000 },
       { nowMs: now127, fingerprint: 'F', networkFailed: true });
-    eq('X127 gate: the grace ends after 3 days', acctStale127.reason, 'session-expired');
+    eq('X127 gate: a stale session is refused the same way', acctStale127.reason, 'key-required');
     const acctTrialEnd127 = entryGate127.decideEntry(
       { type: 'account', idToken: 'ID', refreshToken: 'RF', uid: 'uid-1', expiresAt: now127 + 3600000, email: 'a@b.c', plan: 'Free', trialEndsAt: new Date(now127 - 1000).toISOString(), lastVerifiedAt: now127 },
       { nowMs: now127, fingerprint: 'F' });
-    eq('X127 gate: an ended trial on the Free plan is refused', acctTrialEnd127.reason, 'trial-expired');
+    eq('X127 gate: an ended trial is refused the same way', acctTrialEnd127.reason, 'key-required');
 
     // --- gate copy + bridge routes + splash + Item B (source pins) ---
     const gateDart127 = read127('lib/widgets/entry_gate.dart');
@@ -16584,12 +16576,17 @@ async function main() {
       gateDart127.includes('Create account') && gateDart127.includes("'Sign in'") &&
       providerDart127.includes('Future<bool> signIn(') && providerDart127.includes('Future<bool> signUp(') &&
       providerDart127.includes('Future<bool> forgotPassword('));
-    ok('X127 no code/OTP wording survives anywhere in the gate flow',
-      !/Send code|6-digit|sendEntryCode|verifyEntryCode|sendEmailCode|verifyEmailCode/.test(
+    ok('X127 the email CODE exists only as the verification alternative (v1.0.5)',
+      gateDart127.includes('Send code') && gateDart127.includes('Verify code') &&
+      providerDart127.includes('Future<bool> sendOtp(') && providerDart127.includes('Future<bool> verifyOtp(') &&
+      bridgeDart127.includes('sendEntryOtp') && bridgeDart127.includes('verifyEntryOtp') &&
+      !/sendEntryCode|verifyEntryCode|sendEmailCode|verifyEmailCode/.test(
         gateDart127 + providerDart127 + bridgeDart127 + bridgeJs127 + read127('engine/authClient.js')));
-    ok('X127 the bridge serves the password routes and not the code routes',
+    ok('X127 the bridge serves the password routes and the verification-code routes',
       bridgeJs127.includes("'/api/entry/sign-in'") && bridgeJs127.includes("'/api/entry/sign-up'") &&
       bridgeJs127.includes("'/api/entry/forgot-password'") &&
+      bridgeJs127.includes("'/api/entry/my-key'") && bridgeJs127.includes("'/api/entry/send-otp'") &&
+      bridgeJs127.includes("'/api/entry/verify-otp'") &&
       !bridgeJs127.includes("'/api/entry/send-code'") && !bridgeJs127.includes("'/api/entry/verify-code'"));
     ok('X127 the bridge callback takes the firebase_token intake (v1.0.3)',
       bridgeJs127.includes("searchParams.get('firebase_token')") &&
@@ -16608,13 +16605,13 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.4',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.4"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.4'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.4';"));
+    ok('X127 the remaining version sites carry 1.0.5',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.5"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.5'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.5';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
-      bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('storeAccountSession'));
+      bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('setPendingAccountSession'));
   }
 
   // =====================================================================
@@ -16625,8 +16622,8 @@ async function main() {
   // and a signed-in-with-no-plan line that lands the user back on
   // the key section. The sign-in page also moved to its own
   // standalone home (fs-entry repo) on its own domain, so no
-  // panel/backend address shows in the sign-in flow; the URL below
-  // is the PLANNED domain until MK confirms the real one.
+  // panel/backend address shows in the sign-in flow. v1.0.5 pins
+  // the REAL fs-entry domain (the site went live).
   // The Flutter screens cannot run in this harness — their shape
   // is pinned statically, the Machine ID format functionally.
   // =====================================================================
@@ -16668,24 +16665,114 @@ async function main() {
       gateDart128.indexOf("'Continue with Google'") > gateDart128.indexOf("'Activate'"));
     ok('X128 the doors are split by an "or" divider',
       gateDart128.includes("'or'") && gateDart128.includes('Multi-Account AI Video Engine'));
-    ok('X128 a signed-in account with no plan lands back on the key door',
-      gateDart128.includes('signedInNoPlan') && gateDart128.includes('no active plan') &&
-      gateDart128.includes('Signed in as'));
+    ok('X128 a signed-in account lands on the key fetch (v1.0.5)',
+      gateDart128.includes('showStrip') && gateDart128.includes('your license key below') &&
+      gateDart128.includes('Signed in as') && gateDart128.includes('GET MY FREE KEY'));
     ok('X128 the card closes with the free-trial line',
-      gateDart128.includes('No license key? Google sign-in starts a free 7-day trial.'));
+      gateDart128.includes('No license key? Sign in above to get your free trial key.'));
 
     // --- the dark splash: state-driven progress, ready line, version ---
     ok('X128 the splash is dark with a state-filled progress bar',
       gateDart128.includes('0xFF07070C') && gateDart128.includes('value: progress') &&
       gateDart128.includes('entry.engineStarted ? 0.65 : 0.25'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.4',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.4'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.5',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.5'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
-      'https://meridian-entry.vercel.app/auth.html');
+      'https://fs-entry-aa2dwk693-mk-59e0.vercel.app/auth.html');
     ok('X128 no panel address survives in the app config',
       !JSON.stringify(cfg128).includes('orbitdesk'));
+  }
+
+  // =====================================================================
+  // X129. PUBLIC v1.0.5 — SIGN IN ONLY TO GET YOUR KEY (owner's
+  // flow): the account doors no longer open the app. A sign-in
+  // (Google or email) exists only so the app can call the key
+  // service's mykey action with the session token; the service
+  // returns the email's key — the SAME key on every later
+  // sign-in — and the gate shows it big with Copy + "Activate
+  // this key". From then on the key alone is the login. An
+  // unverified email gets BOTH verification routes on the gate:
+  // the Firebase verification LINK and a 6-digit email CODE
+  // (sendotp/verifyotp on the key service; the code honestly
+  // reports itself unavailable until the sender is configured).
+  // The key service's wire shape is pinned against a fake fetch.
+  // =====================================================================
+  {
+    const fs129 = require('fs');
+    const path129 = require('path');
+    const read129 = (rel) => fs129.readFileSync(path129.join(__dirname, '..', rel), 'utf8');
+    const auth129 = require('../engine/authClient');
+    const cfg129 = require('../engine/serviceConfig').SERVICE_CONFIG;
+
+    // --- the key service coordinates ride the config ---
+    ok('X129 the service config carries the key function coordinates',
+      cfg129.keyFunctionUrl === 'https://zkgpvhcfbqfmcopzvecg.supabase.co/functions/v1/issue-key' &&
+      typeof cfg129.keyFunctionApiKey === 'string' && cfg129.keyFunctionApiKey.startsWith('sb_publishable_'));
+
+    // --- mykey wire shape + answers ---
+    const calls129 = [];
+    const mkFetch129 = (status, payload) => async (url, init) => {
+      calls129.push({ url, method: (init && init.method) || 'GET', headers: (init && init.headers) || {}, body: init && init.body ? JSON.parse(init.body) : null });
+      return { ok: status >= 200 && status < 300, status, json: async () => payload, text: async () => JSON.stringify(payload) };
+    };
+    calls129.length = 0;
+    const mk1 = await auth129.fetchMyKey('ID-T', { fetchImpl: mkFetch129(200, { ok: true, key: 'KEY-ONE', kid: 'k1', plan: 'Trial', exp: '2026-11-25', reused: false }) });
+    ok('X129 mykey returns the freshly issued key',
+      mk1.ok === true && mk1.key === 'KEY-ONE' && mk1.plan === 'Trial' && mk1.reused === false);
+    eq('X129 mykey posts {action:mykey} to the key function with apikey + Bearer',
+      JSON.stringify({ url: calls129[0].url, method: calls129[0].method, body: calls129[0].body, apikey: calls129[0].headers.apikey, auth: calls129[0].headers.Authorization }),
+      JSON.stringify({ url: cfg129.keyFunctionUrl, method: 'POST', body: { action: 'mykey' }, apikey: cfg129.keyFunctionApiKey, auth: 'Bearer ID-T' }));
+    const mk2 = await auth129.fetchMyKey('ID-T', { fetchImpl: mkFetch129(200, { ok: true, key: 'KEY-ONE', kid: 'k1', plan: 'Trial', exp: '2026-11-25', reused: true }) });
+    ok('X129 mykey returns the SAME key on a later sign-in (reused)', mk2.ok === true && mk2.key === 'KEY-ONE' && mk2.reused === true);
+    const mkNv = await auth129.fetchMyKey('ID-T', { fetchImpl: mkFetch129(403, { error: 'email-not-verified' }) });
+    ok('X129 an unverified email gets NO key — the verification card takes over',
+      mkNv.ok === false && mkNv.reason === 'email-not-verified');
+    const mkExp = await auth129.fetchMyKey('ID-T', { fetchImpl: mkFetch129(401, { error: 'bad-token' }) });
+    eq('X129 a dead session maps to session-expired', mkExp.reason, 'session-expired');
+
+    // --- the code routes: honest unavailability, then the pair ---
+    const soDown = await auth129.sendOtp('a@b.c', { fetchImpl: mkFetch129(503, { error: 'otp-unavailable' }) });
+    ok('X129 sendotp is HONEST while no sender is configured',
+      soDown.ok === false && soDown.reason === 'otp-unavailable' &&
+      soDown.message.includes('not available yet'));
+    calls129.length = 0;
+    const soOk = await auth129.sendOtp('a@b.c', { fetchImpl: mkFetch129(200, { ok: true }) });
+    ok('X129 sendotp posts the email with no token (pre-sign-in safe)',
+      soOk.ok === true && JSON.stringify(calls129[0].body) === JSON.stringify({ action: 'sendotp', email: 'a@b.c' }) &&
+      calls129[0].headers.Authorization === undefined);
+    const voOk = await auth129.verifyOtp('a@b.c', '123456', { fetchImpl: mkFetch129(200, { ok: true }) });
+    ok('X129 verifyotp accepts the right code', voOk.ok === true);
+    const voBad = await auth129.verifyOtp('a@b.c', '000000', { fetchImpl: mkFetch129(400, { error: 'otp-invalid' }) });
+    ok('X129 a wrong code maps to the plain sentence',
+      voBad.ok === false && voBad.message === 'That code is not correct — check the email and try again.');
+    const sv129 = await auth129.sendVerificationEmail('ID-T', { fetchImpl: mkFetch129(200, {}) });
+    ok('X129 the link half reuses the Firebase VERIFY_EMAIL send',
+      sv129.ok === true);
+
+    // --- the gate carries the whole flow (source pins) ---
+    const gateDart129 = read129('lib/widgets/entry_gate.dart');
+    const providerDart129 = read129('lib/providers/entry_provider.dart');
+    const bridgeDart129 = read129('lib/services/automation_bridge.dart');
+    const bridgeJs129 = read129('engine_bridge.js');
+    ok('X129 the gate shows the fetched key with Copy + Activate this key',
+      gateDart129.includes('YOUR LICENSE KEY') && gateDart129.includes('Activate this key') &&
+      gateDart129.includes('Save this key — from now on you log in with this key only.') &&
+      gateDart129.includes('_myKeyBlock'));
+    ok('X129 the gate carries BOTH verification routes',
+      gateDart129.includes('VERIFY YOUR EMAIL') && gateDart129.includes('Send verification link') &&
+      gateDart129.includes('Send code') && gateDart129.includes('Verify code') &&
+      gateDart129.includes('_otpCodeInput'));
+    ok('X129 the provider drives the key flow',
+      providerDart129.includes('Future<bool> fetchMyKey()') &&
+      providerDart129.includes('Future<bool> activateFetchedKey()') &&
+      providerDart129.includes('Future<bool> sendVerificationLink()') &&
+      providerDart129.includes("res['reason']?.toString() == 'email-not-verified'"));
+    ok('X129 the Dart bridge + JS bridge serve the key flow routes',
+      bridgeDart129.includes('fetchMyKey()') && bridgeDart129.includes('api/entry/my-key') &&
+      bridgeJs129.includes("'/api/entry/my-key'") && bridgeJs129.includes("'/api/entry/send-verification-link'") &&
+      bridgeJs129.includes('setPendingAccountSession') && !bridgeJs129.includes('storeAccountSession(session, { activate: true })'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

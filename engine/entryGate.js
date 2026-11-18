@@ -21,14 +21,15 @@
 //   key, expired             → gate ('key-expired')
 //   key, other device's bind → gate ('device-mismatch')
 //   key, valid + this device → app
-//   account, plan inactive   → gate ('trial-expired') — the trial
-//     window has ended and no paid plan is recorded
-//   account, token expired   → gate ('session-expired')
-//   account, plan active + token live → app
-//   account, plan active + token expired BUT the last successful
-//     online check is < 3 days old and this check failed on the
-//     network (ctx.networkFailed) → app, on the offline grace —
-//     the status line says it is running on a recent check
+//   account (any shape)      → gate ('key-required') — v1.0.5:
+//     an account session ALONE never opens the app any more.
+//     Sign-in exists only to fetch the user's license key from
+//     the key service; from then on entry is by that key alone.
+//     (v1.0.2–v1.0.4 let a live account session in, on its trial
+//     window / offline grace — that door is closed by the
+//     owner's order; the account shapes below are still READ so
+//     a stored one can be adopted as the pending sign-in by the
+//     bridge, but the decision is always the gate.)
 //
 // Removing the credential from the app (Settings) deletes this
 // file. It does NOT unbind the device: the binding recorded here
@@ -119,9 +120,8 @@ function gateDecision(reason) {
   };
 }
 
-function accountDecision(fields) {
-  return { screen: 'app', reason: 'account', exp: '', ...fields };
-}
+// (v1.0.5: the account-entry decision helper is gone with the
+// account door itself — see the 'key-required' branch below.)
 
 function decideEntry(credential, ctx) {
   const nowMs = ctx && typeof ctx.nowMs === 'number' ? ctx.nowMs : Date.now();
@@ -150,82 +150,15 @@ function decideEntry(credential, ctx) {
   }
 
   if (credential.type === 'account') {
-    const email = typeof credential.email === 'string' ? credential.email : '';
-
-    // Phase 2 session shape: real backend tokens (the Firebase
-    // ID token + refresh token) + the plan state the backend
-    // confirmed (trial window / paid plan). The held Phase-2
-    // draft's accessToken spelling is accepted on read too.
-    if (typeof credential.idToken === 'string' ||
-        typeof credential.accessToken === 'string' ||
-        typeof credential.refreshToken === 'string' ||
-        typeof credential.expiresAt === 'number' ||
-        typeof credential.trialEndsAt === 'string') {
-      const plan = typeof credential.plan === 'string' ? credential.plan : '';
-      const trialEndsMs = typeof credential.trialEndsAt === 'string'
-        ? Date.parse(credential.trialEndsAt) : NaN;
-      const trialActive = !Number.isNaN(trialEndsMs) && nowMs < trialEndsMs;
-      const planActive = trialActive || isPaidPlan(plan);
-      if (!planActive) {
-        const refused = gateDecision('trial-expired');
-        refused.email = email;
-        refused.plan = plan;
-        return refused;
-      }
-      const planLine = trialActive
-        ? statusTextFor(plan, credential.trialEndsAt, true, trialEndsMs, nowMs)
-        : plan;
-      const planFields = {
-        allowed: true,
-        plan,
-        trial: trialActive,
-        daysLeft: trialActive ? daysLeftUntil(trialEndsMs, nowMs) : 0,
-        exp: trialActive ? credential.trialEndsAt : '',
-        email
-      };
-      const tokenLive = typeof credential.expiresAt === 'number' && nowMs < credential.expiresAt;
-      if (tokenLive) {
-        return accountDecision({ ...planFields, statusText: planLine });
-      }
-      // Token expired. The bridge refreshes online before it
-      // asks; reaching here with ctx.networkFailed means that
-      // refresh could not run — the offline grace may apply.
-      const lastVerifiedAt = typeof credential.lastVerifiedAt === 'number'
-        ? credential.lastVerifiedAt : NaN;
-      const grace = ctx && ctx.networkFailed === true &&
-        !Number.isNaN(lastVerifiedAt) &&
-        nowMs - lastVerifiedAt < ACCOUNT_GRACE_MS;
-      if (grace) {
-        return accountDecision({
-          ...planFields,
-          statusText: `${planLine} · offline — running on a recent check`
-        });
-      }
-      const refused = gateDecision('session-expired');
-      refused.email = email;
-      refused.plan = plan;
-      return refused;
-    }
-
-    // v1.0.0 shape (token + exp): honoured as written.
-    const exp = typeof credential.exp === 'string' ? credential.exp : '';
-    const expiryMs = keyExpiryMs({ exp });
-    if (!exp || Number.isNaN(expiryMs) || nowMs > expiryMs) {
-      return gateDecision('session-expired');
-    }
-    const plan = typeof credential.plan === 'string' ? credential.plan : '';
-    const trial = credential.trial === true;
-    return {
-      allowed: true,
-      screen: 'app',
-      reason: 'account',
-      plan,
-      exp,
-      trial,
-      daysLeft: daysLeftUntil(expiryMs, nowMs),
-      statusText: statusTextFor(plan, exp, trial, expiryMs, nowMs),
-      email
-    };
+    // v1.0.5: an account credential — either shape (the Phase 2
+    // token session or the v1.0.0 token+exp record) — is read
+    // only so the bridge can adopt it as the pending sign-in for
+    // the key fetch. The decision is always the gate: entry is
+    // by license key alone now.
+    const refused = gateDecision('key-required');
+    refused.email = typeof credential.email === 'string' ? credential.email : '';
+    refused.plan = typeof credential.plan === 'string' ? credential.plan : '';
+    return refused;
   }
 
   return gateDecision('no-credential');

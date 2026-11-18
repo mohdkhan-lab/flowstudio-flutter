@@ -31,9 +31,18 @@ const SERVICE_CONFIG = {
   // v1.0.4: the sign-in page moved OUT of the panel's site into
   // its own tiny standalone home (its own repo, its own domain),
   // so no panel/backend address ever appears in the sign-in
-  // flow. PLANNED domain below — MK swaps in the real domain
-  // here (this one line) once it is live, before shipping.
-  authPageUrl: 'https://meridian-entry.vercel.app/auth.html'
+  // flow. v1.0.5: the real fs-entry domain is LIVE (below) — it
+  // replaced the planned placeholder before this version ships.
+  authPageUrl: 'https://fs-entry-aa2dwk693-mk-59e0.vercel.app/auth.html',
+  // v1.0.5: the key service — the separate signing function the
+  // app asks for a signed-in user's own license key (mykey) and
+  // for the email-code route (sendotp / verifyotp). The URL and
+  // the publishable API key are public-by-design gateway values
+  // (the same pair the operator's panel uses); every real check
+  // happens inside the function, which verifies the caller's
+  // Firebase ID token before it answers anything.
+  keyFunctionUrl: 'https://zkgpvhcfbqfmcopzvecg.supabase.co/functions/v1/issue-key',
+  keyFunctionApiKey: 'sb_publishable_93CiDuB9fEktuGhscBLmmQ_K_TCxIdj'
 };
 
 function isServiceConfigured(config) {

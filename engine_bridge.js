@@ -192,23 +192,47 @@ function reportStatsSoon() {
   reportEntrySoon();
 }
 
-// PUBLIC v1.0.2 — store a fresh Firebase account session as the
-// entry credential (one shape for email sign-in, sign-up and the
-// Google callback): tokens for refresh, the uid the Firestore
-// user doc hangs off, the backend-confirmed plan state, and the
-// verification stamp the offline grace measures from.
-function storeAccountSession(session, fallbackEmail) {
-  entryGate.saveCredential(appDataDataDir, {
-    type: 'account',
+// PUBLIC v1.0.5 — the PENDING account session. Sign-in (email,
+// sign-up or the Google callback) no longer stores an entry
+// credential: an account alone never opens the app now. The
+// session is held in memory only, just long enough for the gate
+// to fetch the user's license key from the key service with it
+// (/api/entry/my-key); the key's own activation is what stores
+// the entry credential (Door B, as always). An engine restart
+// forgets the pending session — the user simply signs in again.
+let pendingAccountSession = null;
+
+function setPendingAccountSession(session, fallbackEmail) {
+  pendingAccountSession = {
     idToken: session.idToken,
-    refreshToken: session.refreshToken,
-    uid: session.uid,
-    expiresAt: session.expiresAt,
-    email: session.email || fallbackEmail || '',
-    plan: session.plan,
-    trialEndsAt: session.trialEndsAt,
-    lastVerifiedAt: Date.now()
-  });
+    refreshToken: session.refreshToken || '',
+    uid: session.uid || '',
+    expiresAt: session.expiresAt || 0,
+    email: session.email || fallbackEmail || ''
+  };
+}
+
+function pendingAccountView() {
+  return pendingAccountSession ? { email: pendingAccountSession.email } : null;
+}
+
+// One refresh of the pending session (fresh claims — e.g. an
+// email_verified claim set after the user clicked the emailed
+// link — only ever arrive on a refreshed token). Returns true
+// when the pending session now carries a fresh ID token.
+async function refreshPendingAccountSession() {
+  if (!pendingAccountSession || !pendingAccountSession.refreshToken) return false;
+  const r = await authClient.refreshSession(pendingAccountSession.refreshToken);
+  if (!r.ok) return false;
+  pendingAccountSession = {
+    ...pendingAccountSession,
+    idToken: r.session.idToken,
+    refreshToken: r.session.refreshToken || pendingAccountSession.refreshToken,
+    expiresAt: r.session.expiresAt,
+    uid: r.session.uid || pendingAccountSession.uid,
+    email: r.session.email || pendingAccountSession.email
+  };
+  return true;
 }
 
 // Once per engine start: a stored entry credential re-reports
@@ -313,7 +337,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '1.0.4';
+const APP_VERSION = '1.0.5';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -831,80 +855,32 @@ async function startBridge() {
       // engine/serviceConfig.js — there is no mock success path.
       if (pathname === '/api/entry/status' && req.method === 'GET') {
         let credential = entryGate.loadCredential(appDataDataDir);
-        let networkFailed = false;
-        // Phase 2 (Firebase): an account session is verified
-        // against its Firestore user document here. An expired ID
-        // token is refreshed ONCE first; then the doc is GET with
-        // the session's ID token (a 401/403 answer earns one
-        // refresh + one retry). A successful read syncs the plan
-        // state and stamps lastVerifiedAt — the offline grace in
-        // entryGate measures from that stamp. A network failure
-        // is reported to the decision, never hidden.
-        if (credential && credential.type === 'account' &&
-            typeof credential.refreshToken === 'string' && credential.refreshToken &&
-            typeof credential.uid === 'string' && credential.uid) {
-          let refreshed = false;
-          const tokenExpired = typeof credential.expiresAt !== 'number' ||
-            Date.now() >= credential.expiresAt;
-          const tryRefresh = async () => {
-            const r = await authClient.refreshSession(credential.refreshToken);
-            if (r.ok) {
-              credential = {
-                ...credential,
-                idToken: r.session.idToken,
-                refreshToken: r.session.refreshToken || credential.refreshToken,
-                expiresAt: r.session.expiresAt,
-                uid: r.session.uid || credential.uid,
-                email: r.session.email || credential.email,
-                plan: typeof r.session.plan === 'string' ? r.session.plan : credential.plan,
-                trialEndsAt: typeof r.session.trialEndsAt === 'string' ? r.session.trialEndsAt : credential.trialEndsAt
-              };
-              refreshed = true;
-              return true;
-            }
-            if (r.reason === 'network-error') networkFailed = true;
-            return false;
-          };
-          if (tokenExpired) await tryRefresh();
-          if (!networkFailed && typeof credential.idToken === 'string' && credential.idToken) {
-            let state = await authClient.fetchUserState(credential);
-            if (!state.ok && (state.status === 401 || state.status === 403) && !refreshed) {
-              if (await tryRefresh()) {
-                state = await authClient.fetchUserState(credential);
-              }
-            }
-            if (state.ok && state.exists) {
-              credential = {
-                ...credential,
-                plan: state.plan || credential.plan,
-                trialEndsAt: state.trialEndsAt || credential.trialEndsAt,
-                lastVerifiedAt: Date.now()
-              };
-              entryGate.saveCredential(appDataDataDir, credential);
-            } else if (state.ok && !state.exists) {
-              // The doc is missing (e.g. the very first status
-              // after a sign-in whose creation step was cut off):
-              // create it now — creation starts the trial once.
-              const created = await authClient.createUserDoc(credential);
-              if (created.ok) {
-                credential = {
-                  ...credential,
-                  plan: created.plan,
-                  trialEndsAt: created.trialEndsAt,
-                  lastVerifiedAt: Date.now()
-                };
-                entryGate.saveCredential(appDataDataDir, credential);
-              }
-            } else if (!state.ok && state.reason === 'network-error') {
-              networkFailed = true;
-            }
+        // v1.0.5 legacy adoption: a stored ACCOUNT credential
+        // (written by v1.0.2–v1.0.4, when an account session was
+        // itself the entry) no longer opens anything — but its
+        // session is still good for fetching that user's key, so
+        // it is adopted as the pending sign-in and the stored
+        // record is cleared. The gate then shows the signed-in
+        // line and the Get-my-key step instead of a dead end.
+        if (credential && credential.type === 'account') {
+          if (!pendingAccountSession &&
+              (typeof credential.idToken === 'string' || typeof credential.accessToken === 'string')) {
+            pendingAccountSession = {
+              idToken: credential.idToken || credential.accessToken,
+              refreshToken: credential.refreshToken || '',
+              uid: credential.uid || '',
+              expiresAt: credential.expiresAt || 0,
+              email: credential.email || ''
+            };
           }
+          entryGate.clearCredential(appDataDataDir);
+          credential = null;
         }
         const decision = entryGate.decideEntry(
           credential,
-          { nowMs: Date.now(), fingerprint: cachedMachineFingerprint(), networkFailed }
+          { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
         );
-        return sendJson(200, { ok: true, entry: decision, doorA: authClient.doorAState(), machineId: machineFingerprint.machineIdDisplay(cachedMachineFingerprint()) });
+        return sendJson(200, { ok: true, entry: decision, doorA: authClient.doorAState(), machineId: machineFingerprint.machineIdDisplay(cachedMachineFingerprint()), account: pendingAccountView() });
       }
 
       if (pathname === '/api/entry/activate-key' && req.method === 'POST') {
@@ -936,6 +912,9 @@ async function startBridge() {
           fingerprint,
           activatedAt: new Date().toISOString()
         });
+        // v1.0.5: the key is the entry now — the pending account
+        // session (if the key was just fetched with it) is done.
+        pendingAccountSession = null;
         const decision = entryGate.decideEntry(
           entryGate.loadCredential(appDataDataDir),
           { nowMs: Date.now(), fingerprint }
@@ -968,19 +947,19 @@ async function startBridge() {
               ? authClient.DOOR_A_UNAVAILABLE_MESSAGE
               : result.reason === 'network-error'
                 ? 'Sign-in could not reach the account service \u2014 check your internet connection and try again.'
-                : result.reason === 'account-init-failed'
-                  ? 'Sign-in could not be completed \u2014 please try again in a moment.'
-                  : (result.message || 'Sign-in could not be completed \u2014 check the email and password and try again.')
+                : (result.message || 'Sign-in could not be completed \u2014 check the email and password and try again.')
           });
         }
-        storeAccountSession(result.session,
+        // v1.0.5: the session is held as the PENDING sign-in —
+        // the gate fetches the user's key with it next. No entry
+        // credential is stored for an account any more.
+        setPendingAccountSession(result.session,
           typeof body.email === 'string' ? body.email.trim() : '');
         const decision = entryGate.decideEntry(
           entryGate.loadCredential(appDataDataDir),
           { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
         );
-        reportEntrySoon();
-        return sendJson(200, { ok: true, entry: decision });
+        return sendJson(200, { ok: true, entry: decision, account: pendingAccountView() });
       }
 
       if (pathname === '/api/entry/sign-up' && req.method === 'POST') {
@@ -996,19 +975,138 @@ async function startBridge() {
               ? authClient.DOOR_A_UNAVAILABLE_MESSAGE
               : result.reason === 'network-error'
                 ? 'Sign-up could not reach the account service \u2014 check your internet connection and try again.'
-                : result.reason === 'account-init-failed'
-                  ? 'Sign-up could not be completed \u2014 please try again in a moment.'
-                  : (result.message || 'Sign-up could not be completed \u2014 check the email and password and try again.')
+                : (result.message || 'Sign-up could not be completed \u2014 check the email and password and try again.')
           });
         }
-        storeAccountSession(result.session,
+        // v1.0.5: pending sign-in, exactly as in sign-in. (The
+        // verification email Firebase sends on sign-up is the
+        // link half of the verification card the gate shows
+        // when the key fetch asks for verification.)
+        setPendingAccountSession(result.session,
           typeof body.email === 'string' ? body.email.trim() : '');
         const decision = entryGate.decideEntry(
           entryGate.loadCredential(appDataDataDir),
           { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
         );
-        reportEntrySoon();
-        return sendJson(200, { ok: true, entry: decision });
+        return sendJson(200, { ok: true, entry: decision, account: pendingAccountView(), verifyEmailSent: result.verifyEmailSent === true });
+      }
+
+      // v1.0.5: THE KEY FETCH. The pending sign-in asks the key
+      // service for its license key. Two honest refusals get
+      // their own reasons so the gate can answer them properly:
+      // 'no-account' (nobody is signed in) and 'email-not-verified'
+      // (the verification card's job). A refused token earns one
+      // refresh + one retry, and a not-verified answer earns the
+      // same — a freshly clicked verification link only shows up
+      // in a refreshed token's claims.
+      if (pathname === '/api/entry/my-key' && req.method === 'POST') {
+        if (!pendingAccountSession || !pendingAccountSession.idToken) {
+          return sendJson(200, {
+            ok: false, reason: 'no-account',
+            error: 'Sign in first — your license key is fetched with your account.'
+          });
+        }
+        let result = await authClient.fetchMyKey(pendingAccountSession.idToken);
+        if (!result.ok && (result.reason === 'session-expired' || result.reason === 'email-not-verified')) {
+          if (await refreshPendingAccountSession()) {
+            result = await authClient.fetchMyKey(pendingAccountSession.idToken);
+          }
+        }
+        if (!result.ok) {
+          return sendJson(200, {
+            ok: false,
+            reason: result.reason,
+            error: result.reason === 'email-not-verified'
+              ? 'Your email is not verified yet — verify it below, then fetch your key again.'
+              : result.reason === 'network-error'
+                ? 'The key service could not be reached \u2014 check your internet connection and try again.'
+                : (result.message || 'Your key could not be fetched \u2014 try again in a moment.')
+          });
+        }
+        return sendJson(200, {
+          ok: true,
+          key: result.key,
+          kid: result.kid,
+          plan: result.plan,
+          exp: result.exp,
+          reused: result.reused,
+          email: pendingAccountSession.email
+        });
+      }
+
+      // v1.0.5: the verification card's LINK half — (re)send the
+      // Firebase verification email for the pending session.
+      if (pathname === '/api/entry/send-verification-link' && req.method === 'POST') {
+        if (!pendingAccountSession || !pendingAccountSession.idToken) {
+          return sendJson(200, {
+            ok: false, reason: 'no-account',
+            error: 'Sign in first — the verification email goes to that account.'
+          });
+        }
+        const result = await authClient.sendVerificationEmail(pendingAccountSession.idToken);
+        if (!result.ok) {
+          return sendJson(200, {
+            ok: false,
+            reason: result.reason,
+            error: result.reason === 'network-error'
+              ? 'The verification email could not be sent \u2014 check your internet connection and try again.'
+              : (result.message || 'The verification email could not be sent \u2014 try again in a moment.')
+          });
+        }
+        return sendJson(200, {
+          ok: true,
+          message: 'Verification email sent — open the link in it, then come back and fetch your key.'
+        });
+      }
+
+      // v1.0.5: the verification card's CODE half, step 1 — the
+      // key service emails a 6-digit code. Until the service's
+      // email sender is set up it answers 'otp-unavailable' and
+      // the gate says exactly that (never a pretend send).
+      if (pathname === '/api/entry/send-otp' && req.method === 'POST') {
+        const body = await readBody();
+        const email = (typeof body.email === 'string' && body.email.trim())
+          ? body.email.trim()
+          : (pendingAccountSession ? pendingAccountSession.email : '');
+        if (!email) {
+          return sendJson(200, {
+            ok: false, reason: 'email-required',
+            error: 'An email address is needed for the code.'
+          });
+        }
+        const result = await authClient.sendOtp(email);
+        if (!result.ok) {
+          return sendJson(200, {
+            ok: false,
+            reason: result.reason,
+            error: result.reason === 'network-error'
+              ? 'The code could not be sent \u2014 check your internet connection and try again.'
+              : (result.message || 'The code could not be sent \u2014 try again in a moment.')
+          });
+        }
+        return sendJson(200, { ok: true, message: 'Code sent — check your email.' });
+      }
+
+      // v1.0.5: the CODE half, step 2 — the service checks the
+      // code; a pass marks the email verified on its side, so
+      // the gate's next key fetch succeeds.
+      if (pathname === '/api/entry/verify-otp' && req.method === 'POST') {
+        const body = await readBody();
+        const email = (typeof body.email === 'string' && body.email.trim())
+          ? body.email.trim()
+          : (pendingAccountSession ? pendingAccountSession.email : '');
+        const code = typeof body.code === 'string' ? body.code : '';
+        const result = await authClient.verifyOtp(email, code);
+        if (!result.ok) {
+          return sendJson(200, {
+            ok: false,
+            reason: result.reason,
+            error: result.reason === 'network-error'
+              ? 'The code could not be checked \u2014 check your internet connection and try again.'
+              : (result.message || 'That code could not be verified \u2014 try again.')
+          });
+        }
+        return sendJson(200, { ok: true, message: 'Email verified — fetch your key now.' });
       }
 
       if (pathname === '/api/entry/forgot-password' && req.method === 'POST') {
@@ -1037,7 +1135,10 @@ async function startBridge() {
         // sign-out is local — there is no server session to end —
         // so this just clears the stored credential. A license-key
         // credential is NOT touched here \u2014 removing a key is
-        // /api/entry/remove-key's job.
+        // /api/entry/remove-key's job. v1.0.5: the in-memory
+        // pending sign-in is dropped too, and a legacy stored
+        // account credential still clears as before.
+        pendingAccountSession = null;
         const credential = entryGate.loadCredential(appDataDataDir);
         if (credential && credential.type === 'account') {
           entryGate.clearCredential(appDataDataDir);
@@ -1059,9 +1160,10 @@ async function startBridge() {
       // v1.0.3: the Google sign-in lands HERE, in the system
       // browser, after the hosted sign-in page redirects back
       // with the Firebase ID token + the one-time state. The
-      // engine verifies the token and stores the account
-      // session; the app's gate notices on its next status poll
-      // (the gate starts a watch when it opens the Google URL).
+      // engine verifies the token and holds the session as the
+      // pending sign-in (v1.0.5); the app's gate notices on its
+      // next status poll (the gate starts a watch when it opens
+      // the Google URL) and fetches the user's key with it.
       // The page shown is deliberately plain and names nothing
       // about the backend.
       if (pathname === '/auth/callback' && req.method === 'GET') {
@@ -1086,10 +1188,13 @@ async function startBridge() {
           return sendHtml(pageShell('Sign-in did not complete',
             'You can close this tab and try again from the app.'));
         }
-        storeAccountSession(result.session, '');
-        reportEntrySoon();
+        // v1.0.5: the session becomes the PENDING sign-in — the
+        // gate's watch sees it on the status poll and fetches
+        // the user's key with it. Nothing is stored as an entry
+        // credential here.
+        setPendingAccountSession(result.session, '');
         return sendHtml(pageShell('Signed in',
-          'Signed in \u2014 you can close this tab and return to the app.'));
+          'Signed in \u2014 you can close this tab and return to the app to get your license key.'));
       }
 
       // 3c. v2.31.4: app update check + install trigger. CHECK

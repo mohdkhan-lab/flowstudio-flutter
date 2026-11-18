@@ -17,7 +17,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '1.0.4';
+  static const String appVersion = '1.0.5';
 
   // PUBLIC v1.0.1: the one "engine is not answering" sentence the
   // entry-gate calls return when the bridge cannot be reached at
@@ -1345,6 +1345,94 @@ class AutomationBridge {
       return Map<String, dynamic>.from(data as Map);
     } catch (e) {
       debugPrint('[forgotEntryPassword Error] $e');
+      return {
+        'ok': false,
+        'error': engineNotAnsweringError,
+      };
+    }
+  }
+
+  /// v1.0.5: fetch the pending sign-in's license key from the key
+  /// service (the bridge's /api/entry/my-key). On success the
+  /// answer carries { key, kid, plan, exp, reused, email }; on
+  /// refusal { ok: false, reason, error } — reason
+  /// 'email-not-verified' is the gate's cue for its verification
+  /// card, 'no-account' means nobody is signed in.
+  Future<Map<String, dynamic>> fetchMyKey() async {
+    try {
+      final res = await http
+          .post(Uri.parse('$baseUrl/api/entry/my-key'))
+          .timeout(_entryCallTimeout);
+      final data = json.decode(res.body);
+      return Map<String, dynamic>.from(data as Map);
+    } catch (e) {
+      debugPrint('[fetchMyKey Error] $e');
+      return {
+        'ok': false,
+        'error': engineNotAnsweringError,
+      };
+    }
+  }
+
+  /// v1.0.5: the verification card's LINK half — ask the bridge to
+  /// (re)send the Firebase verification email for the pending
+  /// sign-in.
+  Future<Map<String, dynamic>> sendVerificationLink() async {
+    try {
+      final res = await http
+          .post(Uri.parse('$baseUrl/api/entry/send-verification-link'))
+          .timeout(_entryCallTimeout);
+      final data = json.decode(res.body);
+      return Map<String, dynamic>.from(data as Map);
+    } catch (e) {
+      debugPrint('[sendVerificationLink Error] $e');
+      return {
+        'ok': false,
+        'error': engineNotAnsweringError,
+      };
+    }
+  }
+
+  /// v1.0.5: the verification card's CODE half, step 1 — ask for
+  /// a 6-digit code by email. The key service answers
+  /// 'otp-unavailable' until its email sender is set up; the
+  /// bridge's error sentence says exactly that.
+  Future<Map<String, dynamic>> sendEntryOtp(String email) async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$baseUrl/api/entry/send-otp'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'email': email}),
+          )
+          .timeout(_entryCallTimeout);
+      final data = json.decode(res.body);
+      return Map<String, dynamic>.from(data as Map);
+    } catch (e) {
+      debugPrint('[sendEntryOtp Error] $e');
+      return {
+        'ok': false,
+        'error': engineNotAnsweringError,
+      };
+    }
+  }
+
+  /// v1.0.5: the CODE half, step 2 — check the typed code. A pass
+  /// marks the email verified on the key service, so the next
+  /// fetchMyKey succeeds.
+  Future<Map<String, dynamic>> verifyEntryOtp(String email, String code) async {
+    try {
+      final res = await http
+          .post(
+            Uri.parse('$baseUrl/api/entry/verify-otp'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'email': email, 'code': code}),
+          )
+          .timeout(_entryCallTimeout);
+      final data = json.decode(res.body);
+      return Map<String, dynamic>.from(data as Map);
+    } catch (e) {
+      debugPrint('[verifyEntryOtp Error] $e');
       return {
         'ok': false,
         'error': engineNotAnsweringError,

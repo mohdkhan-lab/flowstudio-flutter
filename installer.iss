@@ -5,7 +5,7 @@
 ; own, distinct from the Lite edition's, so both editions install
 ; side by side on the same PC.
 #define MyAppName "FlowStudio"
-#define MyAppVersion "1.0.4"
+#define MyAppVersion "1.0.5"
 #define MyAppPublisher "MK"
 ; v2.22.0 fix: the Flutter Windows build produces "flutter_flow.exe"
 ; (BINARY_NAME in windows/CMakeLists.txt). The old script pointed the

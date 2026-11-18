@@ -13,18 +13,39 @@
 //   signature: Ed25519 over the exact payload segment (the bytes of
 //              the base64url payload string, UTF-8).
 //
-// Verification is fully offline: the Ed25519 PUBLIC key below is the
-// only key this module needs. The matching private key lives outside
-// the repo and is used only by tools/make_license_key.js.
+// Verification is fully offline: the Ed25519 PUBLIC keys below are
+// the only keys this module needs. The matching private keys live
+// outside the repo: the legacy key's is used only by
+// tools/make_license_key.js; the server issuer's never leaves the
+// backend that mints panel-generated keys.
+//
+// PUBLIC v1.0.1: TWO issuers are trusted —
+//   [0] the original v1.0.0 key (offline tool), kept unchanged so
+//       every key issued before v1.0.1 keeps working, and
+//   [1] the server issuer key (panel "Generate" button), added so
+//       keys minted by the admin panel verify too.
+// verifyLicenseKey tries each in turn; everything else about the
+// verdict (parse, fields, expiry) is exactly as in v1.0.0.
 
 const crypto = require('crypto');
 
-const LICENSE_PUBLIC_KEY_PEM = [
-  '-----BEGIN PUBLIC KEY-----',
-  'MCowBQYDK2VwAyEASDmix2IbihAIFqhWB0xmas9imayuC3Ro+M5NGE2XrM4=',
-  '-----END PUBLIC KEY-----',
-  ''
-].join('\n');
+const LICENSE_PUBLIC_KEY_PEMS = [
+  [
+    '-----BEGIN PUBLIC KEY-----',
+    'MCowBQYDK2VwAyEASDmix2IbihAIFqhWB0xmas9imayuC3Ro+M5NGE2XrM4=',
+    '-----END PUBLIC KEY-----',
+    ''
+  ].join('\n'),
+  [
+    '-----BEGIN PUBLIC KEY-----',
+    'MCowBQYDK2VwAyEAoupgJBM+mwVhU3JJmaxz6I+OMhYoH3IW8Rrpmc/P3cc=',
+    '-----END PUBLIC KEY-----',
+    ''
+  ].join('\n')
+];
+
+// Kept for compatibility: the original (legacy) issuer's key.
+const LICENSE_PUBLIC_KEY_PEM = LICENSE_PUBLIC_KEY_PEMS[0];
 
 function base64UrlDecode(segment) {
   if (typeof segment !== 'string' || segment.length === 0) return null;
@@ -79,16 +100,20 @@ function verifyLicenseKey(key, nowMs) {
   const parsed = parseLicenseKey(key);
   if (!parsed) return { ok: false, reason: 'malformed' };
   const { payload, signingInput, signature } = parsed;
+  // v1.0.1: a key is authentic when ANY trusted issuer signed it.
   let signatureOk = false;
-  try {
-    signatureOk = crypto.verify(
-      null,
-      Buffer.from(signingInput, 'utf8'),
-      crypto.createPublicKey(LICENSE_PUBLIC_KEY_PEM),
-      signature
-    );
-  } catch (e) {
-    signatureOk = false;
+  for (const pem of LICENSE_PUBLIC_KEY_PEMS) {
+    try {
+      signatureOk = crypto.verify(
+        null,
+        Buffer.from(signingInput, 'utf8'),
+        crypto.createPublicKey(pem),
+        signature
+      );
+    } catch (e) {
+      signatureOk = false;
+    }
+    if (signatureOk) break;
   }
   if (!signatureOk) return { ok: false, reason: 'bad-signature' };
   const kid = typeof payload.kid === 'string' ? payload.kid.trim() : '';
@@ -105,6 +130,7 @@ function verifyLicenseKey(key, nowMs) {
 
 module.exports = {
   LICENSE_PUBLIC_KEY_PEM,
+  LICENSE_PUBLIC_KEY_PEMS,
   parseLicenseKey,
   keyExpiryMs,
   verifyLicenseKey

@@ -17,7 +17,18 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '1.0.0';
+  static const String appVersion = '1.0.1';
+
+  // PUBLIC v1.0.1: the one "engine is not answering" sentence the
+  // entry-gate calls return when the bridge cannot be reached at
+  // all. EntryProvider compares against this constant (never a
+  // literal copy) to run its start-the-engine-and-retry recovery.
+  static const String engineNotAnsweringError =
+      'The engine is not answering — try again in a moment.';
+
+  // PUBLIC v1.0.1: bound for the entry-gate HTTP calls — v1.0.0
+  // waited forever on a dead port.
+  static const Duration _entryCallTimeout = Duration(seconds: 10);
   
   static AutomationBridge? _instance;
   static AutomationBridge get instance => _instance ??= AutomationBridge._();
@@ -103,6 +114,31 @@ class AutomationBridge {
 
   AutomationBridge._();
 
+  /// PUBLIC v1.0.1: the engine-start log — engine-start.log in the
+  /// app data folder (%APPDATA%\flowstudio, the same folder the
+  /// engine keeps its database in). v1.0.0 sent the engine's
+  /// stdout/stderr and every start failure only to debugPrint,
+  /// which an installed release build shows nowhere: a field
+  /// failure left no artefact at all. Best effort — logging must
+  /// never break engine startup itself.
+  File? _engineStartLogFile() {
+    final appData = Platform.environment['APPDATA'];
+    if (appData == null || appData.isEmpty) return null;
+    return File(p.join(appData, 'flowstudio', 'engine-start.log'));
+  }
+
+  void _logEngineStart(String line) {
+    try {
+      final file = _engineStartLogFile();
+      if (file == null) return;
+      file.parent.createSync(recursive: true);
+      file.writeAsStringSync(
+        '${DateTime.now().toIso8601String()} $line\n',
+        mode: FileMode.append,
+      );
+    } catch (_) {}
+  }
+
   /// Starts the Node.js bridge server if not already running, and connects to SSE stream
   Future<void> ensureEngineRunning() async {
     if (await _adoptIfHealthy()) {
@@ -155,6 +191,11 @@ class AutomationBridge {
       }
 
       debugPrint('[AutomationBridge] Spawning engine: $nodeCmd in $workDir (useShell: $useShell)');
+      // v1.0.1: the spawn parameters, the engine's own output and
+      // its exit code all land in engine-start.log (see
+      // _logEngineStart) — a start failure must leave evidence.
+      _logEngineStart(
+          '[spawn] app v$appVersion node=$nodeCmd workDir=$workDir useShell=$useShell args=[engine_bridge.js]');
 
       _nodeProcess = await Process.start(
         nodeCmd,
@@ -166,9 +207,14 @@ class AutomationBridge {
 
       _nodeProcess?.stdout.transform(utf8.decoder).listen((data) {
         debugPrint('[Node Engine] $data');
+        _logEngineStart('[stdout] ${data.trimRight()}');
       });
       _nodeProcess?.stderr.transform(utf8.decoder).listen((err) {
         debugPrint('[Node Engine ERR] $err');
+        _logEngineStart('[stderr] ${err.trimRight()}');
+      });
+      _nodeProcess?.exitCode.then((code) {
+        _logEngineStart('[exit] engine process exited with code $code');
       });
 
       // Wait up to 10 seconds for it to start
@@ -180,6 +226,7 @@ class AutomationBridge {
       _listenToSse();
     } catch (e) {
       debugPrint('[AutomationBridge] Init error: $e');
+      _logEngineStart('[init error] $e');
     } finally {
       _isConnecting = false;
     }
@@ -1162,7 +1209,9 @@ class AutomationBridge {
   /// Null while the engine is not answering yet.
   Future<Map<String, dynamic>?> getEntryStatus() async {
     try {
-      final res = await http.get(Uri.parse('$baseUrl/api/entry/status'));
+      final res = await http
+          .get(Uri.parse('$baseUrl/api/entry/status'))
+          .timeout(_entryCallTimeout);
       if (res.statusCode == 200) {
         final data = json.decode(res.body);
         if (data['ok'] == true) {
@@ -1180,18 +1229,20 @@ class AutomationBridge {
   /// { ok: false, error: '...' } with a plain-language reason.
   Future<Map<String, dynamic>> activateLicenseKey(String key) async {
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/api/entry/activate-key'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({'key': key}),
-      );
+      final res = await http
+          .post(
+            Uri.parse('$baseUrl/api/entry/activate-key'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'key': key}),
+          )
+          .timeout(_entryCallTimeout);
       final data = json.decode(res.body);
       return Map<String, dynamic>.from(data as Map);
     } catch (e) {
       debugPrint('[activateLicenseKey Error] $e');
       return {
         'ok': false,
-        'error': 'The engine is not answering — try again in a moment.',
+        'error': engineNotAnsweringError,
       };
     }
   }
@@ -1218,18 +1269,20 @@ class AutomationBridge {
   /// honest not-available message — there is no fake success.
   Future<Map<String, dynamic>> sendEntryCode(String email) async {
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/api/entry/send-code'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({'email': email}),
-      );
+      final res = await http
+          .post(
+            Uri.parse('$baseUrl/api/entry/send-code'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'email': email}),
+          )
+          .timeout(_entryCallTimeout);
       final data = json.decode(res.body);
       return Map<String, dynamic>.from(data as Map);
     } catch (e) {
       debugPrint('[sendEntryCode Error] $e');
       return {
         'ok': false,
-        'error': 'The engine is not answering — try again in a moment.',
+        'error': engineNotAnsweringError,
       };
     }
   }
@@ -1238,18 +1291,20 @@ class AutomationBridge {
   /// the account session and the answer carries the entry decision.
   Future<Map<String, dynamic>> verifyEntryCode(String email, String code) async {
     try {
-      final res = await http.post(
-        Uri.parse('$baseUrl/api/entry/verify-code'),
-        headers: {'Content-Type': 'application/json'},
-        body: json.encode({'email': email, 'code': code}),
-      );
+      final res = await http
+          .post(
+            Uri.parse('$baseUrl/api/entry/verify-code'),
+            headers: {'Content-Type': 'application/json'},
+            body: json.encode({'email': email, 'code': code}),
+          )
+          .timeout(_entryCallTimeout);
       final data = json.decode(res.body);
       return Map<String, dynamic>.from(data as Map);
     } catch (e) {
       debugPrint('[verifyEntryCode Error] $e');
       return {
         'ok': false,
-        'error': 'The engine is not answering — try again in a moment.',
+        'error': engineNotAnsweringError,
       };
     }
   }

@@ -28,17 +28,58 @@ class EntryProvider extends ChangeNotifier {
   bool _codeSent = false;
   Timer? _poll;
 
+  // PUBLIC v1.0.1: the engine-start watchdog. If the engine has
+  // not answered within this window the gate stops polling and
+  // shows its engineFailed state (with a Retry button) instead of
+  // sitting on "Starting the engine…" forever.
+  static const Duration _engineWatchdog = Duration(seconds: 20);
+  bool _engineFailed = false;
+  DateTime _pollStartedAt = DateTime.now();
+
   EntryProvider() {
+    // PUBLIC v1.0.1 — THE v1.0.0 BUG FIX: the gate itself starts
+    // its engine. In v1.0.0 the only engine spawn lived in
+    // AccountsProvider's constructor, and while gated the studio
+    // (and that provider) is never built — so nothing ever
+    // listened on the bridge port, this provider polled a dead
+    // port forever, and every gate action failed with "The
+    // engine is not answering". Fire-and-forget: ensureEngine-
+    // Running adopts a healthy engine or spawns one, and the
+    // poll below picks up its first answer.
+    AutomationBridge.instance.ensureEngineRunning();
     refresh();
-    // The engine takes a few seconds to come up after launch; keep
-    // asking until it answers once, then stop polling.
+    _startPoll();
+  }
+
+  /// The engine takes a few seconds to come up after launch; keep
+  /// asking until it answers once, then stop polling. If it never
+  /// answers within the watchdog window, flip to the failed state
+  /// instead of polling forever.
+  void _startPoll() {
+    _poll?.cancel();
+    _pollStartedAt = DateTime.now();
     _poll = Timer.periodic(const Duration(seconds: 2), (_) {
       if (_loaded) {
         _poll?.cancel();
+      } else if (DateTime.now().difference(_pollStartedAt) >=
+          _engineWatchdog) {
+        _engineFailed = true;
+        _poll?.cancel();
+        notifyListeners();
       } else {
         refresh();
       }
     });
+  }
+
+  /// The gate's Retry button (engineFailed state): start the
+  /// engine again and resume polling for its first answer.
+  void retryEngine() {
+    _engineFailed = false;
+    notifyListeners();
+    AutomationBridge.instance.ensureEngineRunning();
+    refresh();
+    _startPoll();
   }
 
   bool get loaded => _loaded;
@@ -49,6 +90,7 @@ class EntryProvider extends ChangeNotifier {
   bool get busy => _busy;
   String get error => _error;
   bool get codeSent => _codeSent;
+  bool get engineFailed => _engineFailed;
 
   Future<void> refresh() async {
     final data = await AutomationBridge.instance.getEntryStatus();
@@ -65,7 +107,24 @@ class EntryProvider extends ChangeNotifier {
       if (msg.isNotEmpty) _doorAMessage = msg;
     }
     _loaded = true;
+    _engineFailed = false;
     notifyListeners();
+  }
+
+  /// PUBLIC v1.0.1: one automatic recovery for a "the engine is
+  /// not answering" answer — make sure the engine is started,
+  /// then run the same call once more before surfacing the error.
+  Future<Map<String, dynamic>> _callWithEngineRetry(
+    Future<Map<String, dynamic>> Function() call,
+  ) async {
+    var res = await call();
+    if (res['ok'] != true &&
+        res['error']?.toString() ==
+            AutomationBridge.engineNotAnsweringError) {
+      await AutomationBridge.instance.ensureEngineRunning();
+      res = await call();
+    }
+    return res;
   }
 
   /// Door B: activate the typed license key on this device.
@@ -74,7 +133,8 @@ class EntryProvider extends ChangeNotifier {
     _busy = true;
     _error = '';
     notifyListeners();
-    final res = await AutomationBridge.instance.activateLicenseKey(key.trim());
+    final res = await _callWithEngineRetry(
+        () => AutomationBridge.instance.activateLicenseKey(key.trim()));
     _busy = false;
     if (res['ok'] == true) {
       await refresh();
@@ -91,7 +151,8 @@ class EntryProvider extends ChangeNotifier {
     _busy = true;
     _error = '';
     notifyListeners();
-    final res = await AutomationBridge.instance.sendEntryCode(email.trim());
+    final res = await _callWithEngineRetry(
+        () => AutomationBridge.instance.sendEntryCode(email.trim()));
     _busy = false;
     if (res['ok'] == true) {
       _codeSent = true;
@@ -109,8 +170,8 @@ class EntryProvider extends ChangeNotifier {
     _busy = true;
     _error = '';
     notifyListeners();
-    final res = await AutomationBridge.instance
-        .verifyEntryCode(email.trim(), code.trim());
+    final res = await _callWithEngineRetry(() => AutomationBridge.instance
+        .verifyEntryCode(email.trim(), code.trim()));
     _busy = false;
     if (res['ok'] == true) {
       await refresh();

@@ -85,7 +85,12 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
   @override
   Widget build(BuildContext context) {
     final entry = context.watch<EntryProvider>();
-    final doorAEnabled = entry.doorAConfigured && !entry.busy;
+    // v1.0.1: every control waits for the engine's first answer
+    // (entry.loaded), not just for !busy — in v1.0.0 the key field
+    // and Activate were live against a dead port and could only
+    // fail with "The engine is not answering".
+    final doorAEnabled =
+        entry.loaded && entry.doorAConfigured && !entry.busy;
     return Scaffold(
       backgroundColor: AppTheme.bgBody,
       body: Center(
@@ -116,12 +121,50 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
                 textAlign: TextAlign.center,
                 style: TextStyle(fontSize: 11.5, color: AppTheme.textDim),
               ),
-              if (!entry.loaded) ...[
+              if (!entry.loaded && !entry.engineFailed) ...[
                 const SizedBox(height: 10),
                 Text(
                   'Starting the engine…',
                   textAlign: TextAlign.center,
                   style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
+                ),
+              ],
+              if (!entry.loaded && entry.engineFailed) ...[
+                // v1.0.1: the watchdog gave up — say so plainly and
+                // offer the one action that can fix it, instead of
+                // an endless "Starting the engine…".
+                const SizedBox(height: 10),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: AppTheme.redBg,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(color: AppTheme.red),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'The engine could not start.',
+                          style: TextStyle(fontSize: 11, color: AppTheme.red),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      TactileButton(
+                        type: TactileType.secondary,
+                        height: 28,
+                        borderRadius: 6,
+                        bevelDepth: 2.0,
+                        padding: const EdgeInsets.symmetric(horizontal: 12),
+                        enabled: true,
+                        label: 'Retry',
+                        onTap: () {
+                          context.read<EntryProvider>().retryEngine();
+                        },
+                      ),
+                    ],
+                  ),
                 ),
               ],
               const SizedBox(height: 18),
@@ -221,7 +264,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
               _field(
                 controller: _keyController,
                 hint: 'Paste your license key',
-                enabled: !entry.busy,
+                enabled: entry.loaded && !entry.busy,
                 maxLines: 3,
               ),
               const SizedBox(height: 10),
@@ -230,7 +273,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
                 height: 34,
                 borderRadius: 6,
                 bevelDepth: 2.0,
-                enabled: !entry.busy,
+                enabled: entry.loaded && !entry.busy,
                 label: entry.busy ? 'Working…' : 'Activate',
                 onTap: () {
                   context

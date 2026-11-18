@@ -16159,9 +16159,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version restarts at 1.0.0+1', read124('pubspec.yaml').includes('version: 1.0.0+1'));
-    eq('X124 package.json version is 1.0.0', JSON.parse(read124('package.json')).version, '1.0.0');
-    ok('X124 the bridge reports version 1.0.0 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.0';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.1+2 (public line)', read124('pubspec.yaml').includes('version: 1.0.1+2'));
+    eq('X124 package.json version is 1.0.1', JSON.parse(read124('package.json')).version, '1.0.1');
+    ok('X124 the bridge reports version 1.0.1 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.1';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the public release line', bridgeSrc124.includes("startsWith('public-v')") && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16169,8 +16169,106 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.0 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.0'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.1 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.1'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
+  }
+
+  // =====================================================================
+  // X125. PUBLIC v1.0.1 — THE GATE STARTS ITS OWN ENGINE + DUAL-KEY
+  // VERIFICATION. v1.0.0's field failure: the gate could never open,
+  // because the engine's only spawn trigger (AccountsProvider's
+  // constructor) lives behind the gate — the gate polled a dead port
+  // forever ("Starting the engine…") and Activate POSTed to nothing
+  // ("The engine is not answering"). The Flutter app cannot run in
+  // this harness, so the gate->spawn path is pinned STATICALLY here
+  // (the project smoke spawns the bridge itself and structurally
+  // cannot see this class of bug — see its header). Dual-key: the
+  // verifier now trusts TWO issuer keys (legacy + server issuer);
+  // the legacy behaviour is pinned by X124, the closed-list property
+  // (a key signed by ANY other keypair still fails) is pinned here
+  // unconditionally with a throwaway keypair.
+  // =====================================================================
+  {
+    const fs125 = require('fs');
+    const path125 = require('path');
+    const crypto125 = require('crypto');
+    const read125 = (rel) => fs125.readFileSync(path125.join(__dirname, '..', rel), 'utf8');
+    const entryProviderSrc125 = read125('lib/providers/entry_provider.dart');
+    const entryGateSrc125 = read125('lib/widgets/entry_gate.dart');
+    const bridgeDartSrc125 = read125('lib/services/automation_bridge.dart');
+    const licenseKey125 = require('../engine/licenseKey');
+
+    // --- the fix: the gate spawns the engine itself ---
+    const ctorStart125 = entryProviderSrc125.indexOf('EntryProvider() {');
+    const ctorEnd125 = entryProviderSrc125.indexOf('bool get loaded');
+    const ctor125 = ctorStart125 >= 0 && ctorEnd125 > ctorStart125
+      ? entryProviderSrc125.slice(ctorStart125, ctorEnd125) : '';
+    ok('X125 the EntryProvider constructor starts the engine itself',
+      ctor125.includes('AutomationBridge.instance.ensureEngineRunning();'));
+    ok('X125 the gate provider polls for the first answer', ctor125.includes('_startPoll();') || entryProviderSrc125.includes('void _startPoll()'));
+
+    // --- controls wait for the engine, not just for !busy ---
+    ok('X125 Door A controls are gated on entry.loaded',
+      entryGateSrc125.includes('entry.loaded && entry.doorAConfigured && !entry.busy'));
+    eq('X125 the key field and Activate are gated on entry.loaded',
+      (entryGateSrc125.match(/entry\.loaded && !entry\.busy/g) || []).length, 2);
+
+    // --- watchdog + visible failed state + retry ---
+    ok('X125 the watchdog window is 20 seconds',
+      entryProviderSrc125.includes('static const Duration _engineWatchdog = Duration(seconds: 20);'));
+    ok('X125 the provider exposes the engineFailed state',
+      entryProviderSrc125.includes('bool get engineFailed => _engineFailed;'));
+    ok('X125 retryEngine restarts the engine and the poll',
+      entryProviderSrc125.includes('void retryEngine()') &&
+      entryProviderSrc125.slice(entryProviderSrc125.indexOf('void retryEngine()'), entryProviderSrc125.indexOf('void retryEngine()') + 400)
+        .includes('ensureEngineRunning()'));
+    ok('X125 the gate shows the failed state with a Retry button',
+      entryGateSrc125.includes('The engine could not start.') &&
+      entryGateSrc125.includes("label: 'Retry'") &&
+      entryGateSrc125.includes('retryEngine()'));
+    ok('X125 "Starting the engine" yields to the failed state',
+      entryGateSrc125.includes('if (!entry.loaded && !entry.engineFailed)'));
+
+    // --- one automatic retry on a not-answering answer ---
+    ok('X125 the provider retries once via the shared recovery',
+      entryProviderSrc125.includes('_callWithEngineRetry') &&
+      entryProviderSrc125.includes('AutomationBridge.engineNotAnsweringError'));
+    eq('X125 all three gate actions use the recovery',
+      (entryProviderSrc125.match(/_callWithEngineRetry\(/g) || []).length, 4); // helper def + 3 call sites
+
+    // --- the bridge: shared sentence, timeouts, start log ---
+    ok('X125 the bridge owns the not-answering sentence',
+      bridgeDartSrc125.includes('static const String engineNotAnsweringError') &&
+      bridgeDartSrc125.includes("'The engine is not answering — try again in a moment.'"));
+    eq('X125 the three gate calls return the shared sentence',
+      (bridgeDartSrc125.match(/'error': engineNotAnsweringError,/g) || []).length, 3);
+    const gateSection125 = bridgeDartSrc125.slice(bridgeDartSrc125.indexOf('entry gate (the app'));
+    eq('X125 all four gate HTTP calls carry the timeout',
+      (gateSection125.match(/\.timeout\(_entryCallTimeout\)/g) || []).length, 4);
+    ok('X125 the gate timeout is 10 seconds',
+      bridgeDartSrc125.includes('static const Duration _entryCallTimeout = Duration(seconds: 10);'));
+    ok('X125 engine starts are logged to engine-start.log in the app data folder',
+      bridgeDartSrc125.includes("'engine-start.log'") &&
+      bridgeDartSrc125.includes("Platform.environment['APPDATA']") &&
+      bridgeDartSrc125.includes("p.join(appData, 'flowstudio', 'engine-start.log')"));
+    ok('X125 the spawn parameters and the child exit code are logged',
+      bridgeDartSrc125.includes("'[spawn] app v$appVersion") &&
+      bridgeDartSrc125.includes('exitCode.then((code)') &&
+      bridgeDartSrc125.includes("'[exit] engine process exited with code $code'"));
+    ok('X125 engine stdout/stderr also reach the start log',
+      bridgeDartSrc125.includes("'[stdout] ") && bridgeDartSrc125.includes("'[stderr] "));
+
+    // --- dual-key verification ---
+    eq('X125 the verifier trusts exactly two issuer keys', licenseKey125.LICENSE_PUBLIC_KEY_PEMS.length, 2);
+    ok('X125 the legacy issuer key is kept, unchanged and first',
+      licenseKey125.LICENSE_PUBLIC_KEY_PEMS[0].includes('MCowBQYDK2VwAyEASDmix2IbihAIFqhWB0xmas9imayuC3Ro+M5NGE2XrM4=') &&
+      licenseKey125.LICENSE_PUBLIC_KEY_PEM === licenseKey125.LICENSE_PUBLIC_KEY_PEMS[0]);
+    ok('X125 the server issuer key is the second trusted key',
+      licenseKey125.LICENSE_PUBLIC_KEY_PEMS[1].includes('MCowBQYDK2VwAyEAoupgJBM+mwVhU3JJmaxz6I+OMhYoH3IW8Rrpmc/P3cc='));
+    const rogue125 = crypto125.generateKeyPairSync('ed25519');
+    const rp125 = Buffer.from(JSON.stringify({ kid: 'rogue', plan: 'Pro', exp: '2030-06-15' }), 'utf8').toString('base64url');
+    const rogueKey125 = rp125 + '.' + crypto125.sign(null, Buffer.from(rp125, 'utf8'), rogue125.privateKey).toString('base64url');
+    eq('X125 a key signed by any other keypair still fails', licenseKey125.verifyLicenseKey(rogueKey125).reason, 'bad-signature');
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

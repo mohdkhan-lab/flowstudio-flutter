@@ -29,6 +29,20 @@
 // the port, and a post-boot liveness check proves the
 // answering bridge is the spawned child before any mutating
 // call is made. test_js/run_smoke_guard_tests.js pins both.
+//
+// PUBLIC v1.0.1 — KNOWN BLIND SPOT (the v1.0.0 field failure):
+// this smoke spawns the bridge ITSELF and drives it over HTTP;
+// it never launches the Flutter app, so it structurally cannot
+// catch a bug in WHO starts the engine. v1.0.0 shipped with the
+// entry gate polling a port nobody listened on — the engine's
+// only spawn trigger (AccountsProvider's constructor) lived
+// behind the gate — and this smoke passed 30/30 throughout.
+// The gate-starts-its-own-engine path is therefore pinned
+// STATICALLY in the root pack (X125: EntryProvider's constructor
+// calls ensureEngineRunning, controls gated on entry.loaded,
+// the 20s watchdog + Retry, engine-start.log, gate timeouts).
+// A green smoke here proves the ENGINE is healthy; the X125
+// pins prove the APP asks it to start.
 const { spawn } = require('child_process');
 const fs = require('fs');
 const os = require('os');
@@ -131,7 +145,7 @@ async function main() {
     if (child.exitCode !== null) {
       refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
     }
-    check('status version is 1.0.0', status && status.version === '1.0.0', JSON.stringify(status));
+    check('status version is 1.0.1', status && status.version === '1.0.1', JSON.stringify(status));
 
     // PUBLIC v1.0.0: ENTRY GATE — a fresh install (throwaway
     // APPDATA, no credential stored) must be CLOSED, Door A must

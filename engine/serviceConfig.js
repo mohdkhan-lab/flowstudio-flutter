@@ -10,9 +10,17 @@
 // it is LIVE. Every value below is public-by-design — a Firebase
 // web config identifies the project, it is not a secret; all real
 // protection lives in the backend's own access rules. There is NO
-// client secret here and there never will be: the Google sign-in
-// flow is PKCE, which needs none. Door A (Google + email/password
-// sign-in) is therefore configured and the gate offers it for real.
+// client secret here and there never will be.
+//
+// v1.0.3: Google sign-in no longer runs a custom OAuth flow from
+// the app (the project's OAuth client is managed elsewhere and
+// accepts no app-registered redirects — the v1.0.2 PKCE attempt
+// died at Google with redirect_uri_mismatch). Instead the gate
+// opens a hosted sign-in page (authPageUrl below) that signs the
+// user in with the backend SDK's own Google provider and hands
+// the resulting ID token back to the bridge's loopback callback,
+// which verifies it via accounts:lookup. No OAuth client ID is
+// needed anywhere in the app any more.
 
 const SERVICE_CONFIG = {
   serviceName: 'Meridian',
@@ -20,7 +28,7 @@ const SERVICE_CONFIG = {
   authDomain: 'arcane-airport-k5xj8.firebaseapp.com',
   projectId: 'arcane-airport-k5xj8',
   databaseId: 'ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50',
-  googleClientId: '76046710811-72m4691j2j4m6ngleri075ebbl8r6tg0.apps.googleusercontent.com'
+  authPageUrl: 'https://orbitdesk-sand-theta.vercel.app/auth.html'
 };
 
 function isServiceConfigured(config) {

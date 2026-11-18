@@ -313,7 +313,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '1.0.2';
+const APP_VERSION = '1.0.3';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -1056,9 +1056,10 @@ async function startBridge() {
           : { ok: false, error: authClient.DOOR_A_UNAVAILABLE_MESSAGE });
       }
 
-      // Phase 2: the Google sign-in lands HERE, in the system
-      // browser, after the backend redirects back with a code.
-      // The engine exchanges it (PKCE) and stores the account
+      // v1.0.3: the Google sign-in lands HERE, in the system
+      // browser, after the hosted sign-in page redirects back
+      // with the Firebase ID token + the one-time state. The
+      // engine verifies the token and stores the account
       // session; the app's gate notices on its next status poll
       // (the gate starts a watch when it opens the Google URL).
       // The page shown is deliberately plain and names nothing
@@ -1074,13 +1075,13 @@ async function startBridge() {
           `<div style="text-align:center"><h2 style="font-weight:600">${title}</h2>` +
           `<p style="color:#c9b995">${line}</p></div></body></html>`;
         const authError = reqUrl.searchParams.get('error');
-        const code = reqUrl.searchParams.get('code');
+        const firebaseToken = reqUrl.searchParams.get('firebase_token');
         const state = reqUrl.searchParams.get('state');
-        if (authError || !code) {
+        if (authError || !firebaseToken) {
           return sendHtml(pageShell('Sign-in did not complete',
             'You can close this tab and try again from the app.'));
         }
-        const result = await authClient.handleGoogleCallback(code, state);
+        const result = await authClient.handleGoogleTokenCallback(firebaseToken, state);
         if (!result.ok) {
           return sendHtml(pageShell('Sign-in did not complete',
             'You can close this tab and try again from the app.'));

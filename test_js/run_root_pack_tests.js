@@ -16068,14 +16068,14 @@ async function main() {
     // "configured", and the detailed Firebase request shapes are
     // pinned in X127.) ---
     eq('X124 the service ships configured (Door A live, Firebase)', serviceConfig124.isServiceConfigured(serviceConfig124.SERVICE_CONFIG), true);
-    ok('X124 the service config carries the Firebase project values', serviceConfig124.SERVICE_CONFIG.projectId === 'arcane-airport-k5xj8' && serviceConfig124.SERVICE_CONFIG.databaseId === 'ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50' && typeof serviceConfig124.SERVICE_CONFIG.apiKey === 'string' && serviceConfig124.SERVICE_CONFIG.apiKey.length > 10 && typeof serviceConfig124.SERVICE_CONFIG.googleClientId === 'string' && serviceConfig124.SERVICE_CONFIG.googleClientId.endsWith('.apps.googleusercontent.com'));
+    ok('X124 the service config carries the Firebase project values', serviceConfig124.SERVICE_CONFIG.projectId === 'arcane-airport-k5xj8' && serviceConfig124.SERVICE_CONFIG.databaseId === 'ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50' && typeof serviceConfig124.SERVICE_CONFIG.apiKey === 'string' && serviceConfig124.SERVICE_CONFIG.apiKey.length > 10 && typeof serviceConfig124.SERVICE_CONFIG.authPageUrl === 'string' && serviceConfig124.SERVICE_CONFIG.authPageUrl === 'https://orbitdesk-sand-theta.vercel.app/auth.html' && !('googleClientId' in serviceConfig124.SERVICE_CONFIG));
     ok('X124 the service name/domain carry no tell-tale words', !/admin|license|flowstudio/i.test(serviceConfig124.SERVICE_CONFIG.serviceName + ' ' + serviceConfig124.SERVICE_CONFIG.authDomain));
     eq('X124 Door A reports itself configured', authClient124.doorAState().configured, true);
     eq('X124 Door A configured message is empty', authClient124.doorAState().message, '');
     const gUrl124 = authClient124.googleStartUrl();
-    ok('X124 Door A google URL is the system-browser OAuth URL (PKCE)', typeof gUrl124 === 'string' && gUrl124.startsWith('https://accounts.google.com/o/oauth2/v2/auth?') && gUrl124.includes('code_challenge_method=S256') && gUrl124.includes('redirect_uri=http%3A%2F%2F127.0.0.1%3A48290%2Fauth%2Fcallback'));
+    ok('X124 Door A google URL is the hosted sign-in page + one-time state (v1.0.3)', typeof gUrl124 === 'string' && gUrl124.startsWith('https://orbitdesk-sand-theta.vercel.app/auth.html?state=') && gUrl124.split('state=')[1] === authClient124.pendingGoogleState() && !gUrl124.includes('accounts.google.com') && !gUrl124.includes('code_challenge'));
     // An unconfigured config still refuses honestly (no fake success).
-    const unconf124 = { serviceName: 'Meridian', apiKey: '', projectId: '', databaseId: '', googleClientId: '' };
+    const unconf124 = { serviceName: 'Meridian', apiKey: '', projectId: '', databaseId: '', authPageUrl: '' };
     eq('X124 Door A google URL is null while unconfigured', authClient124.googleStartUrl({ config: unconf124 }), null);
     const dc124 = await authClient124.signIn('someone@example.com', 'secret1', { config: unconf124 });
     ok('X124 Door A sign-in refuses honestly while unconfigured', dc124.ok === false && dc124.reason === 'not-configured');
@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.2+3 (public line)', read124('pubspec.yaml').includes('version: 1.0.2+3'));
-    eq('X124 package.json version is 1.0.2', JSON.parse(read124('package.json')).version, '1.0.2');
-    ok('X124 the bridge reports version 1.0.2 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.2';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.3+4 (public line)', read124('pubspec.yaml').includes('version: 1.0.3+4'));
+    eq('X124 package.json version is 1.0.3', JSON.parse(read124('package.json')).version, '1.0.3');
+    ok('X124 the bridge reports version 1.0.3 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.3';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the public release line', bridgeSrc124.includes("startsWith('public-v')") && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.2 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.2'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.3 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.3'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16271,17 +16271,21 @@ async function main() {
 
   // =====================================================================
   // X127. PUBLIC v1.0.2 — FIREBASE PHASE 2: Door A on Firebase Auth
-  // REST (email + password, Google via system-browser PKCE +
-  // signInWithIdp, anonymous for reporting), plan state in
+  // REST (email + password, anonymous for reporting), plan state in
   // Firestore (users/{uid}, 7-day trial created on first sign-in),
   // reporting (account max-merge; license activations under a
   // deterministic id), the password gate copy, the held startup
-  // splash, and Item B (filter-chip overflow). Everything below
-  // runs on a FAKE fetch — URLs, bodies, headers and Firestore
-  // value encoding are pinned exactly; no real account is touched.
-  // Google sign-in against a real Google account stays a FIELD
-  // check (the exchange shape is pinned here, the live round trip
-  // cannot be proven without one).
+  // splash, and Item B (filter-chip overflow). v1.0.3 replaced the
+  // Google door: the gate opens a HOSTED sign-in page with a
+  // one-time state; the page returns a Firebase ID token to the
+  // bridge callback, which verifies it via accounts:lookup and
+  // runs the same session path as email sign-in (the v1.0.2
+  // custom-OAuth/PKCE route is dead and pinned ABSENT below).
+  // Everything below runs on a FAKE fetch — URLs, bodies, headers
+  // and Firestore value encoding are pinned exactly; no real
+  // account is touched. Google sign-in against a real Google
+  // account stays a FIELD check (the intake shape is pinned here,
+  // the live round trip cannot be proven without one).
   // =====================================================================
   {
     const fs127 = require('fs');
@@ -16320,17 +16324,15 @@ async function main() {
           return json(200, { idToken: 'ID-ANON', refreshToken: 'RF-ANON', expiresIn: '3600', localId: 'uid-anon' });
         }
         if (url.includes('accounts:sendOobCode')) return json(200, { email: body && body.email });
-        if (url.includes('accounts:lookup')) return json(200, { users: [{ localId: 'uid-1', email: 'a@b.c', emailVerified: true }] });
-        if (url.includes('accounts:signInWithIdp')) {
-          return json(200, { idToken: 'ID-G', refreshToken: 'RF-G', expiresIn: '3600', localId: 'uid-g', email: 'g@example.com' });
+        if (url.includes('accounts:lookup')) {
+          if (body && body.idToken === 'FB-BAD') return json(400, { error: { message: 'INVALID_ID_TOKEN' } });
+          if (body && body.idToken === 'FB-GOOG') return json(200, { users: [{ localId: 'uid-g', email: 'g@example.com', emailVerified: true }] });
+          return json(200, { users: [{ localId: 'uid-1', email: 'a@b.c', emailVerified: true }] });
         }
         return json(404, {});
       }
       if (url.includes('securetoken.googleapis.com')) {
         return json(200, { id_token: 'ID-2', refresh_token: 'RF-2', expires_in: '3600', user_id: 'uid-1' });
-      }
-      if (url.includes('oauth2.googleapis.com/token')) {
-        return json(200, { id_token: 'GOOG-ID', access_token: 'GOOG-AT', token_type: 'Bearer' });
       }
       if (url.startsWith('https://firestore.googleapis.com/v1/')) {
         const docPath = decodeURIComponent(url.split('/documents/')[1].split('?')[0]);
@@ -16448,55 +16450,63 @@ async function main() {
       lk127.ok === true && lk127.uid === 'uid-1' && lk127.emailVerified === true &&
       JSON.stringify(findCall127('accounts:lookup').body) === JSON.stringify({ idToken: 'ID-1' }));
 
-    // --- Google: start URL + PKCE derivation ---
+    // --- Google: start URL points at the hosted sign-in page ---
     const gUrl127 = auth127.googleStartUrl();
     const gParams127 = new URLSearchParams(gUrl127.split('?')[1]);
-    eq('X127 the PKCE challenge is the S256 of the verifier',
-      auth127.pkceChallengeFor('test-verifier'),
-      crypto127.createHash('sha256').update('test-verifier', 'utf8').digest('base64url'));
-    ok('X127 the Google start URL carries client, redirect, PKCE + state',
-      gUrl127.startsWith('https://accounts.google.com/o/oauth2/v2/auth?') &&
-      gParams127.get('client_id') === cfg127.googleClientId &&
-      gParams127.get('redirect_uri') === 'http://127.0.0.1:48290/auth/callback' &&
-      gParams127.get('response_type') === 'code' &&
-      gParams127.get('scope') === 'openid email profile' &&
-      gParams127.get('code_challenge_method') === 'S256' &&
-      gParams127.get('code_challenge') === auth127.pkceChallengeFor(auth127.pendingGoogleVerifier()) &&
-      gParams127.get('state') === auth127.pendingGoogleState());
+    eq('X127 the Google start URL is the hosted auth page from the config',
+      gUrl127.split('?')[0], cfg127.authPageUrl);
+    ok('X127 the Google start URL carries ONLY the one-time state',
+      gParams127.get('state') === auth127.pendingGoogleState() &&
+      [...gParams127.keys()].length === 1 &&
+      !gUrl127.includes('accounts.google.com') && !gUrl127.includes('code_challenge') &&
+      !gUrl127.includes('client_id'));
+    eq('X127 the ID-token expiry reader takes exp from the JWT payload',
+      auth127.idTokenExpiryMs('h.' + Buffer.from(JSON.stringify({ exp: 1893456000 })).toString('base64url') + '.s'),
+      1893456000000);
+    eq('X127 the ID-token expiry reader is 0 for a non-JWT', auth127.idTokenExpiryMs('FB-GOOG'), 0);
 
-    // --- Google: callback exchange + signInWithIdp ---
+    // --- Google: token intake — lookup verifies, trial doc lands ---
     reset127();
-    const verifier127 = auth127.pendingGoogleVerifier();
     const state127 = auth127.pendingGoogleState();
-    const gc127 = await auth127.handleGoogleCallback('AUTHCODE', state127, opts127);
-    const gx127 = findCall127('oauth2.googleapis.com/token');
-    const gxBody127 = new URLSearchParams(typeof gx127.rawBody === 'string' ? gx127.rawBody : '');
-    ok('X127 the code exchange is PKCE form with NO client secret',
-      !!gx127 && gxBody127.get('code') === 'AUTHCODE' &&
-      gxBody127.get('client_id') === cfg127.googleClientId &&
-      gxBody127.get('redirect_uri') === 'http://127.0.0.1:48290/auth/callback' &&
-      gxBody127.get('grant_type') === 'authorization_code' &&
-      gxBody127.get('code_verifier') === verifier127 &&
-      !gx127.rawBody.includes('client_secret'));
-    const idp127 = findCall127('accounts:signInWithIdp');
-    eq('X127 signInWithIdp postBody carries the Google ID token',
-      idp127.body.postBody, 'id_token=GOOG-ID&providerId=google.com');
-    ok('X127 signInWithIdp request shape (requestUri + flags)',
-      idp127.body.requestUri === 'http://127.0.0.1:48290/auth/callback' &&
-      idp127.body.returnIdpCredential === true && idp127.body.returnSecureToken === true);
+    const gc127 = await auth127.handleGoogleTokenCallback('FB-GOOG', state127, opts127);
+    const lkCall127 = calls127.filter(c => c.url.includes('accounts:lookup')).pop();
+    ok('X127 the handed-back token is verified via accounts:lookup',
+      !!lkCall127 && JSON.stringify(lkCall127.body) === JSON.stringify({ idToken: 'FB-GOOG' }));
+    eq('X127 the dead routes are never called (no OAuth exchange, no signInWithIdp)',
+      countCalls127('oauth2.googleapis.com') + countCalls127('accounts:signInWithIdp'), 0);
+    ok('X127 the Google session is the lookup identity riding the intake token',
+      gc127.ok === true && gc127.session.uid === 'uid-g' && gc127.session.email === 'g@example.com' &&
+      gc127.session.idToken === 'FB-GOOG' && gc127.session.refreshToken === '' &&
+      gc127.session.expiresAt > Date.now() && gc127.session.expiresAt <= Date.now() + 3600000);
     ok('X127 the Google sign-in lands with a trial doc for its uid',
-      gc127.ok === true && gc127.session.uid === 'uid-g' && docs127.has('users/uid-g'));
-    const noPend127 = await auth127.handleGoogleCallback('AUTHCODE', state127, opts127);
+      gc127.session.isNew === true && gc127.session.plan === 'Free' && docs127.has('users/uid-g'));
+    const noPend127 = await auth127.handleGoogleTokenCallback('FB-GOOG', state127, opts127);
     eq('X127 a consumed Google attempt cannot be replayed', noPend127.reason, 'no-pending-google');
     auth127.googleStartUrl();
-    const tokenCallsBefore127 = countCalls127('oauth2.googleapis.com/token');
-    const mm127 = await auth127.handleGoogleCallback('AUTHCODE', 'WRONG-STATE', opts127);
-    ok('X127 a state mismatch refuses before any exchange',
+    const lookupBefore127 = countCalls127('accounts:lookup');
+    const mm127 = await auth127.handleGoogleTokenCallback('FB-GOOG', 'WRONG-STATE', opts127);
+    ok('X127 a state mismatch refuses before any verification',
       mm127.ok === false && mm127.reason === 'google-state-mismatch' &&
-      countCalls127('oauth2.googleapis.com/token') === tokenCallsBefore127);
+      countCalls127('accounts:lookup') === lookupBefore127);
+    auth127.googleStartUrl();
+    const noTok127 = await auth127.handleGoogleTokenCallback('', auth127.pendingGoogleState(), opts127);
+    ok('X127 a missing token refuses before any verification',
+      noTok127.ok === false && noTok127.reason === 'google-token-missing' &&
+      countCalls127('accounts:lookup') === lookupBefore127);
+    auth127.googleStartUrl();
+    const badTok127 = await auth127.handleGoogleTokenCallback('FB-BAD', auth127.pendingGoogleState(), opts127);
+    ok('X127 a token lookup rejects maps to google-verify-failed with the plain sentence',
+      badTok127.ok === false && badTok127.reason === 'google-verify-failed' &&
+      badTok127.message === 'Your session has expired — sign in again.');
     ok('X127 no client_secret is embedded in the auth client',
       !read127('engine/authClient.js').includes('client_secret') &&
       !read127('engine/serviceConfig.js').includes('client_secret'));
+    ok('X127 the dead custom-OAuth route is gone from the auth client',
+      !read127('engine/authClient.js').includes('oauth2.googleapis.com') &&
+      !read127('engine/authClient.js').includes('accounts.google.com') &&
+      !read127('engine/authClient.js').includes('signInWithIdp') &&
+      !read127('engine/authClient.js').includes('code_challenge') &&
+      !read127('engine/authClient.js').includes('handleGoogleCallback'));
 
     // --- reporting: account max-merge ---
     reset127();
@@ -16523,7 +16533,7 @@ async function main() {
       report127.activationIdFor('ABCDEFGHIJKLMN', 'FP-9'), expectActId127);
     reset127();
     const rl127 = await report127.reportLicenseUsage(
-      { key: 'ABCDEFGHIJKLMNOP.rest', fingerprint: 'FP-9', appVersion: '1.0.2', videosMade: 7 }, opts127);
+      { key: 'ABCDEFGHIJKLMNOP.rest', fingerprint: 'FP-9', appVersion: '1.0.3', videosMade: 7 }, opts127);
     const rlPatch127 = calls127.find(c => c.method === 'PATCH' && c.url.includes('/documents/activations/'));
     ok('X127 a license report writes the deterministic activations doc',
       rl127.ok === true && rl127.docId === expectActId127 && !!rlPatch127 &&
@@ -16531,12 +16541,12 @@ async function main() {
     ok('X127 a NEW activation doc carries firstSeenAt + the report fields',
       !!rlPatch127.body.fields.firstSeenAt && rlPatch127.body.fields.keyPrefix.stringValue === 'ABCDEFGHIJKLMN' &&
       rlPatch127.body.fields.fingerprint.stringValue === 'FP-9' &&
-      rlPatch127.body.fields.appVersion.stringValue === '1.0.2' &&
+      rlPatch127.body.fields.appVersion.stringValue === '1.0.3' &&
       rlPatch127.body.fields.videosMade.integerValue === '7' && !!rlPatch127.body.fields.lastSeenAt);
     ok('X127 the license report rides an anonymous token',
       calls127.some(c => c.url.includes('/documents/activations/') && c.headers.Authorization === 'Bearer ID-ANON'));
     const rl2_127 = await report127.reportLicenseUsage(
-      { key: 'ABCDEFGHIJKLMNOP.rest', fingerprint: 'FP-9', appVersion: '1.0.2', videosMade: 8 }, opts127);
+      { key: 'ABCDEFGHIJKLMNOP.rest', fingerprint: 'FP-9', appVersion: '1.0.3', videosMade: 8 }, opts127);
     const rlPatch2_127 = calls127.filter(c => c.method === 'PATCH' && c.url.includes('/documents/activations/')).pop();
     ok('X127 an EXISTING activation doc is merged WITHOUT firstSeenAt',
       rl2_127.ok === true && rl2_127.isNew === false && !('firstSeenAt' in rlPatch2_127.body.fields) &&
@@ -16581,6 +16591,11 @@ async function main() {
       bridgeJs127.includes("'/api/entry/sign-in'") && bridgeJs127.includes("'/api/entry/sign-up'") &&
       bridgeJs127.includes("'/api/entry/forgot-password'") &&
       !bridgeJs127.includes("'/api/entry/send-code'") && !bridgeJs127.includes("'/api/entry/verify-code'"));
+    ok('X127 the bridge callback takes the firebase_token intake (v1.0.3)',
+      bridgeJs127.includes("searchParams.get('firebase_token')") &&
+      bridgeJs127.includes('handleGoogleTokenCallback(firebaseToken, state)') &&
+      !bridgeJs127.includes('handleGoogleCallback(') &&
+      bridgeJs127.includes("'/api/entry/google-url'"));
     ok('X127 the startup splash is in the gate (progress + real status lines)',
       gateDart127.includes('_buildStartupScreen') && gateDart127.includes('LinearProgressIndicator') &&
       gateDart127.includes('Starting the engine…') && gateDart127.includes('Checking your entry…') &&
@@ -16593,10 +16608,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.2',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.2"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.2'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.2';"));
+    ok('X127 the remaining version sites carry 1.0.3',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.3"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.3'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.3';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('storeAccountSession'));

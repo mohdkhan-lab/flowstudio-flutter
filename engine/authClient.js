@@ -22,10 +22,9 @@
 //        password is the email door, honestly labelled as such.)
 //   POST …/accounts:lookup?key=<apiKey>  { idToken }
 //        → 200 { users: [ { localId, email, emailVerified, … } ] }
-//   POST …/accounts:signInWithIdp?key=<apiKey>
-//        { postBody: 'id_token=<google id token>&providerId=google.com',
-//          requestUri: <the bridge callback>, returnIdpCredential: true,
-//          returnSecureToken: true }                  (Google door)
+//        (also the verification step for the Google door: the
+//        hosted sign-in page hands the bridge a Firebase ID
+//        token, and lookup is what proves it is real)
 //   POST https://securetoken.googleapis.com/v1/token?key=<apiKey>
 //        form: grant_type=refresh_token&refresh_token=<token>
 //        → 200 { id_token, refresh_token, expires_in, user_id }
@@ -37,15 +36,20 @@
 //   7-day trial (trialEndsAt = now + 7 days); later sign-ins read
 //   the stored state and never reset it.
 //
-// Google sign-in: system-browser OAuth with PKCE (S256) against
-// accounts.google.com using the Web client ID from the service
-// config — NO client secret anywhere (PKCE replaces it). The
-// browser lands on the bridge's own GET /auth/callback, which
-// exchanges the code at https://oauth2.googleapis.com/token and
-// completes the sign-in via accounts:signInWithIdp.
+// Google sign-in (v1.0.3): the gate opens a hosted sign-in page
+// (serviceConfig.authPageUrl) in the system browser with a
+// one-time state. The page signs the user in with the backend
+// SDK's own Google provider — no custom OAuth client anywhere —
+// and redirects the browser to the bridge's own GET
+// /auth/callback carrying the fresh Firebase ID token. The
+// bridge verifies that token via accounts:lookup and then runs
+// the SAME session-establishment path as email sign-in. (The
+// v1.0.2 custom-OAuth/PKCE route is gone: the project's OAuth
+// client accepts no app-registered redirect URIs, so Google
+// refused every attempt with redirect_uri_mismatch.)
 //
 // The client caches nothing (except the single pending Google
-// PKCE attempt, in memory only): the bridge stores the returned
+// state, in memory only): the bridge stores the returned
 // session in the entry credential and entryGate decides entry.
 
 const crypto = require('crypto');
@@ -55,15 +59,14 @@ const firestore = require('./firestoreClient');
 const DOOR_A_UNAVAILABLE_MESSAGE =
   'Account sign-in is not available yet — please use a license key';
 
-// The Google flow finishes on the bridge itself: Google redirects
-// the system browser to this loopback URL on the app's own bridge
-// port (48290 — engine_bridge's PORT).
+// The Google flow finishes on the bridge itself: the hosted
+// sign-in page redirects the system browser to this loopback URL
+// on the app's own bridge port (48290 — engine_bridge's PORT),
+// carrying the Firebase ID token + the one-time state.
 const GOOGLE_REDIRECT_URI = 'http://127.0.0.1:48290/auth/callback';
 
 const IDENTITY_BASE = 'https://identitytoolkit.googleapis.com/v1';
 const SECURETOKEN_URL = 'https://securetoken.googleapis.com/v1/token';
-const GOOGLE_AUTH_URL = 'https://accounts.google.com/o/oauth2/v2/auth';
-const GOOGLE_TOKEN_URL = 'https://oauth2.googleapis.com/token';
 
 const TRIAL_DAYS = 7;
 
@@ -467,51 +470,55 @@ async function refreshSession(refreshToken, opts) {
   return { ok: true, session, accountInitOk: false };
 }
 
-// --- Google sign-in (system browser, PKCE) ----------------------
-// The engine generates the verifier + state, keeps them in memory
-// for the ONE pending attempt, and the bridge's /auth/callback
-// exchanges the returned code. A new googleStartUrl() call
-// replaces any pending attempt; an exchange consumes it.
-
-function pkceChallengeFor(verifier) {
-  return crypto.createHash('sha256').update(String(verifier), 'utf8').digest('base64url');
-}
+// --- Google sign-in (hosted sign-in page, token intake) ---------
+// The engine generates a one-time state, keeps it in memory for
+// the ONE pending attempt, and hands the gate the hosted page's
+// URL with that state. The page signs the user in and redirects
+// the browser to the bridge's /auth/callback with the Firebase
+// ID token + the same state. A new googleStartUrl() call
+// replaces any pending attempt; a callback consumes it.
 
 let pendingGoogle = null;
 
 function googleStartUrl(opts) {
   const config = resolveConfig(opts);
   if (!isServiceConfigured(config)) return null;
-  if (typeof config.googleClientId !== 'string' || !config.googleClientId) return null;
-  const verifier = crypto.randomBytes(32).toString('base64url');
+  if (typeof config.authPageUrl !== 'string' || !config.authPageUrl) return null;
   const state = crypto.randomBytes(16).toString('base64url');
-  pendingGoogle = { verifier, state, createdAt: Date.now() };
-  const params = new URLSearchParams({
-    client_id: config.googleClientId,
-    redirect_uri: GOOGLE_REDIRECT_URI,
-    response_type: 'code',
-    scope: 'openid email profile',
-    code_challenge: pkceChallengeFor(verifier),
-    code_challenge_method: 'S256',
-    state
-  });
-  return `${GOOGLE_AUTH_URL}?${params.toString()}`;
+  pendingGoogle = { state, createdAt: Date.now() };
+  const params = new URLSearchParams({ state });
+  return `${config.authPageUrl}?${params.toString()}`;
 }
 
-// Test/inspection hooks: the pending attempt's verifier + state
-// (the challenge in the start URL must be the verifier's S256).
-function pendingGoogleVerifier() {
-  return pendingGoogle ? pendingGoogle.verifier : null;
-}
-
+// Test/inspection hook: the pending attempt's state (the start
+// URL must carry exactly this value).
 function pendingGoogleState() {
   return pendingGoogle ? pendingGoogle.state : null;
 }
 
-// The callback half: exchange the code for Google tokens (PKCE,
-// NO client secret), then trade the Google credential for a
-// Firebase session via accounts:signInWithIdp.
-async function handleGoogleCallback(code, state, opts) {
+// Read a Firebase ID token's expiry (the JWT payload's exp
+// claim) WITHOUT trusting the token: authenticity is proven by
+// accounts:lookup before this value is ever used, and the exp
+// only stamps the local session's expiry. 0 when unreadable.
+function idTokenExpiryMs(idToken) {
+  try {
+    const parts = String(idToken).split('.');
+    if (parts.length !== 3) return 0;
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return typeof payload.exp === 'number' && payload.exp > 0 ? payload.exp * 1000 : 0;
+  } catch (e) {
+    return 0;
+  }
+}
+
+// The callback half: verify the handed-back Firebase ID token
+// via accounts:lookup, then build the SAME account session as
+// email sign-in (uid/email → trial doc → gate). The page gives
+// no refresh token, so the session's refreshToken is empty: the
+// token lives for its own lifetime (~1 hour) and the gate's
+// offline grace covers short drops after that; a Google user
+// whose token has fully expired simply signs in again.
+async function handleGoogleTokenCallback(firebaseToken, state, opts) {
   const config = resolveConfig(opts);
   if (!isServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
   const fetchImpl = resolveFetch(opts);
@@ -522,58 +529,23 @@ async function handleGoogleCallback(code, state, opts) {
   if (typeof state === 'string' && state && state !== pending.state) {
     return { ok: false, reason: 'google-state-mismatch', status: 0 };
   }
-  const cleanCode = typeof code === 'string' ? code.trim() : '';
-  if (!cleanCode) return { ok: false, reason: 'google-exchange-failed', status: 0 };
-  let googleTokens = null;
-  try {
-    const { status, data } = await callForm(
-      fetchImpl,
-      GOOGLE_TOKEN_URL,
-      {
-        code: cleanCode,
-        client_id: config.googleClientId,
-        redirect_uri: GOOGLE_REDIRECT_URI,
-        grant_type: 'authorization_code',
-        code_verifier: pending.verifier
-      }
-    );
-    if (status !== 200 || !data) {
-      return { ok: false, reason: 'google-exchange-failed', status };
-    }
-    googleTokens = data;
-  } catch (e) {
-    return { ok: false, reason: 'network-error' };
+  const cleanToken = typeof firebaseToken === 'string' ? firebaseToken.trim() : '';
+  if (!cleanToken) return { ok: false, reason: 'google-token-missing', status: 0 };
+  const looked = await lookupSession(cleanToken, opts);
+  if (!looked.ok) {
+    return {
+      ok: false, reason: 'google-verify-failed', status: looked.status || 0,
+      message: looked.message || 'Google sign-in could not be verified.'
+    };
   }
-  const postBody = typeof googleTokens.id_token === 'string' && googleTokens.id_token
-    ? `id_token=${googleTokens.id_token}&providerId=google.com`
-    : (typeof googleTokens.access_token === 'string' && googleTokens.access_token
-      ? `access_token=${googleTokens.access_token}&providerId=google.com`
-      : null);
-  if (!postBody) return { ok: false, reason: 'google-exchange-failed', status: 0 };
-  let session = null;
-  try {
-    const { status, data } = await callJson(
-      fetchImpl,
-      identityUrl(config, 'signInWithIdp'),
-      {
-        postBody,
-        requestUri: GOOGLE_REDIRECT_URI,
-        returnIdpCredential: true,
-        returnSecureToken: true
-      }
-    );
-    if (status !== 200) {
-      return {
-        ok: false, reason: 'google-exchange-failed', status,
-        message: plainError(data, 'Google sign-in could not be completed.')
-      };
-    }
-    session = sessionFromAuthData(data, Date.now());
-    if (!session) return { ok: false, reason: 'google-exchange-failed', status };
-    if (!session.email && typeof data.email === 'string') session.email = data.email;
-  } catch (e) {
-    return { ok: false, reason: 'network-error' };
-  }
+  if (!looked.uid) return { ok: false, reason: 'google-verify-failed', status: 0 };
+  const session = {
+    idToken: cleanToken,
+    refreshToken: '',
+    uid: looked.uid,
+    email: looked.email,
+    expiresAt: idTokenExpiryMs(cleanToken) || (Date.now() + 3600000)
+  };
   return withAccountState(session, opts);
 }
 
@@ -583,10 +555,9 @@ module.exports = {
   TRIAL_DAYS,
   doorAState,
   googleStartUrl,
-  pkceChallengeFor,
-  pendingGoogleVerifier,
   pendingGoogleState,
-  handleGoogleCallback,
+  idTokenExpiryMs,
+  handleGoogleTokenCallback,
   signUp,
   signIn,
   forgotPassword,

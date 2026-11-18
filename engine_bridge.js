@@ -313,7 +313,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '1.0.3';
+const APP_VERSION = '1.0.4';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -904,7 +904,7 @@ async function startBridge() {
           credential,
           { nowMs: Date.now(), fingerprint: cachedMachineFingerprint(), networkFailed }
         );
-        return sendJson(200, { ok: true, entry: decision, doorA: authClient.doorAState() });
+        return sendJson(200, { ok: true, entry: decision, doorA: authClient.doorAState(), machineId: machineFingerprint.machineIdDisplay(cachedMachineFingerprint()) });
       }
 
       if (pathname === '/api/entry/activate-key' && req.method === 'POST') {

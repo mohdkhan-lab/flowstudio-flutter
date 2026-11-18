@@ -43,8 +43,23 @@ function getMachineFingerprint() {
   return computeFingerprint(readMachineGuid(), os.hostname());
 }
 
+// PUBLIC v1.0.4: the gate's DISPLAY form of the fingerprint —
+// FS-XXXX-XXXX-XXXX, derived deterministically from the first
+// 12 hex chars of the SHA-256 fingerprint (uppercased, grouped
+// 4-4-4). Display only: the one-device binding itself always
+// uses the full fingerprint; the short form exists so the user
+// can read their machine identity off the gate and copy it.
+// Returns '' when no fingerprint is available.
+function machineIdDisplay(fingerprint) {
+  const fp = String(fingerprint || '').trim().toLowerCase();
+  if (!/^[0-9a-f]{12}/.test(fp)) return '';
+  const head = fp.slice(0, 12).toUpperCase();
+  return `FS-${head.slice(0, 4)}-${head.slice(4, 8)}-${head.slice(8, 12)}`;
+}
+
 module.exports = {
   computeFingerprint,
   readMachineGuid,
-  getMachineFingerprint
+  getMachineFingerprint,
+  machineIdDisplay
 };

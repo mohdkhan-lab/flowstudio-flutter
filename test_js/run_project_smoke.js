@@ -145,7 +145,7 @@ async function main() {
     if (child.exitCode !== null) {
       refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
     }
-    check('status version is 1.0.3', status && status.version === '1.0.3', JSON.stringify(status));
+    check('status version is 1.0.4', status && status.version === '1.0.4', JSON.stringify(status));
 
     // PUBLIC v1.0.0: ENTRY GATE — a fresh install (throwaway
     // APPDATA, no credential stored) must be CLOSED, a garbage
@@ -165,6 +165,9 @@ async function main() {
     check('entry gate: Door A configured (Firebase backend live)',
       entry0.data && entry0.data.doorA && entry0.data.doorA.configured === true,
       JSON.stringify(entry0.data && entry0.data.doorA));
+    check('entry gate: status carries the FS machine ID (v1.0.4)',
+      entry0.data && /^FS-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(entry0.data.machineId || ''),
+      JSON.stringify(entry0.data && entry0.data.machineId));
     const badKey = await req('POST', '/api/entry/activate-key', { key: 'not-a-key' });
     check('entry gate: a garbage key is refused',
       badKey.status === 200 && badKey.data && badKey.data.ok === false,

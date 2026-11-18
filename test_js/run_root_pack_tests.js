@@ -16068,12 +16068,12 @@ async function main() {
     // "configured", and the detailed Firebase request shapes are
     // pinned in X127.) ---
     eq('X124 the service ships configured (Door A live, Firebase)', serviceConfig124.isServiceConfigured(serviceConfig124.SERVICE_CONFIG), true);
-    ok('X124 the service config carries the Firebase project values', serviceConfig124.SERVICE_CONFIG.projectId === 'arcane-airport-k5xj8' && serviceConfig124.SERVICE_CONFIG.databaseId === 'ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50' && typeof serviceConfig124.SERVICE_CONFIG.apiKey === 'string' && serviceConfig124.SERVICE_CONFIG.apiKey.length > 10 && typeof serviceConfig124.SERVICE_CONFIG.authPageUrl === 'string' && serviceConfig124.SERVICE_CONFIG.authPageUrl === 'https://orbitdesk-sand-theta.vercel.app/auth.html' && !('googleClientId' in serviceConfig124.SERVICE_CONFIG));
+    ok('X124 the service config carries the Firebase project values', serviceConfig124.SERVICE_CONFIG.projectId === 'arcane-airport-k5xj8' && serviceConfig124.SERVICE_CONFIG.databaseId === 'ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50' && typeof serviceConfig124.SERVICE_CONFIG.apiKey === 'string' && serviceConfig124.SERVICE_CONFIG.apiKey.length > 10 && typeof serviceConfig124.SERVICE_CONFIG.authPageUrl === 'string' && serviceConfig124.SERVICE_CONFIG.authPageUrl === 'https://meridian-entry.vercel.app/auth.html' && !('googleClientId' in serviceConfig124.SERVICE_CONFIG));
     ok('X124 the service name/domain carry no tell-tale words', !/admin|license|flowstudio/i.test(serviceConfig124.SERVICE_CONFIG.serviceName + ' ' + serviceConfig124.SERVICE_CONFIG.authDomain));
     eq('X124 Door A reports itself configured', authClient124.doorAState().configured, true);
     eq('X124 Door A configured message is empty', authClient124.doorAState().message, '');
     const gUrl124 = authClient124.googleStartUrl();
-    ok('X124 Door A google URL is the hosted sign-in page + one-time state (v1.0.3)', typeof gUrl124 === 'string' && gUrl124.startsWith('https://orbitdesk-sand-theta.vercel.app/auth.html?state=') && gUrl124.split('state=')[1] === authClient124.pendingGoogleState() && !gUrl124.includes('accounts.google.com') && !gUrl124.includes('code_challenge'));
+    ok('X124 Door A google URL is the hosted sign-in page + one-time state (v1.0.3)', typeof gUrl124 === 'string' && gUrl124.startsWith('https://meridian-entry.vercel.app/auth.html?state=') && gUrl124.split('state=')[1] === authClient124.pendingGoogleState() && !gUrl124.includes('accounts.google.com') && !gUrl124.includes('code_challenge'));
     // An unconfigured config still refuses honestly (no fake success).
     const unconf124 = { serviceName: 'Meridian', apiKey: '', projectId: '', databaseId: '', authPageUrl: '' };
     eq('X124 Door A google URL is null while unconfigured', authClient124.googleStartUrl({ config: unconf124 }), null);
@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.3+4 (public line)', read124('pubspec.yaml').includes('version: 1.0.3+4'));
-    eq('X124 package.json version is 1.0.3', JSON.parse(read124('package.json')).version, '1.0.3');
-    ok('X124 the bridge reports version 1.0.3 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.3';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.4+5 (public line)', read124('pubspec.yaml').includes('version: 1.0.4+5'));
+    eq('X124 package.json version is 1.0.4', JSON.parse(read124('package.json')).version, '1.0.4');
+    ok('X124 the bridge reports version 1.0.4 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.4';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the public release line', bridgeSrc124.includes("startsWith('public-v')") && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.3 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.3'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.4 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.4'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16608,13 +16608,84 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.3',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.3"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.3'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.3';"));
+    ok('X127 the remaining version sites carry 1.0.4',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.4"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.4'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.4';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('storeAccountSession'));
+  }
+
+  // =====================================================================
+  // X128. PUBLIC v1.0.4 — PROFESSIONAL ENTRY: the startup splash and
+  // the gate card rebuilt dark (owner's reference: a competitor's
+  // activation card) — Machine ID box with Copy at the top, the
+  // license-key door FIRST, the account doors below an "or" divider,
+  // and a signed-in-with-no-plan line that lands the user back on
+  // the key section. The sign-in page also moved to its own
+  // standalone home (fs-entry repo) on its own domain, so no
+  // panel/backend address shows in the sign-in flow; the URL below
+  // is the PLANNED domain until MK confirms the real one.
+  // The Flutter screens cannot run in this harness — their shape
+  // is pinned statically, the Machine ID format functionally.
+  // =====================================================================
+  {
+    const fs128 = require('fs');
+    const path128 = require('path');
+    const read128 = (rel) => fs128.readFileSync(path128.join(__dirname, '..', rel), 'utf8');
+    const fingerprint128 = require('../engine/machineFingerprint');
+    const cfg128 = require('../engine/serviceConfig').SERVICE_CONFIG;
+    const gateDart128 = read128('lib/widgets/entry_gate.dart');
+    const providerDart128 = read128('lib/providers/entry_provider.dart');
+    const bridgeJs128 = read128('engine_bridge.js');
+
+    // --- the Machine ID format: deterministic from the fingerprint ---
+    const fpA128 = fingerprint128.computeFingerprint('ABC-123', 'MyPC');
+    const idA128 = fingerprint128.machineIdDisplay(fpA128);
+    ok('X128 the machine ID has the FS-XXXX-XXXX-XXXX shape', /^FS-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}$/.test(idA128));
+    eq('X128 the machine ID is the fingerprint head, grouped', idA128,
+      'FS-' + fpA128.slice(0, 4).toUpperCase() + '-' + fpA128.slice(4, 8).toUpperCase() + '-' + fpA128.slice(8, 12).toUpperCase());
+    eq('X128 the machine ID is deterministic', fingerprint128.machineIdDisplay(fpA128), idA128);
+    ok('X128 a different machine shows a different ID',
+      fingerprint128.machineIdDisplay(fingerprint128.computeFingerprint('XYZ-999', 'MyPC')) !== idA128);
+    eq('X128 no fingerprint, no machine ID', fingerprint128.machineIdDisplay(''), '');
+    eq('X128 a garbage fingerprint shows no machine ID', fingerprint128.machineIdDisplay('not-a-hash'), '');
+
+    // --- the status carries it; the provider and gate surface it ---
+    ok('X128 the entry status serves the machine ID',
+      bridgeJs128.includes('machineId: machineFingerprint.machineIdDisplay(cachedMachineFingerprint())'));
+    ok('X128 the entry provider carries the machine ID to the gate',
+      providerDart128.includes("data['machineId']") && providerDart128.includes('String get machineId => _machineId;'));
+    ok('X128 the gate shows the Machine ID box with Copy',
+      gateDart128.includes('YOUR MACHINE ID') && gateDart128.includes('Clipboard.setData') &&
+      gateDart128.includes('Your license key will be locked to this computer.') &&
+      gateDart128.includes('entry.machineId'));
+
+    // --- the professional entry: key door first, doors below "or" ---
+    ok('X128 the key door sits above the account doors',
+      gateDart128.indexOf("'LICENSE KEY'") > gateDart128.indexOf('_machineIdBox(entry)') &&
+      gateDart128.indexOf("'Continue with Google'") > gateDart128.indexOf("'Activate'"));
+    ok('X128 the doors are split by an "or" divider',
+      gateDart128.includes("'or'") && gateDart128.includes('Multi-Account AI Video Engine'));
+    ok('X128 a signed-in account with no plan lands back on the key door',
+      gateDart128.includes('signedInNoPlan') && gateDart128.includes('no active plan') &&
+      gateDart128.includes('Signed in as'));
+    ok('X128 the card closes with the free-trial line',
+      gateDart128.includes('No license key? Google sign-in starts a free 7-day trial.'));
+
+    // --- the dark splash: state-driven progress, ready line, version ---
+    ok('X128 the splash is dark with a state-filled progress bar',
+      gateDart128.includes('0xFF07070C') && gateDart128.includes('value: progress') &&
+      gateDart128.includes('entry.engineStarted ? 0.65 : 0.25'));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.4',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.4'"));
+
+    // --- the sign-in page's own home (planned domain, one-line swap) ---
+    eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
+      'https://meridian-entry.vercel.app/auth.html');
+    ok('X128 no panel address survives in the app config',
+      !JSON.stringify(cfg128).includes('orbitdesk'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

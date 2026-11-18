@@ -28,7 +28,12 @@ const SERVICE_CONFIG = {
   authDomain: 'arcane-airport-k5xj8.firebaseapp.com',
   projectId: 'arcane-airport-k5xj8',
   databaseId: 'ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50',
-  authPageUrl: 'https://orbitdesk-sand-theta.vercel.app/auth.html'
+  // v1.0.4: the sign-in page moved OUT of the panel's site into
+  // its own tiny standalone home (its own repo, its own domain),
+  // so no panel/backend address ever appears in the sign-in
+  // flow. PLANNED domain below — MK swaps in the real domain
+  // here (this one line) once it is live, before shipping.
+  authPageUrl: 'https://meridian-entry.vercel.app/auth.html'
 };
 
 function isServiceConfigured(config) {

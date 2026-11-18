@@ -37,6 +37,11 @@ class EntryProvider extends ChangeNotifier {
   bool _isAccount = false;
   Timer? _accountWatch;
 
+  // v1.0.4: this machine's display identity (FS-XXXX-XXXX-XXXX),
+  // derived by the engine from the one-device fingerprint and
+  // served with the entry status — the gate's Machine ID box.
+  String _machineId = '';
+
   // PUBLIC v1.0.1: the engine-start watchdog. If the engine has
   // not answered within this window the gate stops polling and
   // shows its engineFailed state (with a Retry button) instead of
@@ -137,6 +142,10 @@ class EntryProvider extends ChangeNotifier {
   /// (Settings shows the account card instead of the license card).
   bool get isAccount => _isAccount;
 
+  /// v1.0.4: this machine's display identity for the gate's
+  /// Machine ID box ('' until the engine's first answer).
+  String get machineId => _machineId;
+
   Future<void> refresh() async {
     final data = await AutomationBridge.instance.getEntryStatus();
     if (data == null) return;
@@ -158,6 +167,8 @@ class EntryProvider extends ChangeNotifier {
       final msg = doorA['message']?.toString() ?? '';
       if (msg.isNotEmpty) _doorAMessage = msg;
     }
+    final mid = data['machineId'];
+    if (mid is String && mid.isNotEmpty) _machineId = mid;
     _loaded = true;
     _engineFailed = false;
     notifyListeners();

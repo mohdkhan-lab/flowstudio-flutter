@@ -1,9 +1,9 @@
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import '../providers/entry_provider.dart';
 import '../services/automation_bridge.dart';
-import '../theme/app_theme.dart';
-import 'tactile_components.dart';
 
 /// PUBLIC v1.0.0: the ENTRY GATE screen — the only screen the app
 /// shows before entry is granted (see EntryProvider). Two doors:
@@ -24,12 +24,37 @@ import 'tactile_components.dart';
 ///   — is shown BEFORE the first activation attempt, so nobody is
 ///   surprised by it (the owner's explicit order).
 ///
+/// v1.0.4: the gate and the startup screen were redesigned as ONE
+/// dark, professional entry (the owner's reference: a competitor
+/// activation card) — a Machine ID box with Copy at the top, the
+/// license-key door FIRST, then the account doors below an "or"
+/// divider. A user who signs in with Google but has no active
+/// plan lands back on this same card, signed-in line showing,
+/// with the key section right there to paste into. The palette
+/// below is deliberately local to this screen: the entry is dark
+/// even though the studio behind it is not.
+///
 /// STARTUP: while the engine starts and the first entry answer is
 /// on its way, a splash screen shows instead of the gate card
 /// (see _buildStartupScreen).
 ///
 /// FIT LAW: the whole gate fits 1024×768 — one centered card, no
 /// scrolling at that size.
+
+// The entry's own dark palette (v1.0.4) — splash + gate card.
+const Color _entryBg = Color(0xFF07070C);
+const Color _entryCard = Color(0xFF101016);
+const Color _entryPanel = Color(0xFF17171F);
+const Color _entryBorder = Color(0xFF262633);
+const Color _entryText = Color(0xFFF2F2F5);
+const Color _entryDim = Color(0xFF9A9AAD);
+const Color _entryFaint = Color(0xFF6D6D80);
+const Color _entryGold = Color(0xFFF0A832);
+const Color _entryGoldText = Color(0xFF1C1503);
+const Color _entryBtn = Color(0xFF1B1B24);
+const Color _entryRed = Color(0xFFFF8585);
+const Color _entryRedBg = Color(0xFF2A1215);
+
 class EntryGateScreen extends StatefulWidget {
   const EntryGateScreen({super.key});
 
@@ -45,12 +70,27 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
   // Door A mode: false = Sign in, true = Create account.
   bool _signUpMode = false;
 
+  // Machine ID copy feedback (the chip reads "Copied" briefly).
+  bool _idCopied = false;
+  Timer? _copiedTimer;
+
   @override
   void dispose() {
+    _copiedTimer?.cancel();
     _emailController.dispose();
     _passwordController.dispose();
     _keyController.dispose();
     super.dispose();
+  }
+
+  void _copyMachineId(String machineId) {
+    if (machineId.isEmpty) return;
+    Clipboard.setData(ClipboardData(text: machineId));
+    setState(() => _idCopied = true);
+    _copiedTimer?.cancel();
+    _copiedTimer = Timer(const Duration(seconds: 2), () {
+      if (mounted) setState(() => _idCopied = false);
+    });
   }
 
   Widget _field({
@@ -61,37 +101,75 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     bool obscureText = false,
   }) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10),
+      padding: const EdgeInsets.symmetric(horizontal: 12),
       decoration: BoxDecoration(
-        color: AppTheme.inputBg,
-        borderRadius: BorderRadius.circular(6),
-        border: Border.all(color: AppTheme.borderSoft),
+        color: _entryPanel,
+        borderRadius: BorderRadius.circular(9),
+        border: Border.all(color: _entryBorder),
       ),
       child: TextField(
         controller: controller,
         enabled: enabled,
         maxLines: maxLines,
         obscureText: obscureText,
-        style: TextStyle(fontSize: 12, color: AppTheme.textMain),
+        style: const TextStyle(fontSize: 12.5, color: _entryText),
         decoration: InputDecoration(
           hintText: hint,
-          hintStyle: TextStyle(fontSize: 11.5, color: AppTheme.textFaint),
+          hintStyle: const TextStyle(fontSize: 12, color: _entryFaint),
           border: InputBorder.none,
           isDense: true,
-          contentPadding: const EdgeInsets.symmetric(vertical: 9),
+          contentPadding: const EdgeInsets.symmetric(vertical: 10),
         ),
       ),
     );
   }
 
-  Widget _doorLabel(String text) {
+  Widget _btn({
+    required String label,
+    required bool enabled,
+    required VoidCallback onTap,
+    bool gold = false,
+    double height = 38,
+  }) {
+    return Opacity(
+      opacity: enabled ? 1 : 0.45,
+      child: Material(
+        color: gold ? _entryGold : _entryBtn,
+        borderRadius: BorderRadius.circular(9),
+        child: InkWell(
+          onTap: enabled ? onTap : null,
+          borderRadius: BorderRadius.circular(9),
+          child: Container(
+            height: height,
+            alignment: Alignment.center,
+            decoration: gold
+                ? null
+                : BoxDecoration(
+                    border: Border.all(color: _entryBorder),
+                    borderRadius: BorderRadius.circular(9),
+                  ),
+            child: Text(
+              label,
+              style: TextStyle(
+                fontSize: 13,
+                fontWeight: FontWeight.bold,
+                color: gold ? _entryGoldText : _entryText,
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _sectionLabel(String text) {
     return Text(
       text,
-      style: TextStyle(
+      style: const TextStyle(
         fontSize: 10,
         fontWeight: FontWeight.bold,
-        letterSpacing: 0.8,
-        color: AppTheme.textFaint,
+        letterSpacing: 1.0,
+        color: _entryGold,
       ),
     );
   }
@@ -106,26 +184,111 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
       ),
       child: Text(
         label,
-        style: TextStyle(
+        style: const TextStyle(
           fontSize: 11,
           fontWeight: FontWeight.bold,
-          color: AppTheme.accentGold,
+          color: _entryGold,
         ),
       ),
     );
   }
 
-  /// v1.0.2 — the STARTUP SCREEN: while the engine starts and
-  /// the first entry answer is on its way (entry.loaded false),
-  /// the app shows a proper splash — logo mark, name, an animated
-  /// progress bar and a status line that follows the real state
-  /// (Starting engine… → Checking your entry…) — instead of the
-  /// bare line the gate card used to carry. The watchdog's
-  /// engineFailed state lives here too, with its Retry button.
-  /// The version sits at the bottom.
+  /// v1.0.4 — the Machine ID box at the top of the card: the
+  /// label and a Copy chip on one row, this PC's identity in a
+  /// clean FS-XXXX-XXXX-XXXX format (the engine derives it
+  /// deterministically from the one-device fingerprint), and the
+  /// binding line underneath.
+  Widget _machineIdBox(EntryProvider entry) {
+    final machineId = entry.machineId;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 10, 10, 11),
+      decoration: BoxDecoration(
+        color: _entryPanel,
+        borderRadius: BorderRadius.circular(10),
+        border: Border.all(color: _entryBorder),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Expanded(
+                child: Text(
+                  'YOUR MACHINE ID',
+                  style: TextStyle(
+                    fontSize: 10,
+                    fontWeight: FontWeight.bold,
+                    letterSpacing: 1.0,
+                    color: _entryGold,
+                  ),
+                ),
+              ),
+              Material(
+                color: _entryBtn,
+                borderRadius: BorderRadius.circular(6),
+                child: InkWell(
+                  onTap: machineId.isEmpty
+                      ? null
+                      : () => _copyMachineId(machineId),
+                  borderRadius: BorderRadius.circular(6),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: _entryBorder),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(
+                      _idCopied ? 'Copied' : 'Copy',
+                      style: const TextStyle(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.bold,
+                        color: _entryText,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 7),
+          Text(
+            machineId.isEmpty ? '—' : machineId,
+            style: const TextStyle(
+              fontSize: 15,
+              fontWeight: FontWeight.bold,
+              letterSpacing: 1.4,
+              color: _entryText,
+              fontFamily: 'Consolas',
+            ),
+          ),
+          const SizedBox(height: 4),
+          const Text(
+            'Your license key will be locked to this computer.',
+            style: TextStyle(fontSize: 10.5, color: _entryFaint),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// v1.0.4 — the STARTUP SCREEN, rebuilt dark and centred like
+  /// a market app's splash: big logo, the app name, the tagline,
+  /// a progress bar that fills with the real engine state
+  /// (starting → checking → ready), a status line that follows
+  /// it, and the version at the bottom. The watchdog's
+  /// engineFailed state lives here too, with its Retry button
+  /// (v1.0.1 behaviour, kept).
   Widget _buildStartupScreen(BuildContext context, EntryProvider entry) {
+    final double progress =
+        entry.engineFailed ? 0 : (entry.engineStarted ? 0.65 : 0.25);
+    final String status = entry.loaded
+        ? 'Workspace ready!'
+        : entry.engineStarted
+            ? 'Checking your entry…'
+            : 'Starting the engine…';
     return Scaffold(
-      backgroundColor: AppTheme.bgBody,
+      backgroundColor: _entryBg,
       body: Stack(
         children: [
           Center(
@@ -134,72 +297,73 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
               children: [
                 Image.asset(
                   'assets/icon.png',
-                  width: 84,
-                  height: 84,
-                  errorBuilder: (_, _, _) => Icon(
+                  width: 96,
+                  height: 96,
+                  errorBuilder: (_, _, _) => const Icon(
                     Icons.auto_awesome,
-                    size: 84,
-                    color: AppTheme.accentGold,
+                    size: 96,
+                    color: _entryGold,
                   ),
                 ),
-                const SizedBox(height: 16),
-                Text(
+                const SizedBox(height: 18),
+                const Text(
                   'FlowStudio',
                   style: TextStyle(
-                    fontSize: 26,
+                    fontSize: 34,
                     fontWeight: FontWeight.bold,
-                    color: AppTheme.textMain,
+                    color: _entryText,
                   ),
                 ),
-                const SizedBox(height: 26),
+                const SizedBox(height: 5),
+                const Text(
+                  'Multi-Account AI Video Engine',
+                  style: TextStyle(fontSize: 13, color: _entryDim),
+                ),
+                const SizedBox(height: 30),
                 SizedBox(
-                  width: 220,
+                  width: 340,
                   child: LinearProgressIndicator(
-                    minHeight: 3,
-                    color: AppTheme.accentGold,
-                    backgroundColor: AppTheme.borderSoft,
+                    value: progress,
+                    minHeight: 4,
+                    color: _entryGold,
+                    backgroundColor: _entryBorder,
                   ),
                 ),
                 const SizedBox(height: 14),
                 if (!entry.engineFailed)
                   Text(
-                    entry.engineStarted
-                        ? 'Checking your entry…'
-                        : 'Starting the engine…',
-                    style:
-                        TextStyle(fontSize: 11.5, color: AppTheme.textFaint),
+                    status,
+                    style: const TextStyle(fontSize: 12, color: _entryDim),
                   ),
                 if (entry.engineFailed) ...[
                   Container(
-                    width: 320,
+                    width: 340,
                     padding: const EdgeInsets.symmetric(
-                        horizontal: 10, vertical: 8),
+                        horizontal: 12, vertical: 9),
                     decoration: BoxDecoration(
-                      color: AppTheme.redBg,
-                      borderRadius: BorderRadius.circular(6),
-                      border: Border.all(color: AppTheme.red),
+                      color: _entryRedBg,
+                      borderRadius: BorderRadius.circular(8),
+                      border: Border.all(color: _entryRed),
                     ),
                     child: Row(
                       children: [
-                        Expanded(
+                        const Expanded(
                           child: Text(
                             'The engine could not start.',
-                            style:
-                                TextStyle(fontSize: 11, color: AppTheme.red),
+                            style: TextStyle(fontSize: 11, color: _entryRed),
                           ),
                         ),
                         const SizedBox(width: 8),
-                        TactileButton(
-                          type: TactileType.secondary,
-                          height: 28,
-                          borderRadius: 6,
-                          bevelDepth: 2.0,
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          enabled: true,
-                          label: 'Retry',
-                          onTap: () {
-                            context.read<EntryProvider>().retryEngine();
-                          },
+                        SizedBox(
+                          width: 96,
+                          child: _btn(
+                            label: 'Retry',
+                            height: 28,
+                            enabled: true,
+                            onTap: () {
+                              context.read<EntryProvider>().retryEngine();
+                            },
+                          ),
                         ),
                       ],
                     ),
@@ -208,14 +372,14 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
               ],
             ),
           ),
-          Positioned(
+          const Positioned(
             left: 0,
             right: 0,
             bottom: 18,
             child: Text(
-              'v1.0.3',
+              'v1.0.4',
               textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
+              style: TextStyle(fontSize: 10.5, color: _entryFaint),
             ),
           ),
         ],
@@ -240,44 +404,132 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     // fail with "The engine is not answering".
     final doorAEnabled =
         entry.loaded && entry.doorAConfigured && !entry.busy;
+    // v1.0.4: a Google/email sign-in that carries no active plan
+    // lands back on this card — say so at the top, with the key
+    // door right below it.
+    final signedInNoPlan = entry.isAccount && entry.email.isNotEmpty;
     return Scaffold(
-      backgroundColor: AppTheme.bgBody,
+      backgroundColor: _entryBg,
       body: Center(
         child: Container(
           width: 470,
-          padding: const EdgeInsets.fromLTRB(26, 20, 26, 18),
+          padding: const EdgeInsets.fromLTRB(26, 20, 26, 16),
           decoration: BoxDecoration(
-            color: AppTheme.surface,
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: AppTheme.border),
+            color: _entryCard,
+            borderRadius: BorderRadius.circular(18),
+            border: Border.all(color: _entryBorder),
           ),
           child: Column(
             mainAxisSize: MainAxisSize.min,
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text(
+              Center(
+                child: Image.asset(
+                  'assets/icon.png',
+                  width: 48,
+                  height: 48,
+                  errorBuilder: (_, _, _) => const Icon(
+                    Icons.auto_awesome,
+                    size: 48,
+                    color: _entryGold,
+                  ),
+                ),
+              ),
+              const SizedBox(height: 8),
+              const Text(
                 'FlowStudio',
                 textAlign: TextAlign.center,
                 style: TextStyle(
-                  fontSize: 24,
+                  fontSize: 23,
                   fontWeight: FontWeight.bold,
-                  color: AppTheme.textMain,
+                  color: _entryText,
                 ),
               ),
-              const SizedBox(height: 4),
-              Text(
-                'Sign in or activate to continue',
+              const SizedBox(height: 3),
+              const Text(
+                'Multi-Account AI Video Engine',
                 textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 11.5, color: AppTheme.textDim),
+                style: TextStyle(fontSize: 11.5, color: _entryDim),
               ),
-              const SizedBox(height: 16),
-              _doorLabel('ACCOUNT'),
-              const SizedBox(height: 8),
-              TactileButton(
-                type: TactileType.secondary,
-                height: 34,
-                borderRadius: 6,
-                bevelDepth: 2.0,
+              if (signedInNoPlan) ...[
+                const SizedBox(height: 12),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: _entryPanel,
+                    borderRadius: BorderRadius.circular(9),
+                    border: Border.all(color: _entryBorder),
+                  ),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          'Signed in as ${entry.email} — this account has '
+                          'no active plan. Paste a license key below to '
+                          'continue.',
+                          style: const TextStyle(
+                              fontSize: 11, color: _entryDim),
+                        ),
+                      ),
+                      _linkButton(
+                        'Sign out',
+                        entry.busy
+                            ? null
+                            : () =>
+                                context.read<EntryProvider>().signOut(),
+                      ),
+                    ],
+                  ),
+                ),
+              ],
+              const SizedBox(height: 14),
+              _machineIdBox(entry),
+              const SizedBox(height: 14),
+              _sectionLabel('LICENSE KEY'),
+              const SizedBox(height: 5),
+              // The activation notice comes FIRST, above the field,
+              // before any activation is attempted.
+              const Text(
+                'Internet is required to activate your license key.',
+                style: TextStyle(fontSize: 11, color: _entryDim),
+              ),
+              const SizedBox(height: 7),
+              _field(
+                controller: _keyController,
+                hint: 'Paste your license key',
+                enabled: entry.loaded && !entry.busy,
+                maxLines: 2,
+              ),
+              const SizedBox(height: 9),
+              _btn(
+                gold: true,
+                height: 42,
+                label: entry.busy ? 'Working…' : 'Activate',
+                enabled: entry.loaded && !entry.busy,
+                onTap: () {
+                  context
+                      .read<EntryProvider>()
+                      .activateKey(_keyController.text);
+                },
+              ),
+              const SizedBox(height: 13),
+              const Row(
+                children: [
+                  Expanded(child: Divider(height: 1, color: _entryBorder)),
+                  Padding(
+                    padding: EdgeInsets.symmetric(horizontal: 10),
+                    child: Text(
+                      'or',
+                      style: TextStyle(fontSize: 11, color: _entryFaint),
+                    ),
+                  ),
+                  Expanded(child: Divider(height: 1, color: _entryBorder)),
+                ],
+              ),
+              const SizedBox(height: 13),
+              _btn(
+                height: 38,
                 enabled: doorAEnabled,
                 label: 'Continue with Google',
                 onTap: () async {
@@ -294,7 +546,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
                   }
                 },
               ),
-              const SizedBox(height: 8),
+              const SizedBox(height: 9),
               _field(
                 controller: _emailController,
                 hint: 'Email address',
@@ -307,12 +559,10 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
                 enabled: doorAEnabled,
                 obscureText: true,
               ),
-              const SizedBox(height: 10),
-              TactileButton(
-                type: TactileType.gold,
-                height: 34,
-                borderRadius: 6,
-                bevelDepth: 2.0,
+              const SizedBox(height: 9),
+              _btn(
+                gold: true,
+                height: 38,
                 enabled: doorAEnabled,
                 label: entry.busy
                     ? 'Working…'
@@ -352,72 +602,41 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
                 ],
               ),
               if (entry.notice.isNotEmpty) ...[
-                const SizedBox(height: 4),
+                const SizedBox(height: 3),
                 Text(
                   entry.notice,
-                  style: TextStyle(fontSize: 10.5, color: AppTheme.textDim),
+                  style: const TextStyle(fontSize: 10.5, color: _entryDim),
                 ),
               ],
               if (!entry.doorAConfigured) ...[
-                const SizedBox(height: 8),
+                const SizedBox(height: 6),
                 Text(
                   entry.doorAMessage,
-                  style: TextStyle(fontSize: 10.5, color: AppTheme.textFaint),
+                  style: const TextStyle(fontSize: 10.5, color: _entryFaint),
                 ),
               ],
-              const SizedBox(height: 12),
-              Divider(height: 1, color: AppTheme.borderSoft),
-              const SizedBox(height: 12),
-              _doorLabel('LICENSE KEY'),
-              const SizedBox(height: 6),
-              // The activation notice comes FIRST, above the field,
-              // before any activation is attempted.
-              Text(
-                'Internet is required to activate your license key.',
-                style: TextStyle(fontSize: 11, color: AppTheme.textDim),
-              ),
-              const SizedBox(height: 8),
-              _field(
-                controller: _keyController,
-                hint: 'Paste your license key',
-                enabled: entry.loaded && !entry.busy,
-                maxLines: 3,
-              ),
-              const SizedBox(height: 10),
-              TactileButton(
-                type: TactileType.gold,
-                height: 34,
-                borderRadius: 6,
-                bevelDepth: 2.0,
-                enabled: entry.loaded && !entry.busy,
-                label: entry.busy ? 'Working…' : 'Activate',
-                onTap: () {
-                  context
-                      .read<EntryProvider>()
-                      .activateKey(_keyController.text);
-                },
-              ),
-              const SizedBox(height: 6),
-              Text(
-                'A license key works on one device only.',
-                style: TextStyle(fontSize: 10, color: AppTheme.textFaint),
-              ),
               if (entry.error.isNotEmpty) ...[
-                const SizedBox(height: 10),
+                const SizedBox(height: 8),
                 Container(
                   padding:
                       const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                   decoration: BoxDecoration(
-                    color: AppTheme.redBg,
-                    borderRadius: BorderRadius.circular(6),
-                    border: Border.all(color: AppTheme.red),
+                    color: _entryRedBg,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: _entryRed),
                   ),
                   child: Text(
                     entry.error,
-                    style: TextStyle(fontSize: 11, color: AppTheme.red),
+                    style: const TextStyle(fontSize: 11, color: _entryRed),
                   ),
                 ),
               ],
+              const SizedBox(height: 10),
+              const Text(
+                'No license key? Google sign-in starts a free 7-day trial.',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 10.5, color: _entryFaint),
+              ),
             ],
           ),
         ),

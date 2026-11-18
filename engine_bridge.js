@@ -237,6 +237,50 @@ async function refreshPendingAccountSession() {
   return true;
 }
 
+// PUBLIC v1.0.7 (C1) — WINDOW PHASE ENFORCEMENT. In v1.0.6 the
+// phase reached the window exactly once per Dart-side state
+// transition, fire-and-forget, and a failure (the shim could not
+// find the window for the bridge's parent pid — e.g. an engine
+// adopted from a previous app run — or a PowerShell hiccup) was
+// silent and never retried: the studio stayed squeezed inside
+// the small gate window for the whole session (the owner's field
+// report). Now the bridge OWNS the phase: every entry-status
+// answer re-asserts the phase its decision implies ('studio'
+// when entry is allowed, 'gate' when it is not) until the
+// window's read-back VERIFIES it. The Dart side's window-phase
+// route feeds the same enforcer for a snappy first attempt. A
+// phase that fails to verify is logged as such and retried on
+// the next status answer — never spun on in a loop here.
+let appWindowPhaseDesired = '';
+let appWindowPhaseVerified = '';
+let appWindowPhaseRunner = null;
+
+function enforceAppWindowPhase(desiredPhase) {
+  if (!windowStyle.appWindowPhasePlan(desiredPhase)) return;
+  appWindowPhaseDesired = desiredPhase;
+  if (appWindowPhaseVerified === desiredPhase) return;
+  if (appWindowPhaseRunner) return;
+  appWindowPhaseRunner = (async () => {
+    try {
+      while (appWindowPhaseVerified !== appWindowPhaseDesired) {
+        const target = appWindowPhaseDesired;
+        const result = await windowStyle.setAppWindowPhase(process.ppid, target);
+        if (result && result.verified) {
+          appWindowPhaseVerified = target;
+          console.log(`[FlowStudio Engine] App window phase: ${target} — applied and verified (${result.width}x${result.height}).`);
+        } else {
+          console.log(`[FlowStudio Engine] App window phase: ${target} — NOT verified (${result && result.applied ? 'window size/style mismatch' : 'app window not found'}); will retry on the next entry status.`);
+          break;
+        }
+      }
+    } catch (e) {
+      // Window dressing must never break the bridge.
+    } finally {
+      appWindowPhaseRunner = null;
+    }
+  })();
+}
+
 // Once per engine start: a stored entry credential re-reports
 // itself (the backend merge-writes — repeats just move the
 // last-seen stamp and the videos total).
@@ -339,7 +383,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '1.0.6';
+const APP_VERSION = '1.0.7';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -882,6 +926,12 @@ async function startBridge() {
           credential,
           { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
         );
+        // v1.0.7 (C1): the window phase follows THIS decision —
+        // enforced (and re-tried until verified) by the bridge
+        // itself, so a restored credential at launch lands in the
+        // full-size studio even if the Dart side's one transition
+        // call was missed or failed.
+        enforceAppWindowPhase(decision.allowed ? 'studio' : 'gate');
         return sendJson(200, { ok: true, entry: decision, doorA: authClient.doorAState(), machineId: machineFingerprint.machineIdDisplay(cachedMachineFingerprint()), account: pendingAccountView() });
       }
 
@@ -968,20 +1018,21 @@ async function startBridge() {
       // 'gate' when the gate comes back (sign-out / key removal);
       // windowStyle then moves + resizes the app's own window (the
       // bridge's parent process) and toggles its fixed size.
-      // Fire-and-forget by design — the answer never waits on the
-      // PowerShell round trip.
+      // PUBLIC v1.0.7 (C1): the route now feeds the bridge's phase
+      // ENFORCER (see enforceAppWindowPhase) — the switch is
+      // applied with read-back verification and retries, and the
+      // entry-status answers keep re-asserting the phase until it
+      // verifies, so a single missed call can no longer strand
+      // the studio inside the small window. The answer reports
+      // whether the phase is already verified.
       if (pathname === '/api/entry/window-phase' && req.method === 'POST') {
         const body = await readBody();
         const phase = typeof body.phase === 'string' ? body.phase : '';
         if (!windowStyle.appWindowPhasePlan(phase)) {
           return sendJson(200, { ok: false, error: 'Unknown window phase.' });
         }
-        windowStyle.setAppWindowPhase(process.ppid, phase)
-          .then((applied) => {
-            if (applied) console.log(`[FlowStudio Engine] App window phase: ${phase}.`);
-          })
-          .catch(() => {});
-        return sendJson(200, { ok: true, phase });
+        enforceAppWindowPhase(phase);
+        return sendJson(200, { ok: true, phase, verified: appWindowPhaseVerified === phase });
       }
 
       if (pathname === '/api/entry/sign-in' && req.method === 'POST') {

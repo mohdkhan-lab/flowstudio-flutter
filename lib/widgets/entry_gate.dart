@@ -1,4 +1,3 @@
-import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -10,19 +9,21 @@ import '../services/automation_bridge.dart';
 ///
 ///   DOOR A — ACCOUNT: "Continue with Google", or an email address
 ///   plus a password (Sign in / Create account, with a Forgot
-///   password action). Phase 2 (v1.0.2): the account backend is
-///   live (Firebase) and sign-in is real. v1.0.5: THE ACCOUNT IS
-///   NOT AN ENTRY any more — the "Get my free key" section below
-///   the divider signs the user in ONLY to fetch their license
-///   key from the key service. v1.0.6: the key is never shown in
-///   the app — the service EMAILS the account's short key
-///   (FS-XXXX-XXXX-XXXX), the card shows a "Check your email"
-///   state, and the user pastes the key from the email into
-///   Door B. An email user whose address is not verified yet gets
-///   the verification card instead: a verification LINK
-///   (Firebase's email) and, as the second route, a 6-digit email
-///   CODE (the key service's — which honestly reports itself
-///   unavailable until its sender is set up). If the backend were
+///   password action). The account is NOT an entry — signing in
+///   exists only so the key service can EMAIL the account's
+///   license key (v1.0.6: the key is never shown in the app; the
+///   service emails the short FS-XXXX-XXXX-XXXX key and the user
+///   pastes it from the email into Door B). v1.0.7 (A2): the key
+///   email is AUTOMATIC — one attempt the moment a sign-in
+///   completes, its state shown on the signed-in strip (sending /
+///   sent / could-not-send, with a manual retry). v1.0.7 (A3):
+///   email sign-up is verify-first and says so in plain words —
+///   account created → verification link by email → sign in →
+///   key by email; an unverified sign-in lands on the same
+///   verification state with its own wording. An email user
+///   whose address is not verified yet gets the verification
+///   state: the verification LINK (Firebase's email) and, as the
+///   second route, a 6-digit email CODE. If the backend were
 ///   ever unconfigured, the door would show the honest
 ///   not-available message and stay disabled — no mock sign-in.
 ///
@@ -35,28 +36,31 @@ import '../services/automation_bridge.dart';
 ///   activation attempt, so nobody is surprised by it (the
 ///   owner's explicit order).
 ///
-/// v1.0.4: the gate and the startup screen were redesigned as ONE
-/// dark, professional entry (the owner's reference: a competitor
-/// activation card) — a Machine ID box with Copy at the top, the
-/// license-key door FIRST, then the account doors below an "or"
-/// divider. A user who signs in with Google but has no active
-/// plan lands back on this same card, signed-in line showing,
-/// with the key section right there to paste into. The palette
-/// below is deliberately local to this screen: the entry is dark
-/// even though the studio behind it is not.
+/// v1.0.7 (C2 + A1): the gate window is a wide, low 640×520
+/// panel and the card is a TWO-ZONE layout that fits it whole —
+/// NO scrolling at 100% Windows scaling in any state. Left zone:
+/// logo, app name, tagline, the free-trial note. Right zone: the
+/// signed-in strip (when a sign-in is pending), the key door,
+/// then exactly one of the check-email block / the verification
+/// state / the get-my-key sign-in form. FIT BUDGET (line height
+/// counted conservatively at 1.25× font size): card padding
+/// 18+14; right zone's tallest state (sign-up form) = key
+/// section 113 + divider 29 + form 232 = 374; card total ≈ 406
+/// of the 520 window height — and the other states are shorter
+/// (strip ≈ 247, check-email ≈ 285, verification ≈ 395). A
+/// scroll view remains ONLY as a fallback for viewport heights
+/// below the design viewport (see _gateScrollFallbackHeight).
 ///
-/// v1.0.6: the look is the owner's approved "Midnight Gold"
-/// design (live sample, picked 2026-11-18): deep charcoal-black,
-/// gold accent, white Google button, radius 16 card. The window
-/// itself is the small fixed 420×620 panel during this phase
-/// (see the engine's window phases) — the card is sized for it,
-/// with a scroll fallback so no state can overflow.
+/// v1.0.7 (C3): there is NO Machine ID box on the gate any more
+/// (owner's order). The machine fingerprint still exists inside
+/// the engine — the one-device binding is unchanged — it is
+/// simply never displayed here.
 ///
-/// STARTUP: while the engine starts and the first entry answer is
-/// on its way, a splash screen shows instead of the gate card
-/// (see _buildStartupScreen). v1.0.6 (F5): its progress is the
-/// provider's determinate engineStage (start → process up → port
-/// answering → entry answer), never a fake bar.
+/// STARTUP: while the engine starts and the first entry answer
+/// is on its way, a splash screen shows instead of the gate card
+/// (see _buildStartupScreen); its progress is the provider's
+/// determinate engineStage (start → process up → port answering
+/// → entry answer), never a fake bar.
 
 // The entry's own dark palette — "Midnight Gold" (v1.0.6) —
 // splash + gate card.
@@ -75,6 +79,13 @@ const Color _entryWhiteText = Color(0xFF1C1C22);
 const Color _entryRed = Color(0xFFFF8585);
 const Color _entryRedBg = Color(0xFF2A1215);
 
+/// v1.0.7 (A1): the design viewport is the 640×520 gate window's
+/// client area (≈485 tall at 100% scaling, window chrome
+/// included in the 520). The gate renders statically at that
+/// size; only a viewport shorter than this falls back to
+/// scrolling, so content can never be trapped off-screen.
+const double _gateScrollFallbackHeight = 460;
+
 class EntryGateScreen extends StatefulWidget {
   const EntryGateScreen({super.key});
 
@@ -91,32 +102,17 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
   // Door A mode: false = Sign in, true = Create account.
   bool _signUpMode = false;
 
-  // Machine ID copy feedback (the chip reads "Copied" briefly).
-  bool _idCopied = false;
-  Timer? _copiedTimer;
-
-  // v1.0.5: the verification card's code (the six boxes render
+  // v1.0.5: the verification state's code (the six boxes render
   // this string; the hidden field behind them owns the keyboard).
   String _otpCode = '';
 
   @override
   void dispose() {
-    _copiedTimer?.cancel();
     _emailController.dispose();
     _passwordController.dispose();
     _keyController.dispose();
     _otpController.dispose();
     super.dispose();
-  }
-
-  void _copyMachineId(String machineId) {
-    if (machineId.isEmpty) return;
-    Clipboard.setData(ClipboardData(text: machineId));
-    setState(() => _idCopied = true);
-    _copiedTimer?.cancel();
-    _copiedTimer = Timer(const Duration(seconds: 2), () {
-      if (mounted) setState(() => _idCopied = false);
-    });
   }
 
   /// v1.0.6: keep a SHORT key tidy while it is typed or pasted —
@@ -177,7 +173,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
           hintStyle: const TextStyle(fontSize: 12, color: _entryFaint),
           border: InputBorder.none,
           isDense: true,
-          contentPadding: const EdgeInsets.symmetric(vertical: 10),
+          contentPadding: const EdgeInsets.symmetric(vertical: 9),
         ),
       ),
     );
@@ -260,7 +256,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
       onPressed: onTap,
       style: TextButton.styleFrom(
         padding: const EdgeInsets.symmetric(horizontal: 4),
-        minimumSize: const Size(0, 26),
+        minimumSize: const Size(0, 24),
         tapTargetSize: MaterialTapTargetSize.shrinkWrap,
       ),
       child: Text(
@@ -274,79 +270,145 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     );
   }
 
-  /// v1.0.4 — the Machine ID box at the top of the card: the
-  /// label and a Copy chip on one row, this PC's identity in a
-  /// clean FS-XXXX-XXXX-XXXX format (the engine derives it
-  /// deterministically from the one-device fingerprint), and the
-  /// binding line underneath.
-  Widget _machineIdBox(EntryProvider entry) {
-    final machineId = entry.machineId;
+  /// v1.0.7 (C2): the LEFT zone — the brand block of the
+  /// two-zone card: logo, app name, tagline, the free-trial chip
+  /// and the note that replaces the old footer line.
+  Widget _brandZone() {
+    return SizedBox(
+      width: 176,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Image.asset(
+            'assets/icon.png',
+            width: 46,
+            height: 46,
+            errorBuilder: (_, _, _) => const Icon(
+              Icons.auto_awesome,
+              size: 46,
+              color: _entryGold,
+            ),
+          ),
+          const SizedBox(height: 9),
+          const Text(
+            'FlowStudio',
+            style: TextStyle(
+              fontSize: 20,
+              fontWeight: FontWeight.bold,
+              color: _entryText,
+            ),
+          ),
+          const SizedBox(height: 3),
+          const Text(
+            'Multi-Account AI Video Engine',
+            style: TextStyle(fontSize: 11, color: _entryDim),
+          ),
+          const SizedBox(height: 16),
+          Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+            decoration: BoxDecoration(
+              borderRadius: BorderRadius.circular(999),
+              border: Border.all(color: _entryGold),
+            ),
+            child: const Text(
+              '7-DAY FREE TRIAL',
+              style: TextStyle(
+                fontSize: 9.5,
+                fontWeight: FontWeight.bold,
+                letterSpacing: 0.8,
+                color: _entryGold,
+              ),
+            ),
+          ),
+          const SizedBox(height: 9),
+          const Text(
+            'No license key? Sign in with Google or email — your '
+            'free trial key arrives by email.',
+            style: TextStyle(fontSize: 10.5, color: _entryFaint),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// DOOR B — the license-key section, shared by every state:
+  /// label, the internet notice (before the field, always), the
+  /// key field and the Activate button.
+  Widget _keySection(EntryProvider entry) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _sectionLabel('LICENSE KEY'),
+        const SizedBox(height: 4),
+        const Text(
+          'Internet is required to activate your license key.',
+          style: TextStyle(fontSize: 11, color: _entryDim),
+        ),
+        const SizedBox(height: 5),
+        _field(
+          controller: _keyController,
+          hint: 'Paste your license key — FS-XXXX-XXXX-XXXX',
+          enabled: entry.loaded && !entry.busy,
+          maxLines: 2,
+          onChanged: _onKeyChanged,
+        ),
+        const SizedBox(height: 6),
+        _btn(
+          gold: true,
+          height: 38,
+          label: entry.busy ? 'Working…' : 'Activate',
+          enabled: entry.loaded && !entry.busy,
+          onTap: () {
+            context.read<EntryProvider>().activateKey(_keyController.text);
+          },
+        ),
+      ],
+    );
+  }
+
+  /// v1.0.7 (A2) — the SIGNED-IN STRIP as a STATUS LINE. The key
+  /// email fires automatically when a sign-in completes; the
+  /// strip reports it: sending → "Sending your license key to
+  /// <email>…"; sender failure → "We could not email your key
+  /// yet." with the "Email my key" button as the manual retry;
+  /// success leaves this strip for the check-email block below.
+  /// The neutral line covers the moment before the automatic
+  /// attempt starts.
+  Widget _signedInStrip(EntryProvider entry) {
+    final status = entry.keyEmailSending
+        ? 'Sending your license key to ${entry.accountEmail}…'
+        : entry.keyEmailFailed
+            ? 'We could not email your key yet.'
+            : 'Signed in as ${entry.accountEmail} — your license '
+                'key comes by email.';
     return Container(
-      padding: const EdgeInsets.fromLTRB(14, 10, 10, 11),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
       decoration: BoxDecoration(
         color: _entryPanel,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(color: _entryBorder),
       ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
+      child: Row(
         children: [
-          Row(
-            children: [
-              const Expanded(
-                child: Text(
-                  'YOUR MACHINE ID',
-                  style: TextStyle(
-                    fontSize: 10,
-                    fontWeight: FontWeight.bold,
-                    letterSpacing: 1.0,
-                    color: _entryGold,
-                  ),
-                ),
-              ),
-              Material(
-                color: _entryBtn,
-                borderRadius: BorderRadius.circular(6),
-                child: InkWell(
-                  onTap: machineId.isEmpty
-                      ? null
-                      : () => _copyMachineId(machineId),
-                  borderRadius: BorderRadius.circular(6),
-                  child: Container(
-                    padding:
-                        const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
-                    decoration: BoxDecoration(
-                      border: Border.all(color: _entryBorder),
-                      borderRadius: BorderRadius.circular(6),
-                    ),
-                    child: Text(
-                      _idCopied ? 'Copied' : 'Copy',
-                      style: const TextStyle(
-                        fontSize: 10.5,
-                        fontWeight: FontWeight.bold,
-                        color: _entryText,
-                      ),
-                    ),
-                  ),
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 7),
-          Text(
-            machineId.isEmpty ? '—' : machineId,
-            style: const TextStyle(
-              fontSize: 15,
-              fontWeight: FontWeight.bold,
-              letterSpacing: 1.4,
-              color: _entryText,
-              fontFamily: 'Consolas',
+          Expanded(
+            child: Text(
+              status,
+              style: const TextStyle(fontSize: 11, color: _entryDim),
             ),
           ),
-          const SizedBox(height: 4),
-          const Text(
-            'Your license key will be locked to this computer.',
-            style: TextStyle(fontSize: 10.5, color: _entryFaint),
+          if (!entry.keyEmailSending)
+            _linkButton(
+              'Email my key',
+              entry.busy
+                  ? null
+                  : () => context.read<EntryProvider>().fetchMyKey(),
+            ),
+          _linkButton(
+            'Sign out',
+            entry.busy
+                ? null
+                : () => context.read<EntryProvider>().signOut(),
           ),
         ],
       ),
@@ -357,16 +419,17 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
   /// emailed this sign-in's short key. The key is NEVER shown in
   /// the app (the owner's order) — the user pastes it into the
   /// key box above. "Resend key email" re-sends the SAME key;
-  /// Sign out drops the pending sign-in.
+  /// Sign out drops the pending sign-in. v1.0.7 (A2): the
+  /// wording is the automatic-email success line.
   Widget _checkEmailBlock(EntryProvider entry) {
     final enabled = entry.loaded && !entry.busy;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _sectionLabel('YOUR LICENSE KEY'),
-        const SizedBox(height: 7),
+        const SizedBox(height: 6),
         Container(
-          padding: const EdgeInsets.fromLTRB(14, 11, 14, 11),
+          padding: const EdgeInsets.fromLTRB(14, 10, 14, 10),
           decoration: BoxDecoration(
             color: _entryPanel,
             borderRadius: BorderRadius.circular(12),
@@ -376,11 +439,11 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
               Text(
-                'Your license key has been sent to ${entry.accountEmail}. '
-                'Paste it above to activate.',
+                'Your license key has been sent to ${entry.accountEmail} '
+                '— check your inbox, then paste it above to activate.',
                 style: const TextStyle(fontSize: 12, color: _entryText),
               ),
-              const SizedBox(height: 5),
+              const SizedBox(height: 4),
               Text(
                 entry.keyEmailedReused
                     ? 'It is the same key as before — one key for this account.'
@@ -390,7 +453,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
             ],
           ),
         ),
-        const SizedBox(height: 4),
+        const SizedBox(height: 3),
         Row(
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
@@ -414,6 +477,8 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
 
   /// v1.0.5 — the six code boxes: a hidden text field owns the
   /// keyboard; the boxes only render the digits typed so far.
+  /// v1.0.7: the boxes are sized for the two-zone card's right
+  /// zone.
   Widget _otpCodeInput(EntryProvider entry) {
     return Stack(
       children: [
@@ -423,8 +488,8 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
             final filled = i < _otpCode.length;
             final active = i == _otpCode.length;
             return Container(
-              width: 52,
-              height: 48,
+              width: 46,
+              height: 44,
               alignment: Alignment.center,
               decoration: BoxDecoration(
                 color: _entryPanel,
@@ -437,7 +502,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
               child: Text(
                 filled ? _otpCode[i] : '',
                 style: const TextStyle(
-                  fontSize: 19,
+                  fontSize: 18,
                   fontWeight: FontWeight.bold,
                   color: _entryText,
                   fontFamily: 'Consolas',
@@ -467,75 +532,209 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     );
   }
 
-  /// v1.0.5 — the VERIFICATION CARD: an email user whose address
-  /// is not verified yet cannot be handed a key. Both routes are
-  /// here: the Firebase verification LINK, and a 6-digit CODE by
-  /// email instead. Either one, once done, unlocks the key fetch.
+  /// v1.0.7 (A3) — the VERIFICATION STATE, verify-first and
+  /// written plainly. A fresh sign-up opens with "Account
+  /// created" + the three steps; a sign-in that lands
+  /// unverified opens with the "not verified yet" line. Both
+  /// carry the Resend verification link button. The CODE route
+  /// stays as the second way: once a code is asked for, the
+  /// state focuses on the code (boxes + Verify + a way back to
+  /// the link).
   Widget _verificationCard(EntryProvider entry) {
     final enabled = entry.loaded && !entry.busy;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _sectionLabel('VERIFY YOUR EMAIL'),
-        const SizedBox(height: 6),
-        Text(
-          'Your key is ready once ${entry.accountEmail} is verified. '
-          'Choose either way:',
-          style: const TextStyle(fontSize: 11.5, color: _entryDim),
-        ),
-        const SizedBox(height: 9),
-        _btn(
-          height: 36,
-          enabled: enabled,
-          label: 'Send verification link',
-          onTap: () {
-            context.read<EntryProvider>().sendVerificationLink();
-          },
-        ),
-        const SizedBox(height: 3),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            const Text(
-              'Opened the link already?',
-              style: TextStyle(fontSize: 11, color: _entryFaint),
-            ),
-            _linkButton(
-              'Fetch my key',
-              enabled
-                  ? () => context.read<EntryProvider>().fetchMyKey()
-                  : null,
-            ),
-          ],
-        ),
         const SizedBox(height: 5),
-        const Text(
-          'Or get a code by email instead:',
-          style: TextStyle(fontSize: 11.5, color: _entryDim),
-        ),
-        const SizedBox(height: 8),
-        if (!entry.otpSent)
+        if (!entry.otpSent) ...[
+          if (entry.accountJustCreated) ...[
+            Text(
+              'Account created. We sent a verification link to '
+              '${entry.accountEmail}.',
+              style: const TextStyle(fontSize: 11.5, color: _entryDim),
+            ),
+            const SizedBox(height: 6),
+            const Text(
+              '1 — Open the link in your email to verify.\n'
+              '2 — Come back and sign in.\n'
+              '3 — Your license key will be emailed to you.',
+              style: TextStyle(fontSize: 11, color: _entryDim),
+            ),
+          ] else
+            Text(
+              'Your email is not verified yet. Please click the verification link we sent to ${entry.accountEmail} first.',
+              style: const TextStyle(fontSize: 11.5, color: _entryDim),
+            ),
+          const SizedBox(height: 8),
           _btn(
-            height: 36,
+            height: 34,
+            enabled: enabled,
+            label: 'Resend verification link',
+            onTap: () {
+              context.read<EntryProvider>().sendVerificationLink();
+            },
+          ),
+          const SizedBox(height: 3),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'Opened the link already?',
+                style: TextStyle(fontSize: 11, color: _entryFaint),
+              ),
+              _linkButton(
+                'Fetch my key',
+                enabled
+                    ? () => context.read<EntryProvider>().fetchMyKey()
+                    : null,
+              ),
+            ],
+          ),
+          const SizedBox(height: 5),
+          const Text(
+            'Or get a code by email instead:',
+            style: TextStyle(fontSize: 11.5, color: _entryDim),
+          ),
+          const SizedBox(height: 6),
+          _btn(
+            height: 34,
             enabled: enabled,
             label: 'Send code',
             onTap: () {
               context.read<EntryProvider>().sendOtp();
             },
           ),
-        if (entry.otpSent) ...[
+        ] else ...[
+          Text(
+            'Enter the 6-digit code we sent to ${entry.accountEmail}.',
+            style: const TextStyle(fontSize: 11.5, color: _entryDim),
+          ),
+          const SizedBox(height: 7),
           _otpCodeInput(entry),
-          const SizedBox(height: 9),
+          const SizedBox(height: 7),
           _btn(
             gold: true,
-            height: 38,
+            height: 36,
             enabled: enabled && _otpCode.length == 6,
             label: entry.busy ? 'Working…' : 'Verify code',
             onTap: () {
               context.read<EntryProvider>().verifyOtp(_otpCode);
             },
           ),
+          const SizedBox(height: 4),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              const Text(
+                'No code?',
+                style: TextStyle(fontSize: 11, color: _entryFaint),
+              ),
+              _linkButton(
+                'Use the verification link instead',
+                enabled
+                    ? () => context
+                        .read<EntryProvider>()
+                        .backToVerificationLink()
+                    : null,
+              ),
+            ],
+          ),
         ],
+      ],
+    );
+  }
+
+  /// DOOR A — the GET MY FREE KEY sign-in form (Google + email).
+  /// v1.0.7 (A3): in Create-account mode the form carries the
+  /// three-step explainer above its button, so the verify-first
+  /// flow is written down before the user even starts it.
+  Widget _signInForm(EntryProvider entry, bool doorAEnabled) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _sectionLabel('GET MY FREE KEY'),
+        const SizedBox(height: 6),
+        _btn(
+          white: true,
+          height: 36,
+          enabled: doorAEnabled,
+          label: 'Continue with Google',
+          onTap: () async {
+            final url = await AutomationBridge.instance.getGoogleAuthUrl();
+            if (url != null && url.isNotEmpty) {
+              await AutomationBridge.instance.openUrl(url);
+              // The sign-in finishes in the browser; watch the
+              // entry status so the pending sign-in — and then
+              // its automatic key email — lands here on its own.
+              if (context.mounted) {
+                context.read<EntryProvider>().startAccountWatch();
+              }
+            }
+          },
+        ),
+        const SizedBox(height: 6),
+        _field(
+          controller: _emailController,
+          hint: 'Email address',
+          enabled: doorAEnabled,
+        ),
+        const SizedBox(height: 6),
+        _field(
+          controller: _passwordController,
+          hint: 'Password',
+          enabled: doorAEnabled,
+          obscureText: true,
+        ),
+        if (_signUpMode) ...[
+          const SizedBox(height: 5),
+          const Text(
+            'Create account → Verify your email → Sign in and get your key by email.',
+            style: TextStyle(fontSize: 10, color: _entryFaint),
+          ),
+        ],
+        const SizedBox(height: 6),
+        _btn(
+          gold: true,
+          height: 36,
+          enabled: doorAEnabled,
+          label: entry.busy
+              ? 'Working…'
+              : (_signUpMode ? 'Create account' : 'Sign in'),
+          onTap: () {
+            final provider = context.read<EntryProvider>();
+            if (_signUpMode) {
+              provider.signUp(
+                  _emailController.text, _passwordController.text);
+            } else {
+              provider.signIn(
+                  _emailController.text, _passwordController.text);
+            }
+          },
+        ),
+        const SizedBox(height: 2),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            _linkButton(
+              _signUpMode
+                  ? 'Already have an account? Sign in'
+                  : 'New here? Create account',
+              doorAEnabled
+                  ? () => setState(() => _signUpMode = !_signUpMode)
+                  : null,
+            ),
+            if (!_signUpMode)
+              _linkButton(
+                'Forgot password?',
+                doorAEnabled
+                    ? () => context
+                        .read<EntryProvider>()
+                        .forgotPassword(_emailController.text)
+                    : null,
+              ),
+          ],
+        ),
       ],
     );
   }
@@ -651,7 +850,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
             right: 0,
             bottom: 18,
             child: Text(
-              'v1.0.6',
+              'v1.0.7',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 10.5, color: _entryFaint),
             ),
@@ -680,273 +879,130 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
         entry.loaded && entry.doorAConfigured && !entry.busy;
     // v1.0.5: a landed sign-in (Google watch, email sign-in, or
     // a legacy account adopted by the bridge) shows as the
-    // signed-in strip at the top — the sign-in's only job is the
-    // key step, and the strip carries that step. It hides while
-    // the check-email block or the verification card is on show
-    // (both name the email themselves). v1.0.6: the strip's
-    // action asks the service to EMAIL the key.
+    // signed-in strip — the sign-in's only job is the key step,
+    // and the strip carries that step's status (v1.0.7 A2). It
+    // hides while the check-email block or the verification
+    // state is on show (both name the email themselves).
     final signedIn = entry.accountEmail.isNotEmpty;
     final showStrip =
         signedIn && !entry.keyEmailed && !entry.needsVerification;
-    return Scaffold(
-      backgroundColor: _entryBg,
-      body: Center(
-        // v1.0.6: the window is the small 420×620 panel in this
-        // phase — the scroll view is only a safety net so no card
-        // state can ever overflow it; at the designed sizes the
-        // card fits whole and nothing scrolls.
-        child: SingleChildScrollView(
-          child: Container(
-          width: 392,
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 12),
-          decoration: BoxDecoration(
-            color: _entryCard,
-            borderRadius: BorderRadius.circular(16),
-            border: Border.all(color: _entryBorder),
-          ),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Center(
-                child: Image.asset(
-                  'assets/icon.png',
-                  width: 40,
-                  height: 40,
-                  errorBuilder: (_, _, _) => const Icon(
-                    Icons.auto_awesome,
-                    size: 40,
-                    color: _entryGold,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 7),
-              const Text(
-                'FlowStudio',
-                textAlign: TextAlign.center,
-                style: TextStyle(
-                  fontSize: 21,
-                  fontWeight: FontWeight.bold,
-                  color: _entryText,
-                ),
-              ),
-              const SizedBox(height: 3),
-              const Text(
-                'Multi-Account AI Video Engine',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 11.5, color: _entryDim),
-              ),
-              if (showStrip) ...[
-                const SizedBox(height: 10),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: _entryPanel,
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: _entryBorder),
-                  ),
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: Text(
-                          'Signed in as ${entry.accountEmail} — your '
-                          'license key comes by email.',
-                          style: const TextStyle(
-                              fontSize: 11, color: _entryDim),
-                        ),
-                      ),
-                      _linkButton(
-                        'Email my key',
-                        entry.busy
-                            ? null
-                            : () =>
-                                context.read<EntryProvider>().fetchMyKey(),
-                      ),
-                      _linkButton(
-                        'Sign out',
-                        entry.busy
-                            ? null
-                            : () =>
-                                context.read<EntryProvider>().signOut(),
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-              const SizedBox(height: 11),
-              _machineIdBox(entry),
-              const SizedBox(height: 11),
-              _sectionLabel('LICENSE KEY'),
-              const SizedBox(height: 5),
-              // The activation notice comes FIRST, above the field,
-              // before any activation is attempted.
-              const Text(
-                'Internet is required to activate your license key.',
-                style: TextStyle(fontSize: 11, color: _entryDim),
-              ),
-              const SizedBox(height: 7),
-              _field(
-                controller: _keyController,
-                hint: 'Paste your license key — FS-XXXX-XXXX-XXXX',
-                enabled: entry.loaded && !entry.busy,
-                maxLines: 2,
-                onChanged: _onKeyChanged,
-              ),
-              const SizedBox(height: 9),
-              _btn(
-                gold: true,
-                height: 42,
-                label: entry.busy ? 'Working…' : 'Activate',
-                enabled: entry.loaded && !entry.busy,
-                onTap: () {
-                  context
-                      .read<EntryProvider>()
-                      .activateKey(_keyController.text);
-                },
-              ),
-              const SizedBox(height: 11),
-              const Row(
+    final card = Container(
+      width: 608,
+      padding: const EdgeInsets.fromLTRB(22, 18, 22, 14),
+      decoration: BoxDecoration(
+        color: _entryCard,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: _entryBorder),
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _brandZone(),
+            const SizedBox(width: 18),
+            const VerticalDivider(
+              width: 1,
+              thickness: 1,
+              color: _entryBorder,
+            ),
+            const SizedBox(width: 18),
+            Expanded(
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
                 children: [
-                  Expanded(child: Divider(height: 1, color: _entryBorder)),
-                  Padding(
-                    padding: EdgeInsets.symmetric(horizontal: 10),
-                    child: Text(
-                      'or',
-                      style: TextStyle(fontSize: 11, color: _entryFaint),
+                  if (showStrip) ...[
+                    _signedInStrip(entry),
+                    const SizedBox(height: 12),
+                  ],
+                  _keySection(entry),
+                  if (!showStrip) ...[
+                    const SizedBox(height: 9),
+                    const Row(
+                      children: [
+                        Expanded(
+                            child: Divider(height: 1, color: _entryBorder)),
+                        Padding(
+                          padding: EdgeInsets.symmetric(horizontal: 10),
+                          child: Text(
+                            'or',
+                            style:
+                                TextStyle(fontSize: 11, color: _entryFaint),
+                          ),
+                        ),
+                        Expanded(
+                            child: Divider(height: 1, color: _entryBorder)),
+                      ],
                     ),
-                  ),
-                  Expanded(child: Divider(height: 1, color: _entryBorder)),
+                    const SizedBox(height: 7),
+                    // Below the divider the card is in exactly
+                    // one of three states — the check-email
+                    // block, the verification state, or the
+                    // get-my-key sign-in form.
+                    if (entry.keyEmailed)
+                      _checkEmailBlock(entry)
+                    else if (entry.needsVerification)
+                      _verificationCard(entry)
+                    else
+                      _signInForm(entry, doorAEnabled),
+                  ],
+                  if (entry.notice.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Text(
+                      entry.notice,
+                      style:
+                          const TextStyle(fontSize: 10.5, color: _entryDim),
+                    ),
+                  ],
+                  if (!entry.doorAConfigured) ...[
+                    const SizedBox(height: 6),
+                    Text(
+                      entry.doorAMessage,
+                      style: const TextStyle(
+                          fontSize: 10.5, color: _entryFaint),
+                    ),
+                  ],
+                  if (entry.error.isNotEmpty) ...[
+                    const SizedBox(height: 8),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                          horizontal: 10, vertical: 8),
+                      decoration: BoxDecoration(
+                        color: _entryRedBg,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(color: _entryRed),
+                      ),
+                      child: Text(
+                        entry.error,
+                        style:
+                            const TextStyle(fontSize: 11, color: _entryRed),
+                      ),
+                    ),
+                  ],
                 ],
               ),
-              const SizedBox(height: 9),
-              // v1.0.5: below the divider the card is in exactly
-              // one of three states — the fetched key, the
-              // verification card, or the get-my-key sign-in.
-              // v1.0.6: the first state is now the check-email
-              // block (the key arrives by email, never in-app).
-              if (entry.keyEmailed)
-                _checkEmailBlock(entry)
-              else if (entry.needsVerification)
-                _verificationCard(entry)
-              else ...[
-                _sectionLabel('GET MY FREE KEY'),
-                const SizedBox(height: 8),
-                _btn(
-                  white: true,
-                  height: 38,
-                  enabled: doorAEnabled,
-                  label: 'Continue with Google',
-                  onTap: () async {
-                    final url =
-                        await AutomationBridge.instance.getGoogleAuthUrl();
-                    if (url != null && url.isNotEmpty) {
-                      await AutomationBridge.instance.openUrl(url);
-                      // The sign-in finishes in the browser; watch
-                      // the entry status so the pending sign-in —
-                      // and then its key — lands here on its own.
-                      if (context.mounted) {
-                        context.read<EntryProvider>().startAccountWatch();
-                      }
-                    }
-                  },
-                ),
-                const SizedBox(height: 8),
-                _field(
-                  controller: _emailController,
-                  hint: 'Email address',
-                  enabled: doorAEnabled,
-                ),
-                const SizedBox(height: 7),
-                _field(
-                  controller: _passwordController,
-                  hint: 'Password',
-                  enabled: doorAEnabled,
-                  obscureText: true,
-                ),
-                const SizedBox(height: 8),
-                _btn(
-                  gold: true,
-                  height: 38,
-                  enabled: doorAEnabled,
-                  label: entry.busy
-                      ? 'Working…'
-                      : (_signUpMode ? 'Create account' : 'Sign in'),
-                  onTap: () {
-                    final provider = context.read<EntryProvider>();
-                    if (_signUpMode) {
-                      provider.signUp(
-                          _emailController.text, _passwordController.text);
-                    } else {
-                      provider.signIn(
-                          _emailController.text, _passwordController.text);
-                    }
-                  },
-                ),
-                const SizedBox(height: 2),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  children: [
-                    _linkButton(
-                      _signUpMode
-                          ? 'Already have an account? Sign in'
-                          : 'New here? Create account',
-                      doorAEnabled
-                          ? () => setState(() => _signUpMode = !_signUpMode)
-                          : null,
-                    ),
-                    if (!_signUpMode)
-                      _linkButton(
-                        'Forgot password?',
-                        doorAEnabled
-                            ? () => context
-                                .read<EntryProvider>()
-                                .forgotPassword(_emailController.text)
-                            : null,
-                      ),
-                  ],
-                ),
-              ],
-              if (entry.notice.isNotEmpty) ...[
-                const SizedBox(height: 3),
-                Text(
-                  entry.notice,
-                  style: const TextStyle(fontSize: 10.5, color: _entryDim),
-                ),
-              ],
-              if (!entry.doorAConfigured) ...[
-                const SizedBox(height: 6),
-                Text(
-                  entry.doorAMessage,
-                  style: const TextStyle(fontSize: 10.5, color: _entryFaint),
-                ),
-              ],
-              if (entry.error.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Container(
-                  padding:
-                      const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-                  decoration: BoxDecoration(
-                    color: _entryRedBg,
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: _entryRed),
-                  ),
-                  child: Text(
-                    entry.error,
-                    style: const TextStyle(fontSize: 11, color: _entryRed),
-                  ),
-                ),
-              ],
-              const SizedBox(height: 10),
-              const Text(
-                'No license key? Sign in above to get your free trial key.',
-                textAlign: TextAlign.center,
-                style: TextStyle(fontSize: 10.5, color: _entryFaint),
-              ),
-            ],
-          ),
-          ),
+            ),
+          ],
         ),
+      ),
+    );
+    return Scaffold(
+      backgroundColor: _entryBg,
+      body: LayoutBuilder(
+        builder: (context, constraints) {
+          // v1.0.7 (A1): at the design size the card is static —
+          // nothing scrolls. The scroll view is a fallback for
+          // viewport heights below the design viewport only.
+          if (constraints.maxHeight < _gateScrollFallbackHeight) {
+            return SingleChildScrollView(
+              child: ConstrainedBox(
+                constraints: BoxConstraints(minHeight: constraints.maxHeight),
+                child: Center(child: card),
+              ),
+            );
+          }
+          return Center(child: card);
+        },
       ),
     );
   }

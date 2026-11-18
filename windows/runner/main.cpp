@@ -27,7 +27,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
 
   FlutterWindow window(project);
   // PUBLIC v1.0.6 (F4 — owner's order): the app OPENS as a small
-  // entry panel — 420x620 logical, centered on the primary
+  // entry panel — 640x520 logical, centered on the primary
   // monitor's work area, FIXED size — while the splash / entry
   // gate is up. Only after the entry check passes does the app
   // take its real studio size (1280x800, resizable); that switch
@@ -35,7 +35,7 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   // POST /api/entry/window-phase). Create() below scales the
   // logical origin/size by the monitor DPI, so the centering is
   // computed in logical units from the physical work area.
-  Win32Window::Size size(420, 620);
+  Win32Window::Size size(640, 520);
   Win32Window::Point origin(0, 0);
   {
     HMONITOR monitor = ::MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);

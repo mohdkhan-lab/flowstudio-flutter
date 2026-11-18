@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.6+7 (public line)', read124('pubspec.yaml').includes('version: 1.0.6+7'));
-    eq('X124 package.json version is 1.0.6', JSON.parse(read124('package.json')).version, '1.0.6');
-    ok('X124 the bridge reports version 1.0.6 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.6';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.7+8 (public line)', read124('pubspec.yaml').includes('version: 1.0.7+8'));
+    eq('X124 package.json version is 1.0.7', JSON.parse(read124('package.json')).version, '1.0.7');
+    ok('X124 the bridge reports version 1.0.7 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.7';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the public release line', bridgeSrc124.includes("startsWith('public-v')") && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.6 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.6'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.7 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.7'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16605,10 +16605,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.6',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.6"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.6'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.6';"));
+    ok('X127 the remaining version sites carry 1.0.7',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.7"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.7'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.7';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('setPendingAccountSession'));
@@ -16654,29 +16654,29 @@ async function main() {
       bridgeJs128.includes('machineId: machineFingerprint.machineIdDisplay(cachedMachineFingerprint())'));
     ok('X128 the entry provider carries the machine ID to the gate',
       providerDart128.includes("data['machineId']") && providerDart128.includes('String get machineId => _machineId;'));
-    ok('X128 the gate shows the Machine ID box with Copy',
-      gateDart128.includes('YOUR MACHINE ID') && gateDart128.includes('Clipboard.setData') &&
-      gateDart128.includes('Your license key will be locked to this computer.') &&
-      gateDart128.includes('entry.machineId'));
+    ok('X128 the gate has NO Machine ID box (v1.0.7 C3 — the fingerprint stays internal)',
+      !gateDart128.includes('YOUR MACHINE ID') && !gateDart128.includes('Clipboard.setData') &&
+      !gateDart128.includes('Your license key will be locked to this computer.') &&
+      !gateDart128.includes('_machineIdBox'));
 
     // --- the professional entry: key door first, doors below "or" ---
     ok('X128 the key door sits above the account doors',
-      gateDart128.indexOf("'LICENSE KEY'") > gateDart128.indexOf('_machineIdBox(entry)') &&
+      gateDart128.indexOf("'LICENSE KEY'") > gateDart128.indexOf('Widget _brandZone()') &&
       gateDart128.indexOf("'Continue with Google'") > gateDart128.indexOf("'Activate'"));
     ok('X128 the doors are split by an "or" divider',
       gateDart128.includes("'or'") && gateDart128.includes('Multi-Account AI Video Engine'));
     ok('X128 a signed-in account lands on the key step (v1.0.5; v1.0.6: by email)',
       gateDart128.includes('showStrip') && gateDart128.includes('comes by email') &&
       gateDart128.includes('Signed in as') && gateDart128.includes('GET MY FREE KEY'));
-    ok('X128 the card closes with the free-trial line',
-      gateDart128.includes('No license key? Sign in above to get your free trial key.'));
+    ok('X128 the brand zone carries the free-trial note (v1.0.7: left zone, was the footer line)',
+      gateDart128.includes('No license key? Sign in with Google or email'));
 
     // --- the dark splash: state-driven progress, ready line, version ---
     ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold)',
       gateDart128.includes('0xFF0B0B10') && gateDart128.includes('value: progress') &&
       gateDart128.includes('entry.engineStage / 3'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.6',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.6'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.7',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.7'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
@@ -16773,7 +16773,7 @@ async function main() {
       !gateDart129.includes('Activate this key') &&
       !gateDart129.includes('Save this key — from now on you log in with this key only.'));
     ok('X129 the gate carries BOTH verification routes',
-      gateDart129.includes('VERIFY YOUR EMAIL') && gateDart129.includes('Send verification link') &&
+      gateDart129.includes('VERIFY YOUR EMAIL') && gateDart129.includes('Resend verification link') &&
       gateDart129.includes('Send code') && gateDart129.includes('Verify code') &&
       gateDart129.includes('_otpCodeInput'));
     ok('X129 the provider drives the key flow',
@@ -16861,25 +16861,27 @@ async function main() {
     ok('X130 the gate wears Midnight Gold (bg, card, gold)',
       gateDart130.includes('0xFF0B0B10') && gateDart130.includes('0xFF14141C') &&
       gateDart130.includes('0xFFF5B83D') && gateDart130.includes('0xFF26262F'));
-    ok('X130 the Google button is white and the card fits the small window',
+    ok('X130 the Google button is white and the card fills the wide gate window (v1.0.7 C2: 608 in 640)',
       gateDart130.includes('white: true') && gateDart130.includes('0xFFF7F5F0') &&
-      gateDart130.includes('width: 392') && gateDart130.includes('BorderRadius.circular(16)'));
+      gateDart130.includes('width: 608') && gateDart130.includes('BorderRadius.circular(16)'));
     ok('X130 the key field invites the short format and auto-formats it',
       gateDart130.includes('Paste your license key — FS-XXXX-XXXX-XXXX') &&
       gateDart130.includes('_onKeyChanged') && gateDart130.includes('onChanged: _onKeyChanged'));
 
     // --- F4: window phases ---
-    eq('X130 the gate phase plan is the small fixed panel',
+    eq('X130 the gate phase plan is the wide low panel (v1.0.7 C2)',
       JSON.stringify(windowStyle130.appWindowPhasePlan('gate')),
-      JSON.stringify({ width: 420, height: 620, resizable: false }));
+      JSON.stringify({ width: 640, height: 520, resizable: false }));
     eq('X130 the studio phase plan is the real size, resizable',
       JSON.stringify(windowStyle130.appWindowPhasePlan('studio')),
       JSON.stringify({ width: 1280, height: 800, resizable: true }));
     eq('X130 an unknown phase has no plan', windowStyle130.appWindowPhasePlan('bogus'), null);
-    eq('X130 setAppWindowPhase is a safe no-op off Windows', await windowStyle130.setAppWindowPhase(123, 'gate'), false);
-    ok('X130 the runner opens at 420x620 and the bridge serves the phase route',
-      mainCpp130.includes('Win32Window::Size size(420, 620)') &&
-      bridgeJs130.includes("'/api/entry/window-phase'") && bridgeJs130.includes('setAppWindowPhase(process.ppid, phase)'));
+    ok('X130 setAppWindowPhase is a safe no-op off Windows (v1.0.7: result object)',
+      (await windowStyle130.setAppWindowPhase(123, 'gate')).verified === false &&
+      (await windowStyle130.setAppWindowPhase(123, 'gate')).attempts === 0);
+    ok('X130 the runner opens at 640x520 and the bridge serves the phase route',
+      mainCpp130.includes('Win32Window::Size size(640, 520)') &&
+      bridgeJs130.includes("'/api/entry/window-phase'") && bridgeJs130.includes('enforceAppWindowPhase(phase)'));
     ok('X130 the Dart side reports phase transitions from the entry state',
       bridgeDart130.includes('Future<void> setEntryWindowPhase(String phase)') &&
       providerDart130.includes("AutomationBridge.instance.setEntryWindowPhase(phase)") &&
@@ -16900,6 +16902,157 @@ async function main() {
       !/await AutomationBridge\.instance\.ensureEngineRunning\(\)/.test(providerDart130.slice(providerDart130.indexOf('EntryProvider()'), providerDart130.indexOf('EntryProvider()') + 1600)));
     ok('X130 the splash progress is the determinate stage, not the old steps',
       gateDart130.includes('entry.engineStage / 3') && !gateDart130.includes('0.65'));
+  }
+
+  // =====================================================================
+  // X131. PUBLIC v1.0.7 — THE OWNER'S FIELD CORRECTIONS + THE
+  // AUTO KEY EMAIL + VERIFY-FIRST SIGN-UP (owner's orders,
+  // 2026-11-18): C1 the studio MUST open at its default size —
+  // the v1.0.6 phase call was single-shot and its shim failure
+  // silent, so the studio sat squeezed in the small window; the
+  // bridge now ENFORCES the phase from every entry-status answer
+  // until the window's read-back verifies. C2 the gate panel is
+  // 640x520 with a two-zone card that fits it whole (A1: no
+  // scrolling in any state at 100% scaling). C3 the Machine ID
+  // box is gone from the gate (the fingerprint + one-device
+  // binding stay internal). A2 the key email is automatic on
+  // sign-in with an honest strip status. A3 email sign-up is
+  // verify-first, written plainly. Part B: the key service
+  // sends through Brevo when BREVO_API_KEY is set (any
+  // recipient), Resend otherwise.
+  // =====================================================================
+  {
+    const fs131 = require('fs');
+    const path131 = require('path');
+    const read131 = (rel) => fs131.readFileSync(path131.join(__dirname, '..', rel), 'utf8');
+    const gateDart131 = read131('lib/widgets/entry_gate.dart');
+    const providerDart131 = read131('lib/providers/entry_provider.dart');
+    const bridgeJs131 = read131('engine_bridge.js');
+    const windowStyle131 = require(path131.join(__dirname, '..', 'engine/windowStyle.js'));
+    const windowStyleSrc131 = read131('engine/windowStyle.js');
+
+    // --- C2 + A1: the 640x520 two-zone fit, budget pinned ---
+    ok('X131 the gate card is the two-zone layout (brand zone + divider + right zone)',
+      gateDart131.includes('Widget _brandZone()') && gateDart131.includes('VerticalDivider') &&
+      gateDart131.includes('Widget _keySection(EntryProvider entry)') &&
+      gateDart131.includes('width: 608') && gateDart131.includes('_gateScrollFallbackHeight'));
+    // The documented budget (line height at 1.25x, the gate's own
+    // metrics): card padding 18+14 = 32; key section 113; the
+    // "or" divider block 29; sign-in form 200; sign-up form 232
+    // (explainer included); strip block + gap 169; check-email
+    // block 111; verification card 221 (sign-up wording) / 154
+    // (code half); brand zone 209.
+    const budget131 = { pad: 32, key: 113, divider: 29, signIn: 200, signUp: 232, strip: 169, checkBlock: 111, verifyCardSignUp: 221, verifyCardCode: 154, brand: 209 };
+    const stateHeights131 = {
+      signIn: budget131.pad + budget131.key + budget131.divider + budget131.signIn,
+      signUp: budget131.pad + budget131.key + budget131.divider + budget131.signUp,
+      strip: budget131.pad + Math.max(budget131.brand, budget131.strip + budget131.key),
+      checkEmail: budget131.pad + budget131.key + budget131.divider + budget131.checkBlock,
+      verifySignUp: budget131.pad + budget131.key + budget131.divider + budget131.verifyCardSignUp,
+      verifyCode: budget131.pad + budget131.key + budget131.divider + budget131.verifyCardCode
+    };
+    ok('X131 every gate state fits the 520 window height with margin (A1)',
+      Math.max(...Object.values(stateHeights131)) <= 520 &&
+      stateHeights131.signUp === 406 && stateHeights131.verifySignUp === 395,
+      JSON.stringify(stateHeights131));
+    ok('X131 the scroll view is ONLY a below-design-viewport fallback',
+      gateDart131.includes('constraints.maxHeight < _gateScrollFallbackHeight') &&
+      gateDart131.includes('SingleChildScrollView') &&
+      gateDart131.indexOf('return Center(child: card);') > gateDart131.indexOf('SingleChildScrollView'));
+
+    // --- C1: the read-back, the verify rule, the retry loop ---
+    eq('X131 a read-back line parses (found, physical size, dpi, style)',
+      JSON.stringify(windowStyle131.parsePhaseReadback('1,1280,800,96,1')),
+      JSON.stringify({ found: true, width: 1280, height: 800, dpi: 96, resizable: true }));
+    eq('X131 a not-found read-back parses as not found',
+      windowStyle131.parsePhaseReadback('0,0,0,96,0').found, false);
+    eq('X131 garbage parses as not found', windowStyle131.parsePhaseReadback('junk').found, false);
+    const studioPlan131 = windowStyle131.appWindowPhasePlan('studio');
+    ok('X131 verify: exact size + style passes',
+      windowStyle131.appWindowPhaseVerified(studioPlan131, windowStyle131.parsePhaseReadback('1,1280,800,96,1')));
+    ok('X131 verify: the DPI-scaled size passes (150% display)',
+      windowStyle131.appWindowPhaseVerified(studioPlan131, windowStyle131.parsePhaseReadback('1,1920,1200,144,1')));
+    ok('X131 verify: the squeezed studio (gate size) FAILS',
+      !windowStyle131.appWindowPhaseVerified(studioPlan131, windowStyle131.parsePhaseReadback('1,640,520,96,0')));
+    ok('X131 verify: right size, wrong style FAILS',
+      !windowStyle131.appWindowPhaseVerified(studioPlan131, windowStyle131.parsePhaseReadback('1,1280,800,96,0')));
+    {
+      let calls131 = 0;
+      const retried131 = await windowStyle131.setAppWindowPhase(0, 'studio', {
+        sleep: async () => {},
+        applyOnce: async () => { calls131++; return calls131 < 3 ? '1,640,520,96,0' : '1,1280,800,96,1'; }
+      });
+      ok('X131 the phase switch retries until the read-back verifies',
+        retried131.verified === true && retried131.attempts === 3);
+      const hopeless131 = await windowStyle131.setAppWindowPhase(0, 'gate', {
+        sleep: async () => {},
+        applyOnce: async () => '0,0,0,96,0'
+      });
+      ok('X131 a window that never appears reports unverified after 3 attempts',
+        hopeless131.verified === false && hopeless131.applied === false && hopeless131.attempts === 3);
+    }
+    ok('X131 the shim finds the window by class when the pid owns none (adopted engine)',
+      windowStyleSrc131.includes('FindWindow') && windowStyleSrc131.includes('GetWindowRect') &&
+      (windowStyleSrc131.match(/FLUTTER_RUNNER_WIN32_WINDOW/g) || []).length >= 2);
+    ok('X131 the bridge enforces the phase from the entry decision, with a truth log',
+      bridgeJs131.includes('function enforceAppWindowPhase(desiredPhase)') &&
+      bridgeJs131.includes("enforceAppWindowPhase(decision.allowed ? 'studio' : 'gate')") &&
+      bridgeJs131.includes('applied and verified') && bridgeJs131.includes('NOT verified') &&
+      bridgeJs131.includes('appWindowPhaseVerified === desiredPhase'));
+
+    // --- A2: the automatic key email + the strip status ---
+    ok('X131 the provider exposes the key-email status (sending / failed)',
+      providerDart131.includes('bool get keyEmailSending') && providerDart131.includes('bool get keyEmailFailed') &&
+      providerDart131.includes("_keyEmailFailed = true"));
+    ok('X131 a sender failure is the strip state, not the red error',
+      providerDart131.includes("res['reason']?.toString() == 'key-email-failed'") &&
+      gateDart131.includes('We could not email your key yet.') &&
+      gateDart131.includes('Sending your license key to'));
+    ok('X131 the automatic attempt is the once-per-sign-in refresh fetch (no loop)',
+      providerDart131.includes('_myKeyAttemptedFor != _accountEmail') &&
+      providerDart131.includes('_myKeyAttemptedFor = _accountEmail;') &&
+      gateDart131.includes("'Email my key'"));
+    ok('X131 the check-email block carries the automatic success wording',
+      gateDart131.includes('Your license key has been sent to') &&
+      gateDart131.includes('check your inbox, then paste it above to activate.'));
+
+    // --- A3: verify-first, written plainly ---
+    ok('X131 the sign-up form explains the flow before it starts',
+      gateDart131.includes('Create account → Verify your email → Sign in and get your key by email.'));
+    ok('X131 a fresh sign-up lands on the Account created state with its 3 steps',
+      gateDart131.includes('Account created. We sent a verification link to') &&
+      gateDart131.includes('1 — Open the link in your email to verify.') &&
+      gateDart131.includes('2 — Come back and sign in.') &&
+      gateDart131.includes('3 — Your license key will be emailed to you.'));
+    ok('X131 an unverified sign-in lands on the not-verified wording',
+      gateDart131.includes('Your email is not verified yet. Please click the verification link we sent to'));
+    ok('X131 the provider marks a fresh sign-up and can return to the link half',
+      providerDart131.includes('bool get accountJustCreated') &&
+      providerDart131.includes('_justSignedUp = true') &&
+      providerDart131.includes('void backToVerificationLink()') &&
+      gateDart131.includes('Use the verification link instead'));
+
+    // --- C3: no Machine ID on the gate; the binding stays ---
+    ok('X131 the gate shows no Machine ID anywhere (C3)',
+      !gateDart131.includes('YOUR MACHINE ID') && !gateDart131.includes('machineId') &&
+      !gateDart131.includes('locked to this computer'));
+    ok('X131 the one-device binding still runs on the internal fingerprint',
+      bridgeJs131.includes('machineId: machineFingerprint.machineIdDisplay(cachedMachineFingerprint())'));
+
+    // --- Part B: Brevo first, Resend fallback (panel repo) ---
+    let fnSrc131 = '';
+    try {
+      fnSrc131 = fs131.readFileSync(path131.resolve(__dirname, '../../../orbitdesk-panel/supabase/functions/issue-key/index.ts'), 'utf8');
+    } catch (e) { /* the pins below fail on the empty source */ }
+    ok('X131 the key service sends via Brevo when its key is set (any recipient)',
+      fnSrc131.includes('async function sendMail(') &&
+      fnSrc131.includes('Deno.env.get("BREVO_API_KEY")') &&
+      fnSrc131.includes('https://api.brevo.com/v3/smtp/email') &&
+      fnSrc131.includes('email: "mohdkhan837218@gmail.com"'));
+    ok('X131 Resend stays the fallback and both mail paths use the one helper',
+      fnSrc131.includes('https://api.resend.com/emails') &&
+      (fnSrc131.match(/sendMail\(/g) || []).length >= 3 &&
+      fnSrc131.includes('!BREVO_API_KEY && !RESEND_API_KEY'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

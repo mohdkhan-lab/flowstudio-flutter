@@ -67,6 +67,21 @@ class EntryProvider extends ChangeNotifier {
   bool _myKeyInFlight = false;
   String _myKeyAttemptedFor = '';
 
+  // v1.0.7 (A2): the key email's visible status for the gate's
+  // signed-in strip. The automatic fetch (refresh, once per
+  // sign-in) is "sending" while [_myKeyInFlight]; a
+  // 'key-email-failed' answer sets [_keyEmailFailed] so the strip
+  // can say so and offer its manual retry — the failure is NOT
+  // also raised as the gate's red error (the strip carries it).
+  bool _keyEmailFailed = false;
+
+  // v1.0.7 (A3): true when the pending sign-in was born as a
+  // fresh sign-up in this run — the gate's verification state
+  // then opens with the "Account created" wording and its three
+  // steps; a plain sign-in that lands unverified gets the
+  // "not verified yet" wording instead.
+  bool _justSignedUp = false;
+
   // PUBLIC v1.0.1: the engine-start watchdog. If the engine has
   // not answered within this window the gate stops polling and
   // shows its engineFailed state (with a Retry button) instead of
@@ -243,6 +258,22 @@ class EntryProvider extends ChangeNotifier {
   /// code boxes show).
   bool get otpSent => _otpSent;
 
+  /// v1.0.7 (A2): true while the (automatic or manual) key-email
+  /// request is in flight — the strip reads "Sending your
+  /// license key to …".
+  bool get keyEmailSending => _myKeyInFlight;
+
+  /// v1.0.7 (A2): true when the last key-email attempt was
+  /// refused by the sender ('key-email-failed') — the strip
+  /// reads "We could not email your key yet." and its button is
+  /// the retry.
+  bool get keyEmailFailed => _keyEmailFailed;
+
+  /// v1.0.7 (A3): true when the pending sign-in is a fresh
+  /// sign-up — the verification state uses its "Account
+  /// created" wording.
+  bool get accountJustCreated => _justSignedUp;
+
   Future<void> refresh() async {
     final data = await AutomationBridge.instance.getEntryStatus();
     if (data == null) return;
@@ -294,6 +325,10 @@ class EntryProvider extends ChangeNotifier {
     // per sign-in (the guard is the attempted-for email; a manual
     // retry from the gate always runs). v1.0.6: "fetch" now means
     // the service EMAILS the key; the guard is the emailed state.
+    // v1.0.7 (A2): this IS the automatic key email the owner
+    // asked for — exactly one automatic attempt per completed
+    // sign-in, its progress/failure shown on the gate's strip;
+    // never a retry loop.
     if (!_allowed &&
         _accountEmail.isNotEmpty &&
         !_keyEmailed &&
@@ -354,6 +389,8 @@ class EntryProvider extends ChangeNotifier {
       _accountEmail = email.trim();
       _myKeyAttemptedFor = '';
       _keyEmailed = false;
+      _keyEmailFailed = false;
+      _justSignedUp = false;
       await refresh();
       return true;
     }
@@ -379,6 +416,11 @@ class EntryProvider extends ChangeNotifier {
       _accountEmail = email.trim();
       _myKeyAttemptedFor = '';
       _keyEmailed = false;
+      _keyEmailFailed = false;
+      // v1.0.7 (A3): a fresh sign-up's verification state opens
+      // with the "Account created" wording — sign-up itself has
+      // already asked Firebase to send the verification link.
+      _justSignedUp = true;
       await refresh();
       return true;
     }
@@ -395,10 +437,18 @@ class EntryProvider extends ChangeNotifier {
   /// verification card takes over (needsVerification) — that
   /// answer is not an error. This is also the gate's "Resend key
   /// email" action: calling it again re-sends the SAME key.
+  /// v1.0.7 (A2): the call is AUTOMATIC — refresh runs it once
+  /// per completed sign-in (Google callback or email sign-in);
+  /// this method is also the strip's manual retry. While it runs
+  /// [keyEmailSending] is true; a 'key-email-failed' answer sets
+  /// [keyEmailFailed] (the strip's failure line) instead of the
+  /// red error box. There is never an automatic retry loop: one
+  /// automatic attempt per sign-in, then the human decides.
   Future<bool> fetchMyKey() async {
     if (_myKeyInFlight) return false;
     _myKeyInFlight = true;
     _myKeyAttemptedFor = _accountEmail;
+    _keyEmailFailed = false;
     _error = '';
     notifyListeners();
     final res =
@@ -410,11 +460,20 @@ class EntryProvider extends ChangeNotifier {
       _keyEmailedExp = res['exp']?.toString() ?? '';
       _keyEmailedReused = res['reused'] == true;
       _needsVerification = false;
+      _keyEmailFailed = false;
       notifyListeners();
       return true;
     }
     if (res['reason']?.toString() == 'email-not-verified') {
       _needsVerification = true;
+      _keyEmailFailed = false;
+      notifyListeners();
+      return false;
+    }
+    if (res['reason']?.toString() == 'key-email-failed') {
+      // A2: the strip carries this failure ("We could not email
+      // your key yet." + its retry button) — no red box as well.
+      _keyEmailFailed = true;
       notifyListeners();
       return false;
     }
@@ -494,6 +553,16 @@ class EntryProvider extends ChangeNotifier {
     return false;
   }
 
+  /// v1.0.7 (A3): the verification state's "Use the verification
+  /// link instead" — leave the code half and go back to the link
+  /// half of the same state.
+  void backToVerificationLink() {
+    _otpSent = false;
+    _error = '';
+    _notice = '';
+    notifyListeners();
+  }
+
   /// Door A: email a password-reset link. The bridge answers the
   /// same way whether or not the email has an account; the gate
   /// shows that sentence as a notice, not an error.
@@ -560,6 +629,8 @@ class EntryProvider extends ChangeNotifier {
     _needsVerification = false;
     _otpSent = false;
     _myKeyAttemptedFor = '';
+    _keyEmailFailed = false;
+    _justSignedUp = false;
     await refresh();
   }
 

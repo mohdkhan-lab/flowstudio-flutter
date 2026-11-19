@@ -104,10 +104,14 @@ class EntryProvider extends ChangeNotifier {
   int _engineStage = 0;
   Timer? _stageProbe;
 
-  // v1.0.6 (F4): the window phase last sent to the engine —
-  // 'gate' (small fixed panel) or 'studio' (real size). The
-  // runner opens in 'gate', so it starts there.
-  String _windowPhase = 'gate';
+  // v1.0.8 (F5): this sign-in came through Google (the gate's
+  // account watch is running for its browser callback) — after
+  // its key email is sent, the app opens the user's Gmail once
+  // so the key email is right in front of them. Email sign-in /
+  // sign-up never open Gmail; the flag is per sign-in and resets
+  // on sign-out.
+  bool _signInViaGoogle = false;
+  bool _gmailOpenedForSignIn = false;
 
   EntryProvider() {
     // PUBLIC v1.0.1 — THE v1.0.0 BUG FIX: the gate itself starts
@@ -312,15 +316,6 @@ class EntryProvider extends ChangeNotifier {
     if (_engineStage < 3) _engineStage = 3;
     _stageProbe?.cancel();
     notifyListeners();
-    // v1.0.6 (F4): the window follows the entry — studio size
-    // once entry is allowed, back to the small panel when it is
-    // not (sign-out, key removal). Fire-and-forget; only on a
-    // real transition.
-    final phase = _allowed ? 'studio' : 'gate';
-    if (phase != _windowPhase) {
-      _windowPhase = phase;
-      AutomationBridge.instance.setEntryWindowPhase(phase);
-    }
     // v1.0.5: a landed sign-in fetches its key on its own — once
     // per sign-in (the guard is the attempted-for email; a manual
     // retry from the gate always runs). v1.0.6: "fetch" now means
@@ -391,6 +386,9 @@ class EntryProvider extends ChangeNotifier {
       _keyEmailed = false;
       _keyEmailFailed = false;
       _justSignedUp = false;
+      // F5: an email sign-in is never a Google sign-in.
+      _signInViaGoogle = false;
+      _gmailOpenedForSignIn = false;
       await refresh();
       return true;
     }
@@ -403,20 +401,31 @@ class EntryProvider extends ChangeNotifier {
   /// v1.0.5 shape as sign-in: the session is parked, the key
   /// fetch follows (an unverified email lands on the
   /// verification card first).
-  Future<bool> signUp(String email, String password) async {
+  /// v1.0.8 (F4): the form's name is required — it is recorded
+  /// on the account (the panel shows it, the key email greets
+  /// with it).
+  Future<bool> signUp(String name, String email, String password) async {
     if (_busy) return false;
+    if (name.trim().isEmpty) {
+      _error = 'Please enter your name.';
+      notifyListeners();
+      return false;
+    }
     _busy = true;
     _error = '';
     _notice = '';
     notifyListeners();
     final res = await _callWithEngineRetry(() => AutomationBridge.instance
-        .signUpAccount(email.trim(), password));
+        .signUpAccount(email.trim(), password, name: name.trim()));
     _busy = false;
     if (res['ok'] == true) {
       _accountEmail = email.trim();
       _myKeyAttemptedFor = '';
       _keyEmailed = false;
       _keyEmailFailed = false;
+      // F5: an email sign-up is never a Google sign-in.
+      _signInViaGoogle = false;
+      _gmailOpenedForSignIn = false;
       // v1.0.7 (A3): a fresh sign-up's verification state opens
       // with the "Account created" wording — sign-up itself has
       // already asked Firebase to send the verification link.
@@ -462,6 +471,15 @@ class EntryProvider extends ChangeNotifier {
       _needsVerification = false;
       _keyEmailFailed = false;
       notifyListeners();
+      // v1.0.8 (F5): a Google sign-in's key email was just
+      // sent — open the user's Gmail in their browser so the
+      // email is right in front of them. Exactly once per
+      // Google sign-in, and only on success: a failed key
+      // email never opens Gmail.
+      if (_signInViaGoogle && !_gmailOpenedForSignIn) {
+        _gmailOpenedForSignIn = true;
+        AutomationBridge.instance.openUrl('https://mail.google.com');
+      }
       return true;
     }
     if (res['reason']?.toString() == 'email-not-verified') {
@@ -593,6 +611,10 @@ class EntryProvider extends ChangeNotifier {
   /// runs for its key. The watch gives up after about three
   /// minutes; the gate's own controls stay live.
   void startAccountWatch() {
+    // F5: the watch exists only for the Google browser flow —
+    // a watch starting means this sign-in is via Google.
+    _signInViaGoogle = true;
+    _gmailOpenedForSignIn = false;
     _stopAccountWatch();
     var ticks = 0;
     _accountWatch = Timer.periodic(const Duration(seconds: 2), (_) {
@@ -631,6 +653,8 @@ class EntryProvider extends ChangeNotifier {
     _myKeyAttemptedFor = '';
     _keyEmailFailed = false;
     _justSignedUp = false;
+    _signInViaGoogle = false;
+    _gmailOpenedForSignIn = false;
     await refresh();
   }
 

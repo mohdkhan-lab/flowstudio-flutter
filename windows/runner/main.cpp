@@ -26,16 +26,18 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   project.set_dart_entrypoint_arguments(std::move(command_line_arguments));
 
   FlutterWindow window(project);
-  // PUBLIC v1.0.6 (F4 — owner's order): the app OPENS as a small
-  // entry panel — 640x520 logical, centered on the primary
-  // monitor's work area, FIXED size — while the splash / entry
-  // gate is up. Only after the entry check passes does the app
-  // take its real studio size (1280x800, resizable); that switch
-  // is driven from the engine (engine/windowStyle.js phases,
-  // POST /api/entry/window-phase). Create() below scales the
-  // logical origin/size by the monitor DPI, so the centering is
-  // computed in logical units from the physical work area.
-  Win32Window::Size size(640, 520);
+  // PUBLIC v1.0.8 (F2 — owner's order): ONE window size for the
+  // whole app, from the very first frame — the studio's own
+  // default 1280x800, centered on the primary monitor's work
+  // area and clamped to it, resizable like any normal window
+  // (maximize allowed). The entry gate is an overlay INSIDE
+  // this window (a popup portal over the blurred studio); the
+  // window itself never resizes or re-styles between the gate
+  // and the studio — the v1.0.6/v1.0.7 two-size phase switch is
+  // gone. Create() below scales the logical origin/size by the
+  // monitor DPI, so the size and centering are computed in
+  // logical units from the physical work area.
+  Win32Window::Size size(1280, 800);
   Win32Window::Point origin(0, 0);
   {
     HMONITOR monitor = ::MonitorFromPoint(POINT{0, 0}, MONITOR_DEFAULTTOPRIMARY);
@@ -47,6 +49,8 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
       const double work_h = (info.rcWork.bottom - info.rcWork.top) / scale;
       const double left = info.rcWork.left / scale;
       const double top = info.rcWork.top / scale;
+      if (work_w > 0 && size.width > work_w) size.width = static_cast<unsigned int>(work_w);
+      if (work_h > 0 && size.height > work_h) size.height = static_cast<unsigned int>(work_h);
       origin = Win32Window::Point(
           static_cast<unsigned int>(left + (work_w > size.width ? (work_w - size.width) / 2 : 0)),
           static_cast<unsigned int>(top + (work_h > size.height ? (work_h - size.height) / 2 : 0)));
@@ -54,15 +58,6 @@ int APIENTRY wWinMain(_In_ HINSTANCE instance, _In_opt_ HINSTANCE prev,
   }
   if (!window.Create(L"FlowStudio", origin, size)) {
     return EXIT_FAILURE;
-  }
-  // Fixed size during the gate phase: no sizing border, no
-  // maximize box. The engine restores both when the studio phase
-  // begins (and removes them again if the gate returns).
-  if (HWND hwnd = window.GetHandle()) {
-    const LONG style = ::GetWindowLong(hwnd, GWL_STYLE);
-    ::SetWindowLong(hwnd, GWL_STYLE, style & ~(WS_THICKFRAME | WS_MAXIMIZEBOX));
-    ::SetWindowPos(hwnd, nullptr, 0, 0, 0, 0,
-                   SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_FRAMECHANGED);
   }
   window.SetQuitOnClose(true);
 

@@ -210,7 +210,12 @@ function setPendingAccountSession(session, fallbackEmail) {
     refreshToken: session.refreshToken || '',
     uid: session.uid || '',
     expiresAt: session.expiresAt || 0,
-    email: session.email || fallbackEmail || ''
+    email: session.email || fallbackEmail || '',
+    // v1.0.8 (F4/F6): the user's display name when the sign-in
+    // path knows it (typed at sign-up, or the Google profile
+    // name) — the my-key call passes it to the key service so
+    // the key email can greet the user by name.
+    name: typeof session.name === 'string' ? session.name : ''
   };
 }
 
@@ -235,50 +240,6 @@ async function refreshPendingAccountSession() {
     email: r.session.email || pendingAccountSession.email
   };
   return true;
-}
-
-// PUBLIC v1.0.7 (C1) — WINDOW PHASE ENFORCEMENT. In v1.0.6 the
-// phase reached the window exactly once per Dart-side state
-// transition, fire-and-forget, and a failure (the shim could not
-// find the window for the bridge's parent pid — e.g. an engine
-// adopted from a previous app run — or a PowerShell hiccup) was
-// silent and never retried: the studio stayed squeezed inside
-// the small gate window for the whole session (the owner's field
-// report). Now the bridge OWNS the phase: every entry-status
-// answer re-asserts the phase its decision implies ('studio'
-// when entry is allowed, 'gate' when it is not) until the
-// window's read-back VERIFIES it. The Dart side's window-phase
-// route feeds the same enforcer for a snappy first attempt. A
-// phase that fails to verify is logged as such and retried on
-// the next status answer — never spun on in a loop here.
-let appWindowPhaseDesired = '';
-let appWindowPhaseVerified = '';
-let appWindowPhaseRunner = null;
-
-function enforceAppWindowPhase(desiredPhase) {
-  if (!windowStyle.appWindowPhasePlan(desiredPhase)) return;
-  appWindowPhaseDesired = desiredPhase;
-  if (appWindowPhaseVerified === desiredPhase) return;
-  if (appWindowPhaseRunner) return;
-  appWindowPhaseRunner = (async () => {
-    try {
-      while (appWindowPhaseVerified !== appWindowPhaseDesired) {
-        const target = appWindowPhaseDesired;
-        const result = await windowStyle.setAppWindowPhase(process.ppid, target);
-        if (result && result.verified) {
-          appWindowPhaseVerified = target;
-          console.log(`[FlowStudio Engine] App window phase: ${target} — applied and verified (${result.width}x${result.height}).`);
-        } else {
-          console.log(`[FlowStudio Engine] App window phase: ${target} — NOT verified (${result && result.applied ? 'window size/style mismatch' : 'app window not found'}); will retry on the next entry status.`);
-          break;
-        }
-      }
-    } catch (e) {
-      // Window dressing must never break the bridge.
-    } finally {
-      appWindowPhaseRunner = null;
-    }
-  })();
 }
 
 // Once per engine start: a stored entry credential re-reports
@@ -383,7 +344,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // GitHub's latest tag against it.
-const APP_VERSION = '1.0.7';
+const APP_VERSION = '1.0.8';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -926,12 +887,6 @@ async function startBridge() {
           credential,
           { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
         );
-        // v1.0.7 (C1): the window phase follows THIS decision —
-        // enforced (and re-tried until verified) by the bridge
-        // itself, so a restored credential at launch lands in the
-        // full-size studio even if the Dart side's one transition
-        // call was missed or failed.
-        enforceAppWindowPhase(decision.allowed ? 'studio' : 'gate');
         return sendJson(200, { ok: true, entry: decision, doorA: authClient.doorAState(), machineId: machineFingerprint.machineIdDisplay(cachedMachineFingerprint()), account: pendingAccountView() });
       }
 
@@ -1013,28 +968,6 @@ async function startBridge() {
         return sendJson(200, { ok: true, entry: decision });
       }
 
-      // PUBLIC v1.0.6 — the app window's phase (owner's order): the
-      // Dart side reports 'studio' once the entry check passes and
-      // 'gate' when the gate comes back (sign-out / key removal);
-      // windowStyle then moves + resizes the app's own window (the
-      // bridge's parent process) and toggles its fixed size.
-      // PUBLIC v1.0.7 (C1): the route now feeds the bridge's phase
-      // ENFORCER (see enforceAppWindowPhase) — the switch is
-      // applied with read-back verification and retries, and the
-      // entry-status answers keep re-asserting the phase until it
-      // verifies, so a single missed call can no longer strand
-      // the studio inside the small window. The answer reports
-      // whether the phase is already verified.
-      if (pathname === '/api/entry/window-phase' && req.method === 'POST') {
-        const body = await readBody();
-        const phase = typeof body.phase === 'string' ? body.phase : '';
-        if (!windowStyle.appWindowPhasePlan(phase)) {
-          return sendJson(200, { ok: false, error: 'Unknown window phase.' });
-        }
-        enforceAppWindowPhase(phase);
-        return sendJson(200, { ok: true, phase, verified: appWindowPhaseVerified === phase });
-      }
-
       if (pathname === '/api/entry/sign-in' && req.method === 'POST') {
         const body = await readBody();
         const result = await authClient.signIn(
@@ -1083,8 +1016,18 @@ async function startBridge() {
         // verification email Firebase sends on sign-up is the
         // link half of the verification card the gate shows
         // when the key fetch asks for verification.)
+        // v1.0.8 (F4): the name typed on the sign-up form is
+        // recorded on the user doc (created with the trial
+        // fields when this uid has none yet) and kept on the
+        // pending session for the key email's greeting. A failed
+        // profile write never fails the sign-up.
+        const signUpName = authClient.cleanDisplayName(body.name);
+        if (signUpName) result.session.name = signUpName;
         setPendingAccountSession(result.session,
           typeof body.email === 'string' ? body.email.trim() : '');
+        if (signUpName) {
+          try { await authClient.recordUserProfile(result.session, signUpName); } catch (e) { /* best effort */ }
+        }
         const decision = entryGate.decideEntry(
           entryGate.loadCredential(appDataDataDir),
           { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
@@ -1111,10 +1054,24 @@ async function startBridge() {
             error: 'Sign in first — your license key is fetched with your account.'
           });
         }
-        let result = await authClient.fetchMyKey(pendingAccountSession.idToken);
+        // v1.0.8 (F6): the key email greets the user by name
+        // when the name is known. The pending session carries
+        // it from sign-up / Google; for a plain email sign-in,
+        // fill it from the user doc on first use (best effort).
+        if (!pendingAccountSession.name && pendingAccountSession.uid) {
+          try {
+            const st = await authClient.fetchUserState({
+              idToken: pendingAccountSession.idToken,
+              uid: pendingAccountSession.uid
+            });
+            if (st.ok && st.exists && st.name) pendingAccountSession.name = st.name;
+          } catch (e) { /* best effort */ }
+        }
+        const myKeyOpts = pendingAccountSession.name ? { name: pendingAccountSession.name } : undefined;
+        let result = await authClient.fetchMyKey(pendingAccountSession.idToken, myKeyOpts);
         if (!result.ok && (result.reason === 'session-expired' || result.reason === 'email-not-verified')) {
           if (await refreshPendingAccountSession()) {
-            result = await authClient.fetchMyKey(pendingAccountSession.idToken);
+            result = await authClient.fetchMyKey(pendingAccountSession.idToken, myKeyOpts);
           }
         }
         if (!result.ok) {
@@ -1296,7 +1253,18 @@ async function startBridge() {
         // gate's watch sees it on the status poll and fetches
         // the user's key with it. Nothing is stored as an entry
         // credential here.
+        // v1.0.8 (F4): the Google profile name rides the token
+        // the callback has ALREADY verified (handleGoogleToken-
+        // Callback ran accounts:lookup) — record it on the user
+        // doc (created with the trial fields for a first Google
+        // sign-in) and keep it for the key email's greeting.
+        // A failed profile write never fails the sign-in.
+        const googleName = authClient.idTokenDisplayName(firebaseToken);
+        if (googleName) result.session.name = googleName;
         setPendingAccountSession(result.session, '');
+        if (googleName) {
+          try { await authClient.recordUserProfile(result.session, googleName); } catch (e) { /* best effort */ }
+        }
         return sendHtml(pageShell('Signed in',
           'Signed in \u2014 you can close this tab and return to the app to get your license key.'));
       }

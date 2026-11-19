@@ -17,7 +17,7 @@ class AutomationBridge {
   // v2.48.4: this app's own engine version — keep in sync with
   // pubspec.yaml and APP_VERSION in engine_bridge.js. Used to refuse
   // adopting a stale engine left running by an older copy of the app.
-  static const String appVersion = '1.0.7';
+  static const String appVersion = '1.0.8';
 
   // PUBLIC v1.0.1: the one "engine is not answering" sentence the
   // entry-gate calls return when the bridge cannot be reached at
@@ -1327,14 +1327,21 @@ class AutomationBridge {
 
   /// Door A: create an account with email + password (a first
   /// sign-in starts the 7-day trial). Same answer shape as sign-in.
+  /// v1.0.8 (F4): the user's name rides along — the engine
+  /// records it on the account's user document.
   Future<Map<String, dynamic>> signUpAccount(
-      String email, String password) async {
+      String email, String password,
+      {String name = ''}) async {
     try {
       final res = await http
           .post(
             Uri.parse('$baseUrl/api/entry/sign-up'),
             headers: {'Content-Type': 'application/json'},
-            body: json.encode({'email': email, 'password': password}),
+            body: json.encode({
+              'email': email,
+              'password': password,
+              if (name.trim().isNotEmpty) 'name': name.trim(),
+            }),
           )
           .timeout(_entryCallTimeout);
       final data = json.decode(res.body);
@@ -1456,25 +1463,6 @@ class AutomationBridge {
         'ok': false,
         'error': engineNotAnsweringError,
       };
-    }
-  }
-
-  /// PUBLIC v1.0.6 (F4): tell the engine which window phase the app
-  /// is in — 'gate' (the small fixed panel) or 'studio' (the real
-  /// size). The engine resizes the app's own window. Fire-and-forget:
-  /// the result is ignored and every failure is swallowed — window
-  /// dressing must never break entry.
-  Future<void> setEntryWindowPhase(String phase) async {
-    try {
-      await http
-          .post(
-            Uri.parse('$baseUrl/api/entry/window-phase'),
-            headers: {'Content-Type': 'application/json'},
-            body: json.encode({'phase': phase}),
-          )
-          .timeout(_entryCallTimeout);
-    } catch (e) {
-      debugPrint('[setEntryWindowPhase Error] $e');
     }
   }
 

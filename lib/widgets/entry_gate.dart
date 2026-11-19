@@ -1,3 +1,7 @@
+import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -36,31 +40,47 @@ import '../services/automation_bridge.dart';
 ///   activation attempt, so nobody is surprised by it (the
 ///   owner's explicit order).
 ///
-/// v1.0.7 (C2 + A1): the gate window is a wide, low 640×520
-/// panel and the card is a TWO-ZONE layout that fits it whole —
-/// NO scrolling at 100% Windows scaling in any state. Left zone:
-/// logo, app name, tagline, the free-trial note. Right zone: the
-/// signed-in strip (when a sign-in is pending), the key door,
-/// then exactly one of the check-email block / the verification
-/// state / the get-my-key sign-in form. FIT BUDGET (line height
-/// counted conservatively at 1.25× font size): card padding
-/// 18+14; right zone's tallest state (sign-up form) = key
-/// section 113 + divider 29 + form 232 = 374; card total ≈ 406
-/// of the 520 window height — and the other states are shorter
-/// (strip ≈ 247, check-email ≈ 285, verification ≈ 395). A
-/// scroll view remains ONLY as a fallback for viewport heights
-/// below the design viewport (see _gateScrollFallbackHeight).
+/// v1.0.8 (F3 — owner's approved design): the window is ONE size
+/// now (the studio's own, from the runner) and the gate is a
+/// POPUP PORTAL over the studio: behind the centered single-
+/// column card the studio shows as a blurred, darkened,
+/// non-interactive shell — visible, beautiful, and unusable
+/// until a valid key activates (no entry without a key: the
+/// real studio is not even built while gated — the shell behind
+/// the blur is a static sketch, never live data). The card
+/// keeps every v1.0.7 state and wording — the signed-in strip,
+/// the key door, exactly one of the check-email block / the
+/// verification state / the get-my-key sign-in form — and adds
+/// a WhatsApp support row at its bottom. FIT BUDGET (line
+/// height counted conservatively at 1.25× font size): card
+/// padding 16+12 = 28; header block 72 (row 36 + note); gap 10;
+/// key section 116; divider block 30; the tallest state
+/// (sign-up form) 267; WhatsApp block 41 — the worst total is
+/// 564 of the 800-tall window, and every other state is
+/// shorter (sign-in + error 548, verification 519, code 451,
+/// check-email 410, strip 325). A scroll view remains ONLY as
+/// a fallback for viewport heights below the design viewport
+/// (see _gateScrollFallbackHeight).
+///
+/// v1.0.8 (F4): Create-account mode asks for the user's NAME
+/// (the form's first field, required) — the panel shows it and
+/// the key email greets with it.
 ///
 /// v1.0.7 (C3): there is NO Machine ID box on the gate any more
 /// (owner's order). The machine fingerprint still exists inside
 /// the engine — the one-device binding is unchanged — it is
 /// simply never displayed here.
 ///
-/// STARTUP: while the engine starts and the first entry answer
-/// is on its way, a splash screen shows instead of the gate card
-/// (see _buildStartupScreen); its progress is the provider's
-/// determinate engineStage (start → process up → port answering
-/// → entry answer), never a fake bar.
+/// STARTUP (v1.0.8 F1): while the engine starts and the first
+/// entry answer is on its way, an ANIMATED splash shows inside
+/// the same full-size window — the logo gently pulses with a
+/// gold glow, the determinate progress bar (the provider's real
+/// engineStage: start → process up → port answering → entry
+/// answer) carries a moving sheen, and the status line shows
+/// the real stage text, rotating honest filler lines only while
+/// one stage persists. Then the splash crossfades to the
+/// portal. The watchdog's engineFailed state lives on the
+/// splash too, with its Retry button (v1.0.1 behaviour, kept).
 
 // The entry's own dark palette — "Midnight Gold" (v1.0.6) —
 // splash + gate card.
@@ -78,13 +98,21 @@ const Color _entryWhite = Color(0xFFF7F5F0);
 const Color _entryWhiteText = Color(0xFF1C1C22);
 const Color _entryRed = Color(0xFFFF8585);
 const Color _entryRedBg = Color(0xFF2A1215);
+const Color _whatsAppGreen = Color(0xFF25D366);
 
-/// v1.0.7 (A1): the design viewport is the 640×520 gate window's
-/// client area (≈485 tall at 100% scaling, window chrome
-/// included in the 520). The gate renders statically at that
-/// size; only a viewport shorter than this falls back to
-/// scrolling, so content can never be trapped off-screen.
-const double _gateScrollFallbackHeight = 460;
+/// v1.0.8: the WhatsApp support link. The number lives ONLY
+/// inside this URL — it is never shown as text anywhere in the
+/// app (the owner's order).
+const String _whatsAppSupportUrl = 'https://wa.me/918198966902';
+
+/// v1.0.8 (F3): the portal's design viewport height — the card
+/// (≈564 worst state) renders statically; only a viewport
+/// shorter than this falls back to scrolling, so content can
+/// never be trapped off-screen.
+const double _gateScrollFallbackHeight = 560;
+
+/// The portal card's width — a single centered column.
+const double _portalCardWidth = 430;
 
 class EntryGateScreen extends StatefulWidget {
   const EntryGateScreen({super.key});
@@ -93,7 +121,9 @@ class EntryGateScreen extends StatefulWidget {
   State<EntryGateScreen> createState() => _EntryGateScreenState();
 }
 
-class _EntryGateScreenState extends State<EntryGateScreen> {
+class _EntryGateScreenState extends State<EntryGateScreen>
+    with SingleTickerProviderStateMixin {
+  final TextEditingController _nameController = TextEditingController();
   final TextEditingController _emailController = TextEditingController();
   final TextEditingController _passwordController = TextEditingController();
   final TextEditingController _keyController = TextEditingController();
@@ -106,8 +136,59 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
   // this string; the hidden field behind them owns the keyboard).
   String _otpCode = '';
 
+  // v1.0.8 (F1): the splash's life — one repeating controller
+  // drives the logo pulse, the glow, the twinkling stars and
+  // the progress bar's sheen. The stage tracker + the 1-second
+  // ticker drive the honest filler status lines: while one real
+  // stage persists past a few seconds, the line rotates; the
+  // moment the stage changes, the real stage text is back.
+  late final AnimationController _splashAnim;
+  Timer? _splashTicker;
+  EntryProvider? _listenedEntry;
+  int _lastEngineStage = 0;
+  DateTime _stageChangedAt = DateTime.now();
+  bool _splashShowing = true;
+
+  @override
+  void initState() {
+    super.initState();
+    _splashAnim = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1800),
+    )..repeat();
+    _splashTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted && _splashShowing) setState(() {});
+    });
+  }
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final entry = context.read<EntryProvider>();
+    if (!identical(entry, _listenedEntry)) {
+      _listenedEntry?.removeListener(_onEntryChanged);
+      _listenedEntry = entry;
+      _lastEngineStage = entry.engineStage;
+      _stageChangedAt = DateTime.now();
+      entry.addListener(_onEntryChanged);
+    }
+  }
+
+  void _onEntryChanged() {
+    final entry = _listenedEntry;
+    if (entry == null) return;
+    if (entry.engineStage != _lastEngineStage) {
+      _lastEngineStage = entry.engineStage;
+      _stageChangedAt = DateTime.now();
+    }
+  }
+
   @override
   void dispose() {
+    _listenedEntry?.removeListener(_onEntryChanged);
+    _splashTicker?.cancel();
+    _splashAnim.dispose();
+    _nameController.dispose();
     _emailController.dispose();
     _passwordController.dispose();
     _keyController.dispose();
@@ -270,65 +351,103 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     );
   }
 
-  /// v1.0.7 (C2): the LEFT zone — the brand block of the
-  /// two-zone card: logo, app name, tagline, the free-trial chip
-  /// and the note that replaces the old footer line.
-  Widget _brandZone() {
-    return SizedBox(
-      width: 176,
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Image.asset(
-            'assets/icon.png',
-            width: 46,
-            height: 46,
-            errorBuilder: (_, _, _) => const Icon(
-              Icons.auto_awesome,
-              size: 46,
-              color: _entryGold,
+  /// v1.0.8: a tappable WhatsApp line — the green glyph plus a
+  /// label. Opens the support chat in the user's browser. The
+  /// phone number itself is never rendered (see the URL const).
+  Widget _whatsAppLink(String label, {double glyphSize = 15}) {
+    return InkWell(
+      onTap: () =>
+          AutomationBridge.instance.openUrl(_whatsAppSupportUrl),
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            CustomPaint(
+              size: Size(glyphSize, glyphSize),
+              painter: const _WhatsAppGlyphPainter(),
             ),
-          ),
-          const SizedBox(height: 9),
-          const Text(
-            'FlowStudio',
-            style: TextStyle(
-              fontSize: 20,
-              fontWeight: FontWeight.bold,
-              color: _entryText,
-            ),
-          ),
-          const SizedBox(height: 3),
-          const Text(
-            'Multi-Account AI Video Engine',
-            style: TextStyle(fontSize: 11, color: _entryDim),
-          ),
-          const SizedBox(height: 16),
-          Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
-            decoration: BoxDecoration(
-              borderRadius: BorderRadius.circular(999),
-              border: Border.all(color: _entryGold),
-            ),
-            child: const Text(
-              '7-DAY FREE TRIAL',
-              style: TextStyle(
-                fontSize: 9.5,
+            const SizedBox(width: 6),
+            Text(
+              label,
+              style: const TextStyle(
+                fontSize: 11.5,
                 fontWeight: FontWeight.bold,
-                letterSpacing: 0.8,
+                color: _entryText,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// v1.0.8 (F3): the portal's header row — the brand block of
+  /// the single-column card: logo, app name, tagline, the
+  /// free-trial chip, and the note under it.
+  Widget _portalHeader() {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          children: [
+            Image.asset(
+              'assets/icon.png',
+              width: 34,
+              height: 34,
+              errorBuilder: (_, _, _) => const Icon(
+                Icons.auto_awesome,
+                size: 34,
                 color: _entryGold,
               ),
             ),
-          ),
-          const SizedBox(height: 9),
-          const Text(
-            'No license key? Sign in with Google or email — your '
-            'free trial key arrives by email.',
-            style: TextStyle(fontSize: 10.5, color: _entryFaint),
-          ),
-        ],
-      ),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    'FlowStudio',
+                    style: TextStyle(
+                      fontSize: 16,
+                      fontWeight: FontWeight.bold,
+                      color: _entryText,
+                    ),
+                  ),
+                  Text(
+                    'Multi-Account AI Video Engine',
+                    style: TextStyle(fontSize: 10, color: _entryDim),
+                  ),
+                ],
+              ),
+            ),
+            Container(
+              padding:
+                  const EdgeInsets.symmetric(horizontal: 9, vertical: 4),
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(999),
+                border: Border.all(color: _entryGold),
+              ),
+              child: const Text(
+                '7-DAY FREE TRIAL',
+                style: TextStyle(
+                  fontSize: 9.5,
+                  fontWeight: FontWeight.bold,
+                  letterSpacing: 0.8,
+                  color: _entryGold,
+                ),
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        const Text(
+          'No license key? Sign in with Google or email — your '
+          'free trial key arrives by email.',
+          style: TextStyle(fontSize: 10.5, color: _entryFaint),
+        ),
+      ],
     );
   }
 
@@ -477,8 +596,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
 
   /// v1.0.5 — the six code boxes: a hidden text field owns the
   /// keyboard; the boxes only render the digits typed so far.
-  /// v1.0.7: the boxes are sized for the two-zone card's right
-  /// zone.
+  /// v1.0.7: the boxes are sized for the card's column.
   Widget _otpCodeInput(EntryProvider entry) {
     return Stack(
       children: [
@@ -649,6 +767,8 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
   /// v1.0.7 (A3): in Create-account mode the form carries the
   /// three-step explainer above its button, so the verify-first
   /// flow is written down before the user even starts it.
+  /// v1.0.8 (F4): Create-account mode opens with the NAME field
+  /// — the first field of the form, required.
   Widget _signInForm(EntryProvider entry, bool doorAEnabled) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -674,6 +794,14 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
           },
         ),
         const SizedBox(height: 6),
+        if (_signUpMode) ...[
+          _field(
+            controller: _nameController,
+            hint: 'Your name',
+            enabled: doorAEnabled,
+          ),
+          const SizedBox(height: 6),
+        ],
         _field(
           controller: _emailController,
           hint: 'Email address',
@@ -704,7 +832,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
           onTap: () {
             final provider = context.read<EntryProvider>();
             if (_signUpMode) {
-              provider.signUp(
+              provider.signUp(_nameController.text,
                   _emailController.text, _passwordController.text);
             } else {
               provider.signIn(
@@ -739,6 +867,158 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     );
   }
 
+  /// v1.0.8 (F3): the LOCKED STUDIO SHELL behind the blur — a
+  /// static sketch of the studio (top strip, accounts column,
+  /// prompts area, progress column, activity strip) drawn with
+  /// plain shapes. It carries NO live data and NO working
+  /// control: the real studio is not built while the gate is up
+  /// (EntryGateHome), and this whole underlay sits inside an
+  /// IgnorePointer under a BackdropFilter — visible, never
+  /// usable.
+  Widget _lockedStudioShell() {
+    Widget bar(double w, double h, [Color c = const Color(0xFF23232E)]) {
+      return Container(
+        width: w,
+        height: h,
+        decoration: BoxDecoration(
+          color: c,
+          borderRadius: BorderRadius.circular(h / 2),
+        ),
+      );
+    }
+
+    Widget panel(List<Widget> children) {
+      return Container(
+        padding: const EdgeInsets.all(12),
+        decoration: BoxDecoration(
+          color: const Color(0xFF12121A),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: const Color(0xFF1E1E28)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: children,
+        ),
+      );
+    }
+
+    return Container(
+      color: const Color(0xFF0E0E13),
+      padding: const EdgeInsets.all(14),
+      child: Column(
+        children: [
+          // Top strip: logo dot, name bar, credits pill, buttons.
+          Row(
+            children: [
+              Container(
+                width: 24,
+                height: 24,
+                decoration: const BoxDecoration(
+                  color: Color(0xFF8A6420),
+                  shape: BoxShape.circle,
+                ),
+              ),
+              const SizedBox(width: 10),
+              bar(110, 10, const Color(0xFF2C2C38)),
+              const Spacer(),
+              bar(130, 16, const Color(0xFF3A2E14)),
+              const SizedBox(width: 10),
+              bar(72, 16),
+              const SizedBox(width: 10),
+              bar(72, 16),
+            ],
+          ),
+          const SizedBox(height: 14),
+          Expanded(
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // Accounts column.
+                SizedBox(
+                  width: 200,
+                  child: panel([
+                    bar(70, 8, const Color(0xFF8A6420)),
+                    const SizedBox(height: 12),
+                    for (var i = 0; i < 5; i++) ...[
+                      Row(children: [
+                        Container(
+                          width: 18,
+                          height: 18,
+                          decoration: const BoxDecoration(
+                            color: Color(0xFF23232E),
+                            shape: BoxShape.circle,
+                          ),
+                        ),
+                        const SizedBox(width: 8),
+                        bar(96, 8),
+                      ]),
+                      const SizedBox(height: 12),
+                    ],
+                  ]),
+                ),
+                const SizedBox(width: 14),
+                // Prompts + settings.
+                Expanded(
+                  child: Column(
+                    children: [
+                      Expanded(
+                        child: panel([
+                          bar(90, 8, const Color(0xFF8A6420)),
+                          const SizedBox(height: 12),
+                          bar(300, 8),
+                          const SizedBox(height: 9),
+                          bar(260, 8),
+                          const SizedBox(height: 9),
+                          bar(280, 8),
+                        ]),
+                      ),
+                      const SizedBox(height: 14),
+                      SizedBox(
+                        height: 64,
+                        child: panel([
+                          Row(children: [
+                            bar(80, 14),
+                            const SizedBox(width: 10),
+                            bar(80, 14),
+                            const SizedBox(width: 10),
+                            bar(80, 14),
+                            const Spacer(),
+                            bar(110, 18, const Color(0xFF3A2E14)),
+                          ]),
+                        ]),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 14),
+                // Progress column.
+                SizedBox(
+                  width: 220,
+                  child: panel([
+                    bar(80, 8, const Color(0xFF8A6420)),
+                    const SizedBox(height: 12),
+                    bar(150, 8),
+                    const SizedBox(height: 9),
+                    bar(120, 8),
+                    const SizedBox(height: 14),
+                    bar(170, 6, const Color(0xFF3A2E14)),
+                  ]),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 14),
+          // Activity strip.
+          Row(children: [
+            bar(60, 8),
+            const SizedBox(width: 10),
+            bar(220, 8),
+          ]),
+        ],
+      ),
+    );
+  }
+
   /// v1.0.4 — the STARTUP SCREEN, rebuilt dark and centred like
   /// a market app's splash: big logo, the app name, the tagline,
   /// a progress bar that fills with the real engine state, a
@@ -748,18 +1028,37 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
   /// v1.0.6 (F5): the progress is DETERMINATE — the provider's
   /// engineStage (0 start requested → 1 process up → 2 port
   /// answering → 3 entry answer in) over 3, with a status line
-  /// per stage. The old two hard-coded steps made the whole
-  /// engine-start wait look like one frozen bar.
+  /// per stage.
+  /// v1.0.8 (F1): the splash is ALIVE — the logo gently pulses
+  /// inside a breathing gold glow with two twinkling stars, and
+  /// the gold bar carries a moving sheen. The fill stays
+  /// truthful (stage/3, as before). The status line shows the
+  /// REAL stage text; only while one stage persists beyond
+  /// ~2.5 s does it rotate honest filler lines ("Preparing your
+  /// accounts…", "Warming up the engine…", "Almost there…"),
+  /// and a stage change brings the real text straight back.
   Widget _buildStartupScreen(BuildContext context, EntryProvider entry) {
     final double progress =
         entry.engineFailed ? 0 : entry.engineStage / 3;
-    final String status = entry.loaded
+    String status = entry.loaded
         ? 'Workspace ready!'
         : entry.engineStage >= 2
             ? 'Checking your entry…'
             : entry.engineStage >= 1
                 ? 'Engine is up — waiting for it to answer…'
                 : 'Starting the engine…';
+    if (!entry.engineFailed && !entry.loaded) {
+      final idleMs =
+          DateTime.now().difference(_stageChangedAt).inMilliseconds;
+      if (idleMs > 2500) {
+        const fillers = [
+          'Preparing your accounts…',
+          'Warming up the engine…',
+          'Almost there…',
+        ];
+        status = fillers[((idleMs - 2500) ~/ 2800) % fillers.length];
+      }
+    }
     return Scaffold(
       backgroundColor: _entryBg,
       body: Stack(
@@ -768,15 +1067,70 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Image.asset(
-                  'assets/icon.png',
-                  width: 96,
-                  height: 96,
-                  errorBuilder: (_, _, _) => const Icon(
-                    Icons.auto_awesome,
-                    size: 96,
-                    color: _entryGold,
-                  ),
+                AnimatedBuilder(
+                  animation: _splashAnim,
+                  builder: (context, _) {
+                    final t = _splashAnim.value;
+                    final pulse =
+                        (math.sin(t * 2 * math.pi) + 1) / 2;
+                    return Stack(
+                      alignment: Alignment.center,
+                      children: [
+                        Container(
+                          width: 128,
+                          height: 128,
+                          decoration: BoxDecoration(
+                            shape: BoxShape.circle,
+                            boxShadow: [
+                              BoxShadow(
+                                color: _entryGold
+                                    .withOpacity(0.16 + 0.22 * pulse),
+                                blurRadius: 34 + 30 * pulse,
+                                spreadRadius: 2 + 6 * pulse,
+                              ),
+                            ],
+                          ),
+                        ),
+                        Transform.scale(
+                          scale: 1 + 0.045 * pulse,
+                          child: Image.asset(
+                            'assets/icon.png',
+                            width: 96,
+                            height: 96,
+                            errorBuilder: (_, _, _) => const Icon(
+                              Icons.auto_awesome,
+                              size: 96,
+                              color: _entryGold,
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          top: 2,
+                          right: 6,
+                          child: Opacity(
+                            opacity: 0.3 + 0.7 * pulse,
+                            child: const Icon(
+                              Icons.auto_awesome,
+                              size: 16,
+                              color: _entryGold,
+                            ),
+                          ),
+                        ),
+                        Positioned(
+                          bottom: 8,
+                          left: 2,
+                          child: Opacity(
+                            opacity: 0.3 + 0.7 * (1 - pulse),
+                            child: const Icon(
+                              Icons.auto_awesome,
+                              size: 11,
+                              color: _entryGold,
+                            ),
+                          ),
+                        ),
+                      ],
+                    );
+                  },
                 ),
                 const SizedBox(height: 18),
                 const Text(
@@ -793,13 +1147,54 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
                   style: TextStyle(fontSize: 13, color: _entryDim),
                 ),
                 const SizedBox(height: 30),
+                // The determinate bar: the gold fill is the real
+                // stage fraction; the sheen band sweeps it while
+                // the splash is up (motion only — never progress).
                 SizedBox(
                   width: 340,
-                  child: LinearProgressIndicator(
-                    value: progress,
-                    minHeight: 4,
-                    color: _entryGold,
-                    backgroundColor: _entryBorder,
+                  height: 4,
+                  child: ClipRRect(
+                    borderRadius: BorderRadius.circular(2),
+                    child: Stack(
+                      children: [
+                        Container(color: _entryBorder),
+                        FractionallySizedBox(
+                          widthFactor: progress.clamp(0, 1).toDouble(),
+                          child: Container(
+                            decoration: const BoxDecoration(
+                              gradient: LinearGradient(
+                                colors: [
+                                  Color(0xFFF2B544),
+                                  Color(0xFFDD941F),
+                                ],
+                              ),
+                            ),
+                          ),
+                        ),
+                        AnimatedBuilder(
+                          animation: _splashAnim,
+                          builder: (context, _) {
+                            return Positioned(
+                              left: -70 + 410 * _splashAnim.value,
+                              top: 0,
+                              bottom: 0,
+                              width: 60,
+                              child: Container(
+                                decoration: BoxDecoration(
+                                  gradient: LinearGradient(
+                                    colors: [
+                                      Colors.white.withOpacity(0),
+                                      Colors.white.withOpacity(0.35),
+                                      Colors.white.withOpacity(0),
+                                    ],
+                                  ),
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                      ],
+                    ),
                   ),
                 ),
                 const SizedBox(height: 14),
@@ -850,7 +1245,7 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
             right: 0,
             bottom: 18,
             child: Text(
-              'v1.0.7',
+              'v1.0.8',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 10.5, color: _entryFaint),
             ),
@@ -860,17 +1255,11 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     );
   }
 
-  @override
-  Widget build(BuildContext context) {
-    final entry = context.watch<EntryProvider>();
-    // v1.0.2: before the first entry answer the STARTUP SCREEN
-    // shows (splash), not the gate card.
-    if (!entry.loaded && !entry.engineFailed) {
-      return _buildStartupScreen(context, entry);
-    }
-    if (!entry.loaded && entry.engineFailed) {
-      return _buildStartupScreen(context, entry);
-    }
+  /// v1.0.8 (F3): the PORTAL — the blurred locked studio with
+  /// the single-column card floating at its centre (a small
+  /// scale + fade entrance, then still). Every state below the
+  /// header is one of the v1.0.7 states, unchanged in wording.
+  Widget _buildPortal(BuildContext context, EntryProvider entry) {
     // v1.0.1: every control waits for the engine's first answer
     // (entry.loaded), not just for !busy — in v1.0.0 the key field
     // and Activate were live against a dead port and could only
@@ -887,123 +1276,229 @@ class _EntryGateScreenState extends State<EntryGateScreen> {
     final showStrip =
         signedIn && !entry.keyEmailed && !entry.needsVerification;
     final card = Container(
-      width: 608,
-      padding: const EdgeInsets.fromLTRB(22, 18, 22, 14),
+      width: _portalCardWidth,
+      padding: const EdgeInsets.fromLTRB(16, 16, 16, 12),
       decoration: BoxDecoration(
         color: _entryCard,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: _entryBorder),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x99000000),
+            blurRadius: 44,
+            offset: Offset(0, 18),
+          ),
+        ],
       ),
-      child: IntrinsicHeight(
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _brandZone(),
-            const SizedBox(width: 18),
-            const VerticalDivider(
-              width: 1,
-              thickness: 1,
-              color: _entryBorder,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _portalHeader(),
+          const SizedBox(height: 10),
+          if (showStrip) ...[
+            _signedInStrip(entry),
+            const SizedBox(height: 10),
+          ],
+          _keySection(entry),
+          if (!showStrip) ...[
+            const SizedBox(height: 9),
+            const Row(
+              children: [
+                Expanded(
+                    child: Divider(height: 1, color: _entryBorder)),
+                Padding(
+                  padding: EdgeInsets.symmetric(horizontal: 10),
+                  child: Text(
+                    'or',
+                    style:
+                        TextStyle(fontSize: 11, color: _entryFaint),
+                  ),
+                ),
+                Expanded(
+                    child: Divider(height: 1, color: _entryBorder)),
+              ],
             ),
-            const SizedBox(width: 18),
-            Expanded(
-              child: Column(
-                mainAxisSize: MainAxisSize.min,
-                crossAxisAlignment: CrossAxisAlignment.stretch,
-                children: [
-                  if (showStrip) ...[
-                    _signedInStrip(entry),
-                    const SizedBox(height: 12),
-                  ],
-                  _keySection(entry),
-                  if (!showStrip) ...[
-                    const SizedBox(height: 9),
-                    const Row(
-                      children: [
-                        Expanded(
-                            child: Divider(height: 1, color: _entryBorder)),
-                        Padding(
-                          padding: EdgeInsets.symmetric(horizontal: 10),
-                          child: Text(
-                            'or',
-                            style:
-                                TextStyle(fontSize: 11, color: _entryFaint),
-                          ),
-                        ),
-                        Expanded(
-                            child: Divider(height: 1, color: _entryBorder)),
-                      ],
-                    ),
-                    const SizedBox(height: 7),
-                    // Below the divider the card is in exactly
-                    // one of three states — the check-email
-                    // block, the verification state, or the
-                    // get-my-key sign-in form.
-                    if (entry.keyEmailed)
-                      _checkEmailBlock(entry)
-                    else if (entry.needsVerification)
-                      _verificationCard(entry)
-                    else
-                      _signInForm(entry, doorAEnabled),
-                  ],
-                  if (entry.notice.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Text(
-                      entry.notice,
-                      style:
-                          const TextStyle(fontSize: 10.5, color: _entryDim),
-                    ),
-                  ],
-                  if (!entry.doorAConfigured) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      entry.doorAMessage,
-                      style: const TextStyle(
-                          fontSize: 10.5, color: _entryFaint),
-                    ),
-                  ],
-                  if (entry.error.isNotEmpty) ...[
-                    const SizedBox(height: 8),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                          horizontal: 10, vertical: 8),
-                      decoration: BoxDecoration(
-                        color: _entryRedBg,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(color: _entryRed),
-                      ),
-                      child: Text(
-                        entry.error,
-                        style:
-                            const TextStyle(fontSize: 11, color: _entryRed),
-                      ),
-                    ),
-                  ],
-                ],
-              ),
+            const SizedBox(height: 7),
+            // Below the divider the card is in exactly one of
+            // three states — the check-email block, the
+            // verification state, or the get-my-key sign-in form.
+            if (entry.keyEmailed)
+              _checkEmailBlock(entry)
+            else if (entry.needsVerification)
+              _verificationCard(entry)
+            else
+              _signInForm(entry, doorAEnabled),
+          ],
+          if (entry.notice.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Text(
+              entry.notice,
+              style:
+                  const TextStyle(fontSize: 10.5, color: _entryDim),
             ),
           ],
-        ),
+          if (!entry.doorAConfigured) ...[
+            const SizedBox(height: 6),
+            Text(
+              entry.doorAMessage,
+              style: const TextStyle(
+                  fontSize: 10.5, color: _entryFaint),
+            ),
+          ],
+          if (entry.error.isNotEmpty) ...[
+            const SizedBox(height: 8),
+            Container(
+              padding: const EdgeInsets.symmetric(
+                  horizontal: 10, vertical: 8),
+              decoration: BoxDecoration(
+                color: _entryRedBg,
+                borderRadius: BorderRadius.circular(8),
+                border: Border.all(color: _entryRed),
+              ),
+              child: Text(
+                entry.error,
+                style:
+                    const TextStyle(fontSize: 11, color: _entryRed),
+              ),
+            ),
+            const SizedBox(height: 6),
+            // The error's own help line (the owner's order):
+            // right under the failure, one tap to support.
+            _whatsAppLink('Still stuck? Get help on WhatsApp',
+                glyphSize: 13),
+          ],
+          const SizedBox(height: 10),
+          const Divider(height: 1, color: _entryBorder),
+          const SizedBox(height: 8),
+          Center(
+            child: _whatsAppLink('Need help? Chat with us on WhatsApp'),
+          ),
+        ],
       ),
+    );
+    // The entrance: the card scales 0.96 → 1 and fades in over
+    // ~350 ms when the portal first appears, then stays still.
+    final enteringCard = TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: 1),
+      duration: const Duration(milliseconds: 350),
+      curve: Curves.easeOutCubic,
+      builder: (context, value, child) {
+        return Opacity(
+          opacity: value,
+          child: Transform.scale(
+            scale: 0.96 + 0.04 * value,
+            child: child,
+          ),
+        );
+      },
+      child: card,
     );
     return Scaffold(
       backgroundColor: _entryBg,
-      body: LayoutBuilder(
-        builder: (context, constraints) {
-          // v1.0.7 (A1): at the design size the card is static —
-          // nothing scrolls. The scroll view is a fallback for
-          // viewport heights below the design viewport only.
-          if (constraints.maxHeight < _gateScrollFallbackHeight) {
-            return SingleChildScrollView(
-              child: ConstrainedBox(
-                constraints: BoxConstraints(minHeight: constraints.maxHeight),
-                child: Center(child: card),
+      body: Stack(
+        children: [
+          // The locked studio behind: blurred, darkened, and
+          // pointer-dead — the portal is the only way in.
+          Positioned.fill(
+            child: IgnorePointer(
+              child: Stack(
+                fit: StackFit.expand,
+                children: [
+                  _lockedStudioShell(),
+                  BackdropFilter(
+                    filter: ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14),
+                    child: Container(
+                      color: Colors.black.withOpacity(0.55),
+                    ),
+                  ),
+                ],
               ),
-            );
-          }
-          return Center(child: card);
-        },
+            ),
+          ),
+          LayoutBuilder(
+            builder: (context, constraints) {
+              // At the design size the card is static — nothing
+              // scrolls. The scroll view is a fallback for
+              // viewport heights below the design viewport only.
+              if (constraints.maxHeight < _gateScrollFallbackHeight) {
+                return SingleChildScrollView(
+                  child: ConstrainedBox(
+                    constraints:
+                        BoxConstraints(minHeight: constraints.maxHeight),
+                    child: Center(child: enteringCard),
+                  ),
+                );
+              }
+              return Center(child: enteringCard);
+            },
+          ),
+        ],
       ),
     );
   }
+
+  @override
+  Widget build(BuildContext context) {
+    final entry = context.watch<EntryProvider>();
+    // v1.0.2: before the first entry answer the STARTUP SCREEN
+    // shows (splash), not the gate card. v1.0.8 (F1): the two
+    // crossfade — splash out, portal in.
+    final showSplash = !entry.loaded;
+    _splashShowing = showSplash;
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 300),
+      child: showSplash
+          ? KeyedSubtree(
+              key: const ValueKey('entry-splash'),
+              child: _buildStartupScreen(context, entry),
+            )
+          : KeyedSubtree(
+              key: const ValueKey('entry-portal'),
+              child: _buildPortal(context, entry),
+            ),
+    );
+  }
+}
+
+/// v1.0.8: the WhatsApp glyph, drawn (no icon font carries it):
+/// the green speech bubble with its tail and the white handset
+/// inside — WhatsApp green #25D366.
+class _WhatsAppGlyphPainter extends CustomPainter {
+  const _WhatsAppGlyphPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final green = Paint()..color = _whatsAppGreen;
+    // Speech bubble: a circle with a small tail at bottom-left.
+    canvas.drawCircle(
+      Offset(s * 0.52, s * 0.46),
+      s * 0.42,
+      green,
+    );
+    final tail = Path()
+      ..moveTo(s * 0.16, s * 0.78)
+      ..lineTo(s * 0.10, s * 0.98)
+      ..lineTo(s * 0.34, s * 0.86)
+      ..close();
+    canvas.drawPath(tail, green);
+    // The white handset (simplified silhouette).
+    final phone = Paint()..color = Colors.white;
+    final handset = Path()
+      ..moveTo(s * 0.36, s * 0.28)
+      ..cubicTo(s * 0.30, s * 0.34, s * 0.30, s * 0.44, s * 0.36, s * 0.54)
+      ..cubicTo(s * 0.44, s * 0.66, s * 0.56, s * 0.74, s * 0.66, s * 0.76)
+      ..cubicTo(s * 0.74, s * 0.77, s * 0.78, s * 0.72, s * 0.76, s * 0.66)
+      ..lineTo(s * 0.66, s * 0.58)
+      ..cubicTo(s * 0.60, s * 0.57, s * 0.55, s * 0.52, s * 0.53, s * 0.46)
+      ..lineTo(s * 0.60, s * 0.39)
+      ..cubicTo(s * 0.61, s * 0.32, s * 0.56, s * 0.27, s * 0.47, s * 0.25)
+      ..cubicTo(s * 0.42, s * 0.24, s * 0.38, s * 0.25, s * 0.36, s * 0.28)
+      ..close();
+    canvas.drawPath(handset, phone);
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }

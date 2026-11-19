@@ -145,7 +145,7 @@ async function main() {
     if (child.exitCode !== null) {
       refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
     }
-    check('status version is 1.0.7', status && status.version === '1.0.7', JSON.stringify(status));
+    check('status version is 1.0.8', status && status.version === '1.0.8', JSON.stringify(status));
 
     // PUBLIC v1.0.0: ENTRY GATE — a fresh install (throwaway
     // APPDATA, no credential stored) must be CLOSED, a garbage
@@ -179,11 +179,12 @@ async function main() {
     check('entry gate: an unknown short key is refused',
       badShort.status === 200 && badShort.data && badShort.data.ok === false,
       JSON.stringify(badShort.data));
-    // v1.0.6: the window-phase route exists and answers (the
-    // resize itself is Windows-only; off Windows it is a no-op).
+    // v1.0.8 (F2): the window-phase route is GONE — the window
+    // is one size from the runner and nothing resizes it. The
+    // route must not answer any more.
     const phase = await req('POST', '/api/entry/window-phase', { phase: 'gate' });
-    check('entry gate: the window-phase route answers',
-      phase.status === 200 && phase.data && phase.data.ok === true,
+    check('entry gate: the window-phase route is gone (v1.0.8 F2)',
+      phase.status === 404,
       JSON.stringify(phase.data));
     // v1.0.5: the key fetch with no pending sign-in refuses
     // honestly — no key is ever invented locally.

@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.7+8 (public line)', read124('pubspec.yaml').includes('version: 1.0.7+8'));
-    eq('X124 package.json version is 1.0.7', JSON.parse(read124('package.json')).version, '1.0.7');
-    ok('X124 the bridge reports version 1.0.7 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.7';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.8+9 (public line)', read124('pubspec.yaml').includes('version: 1.0.8+9'));
+    eq('X124 package.json version is 1.0.8', JSON.parse(read124('package.json')).version, '1.0.8');
+    ok('X124 the bridge reports version 1.0.8 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.8';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the public release line', bridgeSrc124.includes("startsWith('public-v')") && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.7 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.7'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.8 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.8'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16225,7 +16225,8 @@ async function main() {
       entryGateSrc125.includes("label: 'Retry'") &&
       entryGateSrc125.includes('retryEngine()'));
     ok('X125 "Starting the engine" yields to the failed state',
-      entryGateSrc125.includes('if (!entry.loaded && !entry.engineFailed)'));
+      entryGateSrc125.includes('final showSplash = !entry.loaded;') &&
+      entryGateSrc125.includes('entry.engineFailed')); // v1.0.8: one splash branch — the failed state renders inside it
 
     // --- one automatic retry on a not-answering answer ---
     ok('X125 the provider retries once via the shared recovery',
@@ -16241,8 +16242,8 @@ async function main() {
     eq('X125 the eight gate calls return the shared sentence',
       (bridgeDartSrc125.match(/'error': engineNotAnsweringError,/g) || []).length, 8); // + v1.0.5: my-key, verification link, send-otp, verify-otp
     const gateSection125 = bridgeDartSrc125.slice(bridgeDartSrc125.indexOf('entry gate (the app'));
-    eq('X125 all ten gate HTTP calls carry the timeout',
-      (gateSection125.match(/\.timeout\(_entryCallTimeout\)/g) || []).length, 10); // + v1.0.6: the window-phase call
+    eq('X125 all nine gate HTTP calls carry the timeout',
+      (gateSection125.match(/\.timeout\(_entryCallTimeout\)/g) || []).length, 9); // v1.0.6's window-phase call was the tenth — removed in v1.0.8 (F2)
     ok('X125 the gate timeout is 10 seconds',
       bridgeDartSrc125.includes('static const Duration _entryCallTimeout = Duration(seconds: 10);'));
     ok('X125 engine starts are logged to engine-start.log in the app data folder',
@@ -16594,9 +16595,9 @@ async function main() {
       !bridgeJs127.includes('handleGoogleCallback(') &&
       bridgeJs127.includes("'/api/entry/google-url'"));
     ok('X127 the startup splash is in the gate (progress + real status lines)',
-      gateDart127.includes('_buildStartupScreen') && gateDart127.includes('LinearProgressIndicator') &&
+      gateDart127.includes('_buildStartupScreen') && gateDart127.includes('FractionallySizedBox') &&
       gateDart127.includes('Starting the engine…') && gateDart127.includes('Checking your entry…') &&
-      gateDart127.includes('entry.engineStage'));
+      gateDart127.includes('entry.engineStage')); // v1.0.8 (F1): the determinate bar is custom (gold + sheen), no longer LinearProgressIndicator
     const sidebar127 = read127('lib/widgets/sidebar_accounts.dart');
     const chipSection127 = sidebar127.slice(
       sidebar127.indexOf('class _HoverFilterBtn'),
@@ -16605,10 +16606,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.7',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.7"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.7'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.7';"));
+    ok('X127 the remaining version sites carry 1.0.8',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.8"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.8'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.8';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('setPendingAccountSession'));
@@ -16661,22 +16662,22 @@ async function main() {
 
     // --- the professional entry: key door first, doors below "or" ---
     ok('X128 the key door sits above the account doors',
-      gateDart128.indexOf("'LICENSE KEY'") > gateDart128.indexOf('Widget _brandZone()') &&
+      gateDart128.indexOf("'LICENSE KEY'") > gateDart128.indexOf('Widget _portalHeader()') &&
       gateDart128.indexOf("'Continue with Google'") > gateDart128.indexOf("'Activate'"));
     ok('X128 the doors are split by an "or" divider',
       gateDart128.includes("'or'") && gateDart128.includes('Multi-Account AI Video Engine'));
     ok('X128 a signed-in account lands on the key step (v1.0.5; v1.0.6: by email)',
       gateDart128.includes('showStrip') && gateDart128.includes('comes by email') &&
       gateDart128.includes('Signed in as') && gateDart128.includes('GET MY FREE KEY'));
-    ok('X128 the brand zone carries the free-trial note (v1.0.7: left zone, was the footer line)',
+    ok('X128 the portal header carries the free-trial note (v1.0.8: single-column header, was the brand zone)',
       gateDart128.includes('No license key? Sign in with Google or email'));
 
     // --- the dark splash: state-driven progress, ready line, version ---
-    ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold)',
-      gateDart128.includes('0xFF0B0B10') && gateDart128.includes('value: progress') &&
+    ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold; v1.0.8: custom gold bar)',
+      gateDart128.includes('0xFF0B0B10') && gateDart128.includes('widthFactor: progress') &&
       gateDart128.includes('entry.engineStage / 3'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.7',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.7'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.8',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.8'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
@@ -16861,31 +16862,21 @@ async function main() {
     ok('X130 the gate wears Midnight Gold (bg, card, gold)',
       gateDart130.includes('0xFF0B0B10') && gateDart130.includes('0xFF14141C') &&
       gateDart130.includes('0xFFF5B83D') && gateDart130.includes('0xFF26262F'));
-    ok('X130 the Google button is white and the card fills the wide gate window (v1.0.7 C2: 608 in 640)',
+    ok('X130 the Google button is white and the card is the v1.0.8 portal column (430 wide)',
       gateDart130.includes('white: true') && gateDart130.includes('0xFFF7F5F0') &&
-      gateDart130.includes('width: 608') && gateDart130.includes('BorderRadius.circular(16)'));
+      gateDart130.includes('width: _portalCardWidth') && gateDart130.includes('_portalCardWidth = 430') &&
+      gateDart130.includes('BorderRadius.circular(16)'));
     ok('X130 the key field invites the short format and auto-formats it',
       gateDart130.includes('Paste your license key — FS-XXXX-XXXX-XXXX') &&
       gateDart130.includes('_onKeyChanged') && gateDart130.includes('onChanged: _onKeyChanged'));
 
-    // --- F4: window phases ---
-    eq('X130 the gate phase plan is the wide low panel (v1.0.7 C2)',
-      JSON.stringify(windowStyle130.appWindowPhasePlan('gate')),
-      JSON.stringify({ width: 640, height: 520, resizable: false }));
-    eq('X130 the studio phase plan is the real size, resizable',
-      JSON.stringify(windowStyle130.appWindowPhasePlan('studio')),
-      JSON.stringify({ width: 1280, height: 800, resizable: true }));
-    eq('X130 an unknown phase has no plan', windowStyle130.appWindowPhasePlan('bogus'), null);
-    ok('X130 setAppWindowPhase is a safe no-op off Windows (v1.0.7: result object)',
-      (await windowStyle130.setAppWindowPhase(123, 'gate')).verified === false &&
-      (await windowStyle130.setAppWindowPhase(123, 'gate')).attempts === 0);
-    ok('X130 the runner opens at 640x520 and the bridge serves the phase route',
-      mainCpp130.includes('Win32Window::Size size(640, 520)') &&
-      bridgeJs130.includes("'/api/entry/window-phase'") && bridgeJs130.includes('enforceAppWindowPhase(phase)'));
-    ok('X130 the Dart side reports phase transitions from the entry state',
-      bridgeDart130.includes('Future<void> setEntryWindowPhase(String phase)') &&
-      providerDart130.includes("AutomationBridge.instance.setEntryWindowPhase(phase)") &&
-      providerDart130.includes("_allowed ? 'studio' : 'gate'"));
+    // --- F4: window phases — REPLACED in v1.0.8 (F2): the two-
+    // size phase machinery is removed entirely; the window is
+    // the studio's one size from the first frame. The negative
+    // pins live in X132; here only the runner's size is pinned.
+    ok('X130 the runner opens at the studio size 1280x800 (v1.0.8 F2 — one window size)',
+      mainCpp130.includes('Win32Window::Size size(1280, 800)') &&
+      !mainCpp130.includes('Win32Window::Size size(640, 520)'));
 
     // --- F5: the engine start no longer waits inside the future ---
     const ensure130 = bridgeDart130.slice(
@@ -16920,6 +16911,13 @@ async function main() {
   // verify-first, written plainly. Part B: the key service
   // sends through Brevo when BREVO_API_KEY is set (any
   // recipient), Resend otherwise.
+  // v1.0.8 SUPERSESSION: C1's bridge phase enforcer and C2's
+  // two-zone 640x520 card are REPLACED — F2 removes the window
+  // phases entirely (one window size from the runner) and F3
+  // makes the gate a single-column portal over the blurred
+  // studio. The C1/C2 pins below were retired with their
+  // contract; the replacement contract is pinned in X132. A2,
+  // A3, C3 and Part B stay in force unchanged.
   // =====================================================================
   {
     const fs131 = require('fs');
@@ -16931,74 +16929,18 @@ async function main() {
     const windowStyle131 = require(path131.join(__dirname, '..', 'engine/windowStyle.js'));
     const windowStyleSrc131 = read131('engine/windowStyle.js');
 
-    // --- C2 + A1: the 640x520 two-zone fit, budget pinned ---
-    ok('X131 the gate card is the two-zone layout (brand zone + divider + right zone)',
-      gateDart131.includes('Widget _brandZone()') && gateDart131.includes('VerticalDivider') &&
-      gateDart131.includes('Widget _keySection(EntryProvider entry)') &&
-      gateDart131.includes('width: 608') && gateDart131.includes('_gateScrollFallbackHeight'));
-    // The documented budget (line height at 1.25x, the gate's own
-    // metrics): card padding 18+14 = 32; key section 113; the
-    // "or" divider block 29; sign-in form 200; sign-up form 232
-    // (explainer included); strip block + gap 169; check-email
-    // block 111; verification card 221 (sign-up wording) / 154
-    // (code half); brand zone 209.
-    const budget131 = { pad: 32, key: 113, divider: 29, signIn: 200, signUp: 232, strip: 169, checkBlock: 111, verifyCardSignUp: 221, verifyCardCode: 154, brand: 209 };
-    const stateHeights131 = {
-      signIn: budget131.pad + budget131.key + budget131.divider + budget131.signIn,
-      signUp: budget131.pad + budget131.key + budget131.divider + budget131.signUp,
-      strip: budget131.pad + Math.max(budget131.brand, budget131.strip + budget131.key),
-      checkEmail: budget131.pad + budget131.key + budget131.divider + budget131.checkBlock,
-      verifySignUp: budget131.pad + budget131.key + budget131.divider + budget131.verifyCardSignUp,
-      verifyCode: budget131.pad + budget131.key + budget131.divider + budget131.verifyCardCode
-    };
-    ok('X131 every gate state fits the 520 window height with margin (A1)',
-      Math.max(...Object.values(stateHeights131)) <= 520 &&
-      stateHeights131.signUp === 406 && stateHeights131.verifySignUp === 395,
-      JSON.stringify(stateHeights131));
+    // --- C2 + A1: RETIRED in v1.0.8 (F3) — the two-zone card
+    // and its 520 budget were replaced by the single-column
+    // portal and its own budget, pinned in X132. Only the
+    // no-trapped-content fallback survives, in its new shape.
     ok('X131 the scroll view is ONLY a below-design-viewport fallback',
       gateDart131.includes('constraints.maxHeight < _gateScrollFallbackHeight') &&
       gateDart131.includes('SingleChildScrollView') &&
-      gateDart131.indexOf('return Center(child: card);') > gateDart131.indexOf('SingleChildScrollView'));
+      gateDart131.indexOf('return Center(child: enteringCard);') > gateDart131.indexOf('SingleChildScrollView'));
 
-    // --- C1: the read-back, the verify rule, the retry loop ---
-    eq('X131 a read-back line parses (found, physical size, dpi, style)',
-      JSON.stringify(windowStyle131.parsePhaseReadback('1,1280,800,96,1')),
-      JSON.stringify({ found: true, width: 1280, height: 800, dpi: 96, resizable: true }));
-    eq('X131 a not-found read-back parses as not found',
-      windowStyle131.parsePhaseReadback('0,0,0,96,0').found, false);
-    eq('X131 garbage parses as not found', windowStyle131.parsePhaseReadback('junk').found, false);
-    const studioPlan131 = windowStyle131.appWindowPhasePlan('studio');
-    ok('X131 verify: exact size + style passes',
-      windowStyle131.appWindowPhaseVerified(studioPlan131, windowStyle131.parsePhaseReadback('1,1280,800,96,1')));
-    ok('X131 verify: the DPI-scaled size passes (150% display)',
-      windowStyle131.appWindowPhaseVerified(studioPlan131, windowStyle131.parsePhaseReadback('1,1920,1200,144,1')));
-    ok('X131 verify: the squeezed studio (gate size) FAILS',
-      !windowStyle131.appWindowPhaseVerified(studioPlan131, windowStyle131.parsePhaseReadback('1,640,520,96,0')));
-    ok('X131 verify: right size, wrong style FAILS',
-      !windowStyle131.appWindowPhaseVerified(studioPlan131, windowStyle131.parsePhaseReadback('1,1280,800,96,0')));
-    {
-      let calls131 = 0;
-      const retried131 = await windowStyle131.setAppWindowPhase(0, 'studio', {
-        sleep: async () => {},
-        applyOnce: async () => { calls131++; return calls131 < 3 ? '1,640,520,96,0' : '1,1280,800,96,1'; }
-      });
-      ok('X131 the phase switch retries until the read-back verifies',
-        retried131.verified === true && retried131.attempts === 3);
-      const hopeless131 = await windowStyle131.setAppWindowPhase(0, 'gate', {
-        sleep: async () => {},
-        applyOnce: async () => '0,0,0,96,0'
-      });
-      ok('X131 a window that never appears reports unverified after 3 attempts',
-        hopeless131.verified === false && hopeless131.applied === false && hopeless131.attempts === 3);
-    }
-    ok('X131 the shim finds the window by class when the pid owns none (adopted engine)',
-      windowStyleSrc131.includes('FindWindow') && windowStyleSrc131.includes('GetWindowRect') &&
-      (windowStyleSrc131.match(/FLUTTER_RUNNER_WIN32_WINDOW/g) || []).length >= 2);
-    ok('X131 the bridge enforces the phase from the entry decision, with a truth log',
-      bridgeJs131.includes('function enforceAppWindowPhase(desiredPhase)') &&
-      bridgeJs131.includes("enforceAppWindowPhase(decision.allowed ? 'studio' : 'gate')") &&
-      bridgeJs131.includes('applied and verified') && bridgeJs131.includes('NOT verified') &&
-      bridgeJs131.includes('appWindowPhaseVerified === desiredPhase'));
+    // --- C1: RETIRED in v1.0.8 (F2) — the phase read-back /
+    // verify / retry pins and the bridge enforcer pin went with
+    // the machinery they pinned. X132 pins their absence.
 
     // --- A2: the automatic key email + the strip status ---
     ok('X131 the provider exposes the key-email status (sending / failed)',
@@ -17048,11 +16990,290 @@ async function main() {
       fnSrc131.includes('async function sendMail(') &&
       fnSrc131.includes('Deno.env.get("BREVO_API_KEY")') &&
       fnSrc131.includes('https://api.brevo.com/v3/smtp/email') &&
-      fnSrc131.includes('email: "mohdkhan837218@gmail.com"'));
+      fnSrc131.includes('email: "mkflowstudio@gmail.com"'));
     ok('X131 Resend stays the fallback and both mail paths use the one helper',
       fnSrc131.includes('https://api.resend.com/emails') &&
       (fnSrc131.match(/sendMail\(/g) || []).length >= 3 &&
       fnSrc131.includes('!BREVO_API_KEY && !RESEND_API_KEY'));
+  }
+
+  // =====================================================================
+  // X132. PUBLIC v1.0.8 — THE APPROVED ENTRY FLOW (owner's orders,
+  // 2026-11-19, from the approved live sample): F1 the splash is
+  // animated (logo pulse + gold sheen) inside the full-size
+  // window, its fill still the real engineStage, honest filler
+  // lines only while a stage persists, then a crossfade to the
+  // portal. F2 the two-size window phases are GONE — the runner
+  // creates the studio's one size (1280x800, work-area clamped,
+  // resizable) and no phase machinery survives anywhere. F3 the
+  // gate is a popup portal: a static studio shell behind a
+  // BackdropFilter blur + dark scrim, pointer-dead, with the
+  // single-column 430 card floating centre (entrance scale/fade;
+  // on activation a matching blur veil lifts over the real
+  // studio in main.dart) — and a WhatsApp support row at the
+  // card's bottom (the number lives ONLY inside the wa.me URL).
+  // F4 sign-up asks the user's NAME first (required) — the
+  // engine records it on the users/{uid} doc (created with the
+  // trial fields for a new account; the Google profile name the
+  // same way) and the panel lists it. F5 after a GOOGLE sign-in's
+  // key email is sent, the app opens the user's Gmail — once,
+  // Google-path only, success only. F6 the key email greets by
+  // name when the app passes one (the function sanitizes it;
+  // its behaviour is exercised by the panel repo's own check
+  // script — here the wiring is pinned).
+  // =====================================================================
+  {
+    const fs132 = require('fs');
+    const path132 = require('path');
+    const read132 = (rel) => fs132.readFileSync(path132.join(__dirname, '..', rel), 'utf8');
+    const gateDart132 = read132('lib/widgets/entry_gate.dart');
+    const providerDart132 = read132('lib/providers/entry_provider.dart');
+    const bridgeDart132 = read132('lib/services/automation_bridge.dart');
+    const mainDart132 = read132('lib/main.dart');
+    const bridgeJs132 = read132('engine_bridge.js');
+    const windowStyleSrc132 = read132('engine/windowStyle.js');
+    const windowStyle132 = require(path132.join(__dirname, '..', 'engine/windowStyle.js'));
+    const mainCpp132 = read132('windows/runner/main.cpp');
+    const auth132 = require('../engine/authClient');
+    const authSrc132 = read132('engine/authClient.js');
+
+    // --- F2: the phase machinery is GONE, everywhere ---
+    const phaseTokens132 = ['window-phase', 'setEntryWindowPhase', 'enforceAppWindowPhase',
+      'appWindowPhase', 'setAppWindowPhase', 'APP_WINDOW_PHASES', 'App window phase:', '_windowPhase'];
+    const phaseHomes132 = {
+      'the gate': gateDart132, 'the entry provider': providerDart132,
+      'the Dart bridge': bridgeDart132, 'the bridge': bridgeJs132,
+      'windowStyle': windowStyleSrc132, 'the runner': mainCpp132
+    };
+    for (const [homeName, homeSrc] of Object.entries(phaseHomes132)) {
+      ok(`X132 no window-phase machinery survives in ${homeName} (F2)`,
+        phaseTokens132.every((t) => !homeSrc.includes(t)),
+        phaseTokens132.filter((t) => homeSrc.includes(t)).join(','));
+    }
+    eq('X132 windowStyle exports ONLY the Chrome-window helpers now',
+      JSON.stringify(Object.keys(windowStyle132).sort()),
+      JSON.stringify(['getWorkArea', 'setTaskbarButton']));
+    ok('X132 the runner creates the ONE studio size, centered + resizable (F2)',
+      mainCpp132.includes('Win32Window::Size size(1280, 800)') &&
+      mainCpp132.includes('size.width > work_w') && mainCpp132.includes('size.height > work_h') &&
+      !mainCpp132.includes('WS_THICKFRAME') && !mainCpp132.includes('640, 520'));
+
+    // --- F1: the animated splash ---
+    ok('X132 the splash animates: a repeating controller drives pulse + sheen (F1)',
+      gateDart132.includes('SingleTickerProviderStateMixin') &&
+      gateDart132.includes('AnimationController') && gateDart132.includes('_splashAnim') &&
+      gateDart132.includes('math.sin') && gateDart132.includes('Transform.scale'));
+    ok('X132 the splash fill stays the real engine stage (F1)',
+      gateDart132.includes('entry.engineStage / 3') &&
+      gateDart132.includes('widthFactor: progress.clamp(0, 1)') &&
+      gateDart132.includes("'Starting the engine…'") && gateDart132.includes("'Checking your entry…'"));
+    ok('X132 a persisting stage rotates the honest filler lines (F1)',
+      gateDart132.includes("'Preparing your accounts…'") &&
+      gateDart132.includes("'Warming up the engine…'") &&
+      gateDart132.includes("'Almost there…'") &&
+      gateDart132.includes('idleMs > 2500') && gateDart132.includes('_stageChangedAt'));
+    ok('X132 the splash crossfades to the portal (F1)',
+      gateDart132.includes('AnimatedSwitcher') &&
+      gateDart132.includes("ValueKey('entry-splash')") && gateDart132.includes("ValueKey('entry-portal')"));
+
+    // --- F3: the portal over the blurred, locked studio ---
+    ok('X132 the studio behind the portal is blurred, darkened and pointer-dead (F3)',
+      gateDart132.includes('BackdropFilter') &&
+      gateDart132.includes('ui.ImageFilter.blur(sigmaX: 14, sigmaY: 14)') &&
+      gateDart132.includes('Colors.black.withOpacity(0.55)') &&
+      gateDart132.includes('IgnorePointer') && gateDart132.includes('_lockedStudioShell()'));
+    ok('X132 the locked shell is a static sketch — the gate never builds the real studio (F3)',
+      gateDart132.includes('NO live data') &&
+      mainDart132.includes('if (!entry.allowed)') &&
+      mainDart132.includes('return const EntryGateScreen();'));
+    ok('X132 activation lifts the blur over the real studio (F3)',
+      mainDart132.includes('_showUnlockVeil') &&
+      mainDart132.includes('ui.ImageFilter.blur(') &&
+      mainDart132.includes('sigmaX: 14 * value') &&
+      mainDart132.includes('const MainStudioScreen()'));
+    ok('X132 the portal card is the single 430 column with the scale/fade entrance (F3)',
+      gateDart132.includes('_portalCardWidth = 430') &&
+      gateDart132.includes('width: _portalCardWidth') &&
+      gateDart132.includes('TweenAnimationBuilder<double>') &&
+      gateDart132.includes('0.96 + 0.04 * value') &&
+      !gateDart132.includes('_brandZone') && !gateDart132.includes('VerticalDivider'));
+    // The documented budget (line height at 1.25x, the gate's own
+    // metrics): padding 16+12 = 28; header block 72 (row 36 +
+    // gap 8 + two-line note 28); gap 10; key section 116; "or"
+    // divider block 30; sign-in form 207; sign-up form 267 (name
+    // field + explainer included); strip + gap 58; check-email
+    // block 113; verification 222 (link half) / 154 (code half);
+    // error block 44; WhatsApp block 41.
+    const budget132 = { pad: 28, header: 72, gap: 10, key: 116, divider: 30, signIn: 207, signUp: 267, strip: 58, checkBlock: 113, verify: 222, verifyCode: 154, error: 44, whatsapp: 41 };
+    const stateHeights132 = {
+      signUp: budget132.pad + budget132.header + budget132.gap + budget132.key + budget132.divider + budget132.signUp + budget132.whatsapp,
+      signInError: budget132.pad + budget132.header + budget132.gap + budget132.key + budget132.divider + budget132.signIn + budget132.error + budget132.whatsapp,
+      verify: budget132.pad + budget132.header + budget132.gap + budget132.key + budget132.divider + budget132.verify + budget132.whatsapp,
+      verifyCode: budget132.pad + budget132.header + budget132.gap + budget132.key + budget132.divider + budget132.verifyCode + budget132.whatsapp,
+      checkEmail: budget132.pad + budget132.header + budget132.gap + budget132.key + budget132.divider + budget132.checkBlock + budget132.whatsapp,
+      strip: budget132.pad + budget132.header + budget132.gap + budget132.key + budget132.strip + budget132.whatsapp
+    };
+    ok('X132 every portal state fits the window with margin (F3 budget)',
+      Math.max(...Object.values(stateHeights132)) <= 600 &&
+      stateHeights132.signUp === 564,
+      JSON.stringify(stateHeights132));
+    ok('X132 the scroll fallback engages only below the design viewport (F3)',
+      gateDart132.includes('_gateScrollFallbackHeight = 560') &&
+      gateDart132.includes('constraints.maxHeight < _gateScrollFallbackHeight'));
+
+    // --- WhatsApp support (F3): link only, number never text ---
+    ok('X132 the WhatsApp support row + the error help line ride the wa.me link',
+      gateDart132.includes("const String _whatsAppSupportUrl = 'https://wa.me/918198966902';") &&
+      gateDart132.includes("'Need help? Chat with us on WhatsApp'") &&
+      gateDart132.includes("'Still stuck? Get help on WhatsApp'") &&
+      gateDart132.includes('0xFF25D366') && gateDart132.includes('_WhatsAppGlyphPainter'));
+    {
+      const libFiles132 = [];
+      const walk132 = (dir) => {
+        for (const name of fs132.readdirSync(dir)) {
+          const p = path132.join(dir, name);
+          if (fs132.statSync(p).isDirectory()) walk132(p);
+          else if (name.endsWith('.dart')) libFiles132.push(p);
+        }
+      };
+      walk132(path132.join(__dirname, '..', 'lib'));
+      const hits132 = libFiles132.filter((p) => fs132.readFileSync(p, 'utf8').includes('8198966902'));
+      eq('X132 the raw WhatsApp number appears ONLY inside the wa.me URL, in one file',
+        JSON.stringify(hits132.map((p) => path132.basename(p))),
+        JSON.stringify(['entry_gate.dart']));
+      eq('X132 the number occurs exactly once in the gate (the URL itself)',
+        (gateDart132.match(/8198966902/g) || []).length, 1);
+    }
+
+    // --- F4: the name — form, provider, bridge, engine, panel ---
+    ok('X132 the sign-up form asks the name FIRST (F4)',
+      gateDart132.includes('_nameController') &&
+      gateDart132.includes("hint: 'Your name'") &&
+      gateDart132.indexOf("hint: 'Your name'") < gateDart132.indexOf("hint: 'Email address'") &&
+      gateDart132.includes('provider.signUp(_nameController.text'));
+    ok('X132 the provider requires the name and passes it to the bridge (F4)',
+      providerDart132.includes('Future<bool> signUp(String name, String email, String password)') &&
+      providerDart132.includes("'Please enter your name.'") &&
+      providerDart132.includes('signUpAccount(email.trim(), password, name: name.trim())'));
+    ok('X132 the Dart bridge sends the name only when given (F4)',
+      bridgeDart132.includes("if (name.trim().isNotEmpty) 'name': name.trim(),"));
+    ok('X132 the bridge records the name at sign-up and at Google sign-in (F4)',
+      bridgeJs132.includes('authClient.cleanDisplayName(body.name)') &&
+      bridgeJs132.includes('authClient.recordUserProfile(result.session, signUpName)') &&
+      bridgeJs132.includes('authClient.idTokenDisplayName(firebaseToken)') &&
+      bridgeJs132.includes('authClient.recordUserProfile(result.session, googleName)'));
+    eq('X132 the name cleaner trims and collapses whitespace',
+      auth132.cleanDisplayName('  Asha   Verma '), 'Asha Verma');
+    eq('X132 the name cleaner strips newlines and control characters',
+      auth132.cleanDisplayName('Asha\nVerma\u0007'), 'Asha Verma');
+    eq('X132 the name cleaner caps at 60 characters',
+      auth132.cleanDisplayName('x'.repeat(90)).length, 60);
+    eq('X132 the name cleaner treats a non-string as no name',
+      auth132.cleanDisplayName(42), '');
+    {
+      // recordUserProfile against a fake Firestore (X127's wire
+      // shapes): a missing doc is CREATED with trial + name; an
+      // existing doc gets a name-only patch.
+      const docs132 = new Map();
+      const patchBodies132 = [];
+      const fakeFs132 = async (url, init) => {
+        const method = (init && init.method) || 'GET';
+        const headers = (init && init.headers) || {};
+        const body = typeof (init && init.body) === 'string' && headers['Content-Type'] === 'application/json'
+          ? JSON.parse(init.body) : null;
+        const json = (status, data) => ({ status, json: async () => data });
+        if (url.startsWith('https://firestore.googleapis.com/v1/')) {
+          const docPath = decodeURIComponent(url.split('/documents/')[1].split('?')[0]);
+          if (method === 'GET') {
+            if (!docs132.has(docPath)) return json(404, {});
+            return json(200, { name: docPath, fields: docs132.get(docPath) });
+          }
+          if (method === 'PATCH') {
+            patchBodies132.push({ url, body });
+            const merged = { ...(docs132.get(docPath) || {}), ...(body.fields || {}) };
+            docs132.set(docPath, merged);
+            return json(200, { name: docPath, fields: merged });
+          }
+        }
+        return json(404, {});
+      };
+      const session132 = { idToken: 'ID-N', uid: 'uid-n', email: 'n@example.com' };
+      const created132 = await auth132.recordUserProfile(session132, 'Nadia Khan',
+        { fetchImpl: fakeFs132, nowMs: Date.UTC(2026, 10, 19) });
+      ok('X132 a first sign-in CREATES the user doc with the trial AND the name (F4)',
+        created132.ok === true && created132.created === true && created132.nameRecorded === true &&
+        docs132.get('users/uid-n').name.stringValue === 'Nadia Khan' &&
+        docs132.get('users/uid-n').plan.stringValue === 'Free' &&
+        !!docs132.get('users/uid-n').trialEndsAt);
+      const again132 = await auth132.recordUserProfile(session132, 'Nadia Khan', { fetchImpl: fakeFs132 });
+      ok('X132 the same name again writes nothing (F4)',
+        again132.ok === true && again132.created === false && patchBodies132.length === 1);
+      const renamed132 = await auth132.recordUserProfile(session132, 'Nadia K.', { fetchImpl: fakeFs132 });
+      ok('X132 a changed name is refreshed with a name-only patch (F4)',
+        renamed132.ok === true && renamed132.nameRecorded === true &&
+        patchBodies132.length === 2 &&
+        patchBodies132[1].url.includes('updateMask.fieldPaths=name') &&
+        patchBodies132[1].body.fields.name.stringValue === 'Nadia K.');
+      const state132 = await auth132.fetchUserState(session132, { fetchImpl: fakeFs132 });
+      eq('X132 the user state reads the name back (F4)', state132.name, 'Nadia K.');
+    }
+    {
+      // The Google token's name claim, read from the payload.
+      const payload132 = Buffer.from(JSON.stringify({ name: 'Gita Rao', email: 'g@example.com' })).toString('base64url');
+      eq('X132 the Google display name comes out of the verified token (F4)',
+        auth132.idTokenDisplayName(`h.${payload132}.s`), 'Gita Rao');
+      eq('X132 a token without a name claim means no name',
+        auth132.idTokenDisplayName('h.e30.s'), '');
+    }
+    let panelJs132 = '';
+    try {
+      panelJs132 = fs132.readFileSync(path132.resolve(__dirname, '../../../orbitdesk-panel/app.js'), 'utf8');
+    } catch (e) { /* the pins below fail on the empty source */ }
+    ok('X132 the panel shows the name (Users + Dashboard, email fallback) (F4)',
+      (panelJs132.match(/r\.name \|\| r\.email/g) || []).length >= 2 &&
+      panelJs132.includes("{ name: 'name', label: 'Name', type: 'text' }"));
+
+    // --- F5: Gmail opens after a Google sign-in's key email ---
+    ok('X132 the account watch marks the sign-in as via Google (F5)',
+      providerDart132.includes('_signInViaGoogle = true;') &&
+      providerDart132.includes('void startAccountWatch()'));
+    ok('X132 Gmail opens once, on the key-email SUCCESS, Google path only (F5)',
+      providerDart132.includes("AutomationBridge.instance.openUrl('https://mail.google.com')") &&
+      providerDart132.includes('if (_signInViaGoogle && !_gmailOpenedForSignIn)') &&
+      providerDart132.indexOf("openUrl('https://mail.google.com')") >
+        providerDart132.indexOf('_keyEmailed = true;'));
+    ok('X132 email sign-in / sign-up / sign-out reset the Google path (F5)',
+      (providerDart132.match(/_signInViaGoogle = false;/g) || []).length >= 3);
+
+    // --- F6: the name rides mykey; the function greets with it ---
+    {
+      const calls132 = [];
+      const mkFetch132 = (status, payload) => async (url, init) => {
+        calls132.push({ url, body: init && init.body ? JSON.parse(init.body) : null });
+        return { ok: status >= 200 && status < 300, status, json: async () => payload, text: async () => JSON.stringify(payload) };
+      };
+      calls132.length = 0;
+      await auth132.fetchMyKey('ID-T', { fetchImpl: mkFetch132(200, { ok: true, emailed: true }), name: 'Asha Verma' });
+      eq('X132 mykey carries the name when the app knows it (F6)',
+        JSON.stringify(calls132[0].body), JSON.stringify({ action: 'mykey', name: 'Asha Verma' }));
+      calls132.length = 0;
+      await auth132.fetchMyKey('ID-T', { fetchImpl: mkFetch132(200, { ok: true, emailed: true }) });
+      eq('X132 mykey without a name is byte-identical to before (F6)',
+        JSON.stringify(calls132[0].body), JSON.stringify({ action: 'mykey' }));
+    }
+    ok('X132 the bridge fills the name from the user doc for email sign-ins (F6)',
+      bridgeJs132.includes('authClient.fetchUserState({') &&
+      bridgeJs132.includes('pendingAccountSession.name = st.name') &&
+      bridgeJs132.includes('authClient.fetchMyKey(pendingAccountSession.idToken, myKeyOpts)'));
+    let fnSrc132 = '';
+    try {
+      fnSrc132 = fs132.readFileSync(path132.resolve(__dirname, '../../../orbitdesk-panel/supabase/functions/issue-key/index.ts'), 'utf8');
+    } catch (e) { /* the pins below fail on the empty source */ }
+    ok('X132 the key service greets the key email by name, sanitized (F6)',
+      fnSrc132.includes('function cleanDisplayName(raw: unknown): string') &&
+      fnSrc132.includes('const displayName = cleanDisplayName(body?.name);') &&
+      fnSrc132.includes('"Hi " + displayName + ",\\n\\n"') &&
+      fnSrc132.includes('return await handleMyKey(svc, req, body);'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

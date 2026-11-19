@@ -197,8 +197,22 @@ function sessionFromAuthData(data, nowMs) {
 
 // --- Firestore user document (plan state) ----------------------
 
+// PUBLIC v1.0.8 (F4/F6): a display name, cleaned for storage and
+// for the key email's greeting — control characters and
+// newlines stripped, whitespace collapsed, capped at 60
+// characters. '' means "no name known".
+function cleanDisplayName(raw) {
+  if (typeof raw !== 'string') return '';
+  return raw
+    .replace(/[\u0000-\u001F\u007F]+/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, 60)
+    .trim();
+}
+
 // Read users/{uid} with the session's own ID token. Verdicts:
-//   { ok: true, exists, plan, trialEndsAt, videosMade }
+//   { ok: true, exists, plan, trialEndsAt, videosMade, name }
 //   { ok: false, reason, status? } — getDocument's reasons.
 async function fetchUserState(session, opts) {
   if (!session || !session.idToken || !session.uid) {
@@ -216,7 +230,8 @@ async function fetchUserState(session, opts) {
     exists: true,
     plan: typeof f.plan === 'string' ? f.plan : 'Free',
     trialEndsAt: typeof f.trialEndsAt === 'string' ? f.trialEndsAt : '',
-    videosMade: typeof f.videosMade === 'number' ? f.videosMade : 0
+    videosMade: typeof f.videosMade === 'number' ? f.videosMade : 0,
+    name: typeof f.name === 'string' ? f.name : ''
   };
 }
 
@@ -228,6 +243,10 @@ async function createUserDoc(session, opts) {
   const trialEnds = new Date(now.getTime() + TRIAL_DAYS * 86400000);
   const fields = {
     email: session.email || '',
+    // v1.0.8 (F4): the sign-up / Google display name rides the
+    // creation write (the rules' create path allows it; the
+    // field is simply absent when no name is known).
+    ...(cleanDisplayName(opts && opts.name) ? { name: cleanDisplayName(opts && opts.name) } : {}),
     plan: 'Free',
     trialStartedAt: firestore.timestampValue(now.toISOString()),
     trialEndsAt: firestore.timestampValue(trialEnds.toISOString()),
@@ -257,6 +276,43 @@ async function ensureUserState(session, opts) {
     return { ok: true, plan: state.plan, trialEndsAt: state.trialEndsAt, isNew: false };
   }
   return createUserDoc(session, opts);
+}
+
+// PUBLIC v1.0.8 (F4): record the user's display name on their
+// user doc — at sign-up (the typed name) and at Google sign-in
+// (the profile name). When the doc does not exist yet this IS
+// the account-creation write: the doc is created with the trial
+// fields and the name together (the rules' create path allows
+// it, trial-capped). When the doc already exists and its name
+// differs, the name is patched on its own — NOTE: the published
+// rules let a user self-update ONLY videosMade/lastSeenAt, so
+// that patch is refused until 'name' joins the rules' self-
+// update list; the refusal is reported on the result
+// (nameRefreshBlocked) and never fails the sign-in itself.
+// Verdicts: { ok, created, nameRecorded, nameRefreshBlocked? } |
+// { ok: false, reason } — fetchUserState's reasons.
+async function recordUserProfile(session, rawName, opts) {
+  const name = cleanDisplayName(rawName);
+  const state = await fetchUserState(session, opts);
+  if (!state.ok) return state;
+  if (!state.exists) {
+    const created = await createUserDoc(session, { ...(opts || {}), name });
+    if (!created.ok) return created;
+    return { ok: true, created: true, nameRecorded: !!name, plan: created.plan, trialEndsAt: created.trialEndsAt };
+  }
+  if (name && state.name !== name) {
+    const patched = await firestore.patchDocument(`users/${session.uid}`, { name }, {
+      ...(opts || {}),
+      token: session.idToken
+    });
+    return {
+      ok: true,
+      created: false,
+      nameRecorded: patched.ok === true,
+      nameRefreshBlocked: patched.ok !== true
+    };
+  }
+  return { ok: true, created: false, nameRecorded: !!state.name };
 }
 
 // Attach the backend-confirmed plan state to a fresh session.
@@ -537,6 +593,24 @@ function idTokenExpiryMs(idToken) {
   }
 }
 
+// PUBLIC v1.0.8 (F4): the display name a Firebase ID token
+// carries (the Google profile name, in the `name` claim), read
+// WITHOUT trusting the token — the bridge calls this only for a
+// token accounts:lookup has already proven real (see
+// handleGoogleTokenCallback), and the value is only a display
+// name on the user's own doc + the key email's greeting.
+// Cleaned like every other name in this file; '' when absent.
+function idTokenDisplayName(idToken) {
+  try {
+    const parts = String(idToken).split('.');
+    if (parts.length !== 3) return '';
+    const payload = JSON.parse(Buffer.from(parts[1], 'base64url').toString('utf8'));
+    return cleanDisplayName(payload && payload.name);
+  } catch (e) {
+    return '';
+  }
+}
+
 // The callback half: verify the handed-back Firebase ID token
 // via accounts:lookup, then build the SAME account session as
 // email sign-in (uid/email → trial doc → gate). The page gives
@@ -633,9 +707,14 @@ async function fetchMyKey(idToken, opts) {
   if (!fetchImpl) return { ok: false, reason: 'network-unavailable' };
   const cleanToken = typeof idToken === 'string' ? idToken.trim() : '';
   if (!cleanToken) return { ok: false, reason: 'token-required' };
+  // v1.0.8 (F6): the user's name rides along when the bridge
+  // knows it — the service greets the key email with it. Absent
+  // name → the body is exactly the pre-v1.0.8 one.
+  const name = cleanDisplayName(opts && opts.name);
+  const body = name ? { action: 'mykey', name } : { action: 'mykey' };
   try {
     const { status, data } = await callKeyFunction(
-      fetchImpl, config, { action: 'mykey' }, cleanToken);
+      fetchImpl, config, body, cleanToken);
     if (status === 200 && data && data.emailed === true) {
       return {
         ok: true,
@@ -813,6 +892,9 @@ module.exports = {
   googleStartUrl,
   pendingGoogleState,
   idTokenExpiryMs,
+  idTokenDisplayName,
+  cleanDisplayName,
+  recordUserProfile,
   handleGoogleTokenCallback,
   signUp,
   signIn,

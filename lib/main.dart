@@ -1,3 +1,5 @@
+import 'dart:ui' as ui;
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
@@ -146,14 +148,67 @@ class FlowStudioApp extends StatelessWidget {
 /// credential is in place (account session or license key), the
 /// gate steps aside and the studio takes over; removing the key
 /// in Settings brings the gate straight back.
-class EntryGateHome extends StatelessWidget {
+/// The gate/studio switch. While entry is not allowed the
+/// EntryGateScreen shows (splash, then the portal over the
+/// blurred shell) and the studio is NOT built — no entry
+/// without a key. v1.0.8 (F3): the moment entry becomes
+/// allowed — a fresh activation, or a stored key validating at
+/// app start — the studio appears UNDER a matching blur veil
+/// that lifts over ~600 ms (blur and scrim fade to zero), so
+/// unlocking reads as the portal's blur clearing.
+class EntryGateHome extends StatefulWidget {
   const EntryGateHome({super.key});
+
+  @override
+  State<EntryGateHome> createState() => _EntryGateHomeState();
+}
+
+class _EntryGateHomeState extends State<EntryGateHome> {
+  bool _wasAllowed = false;
+  bool _showUnlockVeil = false;
 
   @override
   Widget build(BuildContext context) {
     final entry = context.watch<EntryProvider>();
-    if (entry.allowed) return const MainStudioScreen();
-    return const EntryGateScreen();
+    if (!entry.allowed) {
+      _wasAllowed = false;
+      return const EntryGateScreen();
+    }
+    if (!_wasAllowed) {
+      _wasAllowed = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) setState(() => _showUnlockVeil = true);
+      });
+    }
+    return Stack(
+      children: [
+        const MainStudioScreen(),
+        if (_showUnlockVeil)
+          Positioned.fill(
+            child: TweenAnimationBuilder<double>(
+              tween: Tween<double>(begin: 1, end: 0),
+              duration: const Duration(milliseconds: 600),
+              curve: Curves.easeOut,
+              onEnd: () {
+                if (mounted) setState(() => _showUnlockVeil = false);
+              },
+              builder: (context, value, _) {
+                return IgnorePointer(
+                  child: BackdropFilter(
+                    filter: ui.ImageFilter.blur(
+                      sigmaX: 14 * value,
+                      sigmaY: 14 * value,
+                    ),
+                    child: Container(
+                      color: Colors.black.withOpacity(0.55 * value),
+                    ),
+                  ),
+                );
+              },
+            ),
+          ),
+      ],
+    );
   }
 }
 

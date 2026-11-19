@@ -343,8 +343,8 @@ const PORT = 48290;
 // The app version this bridge ships with — bumped with every release,
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
-// GitHub's latest tag against it.
-const APP_VERSION = '1.0.9';
+// the backend's latest release against it.
+const APP_VERSION = '1.0.10';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -396,11 +396,13 @@ function broadcastEvent(eventName, data) {
 
 // ---------------------------------------------------------------------------
 // v2.31.4: latest-release lookup for the MCP "update the app" tool.
-// This mirrors the Dart updater in SettingsProvider.checkForUpdates
-// EXACTLY — same GitHub releases source, same headers, same 10s
-// timeout, same version comparison, same "first .exe asset" pick —
-// so the MCP check/install can never disagree with Settings →
-// Updates about whether an update exists. The download + silent
+// PUBLIC v1.0.10: the lookup now reads the backend release list —
+// the Firestore `releases` collection — with the pending account
+// session's ID token, and the Dart updater in
+// SettingsProvider.checkForUpdates asks THIS bridge
+// (/api/update/check) instead of keeping a release source of its
+// own, so the MCP check/install and Settings → Updates can never
+// disagree about whether an update exists. The download + silent
 // install themselves stay on the Dart side (it owns the installer
 // launch); the bridge only signals it over SSE (see /api/update/*).
 // ---------------------------------------------------------------------------
@@ -417,59 +419,74 @@ function isNewerVersion(latest, current) {
   return false;
 }
 
-// PUBLIC v1.0.0: the public edition updates ONLY from its own
-// release line — tags named 'public-v*' carrying the asset
-// 'FlowStudio_Setup.exe'. The same repo also hosts the Lite
-// edition's releases ('v*' tags, FlowStudio_Lite_* assets); those
-// must never be offered to a public install (and vice versa), so
-// this scans the release list and picks the newest public tag
-// instead of trusting GitHub's repo-wide "latest".
-function fetchLatestRelease() {
+// PUBLIC v1.0.10: the public edition updates ONLY from the
+// backend release list — the Firestore `releases` collection of
+// the named database, read with the pending account session's ID
+// token (the release rules allow any signed-in read). Among the
+// documents marked published, the one with the newest createdAt
+// is the current release; its bare version ('1.0.10') resolves as
+// the tag 'v1.0.10'. The Setup itself always comes from the ONE
+// permanent download link below (a counter + redirect on the
+// backend), never from a per-release URL. With no pending account
+// session there is no token to read with, so no update is offered.
+const UPDATE_DOWNLOAD_URL = 'https://zkgpvhcfbqfmcopzvecg.supabase.co/functions/v1/download';
+const RELEASES_URL = 'https://firestore.googleapis.com/v1/projects/arcane-airport-k5xj8/databases/ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50/documents/releases?pageSize=50';
+
+async function fetchLatestRelease() {
+  if (!pendingAccountSession || !pendingAccountSession.idToken) {
+    return { tag: '', asset: null };
+  }
+  if (pendingAccountSession.expiresAt && Date.now() >= pendingAccountSession.expiresAt) {
+    await refreshPendingAccountSession();
+  }
+  const token = pendingAccountSession && pendingAccountSession.idToken;
+  if (!token) return { tag: '', asset: null };
   return new Promise((resolve, reject) => {
     const req = https.get(
-      'https://api.github.com/repos/mohdkhan-lab/flowstudio-flutter/releases?per_page=30',
-      { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'FlowStudio' } },
+      RELEASES_URL,
+      { headers: { Authorization: `Bearer ${token}`, 'User-Agent': 'FlowStudio' } },
       (res) => {
         const chunks = [];
         res.on('data', (c) => chunks.push(c));
         res.on('end', () => {
           if (res.statusCode !== 200) {
-            return reject(new Error(`GitHub answered ${res.statusCode}`));
+            return reject(new Error(`the update server answered ${res.statusCode}`));
           }
           try {
-            const list = JSON.parse(Buffer.concat(chunks).toString('utf8'));
-            let tag = '';
-            let asset = null;
-            if (Array.isArray(list)) {
-              for (const rel of list) {
-                const relTag = String((rel && rel.tag_name) || '');
-                if (!relTag.startsWith('public-v')) continue;
-                tag = relTag;
-                if (Array.isArray(rel.assets)) {
-                  for (const a of rel.assets) {
-                    const name = String((a && a.name) || '');
-                    if (name === 'FlowStudio_Setup.exe') {
-                      asset = {
-                        name,
-                        downloadUrl: String(a.browser_download_url || ''),
-                        sizeBytes: Number(a.size) || 0,
-                      };
-                      break;
-                    }
-                  }
-                }
-                break;
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8'));
+            const docs = Array.isArray(body.documents) ? body.documents : [];
+            let best = null;
+            for (const d of docs) {
+              const f = (d && d.fields) || {};
+              if (!f.published || f.published.booleanValue !== true) continue;
+              const version = f.version && typeof f.version.stringValue === 'string'
+                ? f.version.stringValue : '';
+              if (!version) continue;
+              const createdAt = f.createdAt && typeof f.createdAt.timestampValue === 'string'
+                ? f.createdAt.timestampValue : '';
+              const sizeBytes = f.sizeBytes && f.sizeBytes.integerValue != null
+                ? Number(f.sizeBytes.integerValue) || 0 : 0;
+              if (!best || createdAt > best.createdAt) {
+                best = { version, createdAt, sizeBytes };
               }
             }
-            resolve({ tag, asset });
+            if (!best) return resolve({ tag: '', asset: null });
+            resolve({
+              tag: `v${best.version.replace(/^v/, '')}`,
+              asset: {
+                name: 'FlowStudio_Setup.exe',
+                downloadUrl: UPDATE_DOWNLOAD_URL,
+                sizeBytes: best.sizeBytes,
+              },
+            });
           } catch (e) {
-            reject(new Error('GitHub returned an unreadable response'));
+            reject(new Error('the update server returned an unreadable response'));
           }
         });
       }
     );
     req.setTimeout(10000, () => req.destroy(new Error('the update check timed out after 10s')));
-    req.on('error', (e) => reject(new Error(`could not reach GitHub (${e.message})`)));
+    req.on('error', (e) => reject(new Error(`could not reach the update server (${e.message})`)));
   });
 }
 
@@ -1270,8 +1287,8 @@ async function startBridge() {
       }
 
       // 3c. v2.31.4: app update check + install trigger. CHECK
-      // answers from the same GitHub releases source as Settings →
-      // Updates (public-edition releases only — see
+      // answers from the backend release list, the same source
+      // Settings → Updates reads through this route (see
       // fetchLatestRelease). INSTALL is only a *request*: it guards
       // (no active run, a newer release with a Setup file must
       // exist), then signals the Dart app over the existing SSE

@@ -16157,17 +16157,17 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.9+10 (public line)', read124('pubspec.yaml').includes('version: 1.0.9+10'));
-    eq('X124 package.json version is 1.0.9', JSON.parse(read124('package.json')).version, '1.0.9');
-    ok('X124 the bridge reports version 1.0.9 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.9';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.10+11 (public line)', read124('pubspec.yaml').includes('version: 1.0.10+11'));
+    eq('X124 package.json version is 1.0.10', JSON.parse(read124('package.json')).version, '1.0.10');
+    ok('X124 the bridge reports version 1.0.10 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.10';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
-    ok('X124 updates come only from the public release line', bridgeSrc124.includes("startsWith('public-v')") && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
+    ok('X124 updates come only from the backend release list', bridgeSrc124.includes('documents/releases') && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
     ok('X124 the app title is FlowStudio and the gate wraps the studio', mainDart124.includes("title: 'FlowStudio'") && !mainDart124.includes('FlowStudio Lite') && mainDart124.includes('EntryGateHome'));
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.9 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.9'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.10 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.10'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16606,10 +16606,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.9',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.9"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.9'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.9';"));
+    ok('X127 the remaining version sites carry 1.0.10',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.10"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.10'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.10';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('setPendingAccountSession'));
@@ -16676,8 +16676,8 @@ async function main() {
     ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold; v1.0.8: custom gold bar)',
       gateDart128.includes('0xFF0B0B10') && gateDart128.includes('widthFactor: progress') &&
       gateDart128.includes('entry.engineStage / 3'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.9',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.9'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.10',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.10'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
@@ -17365,6 +17365,92 @@ async function main() {
     ok('X133 the WhatsApp number still occurs exactly once — inside the URL (P2)',
       (gateDart133.match(/8198966902/g) || []).length === 1 &&
       gateDart133.includes("const String _whatsAppSupportUrl = 'https://wa.me/918198966902';"));
+  }
+
+  // =====================================================================
+  // X134. PUBLIC v1.0.10 — THE UPDATER MOVES TO THE BACKEND. The app
+  // no longer reads releases from a code host: the bridge's
+  // fetchLatestRelease reads the Firestore `releases` collection
+  // (named database) with the pending account session's ID token —
+  // published documents only, newest createdAt wins — and the Setup
+  // always downloads from the ONE permanent backend link (a counter
+  // + redirect). The Dart checkForUpdates keeps no release source of
+  // its own any more: it asks the local engine (/api/update/check),
+  // so the Settings check and the engine's update routes can never
+  // disagree. No session in the bridge = no token = no update
+  // offered. Failure wording names "the update server", never a
+  // host. The Flutter screens cannot run in this harness, so the
+  // Dart side is pinned statically, like the earlier entry work.
+  // =====================================================================
+  {
+    const fs134 = require('fs');
+    const path134 = require('path');
+    const read134 = (rel) => fs134.readFileSync(path134.join(__dirname, '..', rel), 'utf8');
+    const bridgeSrc134 = read134('engine_bridge.js');
+    const settingsProv134 = read134('lib/providers/settings_provider.dart');
+    const fetchBody134 = bridgeSrc134.slice(
+      bridgeSrc134.indexOf('async function fetchLatestRelease()'),
+      bridgeSrc134.indexOf('async function startBridge()'));
+    const PERMANENT134 = 'https://zkgpvhcfbqfmcopzvecg.supabase.co/functions/v1/download';
+
+    // --- the bridge reads the backend release list ---
+    ok('X134 the bridge reads the backend Firestore releases collection',
+      bridgeSrc134.includes("const RELEASES_URL = 'https://firestore.googleapis.com/v1/projects/arcane-airport-k5xj8/databases/ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50/documents/releases?pageSize=50';") &&
+      fetchBody134.includes('RELEASES_URL'));
+    ok('X134 the release read rides the pending account session token',
+      fetchBody134.includes('pendingAccountSession.idToken') &&
+      fetchBody134.includes('Authorization: `Bearer ${token}`'));
+    ok('X134 an expired pending session is refreshed before the read',
+      fetchBody134.includes('Date.now() >= pendingAccountSession.expiresAt') &&
+      fetchBody134.includes('await refreshPendingAccountSession()'));
+    ok('X134 with no session the lookup resolves no update',
+      fetchBody134.includes("if (!pendingAccountSession || !pendingAccountSession.idToken)") &&
+      fetchBody134.includes("return { tag: '', asset: null };"));
+    ok('X134 only published releases count, newest createdAt wins',
+      fetchBody134.includes('f.published.booleanValue !== true') &&
+      fetchBody134.includes('f.version.stringValue') &&
+      fetchBody134.includes('f.createdAt.timestampValue') &&
+      fetchBody134.includes('createdAt > best.createdAt'));
+    ok('X134 sizeBytes comes from the release document',
+      fetchBody134.includes('f.sizeBytes.integerValue') &&
+      fetchBody134.includes('Number(f.sizeBytes.integerValue)'));
+    ok('X134 the resolved Setup asset is the permanent download link',
+      fetchBody134.includes("name: 'FlowStudio_Setup.exe'") &&
+      fetchBody134.includes('downloadUrl: UPDATE_DOWNLOAD_URL') &&
+      bridgeSrc134.includes(`const UPDATE_DOWNLOAD_URL = '${PERMANENT134}';`));
+    ok('X134 the bridge update errors name the update server',
+      fetchBody134.includes('the update server answered ${res.statusCode}') &&
+      fetchBody134.includes('could not reach the update server') &&
+      fetchBody134.includes('the update check timed out after 10s'));
+    ok('X134 the update routes keep their contract',
+      bridgeSrc134.includes("pathname === '/api/update/check'") &&
+      bridgeSrc134.includes("pathname === '/api/update/install'") &&
+      bridgeSrc134.includes('updateAvailable: !!rel.tag && isNewerVersion(rel.tag, APP_VERSION)') &&
+      bridgeSrc134.includes('sizeBytes: rel.asset ? rel.asset.sizeBytes : 0'));
+
+    // --- the Dart side asks the engine ---
+    ok('X134 the Dart check asks the engine update route',
+      settingsProv134.includes("Uri.parse('${AutomationBridge.baseUrl}/api/update/check')") &&
+      settingsProv134.includes("data['ok'] == true") &&
+      settingsProv134.includes("data['latestVersion']"));
+    ok('X134 the Dart updater downloads from the permanent backend link',
+      settingsProv134.includes(`'${PERMANENT134}'`));
+    ok('X134 the Dart updater takes sizeBytes from the engine answer',
+      settingsProv134.includes("(data['sizeBytes'] as num?)?.toInt() ?? 0"));
+    ok('X134 the Dart failure message is the neutral update-server line',
+      settingsProv134.includes("'Update check failed — could not reach the update server. Check your internet connection.'"));
+    ok('X134 the Dart download error names the download server',
+      settingsProv134.includes("throw 'The download server answered ${response.statusCode}';"));
+
+    // --- no trace of the old release host in either updater file ---
+    ok('X134 no api.github.com in either updater file',
+      !bridgeSrc134.includes('api.github.com') && !settingsProv134.includes('api.github.com'));
+    ok('X134 no browser_download_url in either updater file',
+      !bridgeSrc134.includes('browser_download_url') && !settingsProv134.includes('browser_download_url'));
+    ok('X134 no could-not-reach-GitHub wording in either updater file',
+      !bridgeSrc134.includes('could not reach GitHub') && !settingsProv134.includes('could not reach GitHub'));
+    ok('X134 no github mention of any case in either updater file',
+      !/github/i.test(bridgeSrc134) && !/github/i.test(settingsProv134));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

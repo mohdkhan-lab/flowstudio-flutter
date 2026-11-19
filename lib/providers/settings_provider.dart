@@ -29,7 +29,7 @@ class SettingsProvider with ChangeNotifier {
   final Set<String> _historyCleared = {};
 
   // v2.23.0: in-app updater — the app downloads the new Setup itself and
-  // runs it; the user never has to visit GitHub or download by hand.
+  // runs it; the user never has to download an update by hand.
   bool _updateAvailable = false;
   String _latestVersion = '';
   String _updateDownloadUrl = '';
@@ -531,63 +531,37 @@ class SettingsProvider with ChangeNotifier {
   }
 
   Future<void> checkForUpdates() async {
-    // v2.22.0 fix: REAL update check against the GitHub releases of the
-    // Flutter app. v2.23.0: the check now also captures the Setup's
-    // direct download URL, so the app itself can download and install
-    // the update — no manual trip to GitHub.
+    // v1.0.10: the update check asks the local engine, which reads
+    // the backend release list with the account session — the app
+    // itself keeps no release source of its own, so this check and
+    // the engine's update routes can never disagree. The Setup
+    // always downloads from the one permanent backend download
+    // link, so a newer release only has to exist on the backend
+    // for this check to offer it.
     _isCheckingUpdates = true;
     _updateStatusMessage = 'Checking for the latest version...';
     notifyListeners();
 
     try {
       final res = await http
-          .get(
-            Uri.parse(
-              'https://api.github.com/repos/mohdkhan-lab/flowstudio-flutter/releases?per_page=30',
-            ),
-            headers: {
-              'Accept': 'application/vnd.github+json',
-              'User-Agent': 'FlowStudio',
-            },
-          )
-          .timeout(const Duration(seconds: 10));
+          .get(Uri.parse('${AutomationBridge.baseUrl}/api/update/check'))
+          .timeout(const Duration(seconds: 15));
+      Map<String, dynamic>? data;
       if (res.statusCode == 200) {
-        // PUBLIC v1.0.0: the public edition updates ONLY from its
-        // own release line — tags named 'public-v*' carrying the
-        // asset 'FlowStudio_Setup.exe'. The same repo also hosts
-        // another edition's releases; those are never offered here.
-        final list = json.decode(res.body);
-        Map<String, dynamic>? data;
-        if (list is List) {
-          for (final rel in list) {
-            if (rel is Map<String, dynamic> &&
-                (rel['tag_name']?.toString() ?? '').startsWith('public-v')) {
-              data = rel;
-              break;
-            }
-          }
-        }
-        final tag = (data?['tag_name']?.toString() ?? '');
+        final decoded = json.decode(res.body);
+        if (decoded is Map<String, dynamic>) data = decoded;
+      }
+      if (data != null && data['ok'] == true) {
+        final tag = data['latestVersion']?.toString() ?? '';
         if (tag.isNotEmpty && _isNewerVersion(tag, _settings.currentVersion)) {
           _updateAvailable = true;
           _latestVersion = tag;
           _downloadedSetupPath = '';
-          _updateDownloadUrl = '';
-          _updateSizeBytes = 0;
-          final assets = data?['assets'];
-          if (assets is List) {
-            for (final a in assets) {
-              final name = a['name']?.toString() ?? '';
-              if (name == 'FlowStudio_Setup.exe') {
-                _updateDownloadUrl = a['browser_download_url']?.toString() ?? '';
-                _updateSizeBytes = (a['size'] as num?)?.toInt() ?? 0;
-                break;
-              }
-            }
-          }
-          _updateStatusMessage = _updateDownloadUrl.isNotEmpty
-              ? 'New version available: $tag. Press "Download update" — the app will download and install it here itself.'
-              : 'New version available: $tag — but no Setup file was attached to it.';
+          _updateDownloadUrl =
+              'https://zkgpvhcfbqfmcopzvecg.supabase.co/functions/v1/download';
+          _updateSizeBytes = (data['sizeBytes'] as num?)?.toInt() ?? 0;
+          _updateStatusMessage =
+              'New version available: $tag. Press "Download update" — the app will download and install it here itself.';
         } else {
           _updateAvailable = false;
           _updateStatusMessage =
@@ -595,11 +569,11 @@ class SettingsProvider with ChangeNotifier {
         }
       } else {
         _updateStatusMessage =
-            'Update check failed (GitHub answered ${res.statusCode}). Try again later.';
+            'Update check failed — could not reach the update server. Check your internet connection.';
       }
     } catch (_) {
       _updateStatusMessage =
-          'Update check failed — could not reach GitHub. Check your internet connection.';
+          'Update check failed — could not reach the update server. Check your internet connection.';
     }
 
     _isCheckingUpdates = false;
@@ -625,7 +599,7 @@ class SettingsProvider with ChangeNotifier {
       final request = await client.getUrl(Uri.parse(_updateDownloadUrl));
       final response = await request.close();
       if (response.statusCode != 200) {
-        throw 'GitHub download answered ${response.statusCode}';
+        throw 'The download server answered ${response.statusCode}';
       }
       final total = response.contentLength > 0 ? response.contentLength : _updateSizeBytes;
       int received = 0;

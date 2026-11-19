@@ -145,7 +145,7 @@ async function main() {
     if (child.exitCode !== null) {
       refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
     }
-    check('status version is 1.0.8', status && status.version === '1.0.8', JSON.stringify(status));
+    check('status version is 1.0.9', status && status.version === '1.0.9', JSON.stringify(status));
 
     // PUBLIC v1.0.0: ENTRY GATE — a fresh install (throwaway
     // APPDATA, no credential stored) must be CLOSED, a garbage

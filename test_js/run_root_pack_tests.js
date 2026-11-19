@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.8+9 (public line)', read124('pubspec.yaml').includes('version: 1.0.8+9'));
-    eq('X124 package.json version is 1.0.8', JSON.parse(read124('package.json')).version, '1.0.8');
-    ok('X124 the bridge reports version 1.0.8 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.8';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.9+10 (public line)', read124('pubspec.yaml').includes('version: 1.0.9+10'));
+    eq('X124 package.json version is 1.0.9', JSON.parse(read124('package.json')).version, '1.0.9');
+    ok('X124 the bridge reports version 1.0.9 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.9';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the public release line', bridgeSrc124.includes("startsWith('public-v')") && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.8 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.8'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.9 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.9'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16606,10 +16606,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.8',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.8"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.8'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.8';"));
+    ok('X127 the remaining version sites carry 1.0.9',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.9"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.9'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.9';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('setPendingAccountSession'));
@@ -16676,8 +16676,8 @@ async function main() {
     ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold; v1.0.8: custom gold bar)',
       gateDart128.includes('0xFF0B0B10') && gateDart128.includes('widthFactor: progress') &&
       gateDart128.includes('entry.engineStage / 3'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.8',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.8'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.9',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.9'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
@@ -16936,7 +16936,7 @@ async function main() {
     ok('X131 the scroll view is ONLY a below-design-viewport fallback',
       gateDart131.includes('constraints.maxHeight < _gateScrollFallbackHeight') &&
       gateDart131.includes('SingleChildScrollView') &&
-      gateDart131.indexOf('return Center(child: enteringCard);') > gateDart131.indexOf('SingleChildScrollView'));
+      gateDart131.indexOf('return Center(child: shakenCard);') > gateDart131.indexOf('SingleChildScrollView')); // v1.0.9: the static branch centres the shake-wrapped card (the entering card rides inside it)
 
     // --- C1: RETIRED in v1.0.8 (F2) — the phase read-back /
     // verify / retry pins and the bridge enforcer pin went with
@@ -17100,11 +17100,13 @@ async function main() {
     // The documented budget (line height at 1.25x, the gate's own
     // metrics): padding 16+12 = 28; header block 72 (row 36 +
     // gap 8 + two-line note 28); gap 10; key section 116; "or"
-    // divider block 30; sign-in form 207; sign-up form 267 (name
-    // field + explainer included); strip + gap 58; check-email
-    // block 113; verification 222 (link half) / 154 (code half);
-    // error block 44; WhatsApp block 41.
-    const budget132 = { pad: 28, header: 72, gap: 10, key: 116, divider: 30, signIn: 207, signUp: 267, strip: 58, checkBlock: 113, verify: 222, verifyCode: 154, error: 44, whatsapp: 41 };
+    // divider block 30; sign-in form 243; sign-up form 277 (name
+    // field + explainer included) — v1.0.9: the mode toggle
+    // (30 + gap 6) rides in BOTH forms, and the sign-up form no
+    // longer carries the switch-link row (−26); strip + gap 58;
+    // check-email block 113; verification 222 (link half) / 154
+    // (code half); error block 44; WhatsApp block 41.
+    const budget132 = { pad: 28, header: 72, gap: 10, key: 116, divider: 30, signIn: 243, signUp: 277, strip: 58, checkBlock: 113, verify: 222, verifyCode: 154, error: 44, whatsapp: 41 };
     const stateHeights132 = {
       signUp: budget132.pad + budget132.header + budget132.gap + budget132.key + budget132.divider + budget132.signUp + budget132.whatsapp,
       signInError: budget132.pad + budget132.header + budget132.gap + budget132.key + budget132.divider + budget132.signIn + budget132.error + budget132.whatsapp,
@@ -17113,9 +17115,9 @@ async function main() {
       checkEmail: budget132.pad + budget132.header + budget132.gap + budget132.key + budget132.divider + budget132.checkBlock + budget132.whatsapp,
       strip: budget132.pad + budget132.header + budget132.gap + budget132.key + budget132.strip + budget132.whatsapp
     };
-    ok('X132 every portal state fits the window with margin (F3 budget)',
+    ok('X132 every portal state fits the window with margin (F3 budget; v1.0.9 recount)',
       Math.max(...Object.values(stateHeights132)) <= 600 &&
-      stateHeights132.signUp === 564,
+      stateHeights132.signUp === 574 && stateHeights132.signInError === 584,
       JSON.stringify(stateHeights132));
     ok('X132 the scroll fallback engages only below the design viewport (F3)',
       gateDart132.includes('_gateScrollFallbackHeight = 560') &&
@@ -17274,6 +17276,95 @@ async function main() {
       fnSrc132.includes('const displayName = cleanDisplayName(body?.name);') &&
       fnSrc132.includes('"Hi " + displayName + ",\\n\\n"') &&
       fnSrc132.includes('return await handleMyKey(svc, req, body);'));
+  }
+
+  // =====================================================================
+  // X133. PUBLIC v1.0.9 — PORTAL LIFE (owner's order, approved in
+  // the live sample): P1 hover/press micro-interactions on every
+  // portal control — the gold button's shine + lift + glow, the
+  // Google G's settle rotation, dark buttons warming their border
+  // to gold, fields warming their border on hover/focus, the
+  // SLIDING segmented mode toggle, the WhatsApp glyph bounce, and
+  // the shake-on-error (new errors only). P2 the field icons —
+  // key + paste button, person, mail, lock + show/hide eye — and
+  // the shield-check before the internet note. Reduced motion
+  // (MediaQuery disableAnimations) stills every flourish. No
+  // wording changes, no behaviour changes; the fit budget is the
+  // X132 recount (sign-in form 243, sign-up form 277, worst state
+  // sign-in + error 584 <= 600).
+  // =====================================================================
+  {
+    const fs133 = require('fs');
+    const path133 = require('path');
+    const read133 = (rel) => fs133.readFileSync(path133.join(__dirname, '..', rel), 'utf8');
+    const gateDart133 = read133('lib/widgets/entry_gate.dart');
+
+    // --- P1: the buttons answer the mouse ---
+    ok('X133 the portal button is a hover/press stateful widget (P1)',
+      gateDart133.includes('class _PortalButton extends StatefulWidget') &&
+      gateDart133.includes('MouseRegion') && gateDart133.includes('onHighlightChanged') &&
+      gateDart133.includes('AnimatedScale') && gateDart133.includes('Matrix4.translationValues'));
+    ok('X133 the gold button sweeps a shine on hover-enter (P1)',
+      gateDart133.includes('_shineNonce') && gateDart133.includes('ValueKey(_shineNonce)') &&
+      gateDart133.includes('const Duration(milliseconds: 550)'));
+    ok('X133 the Google G is drawn and settles with a rotation on hover (P1)',
+      gateDart133.includes('class _GoogleGPainter extends CustomPainter') &&
+      gateDart133.includes('AnimatedRotation') && gateDart133.includes('googleMark: true') &&
+      gateDart133.includes('0xFF4285F4') && gateDart133.includes('0xFFEA4335'));
+    ok('X133 dark buttons warm their border toward gold on hover (P1)',
+      gateDart133.includes('_entryGold.withOpacity(0.75)'));
+
+    // --- P1: the sliding mode toggle ---
+    ok('X133 the mode switch is a segmented toggle with a sliding gold thumb (P1)',
+      gateDart133.includes('class _ModeToggle extends StatelessWidget') &&
+      gateDart133.includes('AnimatedPositioned') &&
+      gateDart133.includes('const Cubic(0.34, 1.25, 0.64, 1)') &&
+      gateDart133.includes('_ModeToggle(') &&
+      !gateDart133.includes('New here? Create account') &&
+      !gateDart133.includes('Already have an account? Sign in'));
+    ok('X133 the toggle carries the two mode labels and Forgot password? stays (P1)',
+      gateDart133.includes("_tab('Sign in', !signUp, false)") &&
+      gateDart133.includes("_tab('Create account', signUp, true)") &&
+      gateDart133.includes("'Forgot password?'"));
+
+    // --- P1: fields, WhatsApp, shake, reduced motion ---
+    ok('X133 the portal field animates its border on hover and focus (P1)',
+      gateDart133.includes('class _PortalField extends StatefulWidget') &&
+      gateDart133.includes('FocusNode') && gateDart133.includes('AnimatedContainer') &&
+      gateDart133.includes('const Color(0xFF5C4E2A)'));
+    ok('X133 the WhatsApp glyph bounces once on hover and the row tint deepens (P1)',
+      gateDart133.includes('class _WhatsAppLink extends StatefulWidget') &&
+      gateDart133.includes('_pulseNonce') && gateDart133.includes('math.sin(t * math.pi)') &&
+      gateDart133.includes('_whatsAppGreen.withOpacity(0.13)'));
+    ok('X133 a NEW error shakes the card once — nonce moves on error change only (P1)',
+      gateDart133.includes('_errorShakeNonce') &&
+      gateDart133.includes('err.isNotEmpty && err != _lastSeenError && entry.loaded') &&
+      gateDart133.includes('math.sin(phase * math.pi * 3) * 6 * (1 - phase)') &&
+      gateDart133.includes('const Duration(milliseconds: 400)'));
+    ok('X133 reduced motion stills the flourishes in every portal widget (P1)',
+      (gateDart133.match(/disableAnimations/g) || []).length >= 5);
+
+    // --- P2: the icons ---
+    ok('X133 the four fields carry their prefix icons (P2)',
+      gateDart133.includes('prefixIcon: Icons.vpn_key') &&
+      gateDart133.includes('prefixIcon: Icons.person_outline') &&
+      gateDart133.includes('prefixIcon: Icons.mail_outline') &&
+      gateDart133.includes('prefixIcon: Icons.lock_outline'));
+    ok('X133 the key field has a paste button wired to the clipboard (P2)',
+      gateDart133.includes('Icons.content_paste') &&
+      gateDart133.includes('_pasteIntoKeyField') &&
+      gateDart133.includes('Clipboard.getData(Clipboard.kTextPlain)') &&
+      !gateDart133.includes('Clipboard.setData'));
+    ok('X133 the password field has a working show/hide eye (P2)',
+      gateDart133.includes('_passwordVisible') &&
+      gateDart133.includes('obscureText: !_passwordVisible') &&
+      gateDart133.includes('Icons.visibility_off') && gateDart133.includes('Icons.visibility,'));
+    ok('X133 the internet note carries the shield-check, wording unchanged (P2)',
+      gateDart133.includes('Icons.verified_user') &&
+      gateDart133.includes("'Internet is required to activate your license key.'"));
+    ok('X133 the WhatsApp number still occurs exactly once — inside the URL (P2)',
+      (gateDart133.match(/8198966902/g) || []).length === 1 &&
+      gateDart133.includes("const String _whatsAppSupportUrl = 'https://wa.me/918198966902';"));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

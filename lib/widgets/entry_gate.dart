@@ -54,17 +54,41 @@ import '../services/automation_bridge.dart';
 /// a WhatsApp support row at its bottom. FIT BUDGET (line
 /// height counted conservatively at 1.25× font size): card
 /// padding 16+12 = 28; header block 72 (row 36 + note); gap 10;
-/// key section 116; divider block 30; the tallest state
-/// (sign-up form) 267; WhatsApp block 41 — the worst total is
-/// 564 of the 800-tall window, and every other state is
-/// shorter (sign-in + error 548, verification 519, code 451,
-/// check-email 410, strip 325). A scroll view remains ONLY as
-/// a fallback for viewport heights below the design viewport
-/// (see _gateScrollFallbackHeight).
+/// key section 116; divider block 30; the tallest states are
+/// the forms (v1.0.9: sign-up form 277, sign-in form 243 —
+/// the mode toggle's 30 + gap rides in both, and the sign-up
+/// form no longer carries the switch-link row); WhatsApp
+/// block 41 — the worst total is 584 of the 800-tall window
+/// (sign-in + error), then sign-up 574, verification 519,
+/// code 451, check-email 410, strip 325. A scroll view
+/// remains ONLY as a fallback for viewport heights below the
+/// design viewport (see _gateScrollFallbackHeight).
 ///
 /// v1.0.8 (F4): Create-account mode asks for the user's NAME
 /// (the form's first field, required) — the panel shows it and
 /// the key email greets with it.
+///
+/// v1.0.9 (P1 + P2 — the owner's "the portal feels lifeless"
+/// order, approved in the live sample): the portal's controls
+/// now answer the mouse. Buttons lift on hover (the gold
+/// Activate blooms a glow and sweeps a shine, the white Google
+/// button grows its shadow and settles its G with a small
+/// rotation, dark buttons warm their border toward gold) and
+/// settle on press; fields warm their border toward gold on
+/// hover and focus; the Sign in / Create account switch is a
+/// segmented toggle whose gold pill slides with a spring-lite
+/// curve; the WhatsApp glyph bounces once on hover while its
+/// row tint deepens; and a NEW error shakes the card once,
+/// gently. Icons arrived with it: a key + paste button in the
+/// license field, a person in the name field, a mail in the
+/// email field, a lock + show/hide eye in the password field,
+/// and a shield-check before the internet note. Nothing moved:
+/// the icons live INSIDE the fields, the toggle takes the
+/// switch link's place in the form, and the fit budget above
+/// is re-counted honestly — sign-in form 243, sign-up form 277,
+/// the worst state (sign-in + error) 584 of the 800-tall
+/// window. Reduced motion (the platform's own setting) stills
+/// every flourish; the state changes stay instant.
 ///
 /// v1.0.7 (C3): there is NO Machine ID box on the gate any more
 /// (owner's order). The machine fingerprint still exists inside
@@ -132,6 +156,17 @@ class _EntryGateScreenState extends State<EntryGateScreen>
   // Door A mode: false = Sign in, true = Create account.
   bool _signUpMode = false;
 
+  // v1.0.9 (P2): the password field's show/hide eye — the text
+  // is obscured until the eye opens it.
+  bool _passwordVisible = false;
+
+  // v1.0.9 (P1): the error shake — a nonce that increments
+  // ONLY when a NEW error lands (see _onEntryChanged); the
+  // portal card's shake builder animates toward it, so a
+  // repeated identical error never re-shakes.
+  int _errorShakeNonce = 0;
+  String _lastSeenError = '';
+
   // v1.0.5: the verification state's code (the six boxes render
   // this string; the hidden field behind them owns the keyboard).
   String _otpCode = '';
@@ -181,6 +216,17 @@ class _EntryGateScreenState extends State<EntryGateScreen>
       _lastEngineStage = entry.engineStage;
       _stageChangedAt = DateTime.now();
     }
+    // v1.0.9 (P1): a NEW error shakes the card once — the
+    // nonce moves only when the error text itself changes to
+    // a fresh non-empty value, and only once the portal is
+    // the screen on show (an error that lands during the
+    // splash is simply already there when the portal opens).
+    final err = entry.error;
+    if (err.isNotEmpty && err != _lastSeenError && entry.loaded) {
+      _errorShakeNonce++;
+      if (mounted) setState(() {});
+    }
+    _lastSeenError = err;
   }
 
   @override
@@ -234,30 +280,60 @@ class _EntryGateScreenState extends State<EntryGateScreen>
     int maxLines = 1,
     bool obscureText = false,
     ValueChanged<String>? onChanged,
+    IconData? prefixIcon,
+    Widget? suffix,
   }) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12),
-      decoration: BoxDecoration(
-        color: _entryPanel,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _entryBorder),
-      ),
-      child: TextField(
-        controller: controller,
-        enabled: enabled,
-        maxLines: maxLines,
-        obscureText: obscureText,
-        onChanged: onChanged,
-        style: const TextStyle(fontSize: 12.5, color: _entryText),
-        decoration: InputDecoration(
-          hintText: hint,
-          hintStyle: const TextStyle(fontSize: 12, color: _entryFaint),
-          border: InputBorder.none,
-          isDense: true,
-          contentPadding: const EdgeInsets.symmetric(vertical: 9),
+    // v1.0.9 (P1 + P2): the field is its own widget now — it
+    // owns a focus node and a hover flag so its border can
+    // warm toward gold, and it carries the prefix icon and
+    // the suffix action (paste / eye) INSIDE the same box, so
+    // the field's height — and the card's budget — never move.
+    return _PortalField(
+      controller: controller,
+      hint: hint,
+      enabled: enabled,
+      maxLines: maxLines,
+      obscureText: obscureText,
+      onChanged: onChanged,
+      prefixIcon: prefixIcon,
+      suffix: suffix,
+    );
+  }
+
+  /// v1.0.9 (P2): a compact icon action that lives at a
+  /// field's right edge (paste, show/hide) — small enough to
+  /// never change the field's height.
+  Widget _fieldSuffixIcon(IconData icon, VoidCallback? onTap) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.all(4),
+        child: Icon(
+          icon,
+          size: 15,
+          color: onTap == null ? _entryFaint : _entryDim,
         ),
       ),
     );
+  }
+
+  /// v1.0.9 (P2): the key field's PASTE button — reads the
+  /// clipboard's text into the field (the short-key tidy-up
+  /// runs on it, exactly as if it were typed). An empty or
+  /// non-text clipboard — or a clipboard the platform refuses
+  /// — is a graceful no-op; the field still takes a normal
+  /// paste.
+  Future<void> _pasteIntoKeyField() async {
+    try {
+      final data = await Clipboard.getData(Clipboard.kTextPlain);
+      final text = data?.text;
+      if (text == null || text.isEmpty) return;
+      _keyController.text = text;
+      _onKeyChanged(text);
+    } catch (_) {
+      // Clipboard unavailable — nothing to fill.
+    }
   }
 
   Widget _btn({
@@ -267,56 +343,22 @@ class _EntryGateScreenState extends State<EntryGateScreen>
     bool gold = false,
     bool white = false,
     double height = 38,
+    bool googleMark = false,
   }) {
     // Midnight Gold: gold buttons carry the sample's vertical
     // gold gradient; the Google button is white; the rest are
-    // quiet dark buttons with the hairline border.
-    final BoxDecoration decoration = gold
-        ? BoxDecoration(
-            gradient: const LinearGradient(
-              begin: Alignment.topCenter,
-              end: Alignment.bottomCenter,
-              colors: [Color(0xFFF2B544), Color(0xFFDD941F)],
-            ),
-            borderRadius: BorderRadius.circular(12),
-          )
-        : white
-            ? BoxDecoration(
-                color: _entryWhite,
-                borderRadius: BorderRadius.circular(12),
-              )
-            : BoxDecoration(
-                color: _entryBtn,
-                border: Border.all(color: _entryBorder),
-                borderRadius: BorderRadius.circular(12),
-              );
-    return Opacity(
-      opacity: enabled ? 1 : 0.45,
-      child: Container(
-        decoration: decoration,
-        child: Material(
-          color: Colors.transparent,
-          borderRadius: BorderRadius.circular(12),
-          child: InkWell(
-            onTap: enabled ? onTap : null,
-            borderRadius: BorderRadius.circular(12),
-            child: Container(
-              height: height,
-              alignment: Alignment.center,
-              child: Text(
-                label,
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.bold,
-                  color: gold
-                      ? _entryGoldText
-                      : (white ? _entryWhiteText : _entryText),
-                ),
-              ),
-            ),
-          ),
-        ),
-      ),
+    // quiet dark buttons with the hairline border. v1.0.9
+    // (P1): the button is its own widget now, so it can answer
+    // the mouse — hover lift + glow, a shine sweep on the
+    // gold, a press settle — without any call site changing.
+    return _PortalButton(
+      label: label,
+      enabled: enabled,
+      onTap: onTap,
+      gold: gold,
+      white: white,
+      height: height,
+      googleMark: googleMark,
     );
   }
 
@@ -354,33 +396,10 @@ class _EntryGateScreenState extends State<EntryGateScreen>
   /// v1.0.8: a tappable WhatsApp line — the green glyph plus a
   /// label. Opens the support chat in the user's browser. The
   /// phone number itself is never rendered (see the URL const).
+  /// v1.0.9 (P1): the line is its own widget now, so hovering
+  /// it can bounce the glyph once and deepen the row's tint.
   Widget _whatsAppLink(String label, {double glyphSize = 15}) {
-    return InkWell(
-      onTap: () =>
-          AutomationBridge.instance.openUrl(_whatsAppSupportUrl),
-      borderRadius: BorderRadius.circular(6),
-      child: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            CustomPaint(
-              size: Size(glyphSize, glyphSize),
-              painter: const _WhatsAppGlyphPainter(),
-            ),
-            const SizedBox(width: 6),
-            Text(
-              label,
-              style: const TextStyle(
-                fontSize: 11.5,
-                fontWeight: FontWeight.bold,
-                color: _entryText,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
+    return _WhatsAppLink(label: label, glyphSize: glyphSize);
   }
 
   /// v1.0.8 (F3): the portal's header row — the brand block of
@@ -460,9 +479,19 @@ class _EntryGateScreenState extends State<EntryGateScreen>
       children: [
         _sectionLabel('LICENSE KEY'),
         const SizedBox(height: 4),
-        const Text(
-          'Internet is required to activate your license key.',
-          style: TextStyle(fontSize: 11, color: _entryDim),
+        // v1.0.9 (P2): a small shield-check rides before the
+        // note — the wording is exactly as it was.
+        const Row(
+          children: [
+            Icon(Icons.verified_user, size: 13, color: _entryGold),
+            SizedBox(width: 5),
+            Expanded(
+              child: Text(
+                'Internet is required to activate your license key.',
+                style: TextStyle(fontSize: 11, color: _entryDim),
+              ),
+            ),
+          ],
         ),
         const SizedBox(height: 5),
         _field(
@@ -471,6 +500,11 @@ class _EntryGateScreenState extends State<EntryGateScreen>
           enabled: entry.loaded && !entry.busy,
           maxLines: 2,
           onChanged: _onKeyChanged,
+          prefixIcon: Icons.vpn_key,
+          suffix: _fieldSuffixIcon(
+            Icons.content_paste,
+            entry.busy || !entry.loaded ? null : _pasteIntoKeyField,
+          ),
         ),
         const SizedBox(height: 6),
         _btn(
@@ -780,6 +814,7 @@ class _EntryGateScreenState extends State<EntryGateScreen>
           height: 36,
           enabled: doorAEnabled,
           label: 'Continue with Google',
+          googleMark: true,
           onTap: () async {
             final url = await AutomationBridge.instance.getGoogleAuthUrl();
             if (url != null && url.isNotEmpty) {
@@ -794,11 +829,24 @@ class _EntryGateScreenState extends State<EntryGateScreen>
           },
         ),
         const SizedBox(height: 6),
+        // v1.0.9 (P1): the mode switch is the sample's
+        // segmented toggle — its gold pill SLIDES between
+        // Sign in and Create account on a spring-lite curve
+        // (it takes the old switch link's place; the bottom
+        // row now carries only Forgot password?).
+        _ModeToggle(
+          signUp: _signUpMode,
+          onChanged: doorAEnabled
+              ? (v) => setState(() => _signUpMode = v)
+              : null,
+        ),
+        const SizedBox(height: 6),
         if (_signUpMode) ...[
           _field(
             controller: _nameController,
             hint: 'Your name',
             enabled: doorAEnabled,
+            prefixIcon: Icons.person_outline,
           ),
           const SizedBox(height: 6),
         ],
@@ -806,13 +854,22 @@ class _EntryGateScreenState extends State<EntryGateScreen>
           controller: _emailController,
           hint: 'Email address',
           enabled: doorAEnabled,
+          prefixIcon: Icons.mail_outline,
         ),
         const SizedBox(height: 6),
         _field(
           controller: _passwordController,
           hint: 'Password',
           enabled: doorAEnabled,
-          obscureText: true,
+          obscureText: !_passwordVisible,
+          prefixIcon: Icons.lock_outline,
+          suffix: _fieldSuffixIcon(
+            _passwordVisible ? Icons.visibility_off : Icons.visibility,
+            doorAEnabled
+                ? () =>
+                    setState(() => _passwordVisible = !_passwordVisible)
+                : null,
+          ),
         ),
         if (_signUpMode) ...[
           const SizedBox(height: 5),
@@ -840,19 +897,14 @@ class _EntryGateScreenState extends State<EntryGateScreen>
             }
           },
         ),
-        const SizedBox(height: 2),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.spaceBetween,
-          children: [
-            _linkButton(
-              _signUpMode
-                  ? 'Already have an account? Sign in'
-                  : 'New here? Create account',
-              doorAEnabled
-                  ? () => setState(() => _signUpMode = !_signUpMode)
-                  : null,
-            ),
-            if (!_signUpMode)
+        // v1.0.9 (P1): the mode switch lives in the toggle
+        // above now — this row carries only Forgot password?,
+        // in Sign in mode, as before.
+        if (!_signUpMode) ...[
+          const SizedBox(height: 2),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.end,
+            children: [
               _linkButton(
                 'Forgot password?',
                 doorAEnabled
@@ -861,8 +913,9 @@ class _EntryGateScreenState extends State<EntryGateScreen>
                         .forgotPassword(_emailController.text)
                     : null,
               ),
-          ],
-        ),
+            ],
+          ),
+        ],
       ],
     );
   }
@@ -1245,7 +1298,7 @@ class _EntryGateScreenState extends State<EntryGateScreen>
             right: 0,
             bottom: 18,
             child: Text(
-              'v1.0.8',
+              'v1.0.9',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 10.5, color: _entryFaint),
             ),
@@ -1394,6 +1447,28 @@ class _EntryGateScreenState extends State<EntryGateScreen>
       },
       child: card,
     );
+    // v1.0.9 (P1): the ERROR SHAKE — the builder's tween end
+    // is the error nonce itself, so a NEW error (the nonce
+    // moves, see _onEntryChanged) animates the fractional
+    // sweep 0 → 1 exactly once: a gentle ±6px horizontal
+    // wobble, decaying over ~400 ms. The widget never changes
+    // key, so the card's fields keep their state and focus
+    // through the shake. Reduced motion stills it outright.
+    final reducedMotion = MediaQuery.of(context).disableAnimations;
+    final shakenCard = TweenAnimationBuilder<double>(
+      tween: Tween<double>(begin: 0, end: _errorShakeNonce.toDouble()),
+      duration:
+          reducedMotion ? Duration.zero : const Duration(milliseconds: 400),
+      curve: Curves.linear,
+      builder: (context, value, child) {
+        final phase = value - value.floorToDouble();
+        final dx = _errorShakeNonce == 0
+            ? 0.0
+            : math.sin(phase * math.pi * 3) * 6 * (1 - phase);
+        return Transform.translate(offset: Offset(dx, 0), child: child);
+      },
+      child: enteringCard,
+    );
     return Scaffold(
       backgroundColor: _entryBg,
       body: Stack(
@@ -1426,11 +1501,11 @@ class _EntryGateScreenState extends State<EntryGateScreen>
                   child: ConstrainedBox(
                     constraints:
                         BoxConstraints(minHeight: constraints.maxHeight),
-                    child: Center(child: enteringCard),
+                    child: Center(child: shakenCard),
                   ),
                 );
               }
-              return Center(child: enteringCard);
+              return Center(child: shakenCard);
             },
           ),
         ],
@@ -1459,6 +1534,567 @@ class _EntryGateScreenState extends State<EntryGateScreen>
             ),
     );
   }
+}
+
+/// v1.0.9 (P1 + P2): a portal TEXT FIELD that answers the
+/// mouse — its border warms toward gold on hover and turns
+/// gold on focus (animated), with a faint gold glow while
+/// focused. The prefix icon and the suffix action (paste /
+/// show-hide eye) live INSIDE the box, so the field's height
+/// never changes and the card's fit budget never moves.
+class _PortalField extends StatefulWidget {
+  const _PortalField({
+    required this.controller,
+    required this.hint,
+    this.enabled = true,
+    this.maxLines = 1,
+    this.obscureText = false,
+    this.onChanged,
+    this.prefixIcon,
+    this.suffix,
+  });
+
+  final TextEditingController controller;
+  final String hint;
+  final bool enabled;
+  final int maxLines;
+  final bool obscureText;
+  final ValueChanged<String>? onChanged;
+  final IconData? prefixIcon;
+  final Widget? suffix;
+
+  @override
+  State<_PortalField> createState() => _PortalFieldState();
+}
+
+class _PortalFieldState extends State<_PortalField> {
+  final FocusNode _focusNode = FocusNode();
+  bool _hovering = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode.addListener(_onFocusChange);
+  }
+
+  void _onFocusChange() {
+    if (mounted) setState(() {});
+  }
+
+  @override
+  void dispose() {
+    _focusNode.removeListener(_onFocusChange);
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final reducedMotion = MediaQuery.of(context).disableAnimations;
+    final focused = _focusNode.hasFocus;
+    final borderColor = !widget.enabled
+        ? _entryBorder
+        : focused
+            ? _entryGold
+            : _hovering
+                ? const Color(0xFF5C4E2A)
+                : _entryBorder;
+    return MouseRegion(
+      onEnter: (_) => setState(() => _hovering = true),
+      onExit: (_) => setState(() => _hovering = false),
+      child: AnimatedContainer(
+        duration: reducedMotion
+            ? Duration.zero
+            : const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+        padding: const EdgeInsets.symmetric(horizontal: 12),
+        decoration: BoxDecoration(
+          color: _entryPanel,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: borderColor),
+          boxShadow: focused && widget.enabled
+              ? const [
+                  BoxShadow(
+                    color: Color(0x1FF5B83D),
+                    blurRadius: 10,
+                  ),
+                ]
+              : const [],
+        ),
+        child: Row(
+          children: [
+            if (widget.prefixIcon != null) ...[
+              Icon(
+                widget.prefixIcon,
+                size: 16,
+                color: !widget.enabled
+                    ? _entryFaint
+                    : focused
+                        ? _entryGold
+                        : _entryDim,
+              ),
+              const SizedBox(width: 8),
+            ],
+            Expanded(
+              child: TextField(
+                controller: widget.controller,
+                focusNode: _focusNode,
+                enabled: widget.enabled,
+                maxLines: widget.maxLines,
+                obscureText: widget.obscureText,
+                onChanged: widget.onChanged,
+                style: const TextStyle(fontSize: 12.5, color: _entryText),
+                decoration: InputDecoration(
+                  hintText: widget.hint,
+                  hintStyle:
+                      const TextStyle(fontSize: 12, color: _entryFaint),
+                  border: InputBorder.none,
+                  isDense: true,
+                  contentPadding:
+                      const EdgeInsets.symmetric(vertical: 9),
+                ),
+              ),
+            ),
+            if (widget.suffix != null) widget.suffix!,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+/// v1.0.9 (P1): a portal BUTTON that answers the mouse —
+/// hover lifts it and blooms its shadow (the gold Activate
+/// also sweeps a shine across itself once per hover-enter),
+/// a press settles it to 0.98, dark buttons warm their border
+/// toward gold, and the Google button's G settles with a
+/// small rotation. Touch is untouched: every flourish rides
+/// the pointer or the highlight, never the tap itself.
+class _PortalButton extends StatefulWidget {
+  const _PortalButton({
+    required this.label,
+    required this.enabled,
+    required this.onTap,
+    this.gold = false,
+    this.white = false,
+    this.height = 38,
+    this.googleMark = false,
+  });
+
+  final String label;
+  final bool enabled;
+  final VoidCallback onTap;
+  final bool gold;
+  final bool white;
+  final double height;
+  final bool googleMark;
+
+  @override
+  State<_PortalButton> createState() => _PortalButtonState();
+}
+
+class _PortalButtonState extends State<_PortalButton> {
+  bool _hovering = false;
+  bool _pressed = false;
+  int _shineNonce = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final reducedMotion = MediaQuery.of(context).disableAnimations;
+    final active = widget.enabled;
+    final dur = reducedMotion
+        ? Duration.zero
+        : const Duration(milliseconds: 200);
+    final lift = active && _hovering
+        ? (widget.gold || widget.white ? -2.0 : -1.0)
+        : 0.0;
+    final List<BoxShadow> shadows;
+    if (active && _hovering && widget.gold) {
+      shadows = const [
+        BoxShadow(
+          color: Color(0x61F5B83D),
+          blurRadius: 18,
+          offset: Offset(0, 6),
+        ),
+      ];
+    } else if (active && _hovering && widget.white) {
+      shadows = const [
+        BoxShadow(
+          color: Color(0x59000000),
+          blurRadius: 14,
+          offset: Offset(0, 5),
+        ),
+      ];
+    } else if (active && _hovering) {
+      shadows = const [
+        BoxShadow(
+          color: Color(0x29F5B83D),
+          blurRadius: 12,
+          offset: Offset(0, 4),
+        ),
+      ];
+    } else {
+      shadows = const [];
+    }
+    final BoxDecoration decoration = widget.gold
+        ? BoxDecoration(
+            gradient: const LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [Color(0xFFF2B544), Color(0xFFDD941F)],
+            ),
+            borderRadius: BorderRadius.circular(12),
+            boxShadow: shadows,
+          )
+        : widget.white
+            ? BoxDecoration(
+                color: _entryWhite,
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: shadows,
+              )
+            : BoxDecoration(
+                color: _entryBtn,
+                border: Border.all(
+                  color: active && _hovering
+                      ? _entryGold.withOpacity(0.75)
+                      : _entryBorder,
+                ),
+                borderRadius: BorderRadius.circular(12),
+                boxShadow: shadows,
+              );
+    return Opacity(
+      opacity: active ? 1 : 0.45,
+      child: MouseRegion(
+        onEnter: active
+            ? (_) => setState(() {
+                  _hovering = true;
+                  _shineNonce++;
+                })
+            : null,
+        onExit: active ? (_) => setState(() => _hovering = false) : null,
+        child: AnimatedScale(
+          scale: active && _pressed ? 0.98 : 1,
+          duration: dur,
+          curve: Curves.easeOut,
+          child: AnimatedContainer(
+            duration: dur,
+            curve: Curves.easeOut,
+            transform: Matrix4.translationValues(0, lift, 0),
+            decoration: decoration,
+            child: Material(
+              color: Colors.transparent,
+              borderRadius: BorderRadius.circular(12),
+              child: InkWell(
+                onTap: active ? widget.onTap : null,
+                onHighlightChanged:
+                    active ? (v) => setState(() => _pressed = v) : null,
+                borderRadius: BorderRadius.circular(12),
+                child: Container(
+                  height: widget.height,
+                  alignment: Alignment.center,
+                  child: Stack(
+                    alignment: Alignment.center,
+                    children: [
+                      Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          if (widget.googleMark) ...[
+                            AnimatedRotation(
+                              turns: active && _hovering ? -0.04 : 0,
+                              duration: reducedMotion
+                                  ? Duration.zero
+                                  : const Duration(milliseconds: 300),
+                              curve: const Cubic(0.34, 1.3, 0.64, 1),
+                              child: const CustomPaint(
+                                size: Size(16, 16),
+                                painter: _GoogleGPainter(),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                          ],
+                          Text(
+                            widget.label,
+                            style: TextStyle(
+                              fontSize: 13,
+                              fontWeight: FontWeight.bold,
+                              color: widget.gold
+                                  ? _entryGoldText
+                                  : (widget.white
+                                      ? _entryWhiteText
+                                      : _entryText),
+                            ),
+                          ),
+                        ],
+                      ),
+                      if (widget.gold && active && !reducedMotion)
+                        Positioned.fill(
+                          child: ClipRRect(
+                            borderRadius: BorderRadius.circular(12),
+                            child: TweenAnimationBuilder<double>(
+                              key: ValueKey(_shineNonce),
+                              tween: Tween<double>(begin: 0, end: 1),
+                              duration:
+                                  const Duration(milliseconds: 550),
+                              curve: Curves.easeOut,
+                              builder: (context, t, _) {
+                                return LayoutBuilder(
+                                  builder: (context, constraints) {
+                                    final w = constraints.maxWidth;
+                                    return Transform.translate(
+                                      offset:
+                                          Offset(-70 + (w + 140) * t, 0),
+                                      child: Align(
+                                        alignment: Alignment.centerLeft,
+                                        child: Container(
+                                          width: 60,
+                                          decoration: BoxDecoration(
+                                            gradient: LinearGradient(
+                                              colors: [
+                                                Colors.white
+                                                    .withOpacity(0),
+                                                Colors.white
+                                                    .withOpacity(0.35),
+                                                Colors.white
+                                                    .withOpacity(0),
+                                              ],
+                                            ),
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                );
+                              },
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// v1.0.9 (P1): the Sign in / Create account SEGMENTED
+/// TOGGLE — a pill track whose gold thumb SLIDES to the
+/// active side on a spring-lite curve (an easeOutBack with
+/// the overshoot kept small), instead of the old switch
+/// link's instant swap.
+class _ModeToggle extends StatelessWidget {
+  const _ModeToggle({required this.signUp, required this.onChanged});
+
+  final bool signUp;
+  final ValueChanged<bool>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final reducedMotion = MediaQuery.of(context).disableAnimations;
+    return Opacity(
+      opacity: onChanged == null ? 0.45 : 1,
+      child: Container(
+        height: 30,
+        decoration: BoxDecoration(
+          color: _entryPanel,
+          borderRadius: BorderRadius.circular(999),
+          border: Border.all(color: _entryBorder),
+        ),
+        child: LayoutBuilder(
+          builder: (context, constraints) {
+            final thumbW = (constraints.maxWidth - 4) / 2;
+            return Stack(
+              children: [
+                AnimatedPositioned(
+                  duration: reducedMotion
+                      ? Duration.zero
+                      : const Duration(milliseconds: 280),
+                  curve: const Cubic(0.34, 1.25, 0.64, 1),
+                  left: 2 + (signUp ? thumbW : 0),
+                  top: 2,
+                  width: thumbW,
+                  height: 24,
+                  child: Container(
+                    decoration: BoxDecoration(
+                      gradient: const LinearGradient(
+                        begin: Alignment.topCenter,
+                        end: Alignment.bottomCenter,
+                        colors: [Color(0xFFF2B544), Color(0xFFDD941F)],
+                      ),
+                      borderRadius: BorderRadius.circular(999),
+                    ),
+                  ),
+                ),
+                Row(
+                  children: [
+                    Expanded(
+                      child: _tab('Sign in', !signUp, false),
+                    ),
+                    Expanded(
+                      child: _tab('Create account', signUp, true),
+                    ),
+                  ],
+                ),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  Widget _tab(String label, bool active, bool value) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onChanged == null ? null : () => onChanged!(value),
+      child: Center(
+        child: Text(
+          label,
+          style: TextStyle(
+            fontSize: 11.5,
+            fontWeight: FontWeight.bold,
+            color: active ? _entryGoldText : _entryDim,
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// v1.0.9 (P1): the WhatsApp support line — hovering it
+/// bounces the glyph ONCE (a sine pulse) and deepens the
+/// row's green tint; the tap still opens the support chat,
+/// and the number still lives only inside the URL.
+class _WhatsAppLink extends StatefulWidget {
+  const _WhatsAppLink({required this.label, this.glyphSize = 15});
+
+  final String label;
+  final double glyphSize;
+
+  @override
+  State<_WhatsAppLink> createState() => _WhatsAppLinkState();
+}
+
+class _WhatsAppLinkState extends State<_WhatsAppLink> {
+  bool _hovering = false;
+  int _pulseNonce = 0;
+
+  @override
+  Widget build(BuildContext context) {
+    final reducedMotion = MediaQuery.of(context).disableAnimations;
+    return MouseRegion(
+      onEnter: (_) => setState(() {
+        _hovering = true;
+        _pulseNonce++;
+      }),
+      onExit: (_) => setState(() => _hovering = false),
+      child: AnimatedContainer(
+        duration: reducedMotion
+            ? Duration.zero
+            : const Duration(milliseconds: 200),
+        curve: Curves.easeOut,
+        decoration: BoxDecoration(
+          color: _hovering
+              ? _whatsAppGreen.withOpacity(0.13)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(6),
+        ),
+        child: InkWell(
+          onTap: () =>
+              AutomationBridge.instance.openUrl(_whatsAppSupportUrl),
+          borderRadius: BorderRadius.circular(6),
+          child: Padding(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 2, vertical: 2),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                TweenAnimationBuilder<double>(
+                  key: ValueKey(_pulseNonce),
+                  tween: Tween<double>(begin: 0, end: 1),
+                  duration: reducedMotion
+                      ? Duration.zero
+                      : const Duration(milliseconds: 450),
+                  builder: (context, t, child) {
+                    final scale = _pulseNonce == 0
+                        ? 1.0
+                        : 1 + 0.25 * math.sin(t * math.pi);
+                    return Transform.scale(scale: scale, child: child);
+                  },
+                  child: CustomPaint(
+                    size: Size(widget.glyphSize, widget.glyphSize),
+                    painter: const _WhatsAppGlyphPainter(),
+                  ),
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  widget.label,
+                  style: const TextStyle(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.bold,
+                    color: _entryText,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+/// v1.0.9 (P1/P2): the Google "G", drawn (like the WhatsApp
+/// glyph, no icon font carries it): four colour arcs — blue
+/// at the right, green at the bottom, yellow at the lower
+/// left, red across the top — plus the blue crossbar.
+class _GoogleGPainter extends CustomPainter {
+  const _GoogleGPainter();
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final s = size.width;
+    final stroke = s * 0.30;
+    final rect = Rect.fromCircle(
+      center: Offset(s / 2, s / 2),
+      radius: (s - stroke) / 2,
+    );
+    void arc(Color color, double startDeg, double sweepDeg) {
+      final paint = Paint()
+        ..color = color
+        ..style = PaintingStyle.stroke
+        ..strokeWidth = stroke
+        ..strokeCap = StrokeCap.butt;
+      canvas.drawArc(
+        rect,
+        startDeg * math.pi / 180,
+        sweepDeg * math.pi / 180,
+        false,
+        paint,
+      );
+    }
+
+    arc(const Color(0xFF4285F4), -52, 104);
+    arc(const Color(0xFF34A853), 52, 88);
+    arc(const Color(0xFFFBBC05), 140, 76);
+    arc(const Color(0xFFEA4335), 216, 92);
+    final bar = Paint()..color = const Color(0xFF4285F4);
+    canvas.drawRect(
+      Rect.fromLTRB(
+        s * 0.46,
+        s / 2 - stroke * 0.48,
+        s,
+        s / 2 + stroke * 0.48,
+      ),
+      bar,
+    );
+  }
+
+  @override
+  bool shouldRepaint(covariant CustomPainter oldDelegate) => false;
 }
 
 /// v1.0.8: the WhatsApp glyph, drawn (no icon font carries it):

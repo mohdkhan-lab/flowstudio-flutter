@@ -1298,7 +1298,7 @@ class _EntryGateScreenState extends State<EntryGateScreen>
             right: 0,
             bottom: 18,
             child: Text(
-              'v1.0.10',
+              'v1.0.11',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 10.5, color: _entryFaint),
             ),

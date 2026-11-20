@@ -16068,8 +16068,8 @@ async function main() {
     // "configured", and the detailed Firebase request shapes are
     // pinned in X127.) ---
     eq('X124 the service ships configured (Door A live, Firebase)', serviceConfig124.isServiceConfigured(serviceConfig124.SERVICE_CONFIG), true);
-    ok('X124 the service config carries the Firebase project values', serviceConfig124.SERVICE_CONFIG.projectId === 'arcane-airport-k5xj8' && serviceConfig124.SERVICE_CONFIG.databaseId === 'ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50' && typeof serviceConfig124.SERVICE_CONFIG.apiKey === 'string' && serviceConfig124.SERVICE_CONFIG.apiKey.length > 10 && typeof serviceConfig124.SERVICE_CONFIG.authPageUrl === 'string' && serviceConfig124.SERVICE_CONFIG.authPageUrl === 'https://fs-entry-aa2dwk693-mk-59e0.vercel.app/auth.html' && !('googleClientId' in serviceConfig124.SERVICE_CONFIG));
-    ok('X124 the service name/domain carry no tell-tale words', !/admin|license|flowstudio/i.test(serviceConfig124.SERVICE_CONFIG.serviceName + ' ' + serviceConfig124.SERVICE_CONFIG.authDomain));
+    ok('X124 the service config carries the Firebase project values', serviceConfig124.SERVICE_CONFIG.projectId === 'getflowstudio' && serviceConfig124.SERVICE_CONFIG.databaseId === '(default)' && typeof serviceConfig124.SERVICE_CONFIG.apiKey === 'string' && serviceConfig124.SERVICE_CONFIG.apiKey.length > 10 && typeof serviceConfig124.SERVICE_CONFIG.authPageUrl === 'string' && serviceConfig124.SERVICE_CONFIG.authPageUrl === 'https://fs-entry-aa2dwk693-mk-59e0.vercel.app/auth.html' && !('googleClientId' in serviceConfig124.SERVICE_CONFIG));
+    ok('X124 the service name/domain carry no admin or license words (v1.0.11: the domain carries the brand by owner order)', !/admin|license/i.test(serviceConfig124.SERVICE_CONFIG.serviceName + ' ' + serviceConfig124.SERVICE_CONFIG.authDomain));
     eq('X124 Door A reports itself configured', authClient124.doorAState().configured, true);
     eq('X124 Door A configured message is empty', authClient124.doorAState().message, '');
     const gUrl124 = authClient124.googleStartUrl();
@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.10+11 (public line)', read124('pubspec.yaml').includes('version: 1.0.10+11'));
-    eq('X124 package.json version is 1.0.10', JSON.parse(read124('package.json')).version, '1.0.10');
-    ok('X124 the bridge reports version 1.0.10 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.10';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.11+12 (public line)', read124('pubspec.yaml').includes('version: 1.0.11+12'));
+    eq('X124 package.json version is 1.0.11', JSON.parse(read124('package.json')).version, '1.0.11');
+    ok('X124 the bridge reports version 1.0.11 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.11';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the backend release list', bridgeSrc124.includes('documents/releases') && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.10 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.10'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.11 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.11'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16355,9 +16355,9 @@ async function main() {
     const countCalls127 = (frag) => calls127.filter(c => c.url.includes(frag)).length;
 
     // --- Firestore addressing + value encoding ---
-    eq('X127 the Firestore base names the project + named database',
+    eq('X127 the Firestore base names the project + (default) database',
       fsClient127.firestoreBase(cfg127),
-      'https://firestore.googleapis.com/v1/projects/arcane-airport-k5xj8/databases/ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50/documents');
+      'https://firestore.googleapis.com/v1/projects/getflowstudio/databases/(default)/documents');
     eq('X127 value encoding: string/integer/timestamp',
       JSON.stringify(fsClient127.encodeFields({ s: 'x', n: 5, t: fsClient127.timestampValue('2026-11-18T00:00:00.000Z') })),
       JSON.stringify({ s: { stringValue: 'x' }, n: { integerValue: '5' }, t: { timestampValue: '2026-11-18T00:00:00.000Z' } }));
@@ -16606,10 +16606,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.10',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.10"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.10'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.10';"));
+    ok('X127 the remaining version sites carry 1.0.11',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.11"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.11'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.11';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('setPendingAccountSession'));
@@ -16676,8 +16676,8 @@ async function main() {
     ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold; v1.0.8: custom gold bar)',
       gateDart128.includes('0xFF0B0B10') && gateDart128.includes('widthFactor: progress') &&
       gateDart128.includes('entry.engineStage / 3'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.10',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.10'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.11',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.11'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
@@ -17371,7 +17371,7 @@ async function main() {
   // X134. PUBLIC v1.0.10 — THE UPDATER MOVES TO THE BACKEND. The app
   // no longer reads releases from a code host: the bridge's
   // fetchLatestRelease reads the Firestore `releases` collection
-  // (named database) with the pending account session's ID token —
+  // ((default) database since v1.0.11) with the pending account session's ID token —
   // published documents only, newest createdAt wins — and the Setup
   // always downloads from the ONE permanent backend link (a counter
   // + redirect). The Dart checkForUpdates keeps no release source of
@@ -17395,7 +17395,7 @@ async function main() {
 
     // --- the bridge reads the backend release list ---
     ok('X134 the bridge reads the backend Firestore releases collection',
-      bridgeSrc134.includes("const RELEASES_URL = 'https://firestore.googleapis.com/v1/projects/arcane-airport-k5xj8/databases/ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50/documents/releases?pageSize=50';") &&
+      bridgeSrc134.includes("const RELEASES_URL = 'https://firestore.googleapis.com/v1/projects/getflowstudio/databases/(default)/documents/releases?pageSize=50';") &&
       fetchBody134.includes('RELEASES_URL'));
     ok('X134 the release read rides the pending account session token',
       fetchBody134.includes('pendingAccountSession.idToken') &&
@@ -17451,6 +17451,38 @@ async function main() {
       !bridgeSrc134.includes('could not reach GitHub') && !settingsProv134.includes('could not reach GitHub'));
     ok('X134 no github mention of any case in either updater file',
       !/github/i.test(bridgeSrc134) && !/github/i.test(settingsProv134));
+  }
+
+  // =====================================================================
+  // X135. PUBLIC v1.0.11 — THE BACKEND MOVES TO THE NEW PROJECT.
+  // The account backend is a new Firebase project with a proper
+  // name, created under the service's own account: project
+  // 'getflowstudio', its (default) Firestore database (the old
+  // project used a named database). Sign-in, user records,
+  // reporting and the release list all address the new project;
+  // the key service URL + key material, the permanent download
+  // link and every other behaviour are byte-identical to v1.0.10.
+  // =====================================================================
+  {
+    const fs135 = require('fs');
+    const path135 = require('path');
+    const read135 = (rel) => fs135.readFileSync(path135.join(__dirname, '..', rel), 'utf8');
+    const cfg135 = require('../engine/serviceConfig').SERVICE_CONFIG;
+    const bridgeSrc135 = read135('engine_bridge.js');
+    const cfgSrc135 = read135('engine/serviceConfig.js');
+    const fsClientSrc135 = read135('engine/firestoreClient.js');
+
+    eq('X135 the service config names the new project', cfg135.projectId, 'getflowstudio');
+    eq('X135 the service config uses the (default) database', cfg135.databaseId, '(default)');
+    eq('X135 the service config carries the new project auth domain', cfg135.authDomain, 'getflowstudio.firebaseapp.com');
+    eq('X135 the service config carries the new project api key', cfg135.apiKey, 'AIzaSyC1CTKwTqRo-2Bczo7ihUFRgBN7JRV6TPY');
+    ok('X135 the bridge release list reads the new project (default) database',
+      bridgeSrc135.includes("const RELEASES_URL = 'https://firestore.googleapis.com/v1/projects/getflowstudio/databases/(default)/documents/releases?pageSize=50';"));
+    ok('X135 no old-project trace in the backend-addressing files',
+      !/arcane-airport|ai-studio-dfd8a1b1|AIzaSyC7Z3jXrquVsDKFGTK9tx8DpmWEnM4bHls/.test(bridgeSrc135 + cfgSrc135 + fsClientSrc135));
+    ok('X135 the key service and permanent download link are unchanged',
+      cfg135.keyFunctionUrl === 'https://zkgpvhcfbqfmcopzvecg.supabase.co/functions/v1/issue-key' &&
+      bridgeSrc135.includes("const UPDATE_DOWNLOAD_URL = 'https://zkgpvhcfbqfmcopzvecg.supabase.co/functions/v1/download';"));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

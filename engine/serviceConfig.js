@@ -24,10 +24,16 @@
 
 const SERVICE_CONFIG = {
   serviceName: 'Meridian',
-  apiKey: 'AIzaSyC7Z3jXrquVsDKFGTK9tx8DpmWEnM4bHls',
-  authDomain: 'arcane-airport-k5xj8.firebaseapp.com',
-  projectId: 'arcane-airport-k5xj8',
-  databaseId: 'ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50',
+  // v1.0.11: the backend moved to the new project (proper name,
+  // created under the service's own account). The new project
+  // uses its (default) Firestore database — there is no named
+  // database any more. Sign-in, user records and the release
+  // list all live there now; the key service (below) is
+  // unchanged and keeps verifying this project's ID tokens.
+  apiKey: 'AIzaSyC1CTKwTqRo-2Bczo7ihUFRgBN7JRV6TPY',
+  authDomain: 'getflowstudio.firebaseapp.com',
+  projectId: 'getflowstudio',
+  databaseId: '(default)',
   // v1.0.4: the sign-in page moved OUT of the panel's site into
   // its own tiny standalone home (its own repo, its own domain),
   // so no panel/backend address ever appears in the sign-in

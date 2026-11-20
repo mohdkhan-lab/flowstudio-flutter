@@ -344,7 +344,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // the backend's latest release against it.
-const APP_VERSION = '1.0.10';
+const APP_VERSION = '1.0.11';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -421,8 +421,10 @@ function isNewerVersion(latest, current) {
 
 // PUBLIC v1.0.10: the public edition updates ONLY from the
 // backend release list — the Firestore `releases` collection of
-// the named database, read with the pending account session's ID
-// token (the release rules allow any signed-in read). Among the
+// the project's database, read with the pending account session's
+// ID token (the release rules allow any signed-in read).
+// PUBLIC v1.0.11: that database is the NEW backend project's
+// (default) database (see RELEASES_URL below). Among the
 // documents marked published, the one with the newest createdAt
 // is the current release; its bare version ('1.0.10') resolves as
 // the tag 'v1.0.10'. The Setup itself always comes from the ONE
@@ -430,7 +432,7 @@ function isNewerVersion(latest, current) {
 // backend), never from a per-release URL. With no pending account
 // session there is no token to read with, so no update is offered.
 const UPDATE_DOWNLOAD_URL = 'https://zkgpvhcfbqfmcopzvecg.supabase.co/functions/v1/download';
-const RELEASES_URL = 'https://firestore.googleapis.com/v1/projects/arcane-airport-k5xj8/databases/ai-studio-dfd8a1b1-c711-4940-bbbe-e0b8e9c8fa50/documents/releases?pageSize=50';
+const RELEASES_URL = 'https://firestore.googleapis.com/v1/projects/getflowstudio/databases/(default)/documents/releases?pageSize=50';
 
 async function fetchLatestRelease() {
   if (!pendingAccountSession || !pendingAccountSession.idToken) {

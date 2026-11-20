@@ -4,8 +4,9 @@
 //
 // Base: https://firestore.googleapis.com/v1/projects/<projectId>/
 //         databases/<databaseId>/documents
-// The project has NO "(default)" database; the named database in
-// engine/serviceConfig.js is the one every path below uses.
+// v1.0.11: the backend project uses its "(default)" database; the
+// databaseId in engine/serviceConfig.js is the one every path
+// below uses.
 //
 // Auth is a Bearer token (a Firebase ID token — an account session's
 // or an anonymous session's). Values use Firestore's typed encoding:

@@ -132,6 +132,12 @@ async function getDocument(docPath, opts) {
 // PATCH one document with an update mask (merge semantics: only
 // the named fields are written; the document is created when it
 // does not exist yet). Verdicts mirror getDocument's.
+//
+// opts.createOnly === true adds the currentDocument.exists=false
+// precondition: the write lands ONLY as a create and answers
+// 409 ALREADY_EXISTS when the document is already there. That is
+// the caller's existence test on collections it may write but
+// must not read (v1.0.13 — see reportClient's license report).
 async function patchDocument(docPath, fields, opts) {
   const config = resolveConfig(opts);
   if (!isServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
@@ -141,6 +147,7 @@ async function patchDocument(docPath, fields, opts) {
   const names = Object.keys(fields || {});
   const params = new URLSearchParams();
   for (const name of names) params.append('updateMask.fieldPaths', name);
+  if (opts && opts.createOnly === true) params.append('currentDocument.exists', 'false');
   const url = `${firestoreBase(config)}/${docPath}?${params.toString()}`;
   const body = { name: documentName(config, docPath), fields: encodeFields(fields) };
   try {
@@ -149,6 +156,37 @@ async function patchDocument(docPath, fields, opts) {
       return { ok: true, exists: true, fields: decodeFields(data && data.fields) };
     }
     return { ok: false, reason: 'patch-failed', status };
+  } catch (e) {
+    return { ok: false, reason: 'network-error' };
+  }
+}
+
+// GET a whole collection (the backend's small reference
+// collections — releases, announcements). Verdicts:
+//   { ok: true, docs: [{ id, fields }] }  — decoded plain values
+//   { ok: false, reason, status? }        — anything else
+async function listDocuments(collectionPath, opts) {
+  const config = resolveConfig(opts);
+  if (!isServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  const fetchImpl = resolveFetch(opts);
+  if (!fetchImpl) return { ok: false, reason: 'network-unavailable' };
+  const token = opts && typeof opts.token === 'string' ? opts.token : '';
+  try {
+    const { status, data } = await callFirestore(
+      fetchImpl, 'GET', `${firestoreBase(config)}/${collectionPath}`, token);
+    if (status === 404) return { ok: true, docs: [] };
+    if (status === 200 && data) {
+      const raw = Array.isArray(data.documents) ? data.documents : [];
+      const docs = raw.map((d) => {
+        const name = d && typeof d.name === 'string' ? d.name : '';
+        return {
+          id: name.split('/').pop() || '',
+          fields: decodeFields(d && d.fields)
+        };
+      });
+      return { ok: true, docs };
+    }
+    return { ok: false, reason: 'list-failed', status };
   } catch (e) {
     return { ok: false, reason: 'network-error' };
   }
@@ -163,5 +201,6 @@ module.exports = {
   decodeValue,
   decodeFields,
   getDocument,
-  patchDocument
+  patchDocument,
+  listDocuments
 };

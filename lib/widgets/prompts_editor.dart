@@ -6,6 +6,7 @@ import '../theme/app_theme.dart';
 import 'tactile_components.dart';
 import '../models/activity_log.dart';
 import '../providers/generator_provider.dart';
+import '../providers/entry_provider.dart';
 import '../providers/activity_provider.dart';
 import '../providers/settings_provider.dart';
 import '../services/srt_parser.dart';
@@ -76,6 +77,16 @@ class _PromptsEditorState extends State<PromptsEditor> {
   @override
   Widget build(BuildContext context) {
     final generator = context.watch<GeneratorProvider>();
+    // v1.0.13: the panel's Agent Mode switch — when it is off,
+    // the Agent Prompt pill is hidden below and a screen sitting
+    // in Agent mode is returned to Bulk (post-frame, the same
+    // pattern the gate uses for its own mode flips).
+    final entryProv = context.watch<EntryProvider>();
+    if (!entryProv.agentModeEnabled && !generator.isBulkMode) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        context.read<GeneratorProvider>().setPromptMode(true);
+      });
+    }
 
     if (_controller.text != generator.promptsRawText) {
       _controller.text = generator.promptsRawText;
@@ -383,27 +394,32 @@ class _PromptsEditorState extends State<PromptsEditor> {
                             ),
                           ),
                         ),
-                        const SizedBox(width: 6),
-                        // Agent Prompt Pill (Tactile 3D)
-                        Tooltip(
-                          message: 'AI agent structured prompt mode',
-                          child: TactileButton(
-                            type: TactileType.pill,
-                            isActive: !generator.isBulkMode,
-                            borderRadius: 12,
-                            bevelDepth: 2.0,
-                            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
-                            onTap: () => context.read<GeneratorProvider>().setPromptMode(false),
-                            child: Text(
-                              'Agent Prompt',
-                              style: TextStyle(
-                                fontSize: 10.5,
-                                fontWeight: FontWeight.bold,
-                                color: !generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
+                        // v1.0.13: the Agent Prompt pill exists
+                        // only while the panel's Agent Mode switch
+                        // is on (entryProv.agentModeEnabled).
+                        if (entryProv.agentModeEnabled) ...[
+                          const SizedBox(width: 6),
+                          // Agent Prompt Pill (Tactile 3D)
+                          Tooltip(
+                            message: 'AI agent structured prompt mode',
+                            child: TactileButton(
+                              type: TactileType.pill,
+                              isActive: !generator.isBulkMode,
+                              borderRadius: 12,
+                              bevelDepth: 2.0,
+                              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+                              onTap: () => context.read<GeneratorProvider>().setPromptMode(false),
+                              child: Text(
+                                'Agent Prompt',
+                                style: TextStyle(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.bold,
+                                  color: !generator.isBulkMode ? AppTheme.onAccent : AppTheme.textDim,
+                                ),
                               ),
                             ),
                           ),
-                        ),
+                        ],
                         const Spacer(),
                         // txt/srt import button (Tactile 3D)
                         Tooltip(

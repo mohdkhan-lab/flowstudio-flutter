@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.12+13 (public line)', read124('pubspec.yaml').includes('version: 1.0.12+13'));
-    eq('X124 package.json version is 1.0.12', JSON.parse(read124('package.json')).version, '1.0.12');
-    ok('X124 the bridge reports version 1.0.12 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.12';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.13+14 (public line)', read124('pubspec.yaml').includes('version: 1.0.13+14'));
+    eq('X124 package.json version is 1.0.13', JSON.parse(read124('package.json')).version, '1.0.13');
+    ok('X124 the bridge reports version 1.0.13 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.13';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the backend release list', bridgeSrc124.includes('documents/releases') && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.12 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.12'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.13 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.13'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16342,6 +16342,12 @@ async function main() {
           return json(200, { name: docPath, fields: docs127.get(docPath) });
         }
         if (method === 'PATCH') {
+          // v1.0.13: emulate the create-only precondition the
+          // license report now writes with — 409 ALREADY_EXISTS
+          // when the doc is already there.
+          if (url.includes('currentDocument.exists=false') && docs127.has(docPath)) {
+            return json(409, { error: { code: 409, message: 'Document already exists', status: 'ALREADY_EXISTS' } });
+          }
           const merged = { ...(docs127.get(docPath) || {}), ...(body.fields || {}) };
           docs127.set(docPath, merged);
           return json(200, { name: docPath, fields: merged });
@@ -16606,13 +16612,13 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.12',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.12"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.12'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.12';"));
+    ok('X127 the remaining version sites carry 1.0.13',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.13"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.13'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.13';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
-      bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('setPendingAccountSession'));
+      bridgeJs127.includes('reportActivationSoon(key, activatingAccount)') && bridgeJs127.includes('setPendingAccountSession'));
   }
 
   // =====================================================================
@@ -16676,8 +16682,8 @@ async function main() {
     ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold; v1.0.8: custom gold bar)',
       gateDart128.includes('0xFF0B0B10') && gateDart128.includes('widthFactor: progress') &&
       gateDart128.includes('entry.engineStage / 3'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.12',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.12'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.13',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.13'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
@@ -17403,9 +17409,10 @@ async function main() {
     ok('X134 an expired pending session is refreshed before the read',
       fetchBody134.includes('Date.now() >= pendingAccountSession.expiresAt') &&
       fetchBody134.includes('await refreshPendingAccountSession()'));
-    ok('X134 with no session the lookup resolves no update',
-      fetchBody134.includes("if (!pendingAccountSession || !pendingAccountSession.idToken)") &&
-      fetchBody134.includes("return { tag: '', asset: null };"));
+    ok('X134 with no account session the lookup falls back to an anonymous session (v1.0.13)',
+      fetchBody134.includes('backendConfig.ensureReadSession()') &&
+      fetchBody134.includes("if (!token) return { tag: '', asset: null };") &&
+      !fetchBody134.includes('if (!pendingAccountSession || !pendingAccountSession.idToken)'));
     ok('X134 only published releases count, newest createdAt wins',
       fetchBody134.includes('f.published.booleanValue !== true') &&
       fetchBody134.includes('f.version.stringValue') &&
@@ -17507,6 +17514,302 @@ async function main() {
       'https://fs-entry.vercel.app/auth.html');
     ok('X136 no per-deployment Vercel URL survives in the service config',
       !/fs-entry-[a-z0-9]+-[a-z0-9-]+\.vercel\.app/.test(cfgSrc136) && !cfgSrc136.includes('aa2dwk693'));
+  }
+
+  // =====================================================================
+  // X137. PUBLIC v1.0.13 — REPORTING THAT ACTUALLY LANDS + UPDATER
+  // ANONYMOUS FALLBACK + BACKEND-CONFIG READER.
+  // The audit (2026-11-20, the owner's field test: fresh signup,
+  // key issued, 2 videos made — panel Activations stayed 0)
+  // found three breaks, each reproduced live before fixing:
+  //  (1) reportLicenseUsage GET the activations doc before its
+  //      PATCH — but the rules make activations admin-readable
+  //      ONLY, so the anonymous GET answered 403 and the report
+  //      returned before the PATCH the rules DO allow. Live
+  //      repro with the app's own modules: signUp 200, GET 403
+  //      PERMISSION_DENIED, verdict {get-failed, 403}; a direct
+  //      create-only PATCH answered 200 and its repeat 409
+  //      ALREADY_EXISTS. The report now writes first (create-only
+  //      PATCH carries firstSeenAt; 409 falls back to a plain
+  //      merge) and never GETs. The account report also writes
+  //      appVersion now, and a KEY report with an identified
+  //      account updates that user's doc in the same call.
+  //  (2) fetchLatestRelease demanded the pending account
+  //      session, which key activation clears — key-entered apps
+  //      never saw updates. It falls back to an anonymous
+  //      session (the smoke proves the key-only read live).
+  //  (3) The app never read flags/announcements/maintenance.
+  //      engine/backendConfig.js is that reader; the bridge
+  //      serves it with /api/entry/status; the gate shows the
+  //      maintenance message and blocks entry, the top strip
+  //      shows the announcement, and the Agent Prompt pill
+  //      hides when the panel's Agent Mode switch is off.
+  // =====================================================================
+  {
+    const fs137 = require('fs');
+    const path137 = require('path');
+    const read137 = (rel) => fs137.readFileSync(path137.join(__dirname, '..', rel), 'utf8');
+    const report137 = require('../engine/reportClient');
+    const backendCfg137 = require('../engine/backendConfig');
+
+    // --- rules-faithful fake backend: activations reads are
+    // ADMIN-ONLY (GET → 403, exactly the published rules); the
+    // create-only PATCH precondition answers 409 ALREADY_EXISTS;
+    // users/flags docs read back from the store; announcements
+    // list from the store. ---
+    const calls137 = [];
+    const docs137 = new Map();
+    let failUsersPatch137 = false;
+    const reset137 = () => {
+      calls137.length = 0; docs137.clear(); failUsersPatch137 = false;
+      report137.resetAnonymousSessionCache(); backendCfg137.resetReadSessionCache();
+    };
+    const fakeFetch137 = async (url, init) => {
+      const method = (init && init.method) || 'GET';
+      const headers = (init && init.headers) || {};
+      const body = typeof (init && init.body) === 'string' ? JSON.parse(init.body) : (init && init.body);
+      calls137.push({ url, method, headers, body });
+      const json = (status, data) => ({ status, json: async () => data });
+      if (url.includes('identitytoolkit.googleapis.com')) {
+        if (url.includes('accounts:signUp')) {
+          return json(200, { idToken: 'ID-ANON-137', refreshToken: 'RF-ANON-137', expiresIn: '3600', localId: 'uid-anon-137' });
+        }
+        return json(404, {});
+      }
+      if (url.startsWith('https://firestore.googleapis.com/v1/')) {
+        const docPath = decodeURIComponent(url.split('/documents/')[1].split('?')[0]);
+        if (method === 'GET' && docPath === 'announcements') {
+          const documents = [...docs137.entries()]
+            .filter(([p]) => p.startsWith('announcements/'))
+            .map(([p, fields]) => ({ name: `projects/x/documents/${p}`, fields }));
+          return json(200, { documents });
+        }
+        if (method === 'GET') {
+          if (docPath.startsWith('activations/')) {
+            return json(403, { error: { code: 403, message: 'Missing or insufficient permissions.', status: 'PERMISSION_DENIED' } });
+          }
+          if (!docs137.has(docPath)) return json(404, {});
+          return json(200, { name: docPath, fields: docs137.get(docPath) });
+        }
+        if (method === 'PATCH') {
+          if (failUsersPatch137 && docPath.startsWith('users/')) {
+            return json(500, { error: { code: 500, message: 'boom', status: 'INTERNAL' } });
+          }
+          if (url.includes('currentDocument.exists=false') && docs137.has(docPath)) {
+            return json(409, { error: { code: 409, message: 'Document already exists', status: 'ALREADY_EXISTS' } });
+          }
+          const merged = { ...(docs137.get(docPath) || {}), ...(body.fields || {}) };
+          docs137.set(docPath, merged);
+          return json(200, { name: docPath, fields: merged });
+        }
+        return json(405, {});
+      }
+      return json(404, {});
+    };
+    const opts137 = { fetchImpl: fakeFetch137 };
+    const fsCalls137 = () => calls137.filter(c => c.url.includes('firestore.googleapis.com'));
+    const patches137 = (frag) => calls137.filter(c => c.method === 'PATCH' && c.url.includes(frag));
+
+    // A parseable key (payload carries the plan; parse-only —
+    // reporting never verifies, activation already did).
+    const key137 = Buffer.from(JSON.stringify({ kid: 'K-137', plan: 'Trial', exp: '2027-01-31' })).toString('base64url') +
+      '.' + Buffer.from('sig-bytes').toString('base64url');
+    eq('X137 the plan rides out of the key payload', report137.planOfKey(key137), 'Trial');
+    eq('X137 an unparseable key reports no plan', report137.planOfKey('FS-XXXX-XXXX-XXXX'), '');
+
+    // --- (1) the license report: write-first, no GET ---
+    reset137();
+    const now1_137 = Date.UTC(2026, 10, 20, 17, 0, 0);
+    const rl137 = await report137.reportLicenseUsage(
+      { key: key137, fingerprint: 'FP-137', appVersion: '1.0.13', videosMade: 2 },
+      { fetchImpl: fakeFetch137, nowMs: now1_137 });
+    const actId137 = report137.activationIdFor(report137.keyPrefixOf(key137), 'FP-137');
+    ok('X137 the license report lands against admin-only reads',
+      rl137.ok === true && rl137.isNew === true && rl137.docId === actId137);
+    eq('X137 the license report issues NO Firestore GET at all',
+      fsCalls137().filter(c => c.method === 'GET').length, 0);
+    const create137 = patches137('/documents/activations/')[0];
+    ok('X137 the create is a create-only PATCH carrying firstSeenAt + the panel fields',
+      !!create137 && create137.url.includes('currentDocument.exists=false') &&
+      create137.url.includes('updateMask.fieldPaths=firstSeenAt') &&
+      create137.url.includes('updateMask.fieldPaths=plan') &&
+      create137.body.fields.keyPrefix.stringValue === report137.keyPrefixOf(key137) &&
+      create137.body.fields.plan.stringValue === 'Trial' &&
+      create137.body.fields.fingerprint.stringValue === 'FP-137' &&
+      create137.body.fields.appVersion.stringValue === '1.0.13' &&
+      create137.body.fields.videosMade.integerValue === '2' &&
+      create137.body.fields.firstSeenAt.timestampValue === new Date(now1_137).toISOString() &&
+      create137.headers.Authorization === 'Bearer ID-ANON-137');
+    const now2_137 = Date.UTC(2026, 10, 20, 18, 30, 0);
+    const rl2_137 = await report137.reportLicenseUsage(
+      { key: key137, fingerprint: 'FP-137', appVersion: '1.0.13', videosMade: 9 },
+      { fetchImpl: fakeFetch137, nowMs: now2_137 });
+    const actPatches137 = patches137('/documents/activations/');
+    const storedAct137 = docs137.get(`activations/${actId137}`);
+    ok('X137 an existing activation merges via the 409 fallback WITHOUT firstSeenAt',
+      rl2_137.ok === true && rl2_137.isNew === false && actPatches137.length === 3 &&
+      actPatches137[2].url.includes('currentDocument') === false &&
+      !('firstSeenAt' in actPatches137[2].body.fields) &&
+      storedAct137.videosMade.integerValue === '9' &&
+      storedAct137.firstSeenAt.timestampValue === new Date(now1_137).toISOString() &&
+      storedAct137.lastSeenAt.timestampValue === new Date(now2_137).toISOString());
+    eq('X137 the anonymous session is shared across license reports',
+      calls137.filter(c => c.url.includes('accounts:signUp')).length, 1);
+
+    // A failed report is a verdict, never a wedge: the next
+    // trigger reports again and lands.
+    reset137();
+    let patch500_137 = true;
+    const flaky137 = async (url, init) => {
+      if (patch500_137 && (init && init.method) === 'PATCH' && url.includes('firestore.googleapis.com')) {
+        return { status: 500, json: async () => ({ error: { message: 'boom' } }) };
+      }
+      return fakeFetch137(url, init);
+    };
+    const rlFail137 = await report137.reportLicenseUsage(
+      { key: key137, fingerprint: 'FP-137', appVersion: '1.0.13', videosMade: 1 },
+      { fetchImpl: flaky137, nowMs: now1_137 });
+    patch500_137 = false;
+    const rlRetry137 = await report137.reportLicenseUsage(
+      { key: key137, fingerprint: 'FP-137', appVersion: '1.0.13', videosMade: 1 },
+      { fetchImpl: flaky137, nowMs: now1_137 });
+    ok('X137 a failed report verdicts honestly and the next trigger lands it',
+      rlFail137.ok === false && rlFail137.status === 500 &&
+      rlRetry137.ok === true && rlRetry137.isNew === true);
+
+    // --- (1b) the account report carries appVersion; a key
+    // report with an identified account updates the user doc ---
+    reset137();
+    docs137.set('users/uid-137', { videosMade: { integerValue: '5' } });
+    const ra137 = await report137.reportAccountUsage(
+      { uid: 'uid-137', idToken: 'ID-USER-137', appVersion: '1.0.13', videosMade: 3 }, opts137);
+    const raPatch137 = patches137('/documents/users/uid-137')[0];
+    ok('X137 the account report max-merges AND writes appVersion',
+      ra137.ok === true && ra137.videosMade === 5 && !!raPatch137 &&
+      raPatch137.body.fields.appVersion.stringValue === '1.0.13' &&
+      raPatch137.url.includes('updateMask.fieldPaths=appVersion') &&
+      raPatch137.headers.Authorization === 'Bearer ID-USER-137');
+    reset137();
+    docs137.set('users/uid-137', { videosMade: { integerValue: '1' } });
+    const both137 = await report137.reportForCredential({
+      credential: { type: 'key', key: key137 },
+      fingerprint: 'FP-137', appVersion: '1.0.13', videosMade: 4,
+      accountSession: { uid: 'uid-137', idToken: 'ID-USER-137' }
+    }, opts137);
+    ok('X137 a key report with an identified account updates BOTH docs',
+      both137.ok === true && both137.account && both137.account.ok === true &&
+      docs137.has(`activations/${actId137}`) &&
+      docs137.get('users/uid-137').videosMade.integerValue === '4' &&
+      docs137.get('users/uid-137').appVersion.stringValue === '1.0.13');
+    failUsersPatch137 = true;
+    const bothFail137 = await report137.reportForCredential({
+      credential: { type: 'key', key: key137 },
+      fingerprint: 'FP-137', appVersion: '1.0.13', videosMade: 6,
+      accountSession: { uid: 'uid-137', idToken: 'ID-USER-137' }
+    }, opts137);
+    ok('X137 a failed account half makes the combined verdict fail (pending retry)',
+      bothFail137.ok === false && bothFail137.account.ok === false &&
+      docs137.get(`activations/${actId137}`).videosMade.integerValue === '6');
+
+    // --- (3) backend-config reader ---
+    eq('X137 backend-config defaults are the pre-1.0.13 behaviour',
+      JSON.stringify(backendCfg137.normalizeBackendConfig({})),
+      JSON.stringify({ maintenance: false, maintenanceMessage: backendCfg137.DEFAULT_MAINTENANCE_MESSAGE, agentModeEnabled: true, announcement: null }));
+    const pickDocs137 = [
+      { id: 'a1', fields: { title: 'Old app news', body: 'old', active: true, audience: 'app', createdAt: '2026-11-19T00:00:00.000Z' } },
+      { id: 'a2', fields: { title: 'Website only', body: 'web', active: true, audience: 'website', createdAt: '2026-11-20T12:00:00.000Z' } },
+      { id: 'a3', fields: { title: 'New app news', body: 'fresh', active: true, audience: 'app', createdAt: '2026-11-20T10:00:00.000Z' } },
+      { id: 'a4', fields: { title: 'Inactive', body: 'off', active: false, audience: 'app', createdAt: '2026-11-20T13:00:00.000Z' } },
+      { id: 'a5', fields: { title: 'No audience', body: 'counts as app', active: true, createdAt: '2026-11-18T00:00:00.000Z' } }
+    ];
+    eq('X137 the announcement pick is the newest ACTIVE app-audience doc',
+      JSON.stringify(backendCfg137.pickAnnouncement(pickDocs137)),
+      JSON.stringify({ title: 'New app news', body: 'fresh' }));
+    eq('X137 the announcements flag off suppresses the announcement',
+      backendCfg137.normalizeBackendConfig({
+        announcementsFlagFields: { enabled: false }, announcementDocs: pickDocs137
+      }).announcement, null);
+    reset137();
+    docs137.set('flags/maintenance', {
+      appMaintenance: { booleanValue: true }, message: { stringValue: 'Panel maintenance message' },
+      websiteMaintenance: { booleanValue: false }
+    });
+    docs137.set('flags/agent_mode', { enabled: { booleanValue: false } });
+    docs137.set('flags/announcements', { enabled: { booleanValue: true } });
+    for (const d of pickDocs137) {
+      const enc = {};
+      for (const [k, v] of Object.entries(d.fields)) {
+        enc[k] = typeof v === 'boolean' ? { booleanValue: v }
+          : k === 'createdAt' ? { timestampValue: v } : { stringValue: v };
+      }
+      docs137.set(`announcements/${d.id}`, enc);
+    }
+    const bcfg137 = await backendCfg137.fetchBackendConfig(opts137);
+    ok('X137 the backend config folds maintenance + agent flag + announcement',
+      bcfg137.ok === true && bcfg137.maintenance === true &&
+      bcfg137.maintenanceMessage === 'Panel maintenance message' &&
+      bcfg137.agentModeEnabled === false &&
+      !!bcfg137.announcement && bcfg137.announcement.title === 'New app news');
+    ok('X137 the config read rides an anonymous session when no token is passed',
+      calls137.some(c => c.url.includes('accounts:signUp')) &&
+      fsCalls137().every(c => c.headers.Authorization === 'Bearer ID-ANON-137'));
+    reset137();
+    docs137.set('flags/maintenance', { appMaintenance: { booleanValue: false } });
+    const bcfgTok137 = await backendCfg137.fetchBackendConfig({ fetchImpl: fakeFetch137, token: 'ID-USER-137' });
+    ok('X137 a passed token is used instead of an anonymous session',
+      bcfgTok137.ok === true && bcfgTok137.maintenance === false &&
+      !calls137.some(c => c.url.includes('accounts:signUp')) &&
+      fsCalls137().every(c => c.headers.Authorization === 'Bearer ID-USER-137'));
+    const bcfgDown137 = await backendCfg137.fetchBackendConfig({
+      fetchImpl: async () => { throw new Error('offline'); }
+    });
+    ok('X137 a failed config fetch verdicts not-ok (entry proceeds as before)',
+      bcfgDown137.ok === false);
+
+    // --- (2) + wiring: bridge source pins ---
+    const bridge137 = read137('engine_bridge.js');
+    const fetchBody137 = bridge137.slice(
+      bridge137.indexOf('async function fetchLatestRelease()'),
+      bridge137.indexOf('async function currentBackendConfig()'));
+    ok('X137 the updater falls back to an anonymous session (no session gate)',
+      fetchBody137.includes('backendConfig.ensureReadSession()') &&
+      fetchBody137.includes("if (!token) return { tag: '', asset: null };") &&
+      !fetchBody137.includes('if (!pendingAccountSession || !pendingAccountSession.idToken)'));
+    ok('X137 the activation report is gated on the completed credential save',
+      bridge137.includes('const credentialSaved = entryGate.saveCredential(appDataDataDir, {') &&
+      bridge137.includes('if (credentialSaved) {') &&
+      bridge137.includes('reportActivationSoon(key, activatingAccount);') &&
+      bridge137.indexOf('const credentialSaved = entryGate.saveCredential') <
+        bridge137.indexOf('reportActivationSoon(key, activatingAccount);'));
+    ok('X137 the stored key credential carries its account attribution',
+      bridge137.includes('accountUid: activatingAccount.uid') &&
+      bridge137.includes('accountEmail: activatingAccount.email'));
+    ok('X137 reporting failures persist a pending marker the next trigger retries',
+      bridge137.includes("path.join(appDataDataDir, 'report-pending.json')") &&
+      bridge137.includes('function markReportPending(reason)') &&
+      bridge137.includes('function clearReportPending()'));
+    ok('X137 the entry status serves the backend config',
+      bridge137.includes('const backendState = await currentBackendConfig();') &&
+      bridge137.includes('backend: backendState ||'));
+    ok('X137 the report hands the credential over explicitly (no disk re-read)',
+      bridge137.includes("reportEntrySoon({ type: 'key', key: keyText }, accountSession || undefined);"));
+
+    // --- (3) wiring: Dart source pins ---
+    const provider137 = read137('lib/providers/entry_provider.dart');
+    const gate137 = read137('lib/widgets/entry_gate.dart');
+    const strip137 = read137('lib/widgets/top_strip.dart');
+    const prompts137 = read137('lib/widgets/prompts_editor.dart');
+    ok('X137 the entry provider parses the backend block and maintenance blocks entry',
+      provider137.includes("_maintenance = backend['maintenance'] == true;") &&
+      provider137.includes('if (_maintenance) _allowed = false;') &&
+      provider137.includes("_agentModeEnabled = backend['agentModeEnabled'] != false;"));
+    ok('X137 the gate shows the maintenance view instead of the portal',
+      gate137.includes('entry.maintenance') && gate137.includes('_buildMaintenance'));
+    ok('X137 the top strip shows the announcement line',
+      strip137.includes('entryProv.hasAnnouncement') && strip137.includes('entryProv.announcementTitle'));
+    ok('X137 the Agent Prompt pill hides when the panel switch is off',
+      prompts137.includes('if (entryProv.agentModeEnabled) ...[') &&
+      prompts137.includes('!entryProv.agentModeEnabled && !generator.isBulkMode'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

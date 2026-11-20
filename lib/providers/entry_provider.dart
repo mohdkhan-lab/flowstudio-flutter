@@ -24,6 +24,17 @@ class EntryProvider extends ChangeNotifier {
   bool _loaded = false;
   bool _allowed = false;
   String _statusText = '';
+
+  // v1.0.13: the backend config the bridge reads from the
+  // operator's panel (flags + announcements) and serves with the
+  // entry status. Defaults are the pre-1.0.13 behaviour — no
+  // maintenance, Agent Mode on, no announcement — and a status
+  // answer without the backend block leaves them untouched.
+  bool _maintenance = false;
+  String _maintenanceMessage = '';
+  bool _agentModeEnabled = true;
+  String _announcementTitle = '';
+  String _announcementBody = '';
   bool _doorAConfigured = false;
   String _doorAMessage =
       'Account sign-in is not available yet — please use a license key';
@@ -201,6 +212,23 @@ class EntryProvider extends ChangeNotifier {
   bool get loaded => _loaded;
   bool get allowed => _allowed;
   String get statusText => _statusText;
+
+  /// v1.0.13: backend maintenance is ON — the gate shows the
+  /// maintenance message instead of the doors and entry is
+  /// blocked (refresh() also forces not-allowed).
+  bool get maintenance => _maintenance;
+  String get maintenanceMessage => _maintenanceMessage;
+
+  /// v1.0.13: the panel's Agent Mode switch — false hides the
+  /// Agent Prompt mode in the studio.
+  bool get agentModeEnabled => _agentModeEnabled;
+
+  /// v1.0.13: the current app announcement ('' when none) — the
+  /// studio's top strip shows it as a notice line.
+  String get announcementTitle => _announcementTitle;
+  String get announcementBody => _announcementBody;
+  bool get hasAnnouncement =>
+      _announcementTitle.isNotEmpty || _announcementBody.isNotEmpty;
   bool get doorAConfigured => _doorAConfigured;
   String get doorAMessage => _doorAMessage;
   bool get busy => _busy;
@@ -292,6 +320,26 @@ class EntryProvider extends ChangeNotifier {
       final dl = entry['daysLeft'];
       _daysLeft = dl is num ? dl.toInt() : 0;
       if (_allowed) _stopAccountWatch();
+    }
+    // v1.0.13: the backend block (maintenance / announcement /
+    // agent-mode flag) the bridge reads from the panel. A status
+    // answer without it leaves the defaults untouched.
+    // Maintenance blocks entry outright — the gate swaps the
+    // doors for the maintenance message.
+    final backend = data['backend'];
+    if (backend is Map) {
+      _maintenance = backend['maintenance'] == true;
+      _maintenanceMessage = backend['maintenanceMessage']?.toString() ?? '';
+      _agentModeEnabled = backend['agentModeEnabled'] != false;
+      final ann = backend['announcement'];
+      if (ann is Map) {
+        _announcementTitle = ann['title']?.toString() ?? '';
+        _announcementBody = ann['body']?.toString() ?? '';
+      } else {
+        _announcementTitle = '';
+        _announcementBody = '';
+      }
+      if (_maintenance) _allowed = false;
     }
     final doorA = data['doorA'];
     if (doorA is Map) {

@@ -115,7 +115,7 @@ class TopStrip extends StatelessWidget {
                 // Version Pill — Tactile 3D
                 TactileChip(
                   color: AppTheme.accentText,
-                  label: 'v1.0.12',
+                  label: 'v1.0.13',
                   height: 22,
                   borderRadius: 11,
                   bevelDepth: 1.5,
@@ -139,6 +139,37 @@ class TopStrip extends StatelessWidget {
                           fontSize: 9.5,
                           color: AppTheme.textDim,
                           fontWeight: FontWeight.w500,
+                        ),
+                      ),
+                    );
+                  },
+                ),
+                // PUBLIC v1.0.13: the panel's current app
+                // announcement, when one is active — a single
+                // gold notice line next to the entry status.
+                Consumer<EntryProvider>(
+                  builder: (context, entryProv, _) {
+                    if (!entryProv.hasAnnouncement) {
+                      return const SizedBox.shrink();
+                    }
+                    final title = entryProv.announcementTitle;
+                    final body = entryProv.announcementBody;
+                    final text = title.isEmpty
+                        ? body
+                        : (body.isEmpty ? title : '$title — $body');
+                    return Padding(
+                      padding: const EdgeInsets.only(left: 8),
+                      child: ConstrainedBox(
+                        constraints: const BoxConstraints(maxWidth: 340),
+                        child: Text(
+                          text,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            fontSize: 9.5,
+                            color: AppTheme.accentText,
+                            fontWeight: FontWeight.w600,
+                          ),
                         ),
                       ),
                     );

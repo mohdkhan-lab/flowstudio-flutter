@@ -1298,7 +1298,7 @@ class _EntryGateScreenState extends State<EntryGateScreen>
             right: 0,
             bottom: 18,
             child: Text(
-              'v1.0.12',
+              'v1.0.13',
               textAlign: TextAlign.center,
               style: TextStyle(fontSize: 10.5, color: _entryFaint),
             ),
@@ -1513,6 +1513,56 @@ class _EntryGateScreenState extends State<EntryGateScreen>
     );
   }
 
+  /// v1.0.13: the maintenance view — shown instead of the
+  /// portal while the panel's maintenance switch is on for the
+  /// app. The words are the operator's own message from the
+  /// backend (the provider carries the backend default when the
+  /// panel has none). Entry stays blocked until the switch goes
+  /// off; the status poll keeps running, so the portal returns
+  /// on its own.
+  Widget _buildMaintenance(BuildContext context, EntryProvider entry) {
+    return Scaffold(
+      backgroundColor: _entryBg,
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 40),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Image.asset(
+                'assets/icon.png',
+                width: 72,
+                height: 72,
+                errorBuilder: (_, _, _) => const Icon(
+                  Icons.auto_awesome,
+                  size: 72,
+                  color: _entryGold,
+                ),
+              ),
+              const SizedBox(height: 20),
+              const Text(
+                'We\'ll be right back',
+                style: TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.bold,
+                  color: _entryText,
+                ),
+              ),
+              const SizedBox(height: 10),
+              Text(
+                entry.maintenanceMessage.isNotEmpty
+                    ? entry.maintenanceMessage
+                    : 'We are briefly down for maintenance. Please try again shortly.',
+                textAlign: TextAlign.center,
+                style: const TextStyle(fontSize: 12.5, color: _entryDim),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final entry = context.watch<EntryProvider>();
@@ -1528,10 +1578,15 @@ class _EntryGateScreenState extends State<EntryGateScreen>
               key: const ValueKey('entry-splash'),
               child: _buildStartupScreen(context, entry),
             )
-          : KeyedSubtree(
-              key: const ValueKey('entry-portal'),
-              child: _buildPortal(context, entry),
-            ),
+          : entry.maintenance
+              ? KeyedSubtree(
+                  key: const ValueKey('entry-maintenance'),
+                  child: _buildMaintenance(context, entry),
+                )
+              : KeyedSubtree(
+                  key: const ValueKey('entry-portal'),
+                  child: _buildPortal(context, entry),
+                ),
     );
   }
 }

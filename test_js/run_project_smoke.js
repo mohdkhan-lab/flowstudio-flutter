@@ -145,7 +145,26 @@ async function main() {
     if (child.exitCode !== null) {
       refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
     }
-    check('status version is 1.0.12', status && status.version === '1.0.12', JSON.stringify(status));
+    check('status version is 1.0.13', status && status.version === '1.0.13', JSON.stringify(status));
+
+    // PUBLIC v1.0.13: UPDATER ANONYMOUS FALLBACK — this bridge
+    // has NO pending account session (fresh throwaway APPDATA,
+    // exactly a key-entered install after a restart). Before the
+    // fix, /api/update/check could only answer latestVersion ''
+    // for it. Now the releases read falls back to an anonymous
+    // session, so the check must come back ok with the live
+    // release list's tag. When the backend is simply unreachable
+    // from the test machine, the route's own network error is
+    // accepted instead (the strict branch is what runs online).
+    const upd0 = await req('GET', '/api/update/check');
+    const updNetFail = upd0.data && upd0.data.ok === false &&
+      /could not reach|timed out/i.test(String(upd0.data.error || ''));
+    check('key-only update check reads the release list (anonymous fallback)',
+      (upd0.status === 200 && upd0.data && upd0.data.ok === true &&
+        typeof upd0.data.latestVersion === 'string' && upd0.data.latestVersion.length > 0) ||
+      updNetFail,
+      JSON.stringify(upd0.data));
+    if (updNetFail) console.log('NOTE  update check backend unreachable from here — network branch taken');
 
     // PUBLIC v1.0.0: ENTRY GATE — a fresh install (throwaway
     // APPDATA, no credential stored) must be CLOSED, a garbage

@@ -134,6 +134,7 @@ const licenseKey = require('./engine/licenseKey');
 const entryGate = require('./engine/entryGate');
 const authClient = require('./engine/authClient');
 const reportClient = require('./engine/reportClient');
+const backendConfig = require('./engine/backendConfig');
 const machineFingerprint = require('./engine/machineFingerprint');
 const windowStyle = require('./engine/windowStyle');
 
@@ -166,26 +167,65 @@ function currentVideosMade() {
   }
 }
 
-function reportEntrySoon() {
+// PUBLIC v1.0.13 — durable reporting: a failed report is no
+// longer silently lost. The bridge records the debt in
+// report-pending.json in the app data dir; every later report
+// trigger (entry, activation, a finished run, the next engine
+// start) re-sends the CURRENT totals, and a success clears the
+// marker. Reporting still never blocks or fails entry or
+// generation, and never surfaces anything to the user.
+function markReportPending(reason) {
   try {
-    const credential = entryGate.loadCredential(appDataDataDir);
+    fs.writeFileSync(
+      path.join(appDataDataDir, 'report-pending.json'),
+      JSON.stringify({ at: new Date().toISOString(), reason: String(reason || 'unknown') }),
+      'utf8');
+  } catch (e) {}
+}
+
+function clearReportPending() {
+  try { fs.unlinkSync(path.join(appDataDataDir, 'report-pending.json')); } catch (e) {}
+}
+
+function reportEntrySoon(credentialOverride, accountSession) {
+  try {
+    const credential = credentialOverride || entryGate.loadCredential(appDataDataDir);
     if (!credential) return;
+    // v1.0.13: when no session is handed over but the stored key
+    // credential names its account AND the live pending sign-in
+    // is that same account, the account update rides along too.
+    let session = accountSession || null;
+    if (!session && credential.accountUid && pendingAccountSession &&
+        pendingAccountSession.uid === credential.accountUid &&
+        pendingAccountSession.idToken) {
+      session = { uid: pendingAccountSession.uid, idToken: pendingAccountSession.idToken };
+    }
     const result = reportClient.reportForCredential({
       credential,
       fingerprint: cachedMachineFingerprint(),
       appVersion: APP_VERSION,
-      videosMade: currentVideosMade()
+      videosMade: currentVideosMade(),
+      accountSession: session || undefined
     });
-    if (result && typeof result.catch === 'function') result.catch(() => {});
+    if (result && typeof result.then === 'function') {
+      result.then((verdict) => {
+        if (verdict && verdict.ok) clearReportPending();
+        else markReportPending(verdict && verdict.reason);
+      }).catch(() => markReportPending('report-error'));
+    }
   } catch (e) {}
 }
 
-function reportActivationSoon(keyText) {
+function reportActivationSoon(keyText, accountSession) {
   try {
     if (typeof keyText !== 'string' || !keyText) return;
-    // The credential was saved just before this call; the report
-    // routes on it (license → activations doc, see reportClient).
-    reportEntrySoon();
+    // v1.0.13: the credential object is handed over directly —
+    // the activation route calls this ONLY after saveCredential
+    // has completed — so the report never depends on re-reading
+    // the file the route just wrote. The account session (when
+    // the key was fetched on a sign-in) rides along so the
+    // user's own doc is updated in the same report.
+    reportEntrySoon({ type: 'key', key: keyText }, accountSession || undefined);
   } catch (e) {}
 }
 
@@ -344,7 +384,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // the backend's latest release against it.
-const APP_VERSION = '1.0.12';
+const APP_VERSION = '1.0.13';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -429,19 +469,28 @@ function isNewerVersion(latest, current) {
 // is the current release; its bare version ('1.0.10') resolves as
 // the tag 'v1.0.10'. The Setup itself always comes from the ONE
 // permanent download link below (a counter + redirect on the
-// backend), never from a per-release URL. With no pending account
-// session there is no token to read with, so no update is offered.
+// backend), never from a per-release URL.
+// PUBLIC v1.0.13: the pending session is CLEARED at key
+// activation, so a key-entered app had no token here and never
+// saw an update — v1.0.12 installs could not self-update at all.
+// The read now falls back to an anonymous session (the rules
+// allow any signed-in read); only when NO session of either kind
+// can be had is no update offered.
 const UPDATE_DOWNLOAD_URL = 'https://zkgpvhcfbqfmcopzvecg.supabase.co/functions/v1/download';
 const RELEASES_URL = 'https://firestore.googleapis.com/v1/projects/getflowstudio/databases/(default)/documents/releases?pageSize=50';
 
 async function fetchLatestRelease() {
-  if (!pendingAccountSession || !pendingAccountSession.idToken) {
-    return { tag: '', asset: null };
+  let token = '';
+  if (pendingAccountSession && pendingAccountSession.idToken) {
+    if (pendingAccountSession.expiresAt && Date.now() >= pendingAccountSession.expiresAt) {
+      await refreshPendingAccountSession();
+    }
+    token = (pendingAccountSession && pendingAccountSession.idToken) || '';
   }
-  if (pendingAccountSession.expiresAt && Date.now() >= pendingAccountSession.expiresAt) {
-    await refreshPendingAccountSession();
+  if (!token) {
+    const anon = await backendConfig.ensureReadSession();
+    if (anon.ok && anon.session) token = anon.session.idToken || '';
   }
-  const token = pendingAccountSession && pendingAccountSession.idToken;
   if (!token) return { tag: '', asset: null };
   return new Promise((resolve, reject) => {
     const req = https.get(
@@ -490,6 +539,42 @@ async function fetchLatestRelease() {
     req.setTimeout(10000, () => req.destroy(new Error('the update check timed out after 10s')));
     req.on('error', (e) => reject(new Error(`could not reach the update server (${e.message})`)));
   });
+}
+
+// PUBLIC v1.0.13 — the backend config (maintenance / agent-mode
+// flag / current app announcement) riding the entry/status
+// answer, cached for a minute so the gate's polling never
+// hammers the backend. A failed fetch keeps the last good value
+// (or null — the status answer then carries the defaults and
+// entry proceeds exactly as it did before this reader existed).
+let backendConfigCache = { at: 0, value: null };
+const BACKEND_CONFIG_TTL_MS = 60 * 1000;
+
+async function currentBackendConfig() {
+  const now = Date.now();
+  if (backendConfigCache.value && now - backendConfigCache.at < BACKEND_CONFIG_TTL_MS) {
+    return backendConfigCache.value;
+  }
+  let token = '';
+  if (pendingAccountSession && pendingAccountSession.idToken) {
+    if (pendingAccountSession.expiresAt && now >= pendingAccountSession.expiresAt) {
+      await refreshPendingAccountSession();
+    }
+    token = (pendingAccountSession && pendingAccountSession.idToken) || '';
+  }
+  const result = await backendConfig.fetchBackendConfig(token ? { token } : {});
+  if (result && result.ok) {
+    const value = {
+      maintenance: result.maintenance === true,
+      maintenanceMessage: result.maintenanceMessage || '',
+      announcement: result.announcement || null,
+      agentModeEnabled: result.agentModeEnabled !== false
+    };
+    backendConfigCache = { at: now, value };
+    return value;
+  }
+  backendConfigCache = { at: now, value: backendConfigCache.value };
+  return backendConfigCache.value;
 }
 
 async function startBridge() {
@@ -906,7 +991,12 @@ async function startBridge() {
           credential,
           { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
         );
-        return sendJson(200, { ok: true, entry: decision, doorA: authClient.doorAState(), machineId: machineFingerprint.machineIdDisplay(cachedMachineFingerprint()), account: pendingAccountView() });
+        // v1.0.13: the backend config rides the status answer
+        // (maintenance / announcement / agent-mode flag). Null
+        // (never fetched successfully) becomes the defaults —
+        // entry proceeds exactly as before this reader existed.
+        const backendState = await currentBackendConfig();
+        return sendJson(200, { ok: true, entry: decision, doorA: authClient.doorAState(), machineId: machineFingerprint.machineIdDisplay(cachedMachineFingerprint()), account: pendingAccountView(), backend: backendState || { maintenance: false, maintenanceMessage: '', announcement: null, agentModeEnabled: true } });
       }
 
       if (pathname === '/api/entry/activate-key' && req.method === 'POST') {
@@ -950,6 +1040,20 @@ async function startBridge() {
           return sendJson(200, { ok: false, error: messages[verdict.reason] || 'This license key is not valid.' });
         }
         const fingerprint = cachedMachineFingerprint();
+        // v1.0.13: the pending account session (present when this
+        // key was fetched on a sign-in) identifies the account
+        // this activation belongs to — capture it BEFORE it is
+        // cleared below. Its uid/email are stored alongside the
+        // key credential so later reports can attribute this
+        // device to that account, and its live token rides the
+        // activation report so the user's own doc updates too.
+        const activatingAccount = pendingAccountSession
+          ? {
+              uid: pendingAccountSession.uid || '',
+              email: pendingAccountSession.email || '',
+              idToken: pendingAccountSession.idToken || ''
+            }
+          : null;
         // One-device binding is LOCAL: the activation completes
         // here and binds this machine in the stored credential.
         // (The Phase 2 account backend owns ACCOUNTS, not key
@@ -958,12 +1062,15 @@ async function startBridge() {
         // placeholder endpoint here; against the real backend
         // that call could only fail and would have broken Door B
         // the moment Door A's backend went live.)
-        entryGate.saveCredential(appDataDataDir, {
+        const credentialSaved = entryGate.saveCredential(appDataDataDir, {
           type: 'key',
           key,
           kid: verdict.kid,
           fingerprint,
-          activatedAt: new Date().toISOString()
+          activatedAt: new Date().toISOString(),
+          ...(activatingAccount && activatingAccount.uid
+            ? { accountUid: activatingAccount.uid, accountEmail: activatingAccount.email }
+            : {})
         });
         // v1.0.5: the key is the entry now — the pending account
         // session (if this key was emailed on its sign-in) is done.
@@ -974,7 +1081,13 @@ async function startBridge() {
         );
         // Phase 2 reporting: the panel learns of this activation
         // (fire-and-forget — the answer above never waits on it).
-        reportActivationSoon(key);
+        // v1.0.13: the report runs ONLY after the credential save
+        // has completed (saveCredential is synchronous; its
+        // verdict gates this call) and receives the credential +
+        // account session explicitly.
+        if (credentialSaved) {
+          reportActivationSoon(key, activatingAccount);
+        }
         return sendJson(200, { ok: true, entry: decision });
       }
 

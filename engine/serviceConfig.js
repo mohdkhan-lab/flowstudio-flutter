@@ -39,7 +39,13 @@ const SERVICE_CONFIG = {
   // so no panel/backend address ever appears in the sign-in
   // flow. v1.0.5: the real fs-entry domain is LIVE (below) — it
   // replaced the planned placeholder before this version ships.
-  authPageUrl: 'https://fs-entry-aa2dwk693-mk-59e0.vercel.app/auth.html',
+  // v1.0.12: this must stay the STABLE production alias — never a
+  // pinned per-deployment URL. Deployments are immutable: the
+  // v1.0.5-era deployment pinned here kept serving the OLD
+  // project's config after the sign-in page moved to the new
+  // project, so Google sign-ins silently landed in the old
+  // project while everything else used the new one.
+  authPageUrl: 'https://fs-entry.vercel.app/auth.html',
   // v1.0.5: the key service — the separate signing function the
   // app asks for a signed-in user's own license key (mykey) and
   // for the email-code route (sendotp / verifyotp). The URL and

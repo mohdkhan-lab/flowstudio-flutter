@@ -16068,12 +16068,12 @@ async function main() {
     // "configured", and the detailed Firebase request shapes are
     // pinned in X127.) ---
     eq('X124 the service ships configured (Door A live, Firebase)', serviceConfig124.isServiceConfigured(serviceConfig124.SERVICE_CONFIG), true);
-    ok('X124 the service config carries the Firebase project values', serviceConfig124.SERVICE_CONFIG.projectId === 'getflowstudio' && serviceConfig124.SERVICE_CONFIG.databaseId === '(default)' && typeof serviceConfig124.SERVICE_CONFIG.apiKey === 'string' && serviceConfig124.SERVICE_CONFIG.apiKey.length > 10 && typeof serviceConfig124.SERVICE_CONFIG.authPageUrl === 'string' && serviceConfig124.SERVICE_CONFIG.authPageUrl === 'https://fs-entry-aa2dwk693-mk-59e0.vercel.app/auth.html' && !('googleClientId' in serviceConfig124.SERVICE_CONFIG));
+    ok('X124 the service config carries the Firebase project values', serviceConfig124.SERVICE_CONFIG.projectId === 'getflowstudio' && serviceConfig124.SERVICE_CONFIG.databaseId === '(default)' && typeof serviceConfig124.SERVICE_CONFIG.apiKey === 'string' && serviceConfig124.SERVICE_CONFIG.apiKey.length > 10 && typeof serviceConfig124.SERVICE_CONFIG.authPageUrl === 'string' && serviceConfig124.SERVICE_CONFIG.authPageUrl === 'https://fs-entry.vercel.app/auth.html' && !('googleClientId' in serviceConfig124.SERVICE_CONFIG));
     ok('X124 the service name/domain carry no admin or license words (v1.0.11: the domain carries the brand by owner order)', !/admin|license/i.test(serviceConfig124.SERVICE_CONFIG.serviceName + ' ' + serviceConfig124.SERVICE_CONFIG.authDomain));
     eq('X124 Door A reports itself configured', authClient124.doorAState().configured, true);
     eq('X124 Door A configured message is empty', authClient124.doorAState().message, '');
     const gUrl124 = authClient124.googleStartUrl();
-    ok('X124 Door A google URL is the hosted sign-in page + one-time state (v1.0.3)', typeof gUrl124 === 'string' && gUrl124.startsWith('https://fs-entry-aa2dwk693-mk-59e0.vercel.app/auth.html?state=') && gUrl124.split('state=')[1] === authClient124.pendingGoogleState() && !gUrl124.includes('accounts.google.com') && !gUrl124.includes('code_challenge'));
+    ok('X124 Door A google URL is the hosted sign-in page + one-time state (v1.0.3)', typeof gUrl124 === 'string' && gUrl124.startsWith('https://fs-entry.vercel.app/auth.html?state=') && gUrl124.split('state=')[1] === authClient124.pendingGoogleState() && !gUrl124.includes('accounts.google.com') && !gUrl124.includes('code_challenge'));
     // An unconfigured config still refuses honestly (no fake success).
     const unconf124 = { serviceName: 'Meridian', apiKey: '', projectId: '', databaseId: '', authPageUrl: '' };
     eq('X124 Door A google URL is null while unconfigured', authClient124.googleStartUrl({ config: unconf124 }), null);
@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.11+12 (public line)', read124('pubspec.yaml').includes('version: 1.0.11+12'));
-    eq('X124 package.json version is 1.0.11', JSON.parse(read124('package.json')).version, '1.0.11');
-    ok('X124 the bridge reports version 1.0.11 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.11';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.12+13 (public line)', read124('pubspec.yaml').includes('version: 1.0.12+13'));
+    eq('X124 package.json version is 1.0.12', JSON.parse(read124('package.json')).version, '1.0.12');
+    ok('X124 the bridge reports version 1.0.12 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.12';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the backend release list', bridgeSrc124.includes('documents/releases') && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.11 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.11'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.12 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.12'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16606,10 +16606,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.11',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.11"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.11'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.11';"));
+    ok('X127 the remaining version sites carry 1.0.12',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.12"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.12'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.12';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key)') && bridgeJs127.includes('setPendingAccountSession'));
@@ -16676,12 +16676,12 @@ async function main() {
     ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold; v1.0.8: custom gold bar)',
       gateDart128.includes('0xFF0B0B10') && gateDart128.includes('widthFactor: progress') &&
       gateDart128.includes('entry.engineStage / 3'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.11',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.11'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.12',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.12'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
-      'https://fs-entry-aa2dwk693-mk-59e0.vercel.app/auth.html');
+      'https://fs-entry.vercel.app/auth.html');
     ok('X128 no panel address survives in the app config',
       !JSON.stringify(cfg128).includes('orbitdesk'));
   }
@@ -17483,6 +17483,30 @@ async function main() {
     ok('X135 the key service and permanent download link are unchanged',
       cfg135.keyFunctionUrl === 'https://zkgpvhcfbqfmcopzvecg.supabase.co/functions/v1/issue-key' &&
       bridgeSrc135.includes("const UPDATE_DOWNLOAD_URL = 'https://zkgpvhcfbqfmcopzvecg.supabase.co/functions/v1/download';"));
+  }
+
+  // =====================================================================
+  // X136. PUBLIC v1.0.12 — THE SIGN-IN PAGE RIDES THE STABLE ALIAS.
+  // v1.0.11 moved the backend to the new project, but the hosted
+  // sign-in page URL in the config still pinned the v1.0.5-era
+  // per-deployment Vercel URL. Deployments are immutable, so that
+  // deployment kept serving the OLD project's config and Google
+  // sign-ins silently landed in the old project (the owner's field
+  // screenshot showed the account chooser naming the old project's
+  // auth domain). The ONLY functional change in this version:
+  // authPageUrl is the stable production alias, which always
+  // serves the current deployment (the new project's config).
+  // =====================================================================
+  {
+    const fs136 = require('fs');
+    const path136 = require('path');
+    const cfg136 = require('../engine/serviceConfig').SERVICE_CONFIG;
+    const cfgSrc136 = fs136.readFileSync(path136.join(__dirname, '..', 'engine', 'serviceConfig.js'), 'utf8');
+
+    eq('X136 the sign-in page URL is the stable production alias', cfg136.authPageUrl,
+      'https://fs-entry.vercel.app/auth.html');
+    ok('X136 no per-deployment Vercel URL survives in the service config',
+      !/fs-entry-[a-z0-9]+-[a-z0-9-]+\.vercel\.app/.test(cfgSrc136) && !cfgSrc136.includes('aa2dwk693'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

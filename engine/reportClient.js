@@ -21,6 +21,10 @@
 //     session (license users have no account) and carries
 //     { keyPrefix, plan, fingerprint, appVersion, videosMade,
 //       lastSeenAt } plus firstSeenAt on the create only.
+//     v1.0.15: the same write also carries the device-reported
+//     credits summary (accountsCount always; creditsTotal +
+//     creditsKnownAccounts only when a balance is known) — see
+//     summarizeAccountCredits below.
 //
 //     v1.0.13 ROOT CAUSE (field + live repro, 2026-11-20): the
 //     pre-1.0.13 code decided firstSeenAt with a GET first — but
@@ -141,12 +145,44 @@ async function reportAccountUsage(args, opts) {
   if (!patched.ok) return patched;
   return { ok: true, videosMade: Math.max(stored, localTotal) };
 }
+// PUBLIC v1.0.15 — the credits summary the license report
+// carries. The values are the engine's OWN last-known balances:
+// the account records' credits fields, written by
+// engine/creditService.js from live reads and spend estimates —
+// the same numbers behind the app's TOTAL CREDITS display.
+// Reporting never triggers a credit check; it only reads what
+// the app already knows, so a balance is exactly as fresh as
+// the last check or spend the app itself performed.
+//   known — accounts whose balance was actually read at some
+//           point (a finite number; a never-read balance stays
+//           null and contributes nothing).
+//   total — the sum over the KNOWN balances only.
+// When NO account has a known balance, creditsTotal is null
+// and the report OMITS the credits fields entirely — a 0
+// there would pose as "the pool is empty" when the truth is
+// "nothing was ever read".
+function summarizeAccountCredits(accounts) {
+  const list = Array.isArray(accounts) ? accounts : [];
+  let known = 0;
+  let total = 0;
+  for (const acc of list) {
+    const c = acc && acc.credits;
+    if (typeof c === 'number' && Number.isFinite(c)) {
+      known += 1;
+      total += Math.max(0, c);
+    }
+  }
+  return {
+    accountsCount: list.length,
+    creditsKnownAccounts: known,
+    creditsTotal: known > 0 ? total : null
+  };
+}
 
 // License report: activations/{sha256(keyPrefix+fingerprint)}.
 // No existence GET (admin-readable only — see the header note):
 // the create-only PATCH is the existence test.
-async function reportLicenseUsage(args, opts) {
-  const config = resolveConfig(opts);
+async function reportLicenseUsage(args, opts) {  const config = resolveConfig(opts);
   if (!isServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
   if (!resolveFetch(opts)) return { ok: false, reason: 'network-unavailable' };
   const key = args && typeof args.key === 'string' ? args.key : '';
@@ -168,6 +204,23 @@ async function reportLicenseUsage(args, opts) {
     videosMade: localTotal,
     lastSeenAt: firestore.timestampValue(nowIso)
   };
+  // v1.0.15: the device-reported credits summary rides this
+  // same write — activations carries no field whitelist in the
+  // rules, so the fields are safe here. The ACCOUNT report
+  // deliberately does NOT carry them: the users-doc self-update
+  // rule whitelists its fields, and one extra key would sink
+  // the whole account update with it. accountsCount always
+  // rides when the caller hands over the account records; the
+  // credits pair rides only when at least one balance is
+  // actually known (see summarizeAccountCredits).
+  if (Array.isArray(args && args.accounts)) {
+    const summary = summarizeAccountCredits(args.accounts);
+    fields.accountsCount = summary.accountsCount;
+    if (summary.creditsTotal !== null) {
+      fields.creditsTotal = summary.creditsTotal;
+      fields.creditsKnownAccounts = summary.creditsKnownAccounts;
+    }
+  }
   // Brand-new activation: the create-only write carries
   // firstSeenAt as well. 409 ALREADY_EXISTS is the doc-is-there
   // answer, not an error.
@@ -215,7 +268,8 @@ async function reportForCredential(args, opts) {
       key: (args && args.key) || credential.key,
       fingerprint: args.fingerprint,
       appVersion: args.appVersion,
-      videosMade: args.videosMade
+      videosMade: args.videosMade,
+      accounts: args.accounts
     }, opts);
     const acct = args && args.accountSession;
     if (acct && typeof acct.uid === 'string' && acct.uid &&
@@ -237,6 +291,7 @@ module.exports = {
   keyPrefixOf,
   planOfKey,
   activationIdFor,
+  summarizeAccountCredits,
   reportAccountUsage,
   reportLicenseUsage,
   reportForCredential,

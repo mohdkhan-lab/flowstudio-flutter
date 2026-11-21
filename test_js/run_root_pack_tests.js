@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.14+15 (public line)', read124('pubspec.yaml').includes('version: 1.0.14+15'));
-    eq('X124 package.json version is 1.0.14', JSON.parse(read124('package.json')).version, '1.0.14');
-    ok('X124 the bridge reports version 1.0.14 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.14';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.15+16 (public line)', read124('pubspec.yaml').includes('version: 1.0.15+16'));
+    eq('X124 package.json version is 1.0.15', JSON.parse(read124('package.json')).version, '1.0.15');
+    ok('X124 the bridge reports version 1.0.15 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.15';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the backend release list', bridgeSrc124.includes('documents/releases') && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.14 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.14'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.15 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.15'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16612,10 +16612,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.14',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.14"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.14'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.14';"));
+    ok('X127 the remaining version sites carry 1.0.15',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.15"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.15'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.15';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key, activatingAccount)') && bridgeJs127.includes('setPendingAccountSession'));
@@ -16682,8 +16682,8 @@ async function main() {
     ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold; v1.0.8: custom gold bar)',
       gateDart128.includes('0xFF0B0B10') && gateDart128.includes('widthFactor: progress') &&
       gateDart128.includes('entry.engineStage / 3'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.14',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.14'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.15',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.15'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
@@ -17910,6 +17910,162 @@ async function main() {
     ok('X138 the failure path returns the backend-config defaults',
       src138.includes('return { ...BACKEND_CONFIG_DEFAULTS };') &&
       src138.includes("const BACKEND_CONFIG_DEFAULTS = { maintenance: false, maintenanceMessage: '', announcement: null, agentModeEnabled: true };"));
+  }
+
+  // =====================================================================
+  // X139. PUBLIC v1.0.15 — THE LICENSE REPORT CARRIES THE
+  // DEVICE-REPORTED CREDITS SUMMARY.
+  // The panel's user detail showed credits as "Not reported yet"
+  // because the app never sent them (v1.0.13 reporting carried
+  // only videosMade + appVersion). The license report now also
+  // carries, built from the engine's own account records (the
+  // credits fields creditService maintains — the same numbers
+  // behind the app's TOTAL CREDITS display):
+  //   accountsCount        — every account added in the app;
+  //   creditsTotal         — the sum over accounts whose balance
+  //                          is actually known (a finite number);
+  //   creditsKnownAccounts — how many accounts contributed.
+  // The credits pair rides ONLY when at least one balance is
+  // known — never a misleading 0 for "nothing was ever read".
+  // The fields ride the ACTIVATIONS write only: the users-doc
+  // self-update rule whitelists its fields, so the account
+  // report must never carry them (one extra key would sink the
+  // whole account update). Reporting reads the records as they
+  // are — it never triggers a credit check.
+  // =====================================================================
+  {
+    const fs139 = require('fs');
+    const path139 = require('path');
+    const read139 = (rel) => fs139.readFileSync(path139.join(__dirname, '..', rel), 'utf8');
+    const report139 = require('../engine/reportClient');
+    const bridge139 = read139('engine_bridge.js');
+
+    // --- the pure summary ---
+    eq('X139 the summary sums only the actually-known balances',
+      JSON.stringify(report139.summarizeAccountCredits([
+        { credits: 50 }, { credits: 25 }, { credits: null },
+        { credits: NaN }, {}, { credits: '80' }
+      ])),
+      JSON.stringify({ accountsCount: 6, creditsKnownAccounts: 2, creditsTotal: 75 }));
+    eq('X139 no known balance anywhere -> creditsTotal is null (the pair is omitted)',
+      JSON.stringify(report139.summarizeAccountCredits([{ credits: null }, {}])),
+      JSON.stringify({ accountsCount: 2, creditsKnownAccounts: 0, creditsTotal: null }));
+    eq('X139 a really-read 0 balance IS known (an exhausted account reports 0, not silence)',
+      JSON.stringify(report139.summarizeAccountCredits([{ credits: 0 }])),
+      JSON.stringify({ accountsCount: 1, creditsKnownAccounts: 1, creditsTotal: 0 }));
+    eq('X139 no accounts at all -> count 0 and no credits pair',
+      JSON.stringify(report139.summarizeAccountCredits(undefined)),
+      JSON.stringify({ accountsCount: 0, creditsKnownAccounts: 0, creditsTotal: null }));
+
+    // --- rules-faithful fake backend (mirrors X137's) ---
+    const calls139 = [];
+    const docs139 = new Map();
+    const reset139 = () => { calls139.length = 0; docs139.clear(); report139.resetAnonymousSessionCache(); };
+    const fakeFetch139 = async (url, init) => {
+      const method = (init && init.method) || 'GET';
+      const headers = (init && init.headers) || {};
+      const body = typeof (init && init.body) === 'string' ? JSON.parse(init.body) : (init && init.body);
+      calls139.push({ url, method, headers, body });
+      const json = (status, data) => ({ status, json: async () => data });
+      if (url.includes('identitytoolkit.googleapis.com')) {
+        if (url.includes('accounts:signUp')) {
+          return json(200, { idToken: 'ID-ANON-139', refreshToken: 'RF-ANON-139', expiresIn: '3600', localId: 'uid-anon-139' });
+        }
+        return json(404, {});
+      }
+      if (url.startsWith('https://firestore.googleapis.com/v1/')) {
+        const docPath = decodeURIComponent(url.split('/documents/')[1].split('?')[0]);
+        if (method === 'GET') {
+          if (docPath.startsWith('activations/')) {
+            return json(403, { error: { code: 403, message: 'Missing or insufficient permissions.', status: 'PERMISSION_DENIED' } });
+          }
+          if (!docs139.has(docPath)) return json(404, {});
+          return json(200, { name: docPath, fields: docs139.get(docPath) });
+        }
+        if (method === 'PATCH') {
+          if (url.includes('currentDocument.exists=false') && docs139.has(docPath)) {
+            return json(409, { error: { code: 409, message: 'Document already exists', status: 'ALREADY_EXISTS' } });
+          }
+          const merged = { ...(docs139.get(docPath) || {}), ...(body.fields || {}) };
+          docs139.set(docPath, merged);
+          return json(200, { name: docPath, fields: merged });
+        }
+        return json(405, {});
+      }
+      return json(404, {});
+    };
+    const patches139 = (frag) => calls139.filter(c => c.method === 'PATCH' && c.url.includes(frag));
+    const key139 = Buffer.from(JSON.stringify({ kid: 'K-139', plan: 'Trial', exp: '2027-01-31' })).toString('base64url') +
+      '.' + Buffer.from('sig-bytes').toString('base64url');
+    const actId139 = report139.activationIdFor(report139.keyPrefixOf(key139), 'FP-139');
+    const now139 = Date.UTC(2026, 10, 21, 6, 0, 0);
+
+    // --- the credits pair rides the license write when known ---
+    reset139();
+    const rl139 = await report139.reportLicenseUsage(
+      { key: key139, fingerprint: 'FP-139', appVersion: '1.0.15', videosMade: 3,
+        accounts: [{ credits: 50 }, { credits: 25 }, { credits: null }] },
+      { fetchImpl: fakeFetch139, nowMs: now139 });
+    const create139 = patches139('/documents/activations/')[0];
+    ok('X139 the license report carries the credits summary on the create write',
+      rl139.ok === true && !!create139 &&
+      create139.body.fields.creditsTotal.integerValue === '75' &&
+      create139.body.fields.creditsKnownAccounts.integerValue === '2' &&
+      create139.body.fields.accountsCount.integerValue === '3' &&
+      create139.url.includes('updateMask.fieldPaths=creditsTotal') &&
+      create139.url.includes('updateMask.fieldPaths=accountsCount') &&
+      docs139.get(`activations/${actId139}`).creditsTotal.integerValue === '75');
+
+    // --- nothing known -> the pair is omitted, the count rides ---
+    reset139();
+    const rl2_139 = await report139.reportLicenseUsage(
+      { key: key139, fingerprint: 'FP-139', appVersion: '1.0.15', videosMade: 1,
+        accounts: [{ credits: null }, {}] },
+      { fetchImpl: fakeFetch139, nowMs: now139 });
+    const create2_139 = patches139('/documents/activations/')[0];
+    ok('X139 no known balance -> credits fields OMITTED, accountsCount still rides',
+      rl2_139.ok === true && !!create2_139 &&
+      !('creditsTotal' in create2_139.body.fields) &&
+      !('creditsKnownAccounts' in create2_139.body.fields) &&
+      create2_139.body.fields.accountsCount.integerValue === '2' &&
+      !('creditsTotal' in docs139.get(`activations/${actId139}`)));
+
+    // --- no accounts handed over -> nothing new rides (back-compat) ---
+    reset139();
+    const rl3_139 = await report139.reportLicenseUsage(
+      { key: key139, fingerprint: 'FP-139', appVersion: '1.0.15', videosMade: 1 },
+      { fetchImpl: fakeFetch139, nowMs: now139 });
+    const create3_139 = patches139('/documents/activations/')[0];
+    ok('X139 a report without account records carries no credits/accounts fields at all',
+      rl3_139.ok === true && !!create3_139 &&
+      !('creditsTotal' in create3_139.body.fields) &&
+      !('accountsCount' in create3_139.body.fields));
+
+    // --- the account half NEVER carries them (rules whitelist) ---
+    reset139();
+    docs139.set('users/uid-139', { videosMade: { integerValue: '1' } });
+    const both139 = await report139.reportForCredential({
+      credential: { type: 'key', key: key139 },
+      fingerprint: 'FP-139', appVersion: '1.0.15', videosMade: 4,
+      accounts: [{ credits: 40 }, { credits: null }],
+      accountSession: { uid: 'uid-139', idToken: 'ID-USER-139' }
+    }, { fetchImpl: fakeFetch139, nowMs: now139 });
+    const userPatch139 = patches139('/documents/users/uid-139')[0];
+    ok('X139 reportForCredential: activations carry credits, the users-doc write never does',
+      both139.ok === true && !!userPatch139 &&
+      docs139.get(`activations/${actId139}`).creditsTotal.integerValue === '40' &&
+      !('creditsTotal' in userPatch139.body.fields) &&
+      !('creditsKnownAccounts' in userPatch139.body.fields) &&
+      !('accountsCount' in userPatch139.body.fields));
+
+    // --- bridge wiring pins ---
+    ok('X139 the bridge hands its account records to every report',
+      bridge139.includes('accounts: currentAccountRecords(),') &&
+      bridge139.includes('function currentAccountRecords()') &&
+      bridge139.includes('const list = getAccounts();'));
+    ok('X139 reporting never triggers a credit check (no fetch/refresh on the report path)',
+      !read139('engine/reportClient.js').includes('fetchRealCredits') &&
+      !read139('engine/reportClient.js').includes('refreshAllAccountCredits'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

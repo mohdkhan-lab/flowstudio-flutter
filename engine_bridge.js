@@ -167,6 +167,20 @@ function currentVideosMade() {
   }
 }
 
+// PUBLIC v1.0.15 — the account records the report's credits
+// summary is built from (accountStore's getAccounts, already
+// imported above; the records' credits fields are
+// creditService's last-known balances). Read-only: reporting
+// never triggers a credit check.
+function currentAccountRecords() {
+  try {
+    const list = getAccounts();
+    return Array.isArray(list) ? list : [];
+  } catch (e) {
+    return [];
+  }
+}
+
 // PUBLIC v1.0.13 — durable reporting: a failed report is no
 // longer silently lost. The bridge records the debt in
 // report-pending.json in the app data dir; every later report
@@ -205,6 +219,7 @@ function reportEntrySoon(credentialOverride, accountSession) {
       fingerprint: cachedMachineFingerprint(),
       appVersion: APP_VERSION,
       videosMade: currentVideosMade(),
+      accounts: currentAccountRecords(),
       accountSession: session || undefined
     });
     if (result && typeof result.then === 'function') {
@@ -384,7 +399,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // the backend's latest release against it.
-const APP_VERSION = '1.0.14';
+const APP_VERSION = '1.0.15';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the

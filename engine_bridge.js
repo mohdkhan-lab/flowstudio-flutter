@@ -384,7 +384,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // the backend's latest release against it.
-const APP_VERSION = '1.0.13';
+const APP_VERSION = '1.0.14';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -544,11 +544,17 @@ async function fetchLatestRelease() {
 // PUBLIC v1.0.13 — the backend config (maintenance / agent-mode
 // flag / current app announcement) riding the entry/status
 // answer, cached for a minute so the gate's polling never
-// hammers the backend. A failed fetch keeps the last good value
-// (or null — the status answer then carries the defaults and
-// entry proceeds exactly as it did before this reader existed).
+// hammers the backend. PUBLIC v1.0.14: the cache timestamp marks
+// the last SUCCESSFUL fetch ONLY — a failed fetch returns the
+// pre-1.0.13 defaults (never a stale value) and renews nothing.
+// (Field bug on v1.0.13: the failure path re-stamped the cache
+// while keeping the old value, so while config reads kept
+// failing a stale maintenance:true was served forever — the
+// panel showed maintenance OFF, the owner restarted the app,
+// and the still-running engine kept answering maintenance.)
 let backendConfigCache = { at: 0, value: null };
 const BACKEND_CONFIG_TTL_MS = 60 * 1000;
+const BACKEND_CONFIG_DEFAULTS = { maintenance: false, maintenanceMessage: '', announcement: null, agentModeEnabled: true };
 
 async function currentBackendConfig() {
   const now = Date.now();
@@ -573,8 +579,11 @@ async function currentBackendConfig() {
     backendConfigCache = { at: now, value };
     return value;
   }
-  backendConfigCache = { at: now, value: backendConfigCache.value };
-  return backendConfigCache.value;
+  // v1.0.14: fail OPEN on the defaults and leave the cache
+  // exactly as it was — the stale value stays expired, so the
+  // next status call retries the fetch and a recovered backend
+  // is picked up at once.
+  return { ...BACKEND_CONFIG_DEFAULTS };
 }
 
 async function startBridge() {

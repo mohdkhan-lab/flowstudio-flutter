@@ -145,7 +145,7 @@ async function main() {
     if (child.exitCode !== null) {
       refuse(`the spawned bridge exited (code ${child.exitCode}) yet something answers on ${BASE} — a foreign bridge holds the port. Bridge log tail: ${bridgeLog.slice(-300)}`);
     }
-    check('status version is 1.0.13', status && status.version === '1.0.13', JSON.stringify(status));
+    check('status version is 1.0.14', status && status.version === '1.0.14', JSON.stringify(status));
 
     // PUBLIC v1.0.13: UPDATER ANONYMOUS FALLBACK — this bridge
     // has NO pending account session (fresh throwaway APPDATA,

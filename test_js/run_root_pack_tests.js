@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.13+14 (public line)', read124('pubspec.yaml').includes('version: 1.0.13+14'));
-    eq('X124 package.json version is 1.0.13', JSON.parse(read124('package.json')).version, '1.0.13');
-    ok('X124 the bridge reports version 1.0.13 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.13';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.14+15 (public line)', read124('pubspec.yaml').includes('version: 1.0.14+15'));
+    eq('X124 package.json version is 1.0.14', JSON.parse(read124('package.json')).version, '1.0.14');
+    ok('X124 the bridge reports version 1.0.14 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.14';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the backend release list', bridgeSrc124.includes('documents/releases') && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.13 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.13'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.14 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.14'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16612,10 +16612,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.13',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.13"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.13'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.13';"));
+    ok('X127 the remaining version sites carry 1.0.14',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.14"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.14'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.14';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key, activatingAccount)') && bridgeJs127.includes('setPendingAccountSession'));
@@ -16682,8 +16682,8 @@ async function main() {
     ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold; v1.0.8: custom gold bar)',
       gateDart128.includes('0xFF0B0B10') && gateDart128.includes('widthFactor: progress') &&
       gateDart128.includes('entry.engineStage / 3'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.13',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.13'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.14',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.14'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
@@ -17810,6 +17810,106 @@ async function main() {
     ok('X137 the Agent Prompt pill hides when the panel switch is off',
       prompts137.includes('if (entryProv.agentModeEnabled) ...[') &&
       prompts137.includes('!entryProv.agentModeEnabled && !generator.isBulkMode'));
+  }
+
+  // =====================================================================
+  // X138. PUBLIC v1.0.14 — THE BACKEND-CONFIG CACHE MUST NEVER
+  // RENEW A STALE VALUE. Field bug on v1.0.13: the bridge's
+  // currentBackendConfig cached the panel config (maintenance /
+  // agent-mode / announcement) for 60s, and on a FAILED fetch it
+  // re-stamped the cache with the OLD value — so while config
+  // reads kept failing, a stale maintenance:true was served
+  // forever. The panel showed maintenance OFF (verified in
+  // Firestore), the owner fully restarted the app, and the
+  // still-running engine kept answering maintenance. The fix:
+  // the timestamp marks the last SUCCESSFUL fetch only; on
+  // failure after expiry the answer is the defaults (fail-open —
+  // a stale block must never lock users out), the cache is left
+  // untouched, and the next call retries the fetch at once.
+  // The REAL bridge function is extracted and driven here with
+  // a scripted fetch + a fake clock.
+  // =====================================================================
+  {
+    const fs138 = require('fs');
+    const path138 = require('path');
+    const bridge138 = fs138.readFileSync(path138.join(__dirname, '..', 'engine_bridge.js'), 'utf8');
+    const src138 = bridge138.slice(
+      bridge138.indexOf('let backendConfigCache'),
+      bridge138.indexOf('async function startBridge()'));
+    const defaults138 = { maintenance: false, maintenanceMessage: '', announcement: null, agentModeEnabled: true };
+    // A fresh cache + scripted fetch outcomes per scenario.
+    const make138 = (outcomes) => {
+      const state = { fetches: 0, clock: 1000000 };
+      const stub = {
+        fetchBackendConfig: async () => {
+          state.fetches++;
+          return outcomes[Math.min(state.fetches - 1, outcomes.length - 1)];
+        }
+      };
+      const current = new Function('backendConfig', 'pendingAccountSession', 'refreshPendingAccountSession', 'Date',
+        src138 + '\nreturn currentBackendConfig;')(
+        stub, null, async () => {}, { now: () => state.clock });
+      return { state, current };
+    };
+    const okMaint138 = { ok: true, maintenance: true, maintenanceMessage: 'Panel msg', announcement: null, agentModeEnabled: true };
+    const okClear138 = { ok: true, maintenance: false, maintenanceMessage: '', announcement: null, agentModeEnabled: true };
+    const fail138 = { ok: false, reason: 'offline' };
+
+    // (1) success → the cached value is served within the TTL
+    // without a second fetch.
+    {
+      const s = make138([okMaint138]);
+      const v1 = await s.current();
+      s.state.clock += 30000;
+      const v2 = await s.current();
+      ok('X138 a successful fetch is cached and served within the TTL (no second fetch)',
+        v1.maintenance === true && v2.maintenance === true && s.state.fetches === 1);
+    }
+    // (2) after TTL expiry + fetch failure → the DEFAULTS, even
+    // though the cached value had maintenance:true; and the
+    // failure does not renew anything (the next call fetches
+    // again instead of serving from a re-stamped cache).
+    {
+      const s = make138([okMaint138, fail138]);
+      await s.current();
+      s.state.clock += 61000;
+      const v = await s.current();
+      eq('X138 expiry + failure answers the defaults, never the stale maintenance',
+        JSON.stringify(v), JSON.stringify(defaults138));
+      const v2 = await s.current();
+      ok('X138 a failure renews no timestamp (the next call fetches again)',
+        s.state.fetches === 3 && v2.maintenance === false);
+    }
+    // (3) a failure does not extend the TTL — once reads
+    // recover, the fresh value is picked up immediately.
+    {
+      const s = make138([okMaint138, fail138, okClear138]);
+      await s.current();
+      s.state.clock += 61000;
+      const vFail = await s.current();
+      s.state.clock += 500;
+      const vOk = await s.current();
+      ok('X138 after a failure the recovered value is picked up at once',
+        vFail.maintenance === false && s.state.fetches === 3 &&
+        vOk.maintenance === false && vOk.agentModeEnabled === true);
+    }
+    // (4) first-ever fetch failure → the defaults, and no
+    // phantom cache (the next call retries the fetch).
+    {
+      const s = make138([fail138]);
+      const v = await s.current();
+      eq('X138 a first-ever fetch failure answers the defaults',
+        JSON.stringify(v), JSON.stringify(defaults138));
+      await s.current();
+      eq('X138 no phantom cache after a first failure (fetch retried)', s.state.fetches, 2);
+    }
+    // Source pins: the renew-on-failure line is gone; the
+    // failure path returns the defaults.
+    ok('X138 the renew-on-failure line is gone from the bridge',
+      !bridge138.includes('backendConfigCache = { at: now, value: backendConfigCache.value }'));
+    ok('X138 the failure path returns the backend-config defaults',
+      src138.includes('return { ...BACKEND_CONFIG_DEFAULTS };') &&
+      src138.includes("const BACKEND_CONFIG_DEFAULTS = { maintenance: false, maintenanceMessage: '', announcement: null, agentModeEnabled: true };"));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

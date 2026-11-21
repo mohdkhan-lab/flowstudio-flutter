@@ -11,14 +11,12 @@
     "electron-builder": "^24.13.3"
   },
   "license": "ISC",
-  "main": "main.js",
   "name": "flowstudio",
   "scripts": {
     "start": "electron main.js",
-    "test": "node tests/smoke.js",
-    "test:fit": "node tests/fitcheck.js",
-    "test:ui": "node tests/uitest.js",
-    "dist": "electron-builder --win nsis"
+    "test": "node test_js/run_root_pack_tests.js",
+    "dist": "electron-builder --win nsis",
+    "test:smoke": "node test_js/run_project_smoke.js"
   },
   "version": "1.0.17",
   "build": {
@@ -46,12 +44,6 @@
       "shortcutName": "FlowStudio",
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true
-    },
-    "publish": {
-      "provider": "github",
-      "owner": "mohdkhan837218-spec",
-      "repo": "flowstudio-lite",
-      "releaseType": "release"
     }
   }
 }

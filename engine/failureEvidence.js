@@ -3,12 +3,11 @@
 /**
  * FlowStudio Lite — FAILURE EVIDENCE discipline (v2.9.0).
  *
- * WHY: on the owner's PC (2026-10-15, v2.8.0 run, 2 fresh prompts,
+ * WHY: on a test PC (2026-10-15, v2.8.0 run, 2 fresh prompts,
  * account just credit-checked) BOTH tasks were declared Failed at
  * stage 'generation' with the SAME reason:
- *   "Google Safety Filter: closeMohd AslamMohda.ktanwar@gmail.com
- *    Switch account movie_filter_auto46 Google Flow creditsCredits
- *    refresh daily at 9:02 AM Upgrade personCreate ava…"
+ *   "Google Safety Filter: <the first 150 chars of the
+ *    account/credits POPOVER's innerText>"
  * That text is not a Flow refusal at all — it is the first 150 chars
  * of the account/credits POPOVER's innerText (the very panel
  * readLiveCreditsFromPage opens to read the balance). The monitor's

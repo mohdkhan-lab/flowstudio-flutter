@@ -795,6 +795,54 @@ async function redeemKey(shortKey, deviceFingerprint, appVersion, opts) {
   }
 }
 
+// PUBLIC v1.0.17 — validate: the entry re-check. The app asks
+// the key service whether the signed key it holds is still bound
+// to THIS device. The offline signature check stays the base
+// gate; this is the server half that stops a copied signed key
+// from opening the app on a second computer (the binding the
+// service wrote at redeem time is the one that counts).
+//   { ok: true, state: 'valid' }           — bound to this device
+//                                            (or just bound now)
+//   { ok: true, state: 'bound-elsewhere' } — bound to another PC
+//   { ok: true, state: 'expired' }         — the row's exp passed
+//   { ok: true, state: 'unknown-key' }     — no server row (an
+//                                            older key; the caller
+//                                            decides what that
+//                                            means — the bridge
+//                                            lets it through)
+//   { ok: false, reason }                  — no usable answer
+//                                            (network / service);
+//                                            entry must NOT block
+//                                            on this alone.
+async function validateKey(kid, deviceFingerprint, opts) {
+  const config = resolveConfig(opts);
+  if (!isServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  if (!keyServiceConfigured(config)) return { ok: false, reason: 'not-configured' };
+  const fetchImpl = resolveFetch(opts);
+  if (!fetchImpl) return { ok: false, reason: 'network-unavailable' };
+  const cleanKid = typeof kid === 'string' ? kid.trim() : '';
+  const cleanFp = typeof deviceFingerprint === 'string' ? deviceFingerprint.trim() : '';
+  if (!cleanKid) return { ok: false, reason: 'kid-required' };
+  if (!cleanFp) return { ok: false, reason: 'device-required' };
+  try {
+    const { status, data } = await callKeyFunction(
+      fetchImpl, config,
+      { action: 'validate', kid: cleanKid, deviceFingerprint: cleanFp },
+      null);
+    if (status === 200 && data && data.valid === true) {
+      return { ok: true, state: 'valid' };
+    }
+    if (status === 200 && data && data.valid === false) {
+      if (data.reason === 'bound-elsewhere') return { ok: true, state: 'bound-elsewhere' };
+      if (data.reason === 'expired') return { ok: true, state: 'expired' };
+      return { ok: true, state: 'unknown-key' };
+    }
+    return { ok: false, reason: 'validate-failed', status };
+  } catch (e) {
+    return { ok: false, reason: 'network-error' };
+  }
+}
+
 // The verification card's LINK route for a live session: ask
 // Firebase to (re)send the VERIFY_EMAIL email for this token.
 // (Sign-up already sends one automatically; this covers the
@@ -909,6 +957,7 @@ module.exports = {
   firebaseErrorCode,
   fetchMyKey,
   redeemKey,
+  validateKey,
   sendVerificationEmail,
   sendOtp,
   verifyOtp

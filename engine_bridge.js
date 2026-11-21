@@ -273,8 +273,75 @@ function reportEntrySoon(credentialOverride, accountSession) {
         .catch(() => sendReport(session));
       return;
     }
+    // PUBLIC v1.0.17: no live sign-in this run, but the stored
+    // credential carries its account's refresh token (saved at
+    // activation) — revive a REPORT-ONLY session from it so the
+    // user's own doc keeps refreshing across engine restarts,
+    // not only in the run that signed in. The revived session is
+    // never the pending sign-in: fetching a key still requires
+    // signing in afresh (the v1.0.5 rule stands).
+    if (!session && credential.accountUid && credential.accountRefreshToken) {
+      reviveReportSession(credential)
+        .then((revived) => sendReport(revived || session))
+        .catch(() => sendReport(session));
+      return;
+    }
     sendReport(session);
   } catch (e) {}
+}
+
+// PUBLIC v1.0.17 — the report-only session revived from the
+// credential's stored account refresh token (see reportEntrySoon).
+// Cached in memory per engine run; a rotated refresh token is
+// written back into the credential, and a dead one is dropped
+// from it so it is not retried forever. Best-effort throughout:
+// any failure simply means this report goes without the
+// users-doc half, exactly as before this existed.
+let revivedReportSession = null;
+
+async function reviveReportSession(credential) {
+  try {
+    const now = Date.now();
+    if (revivedReportSession &&
+        revivedReportSession.uid === credential.accountUid &&
+        revivedReportSession.expiresAt > now + 30000) {
+      return { uid: revivedReportSession.uid, idToken: revivedReportSession.idToken };
+    }
+    const cachedToken = revivedReportSession &&
+        revivedReportSession.uid === credential.accountUid
+      ? revivedReportSession.refreshToken : '';
+    const token = cachedToken || credential.accountRefreshToken;
+    if (!token) return null;
+    const r = await authClient.refreshSession(token);
+    if (!r || !r.ok || !r.session || !r.session.idToken) {
+      if (token === credential.accountRefreshToken) {
+        const fresh = entryGate.loadCredential(appDataDataDir);
+        if (fresh && fresh.accountRefreshToken === token) {
+          delete fresh.accountRefreshToken;
+          entryGate.saveCredential(appDataDataDir, fresh);
+        }
+      }
+      revivedReportSession = null;
+      return null;
+    }
+    revivedReportSession = {
+      uid: r.session.uid || credential.accountUid,
+      idToken: r.session.idToken,
+      refreshToken: r.session.refreshToken || token,
+      expiresAt: r.session.expiresAt || 0
+    };
+    if (revivedReportSession.refreshToken &&
+        revivedReportSession.refreshToken !== credential.accountRefreshToken) {
+      const fresh = entryGate.loadCredential(appDataDataDir);
+      if (fresh && fresh.type === 'key' && fresh.accountUid === credential.accountUid) {
+        fresh.accountRefreshToken = revivedReportSession.refreshToken;
+        entryGate.saveCredential(appDataDataDir, fresh);
+      }
+    }
+    return { uid: revivedReportSession.uid, idToken: revivedReportSession.idToken };
+  } catch (e) {
+    return null;
+  }
 }
 
 function reportActivationSoon(keyText, accountSession) {
@@ -445,7 +512,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // the backend's latest release against it.
-const APP_VERSION = '1.0.16';
+const APP_VERSION = '1.0.17';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
@@ -645,6 +712,70 @@ async function currentBackendConfig() {
   // next status call retries the fetch and a recovered backend
   // is picked up at once.
   return { ...BACKEND_CONFIG_DEFAULTS };
+}
+
+// PUBLIC v1.0.17 — the entry re-check. decideEntry's one-device
+// binding is LOCAL (it compares the fingerprint stored in the
+// credential with this machine's), which a copied credential
+// satisfies trivially if the key text is pasted fresh on another
+// PC. The key service holds the binding written at redeem time;
+// this asks it. Policy, deliberately asymmetric:
+//   - a definitive "bound-elsewhere" BLOCKS entry (the gate
+//     shows the reason and the user can paste another key or
+//     ask support for a reset);
+//   - every other outcome lets the offline verdict stand —
+//     a key-service outage must never lock out a genuine user,
+//     and a key with no server row (pre-service era) keeps
+//     working exactly as before.
+// Answers cache per (kid, fingerprint): a definitive answer for
+// 6 h, a no-answer for 60 s (so a down service costs one short
+// wait a minute, not one per status poll). The call itself is
+// raced against a 4 s timeout so a hanging service cannot hold
+// the gate's first answer hostage.
+let keyValidationCache = { key: '', at: 0, state: '' };
+const KEY_VALIDATION_TTL_MS = 6 * 60 * 60 * 1000;
+const KEY_VALIDATION_RETRY_MS = 60 * 1000;
+const KEY_VALIDATION_TIMEOUT_MS = 4000;
+
+async function serverKeyBlock(credential, fingerprint) {
+  try {
+    if (!credential || credential.type !== 'key' || !credential.key) return null;
+    if (!fingerprint) return null;
+    const verdict = licenseKey.verifyLicenseKey(credential.key, Date.now());
+    if (!verdict.ok || !verdict.kid) return null;
+    const cacheKey = verdict.kid + '|' + fingerprint;
+    const now = Date.now();
+    if (keyValidationCache.key === cacheKey) {
+      const age = now - keyValidationCache.at;
+      if (keyValidationCache.state === 'bound-elsewhere' && age < KEY_VALIDATION_TTL_MS) {
+        return { reason: 'key-bound-elsewhere' };
+      }
+      if (keyValidationCache.state === 'valid' && age < KEY_VALIDATION_TTL_MS) return null;
+      if (keyValidationCache.state === 'unreachable' && age < KEY_VALIDATION_RETRY_MS) return null;
+    }
+    let timer = null;
+    const res = await Promise.race([
+      authClient.validateKey(verdict.kid, fingerprint),
+      new Promise((resolve) => {
+        timer = setTimeout(() => resolve({ ok: false, reason: 'timeout' }), KEY_VALIDATION_TIMEOUT_MS);
+      })
+    ]).finally(() => { if (timer) clearTimeout(timer); });
+    if (!res || !res.ok) {
+      keyValidationCache = { key: cacheKey, at: now, state: 'unreachable' };
+      return null;
+    }
+    if (res.state === 'bound-elsewhere') {
+      keyValidationCache = { key: cacheKey, at: now, state: 'bound-elsewhere' };
+      return { reason: 'key-bound-elsewhere' };
+    }
+    // 'valid', 'expired' (the offline check already owns
+    // expiry) and 'unknown-key' all leave the decision alone;
+    // cache them as good so the poll does not re-ask.
+    keyValidationCache = { key: cacheKey, at: now, state: 'valid' };
+    return null;
+  } catch (e) {
+    return null;
+  }
 }
 
 async function startBridge() {
@@ -1061,6 +1192,20 @@ async function startBridge() {
           credential,
           { nowMs: Date.now(), fingerprint: cachedMachineFingerprint() }
         );
+        // v1.0.17: the server re-check — a key the service has
+        // bound to ANOTHER computer is refused here even though
+        // the local verdict passed (see serverKeyBlock). Only a
+        // definitive answer overrides; no answer changes
+        // nothing.
+        if (decision.allowed && credential && credential.type === 'key') {
+          const block = await serverKeyBlock(credential, cachedMachineFingerprint());
+          if (block) {
+            decision.allowed = false;
+            decision.screen = 'gate';
+            decision.reason = block.reason;
+            decision.statusText = '';
+          }
+        }
         // v1.0.13: the backend config rides the status answer
         // (maintenance / announcement / agent-mode flag). Null
         // (never fetched successfully) becomes the defaults —
@@ -1121,7 +1266,11 @@ async function startBridge() {
           ? {
               uid: pendingAccountSession.uid || '',
               email: pendingAccountSession.email || '',
-              idToken: pendingAccountSession.idToken || ''
+              idToken: pendingAccountSession.idToken || '',
+              // v1.0.17: the refresh token is stored with the
+              // credential (below) so later reports can revive a
+              // report-only session across engine restarts.
+              refreshToken: pendingAccountSession.refreshToken || ''
             }
           : null;
         // One-device binding is LOCAL: the activation completes
@@ -1139,7 +1288,13 @@ async function startBridge() {
           fingerprint,
           activatedAt: new Date().toISOString(),
           ...(activatingAccount && activatingAccount.uid
-            ? { accountUid: activatingAccount.uid, accountEmail: activatingAccount.email }
+            ? {
+                accountUid: activatingAccount.uid,
+                accountEmail: activatingAccount.email,
+                ...(activatingAccount.refreshToken
+                  ? { accountRefreshToken: activatingAccount.refreshToken }
+                  : {})
+              }
             : {})
         });
         // v1.0.5: the key is the entry now — the pending account

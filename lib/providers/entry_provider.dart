@@ -41,7 +41,9 @@ class EntryProvider extends ChangeNotifier {
   bool _busy = false;
   String _error = '';
   String _notice = '';
+  bool _serverBlockNotice = false;
   Timer? _poll;
+  Timer? _maintWatch;
 
   // Phase 2: the account side of the current decision, for the
   // Settings account card (signed-in email, plan, trial days).
@@ -320,6 +322,19 @@ class EntryProvider extends ChangeNotifier {
       final dl = entry['daysLeft'];
       _daysLeft = dl is num ? dl.toInt() : 0;
       if (_allowed) _stopAccountWatch();
+      // v1.0.17: the bridge's server re-check refused the stored
+      // key — the key service has it bound to another computer.
+      // Say so above the key field instead of leaving the doors
+      // silently shut. The flag remembers the notice is ours, so
+      // a later good answer clears exactly it (action-set notices
+      // are untouched).
+      if (entry['reason']?.toString() == 'key-bound-elsewhere') {
+        _notice = 'This key is in use on another computer. If you have changed your PC, contact support on WhatsApp and we will reset it for you.';
+        _serverBlockNotice = true;
+      } else if (_serverBlockNotice) {
+        _notice = '';
+        _serverBlockNotice = false;
+      }
     }
     // v1.0.13: the backend block (maintenance / announcement /
     // agent-mode flag) the bridge reads from the panel. A status
@@ -339,7 +354,12 @@ class EntryProvider extends ChangeNotifier {
         _announcementTitle = '';
         _announcementBody = '';
       }
-      if (_maintenance) _allowed = false;
+      if (_maintenance) {
+        _allowed = false;
+        _startMaintWatch();
+      } else {
+        _maintWatch?.cancel();
+      }
     }
     final doorA = data['doorA'];
     if (doorA is Map) {
@@ -715,9 +735,28 @@ class EntryProvider extends ChangeNotifier {
     await refresh();
   }
 
+  /// v1.0.17: while the backend says maintenance is ON, keep
+  /// asking every 15 s. The first-answer poll has already stopped
+  /// by then, so without this watch the gate would sit on the
+  /// maintenance message until the app is restarted — even after
+  /// the panel switches maintenance off. (The bridge's own
+  /// backend-config cache is 60 s, so a switch-off lands here
+  /// within about a minute.)
+  void _startMaintWatch() {
+    if (_maintWatch != null && _maintWatch!.isActive) return;
+    _maintWatch = Timer.periodic(const Duration(seconds: 15), (_) {
+      if (!_maintenance) {
+        _maintWatch?.cancel();
+        return;
+      }
+      refresh();
+    });
+  }
+
   @override
   void dispose() {
     _poll?.cancel();
+    _maintWatch?.cancel();
     _stageProbe?.cancel();
     _stopAccountWatch();
     super.dispose();

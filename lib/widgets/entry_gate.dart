@@ -4,6 +4,8 @@ import 'dart:ui' as ui;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:media_kit/media_kit.dart';
+import 'package:media_kit_video/media_kit_video.dart';
 import 'package:provider/provider.dart';
 import '../providers/entry_provider.dart';
 import '../services/automation_bridge.dart';
@@ -184,6 +186,19 @@ class _EntryGateScreenState extends State<EntryGateScreen>
   DateTime _stageChangedAt = DateTime.now();
   bool _splashShowing = true;
 
+  // v1.0.17: the logo intro (the owner's v4 film) IS the splash.
+  // It plays once over the startup screen while the engine comes
+  // up; the portal follows when BOTH the first entry answer is in
+  // AND the intro has ended or been skipped (a click anywhere).
+  // Any failure — no player, a bad asset — falls back to the
+  // animated splash below, exactly as before.
+  Player? _introPlayer;
+  VideoController? _introController;
+  StreamSubscription<bool>? _introCompletedSub;
+  StreamSubscription<String>? _introErrorSub;
+  bool _introDone = false;
+  bool _introFailed = false;
+
   @override
   void initState() {
     super.initState();
@@ -194,6 +209,45 @@ class _EntryGateScreenState extends State<EntryGateScreen>
     _splashTicker = Timer.periodic(const Duration(seconds: 1), (_) {
       if (mounted && _splashShowing) setState(() {});
     });
+    _startIntro();
+  }
+
+  /// v1.0.17: open the logo-intro film. Everything is guarded —
+  /// a player that cannot start simply marks the intro failed
+  /// and the animated splash carries on.
+  void _startIntro() {
+    try {
+      final player = Player();
+      _introPlayer = player;
+      _introController = VideoController(player);
+      _introCompletedSub = player.stream.completed.listen((done) {
+        if (done && mounted) _endIntro();
+      });
+      _introErrorSub = player.stream.error.listen((_) {
+        if (mounted && !_introFailed) {
+          setState(() => _introFailed = true);
+        }
+      });
+      player.open(Media('asset:///assets/logo_intro.mp4'));
+    } catch (e) {
+      _introFailed = true;
+    }
+  }
+
+  /// v1.0.17: a click (or the film ending) ends the intro. The
+  /// player is released here rather than at dispose — the gate
+  /// itself stays alive for the portal that follows.
+  void _endIntro() {
+    if (_introDone) return;
+    setState(() => _introDone = true);
+    _introCompletedSub?.cancel();
+    _introErrorSub?.cancel();
+    final player = _introPlayer;
+    _introPlayer = null;
+    _introController = null;
+    if (player != null) {
+      player.dispose();
+    }
   }
 
   @override
@@ -212,6 +266,9 @@ class _EntryGateScreenState extends State<EntryGateScreen>
   void _onEntryChanged() {
     final entry = _listenedEntry;
     if (entry == null) return;
+    // v1.0.17: an engine failure ends the intro at once — the
+    // Retry state matters more than the film.
+    if (entry.engineFailed && !_introDone) _endIntro();
     if (entry.engineStage != _lastEngineStage) {
       _lastEngineStage = entry.engineStage;
       _stageChangedAt = DateTime.now();
@@ -233,6 +290,9 @@ class _EntryGateScreenState extends State<EntryGateScreen>
   void dispose() {
     _listenedEntry?.removeListener(_onEntryChanged);
     _splashTicker?.cancel();
+    _introCompletedSub?.cancel();
+    _introErrorSub?.cancel();
+    _introPlayer?.dispose();
     _splashAnim.dispose();
     _nameController.dispose();
     _emailController.dispose();
@@ -1112,11 +1172,49 @@ class _EntryGateScreenState extends State<EntryGateScreen>
         status = fillers[((idleMs - 2500) ~/ 2800) % fillers.length];
       }
     }
+    // v1.0.17: while the logo intro plays it owns the screen —
+    // the classic splash below is its fallback (and its
+    // engine-failed face). A click anywhere ends the film.
+    final introActive = !_introDone &&
+        !_introFailed &&
+        _introController != null &&
+        !entry.engineFailed;
     return Scaffold(
       backgroundColor: _entryBg,
-      body: Stack(
-        children: [
-          Center(
+      body: GestureDetector(
+        onTap: introActive ? _endIntro : null,
+        child: Stack(
+          children: [
+            if (introActive)
+              Positioned.fill(
+                child: Video(
+                  controller: _introController!,
+                  fit: BoxFit.contain,
+                  controls: NoVideoControls,
+                ),
+              ),
+            if (introActive)
+              Positioned(
+                left: 0,
+                right: 0,
+                bottom: 18,
+                child: Text(
+                  status,
+                  textAlign: TextAlign.center,
+                  style: const TextStyle(fontSize: 12, color: _entryDim),
+                ),
+              ),
+            if (introActive)
+              const Positioned(
+                right: 16,
+                bottom: 16,
+                child: Text(
+                  'Click to skip',
+                  style: TextStyle(fontSize: 11, color: _entryFaint),
+                ),
+              ),
+            if (!introActive)
+              Center(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
@@ -1293,17 +1391,19 @@ class _EntryGateScreenState extends State<EntryGateScreen>
               ],
             ),
           ),
-          const Positioned(
-            left: 0,
-            right: 0,
-            bottom: 18,
-            child: Text(
-              'v1.0.16',
-              textAlign: TextAlign.center,
-              style: TextStyle(fontSize: 10.5, color: _entryFaint),
+          if (!introActive)
+            const Positioned(
+              left: 0,
+              right: 0,
+              bottom: 18,
+              child: Text(
+                'v1.0.17',
+                textAlign: TextAlign.center,
+                style: TextStyle(fontSize: 10.5, color: _entryFaint),
+              ),
             ),
-          ),
         ],
+        ),
       ),
     );
   }
@@ -1568,8 +1668,13 @@ class _EntryGateScreenState extends State<EntryGateScreen>
     final entry = context.watch<EntryProvider>();
     // v1.0.2: before the first entry answer the STARTUP SCREEN
     // shows (splash), not the gate card. v1.0.8 (F1): the two
-    // crossfade — splash out, portal in.
-    final showSplash = !entry.loaded;
+    // crossfade — splash out, portal in. v1.0.17: the splash
+    // also stays while the logo intro plays — the portal
+    // follows when the entry answer is in AND the film has
+    // ended or been skipped (an intro that failed never holds
+    // the gate).
+    final introPending = !_introDone && !_introFailed;
+    final showSplash = !entry.loaded || introPending;
     _splashShowing = showSplash;
     return AnimatedSwitcher(
       duration: const Duration(milliseconds: 300),

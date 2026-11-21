@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.16+17 (public line)', read124('pubspec.yaml').includes('version: 1.0.16+17'));
-    eq('X124 package.json version is 1.0.16', JSON.parse(read124('package.json')).version, '1.0.16');
-    ok('X124 the bridge reports version 1.0.16 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.16';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.17+18 (public line)', read124('pubspec.yaml').includes('version: 1.0.17+18'));
+    eq('X124 package.json version is 1.0.17', JSON.parse(read124('package.json')).version, '1.0.17');
+    ok('X124 the bridge reports version 1.0.17 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.17';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the backend release list', bridgeSrc124.includes('documents/releases') && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.16 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.16'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.17 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.17'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16225,8 +16225,8 @@ async function main() {
       entryGateSrc125.includes("label: 'Retry'") &&
       entryGateSrc125.includes('retryEngine()'));
     ok('X125 "Starting the engine" yields to the failed state',
-      entryGateSrc125.includes('final showSplash = !entry.loaded;') &&
-      entryGateSrc125.includes('entry.engineFailed')); // v1.0.8: one splash branch — the failed state renders inside it
+      entryGateSrc125.includes('final showSplash = !entry.loaded || introPending;') &&
+      entryGateSrc125.includes('entry.engineFailed')); // v1.0.8: one splash branch — the failed state renders inside it; v1.0.17: the splash also holds while the logo intro plays
 
     // --- one automatic retry on a not-answering answer ---
     ok('X125 the provider retries once via the shared recovery',
@@ -16612,10 +16612,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.16',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.16"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.16'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.16';"));
+    ok('X127 the remaining version sites carry 1.0.17',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.17"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.17'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.17';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key, activatingAccount)') && bridgeJs127.includes('setPendingAccountSession'));
@@ -16682,8 +16682,8 @@ async function main() {
     ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold; v1.0.8: custom gold bar)',
       gateDart128.includes('0xFF0B0B10') && gateDart128.includes('widthFactor: progress') &&
       gateDart128.includes('entry.engineStage / 3'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.16',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.16'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.17',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.17'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
@@ -17801,7 +17801,8 @@ async function main() {
     const prompts137 = read137('lib/widgets/prompts_editor.dart');
     ok('X137 the entry provider parses the backend block and maintenance blocks entry',
       provider137.includes("_maintenance = backend['maintenance'] == true;") &&
-      provider137.includes('if (_maintenance) _allowed = false;') &&
+      provider137.includes('if (_maintenance) {') &&
+      provider137.includes('_allowed = false;') &&
       provider137.includes("_agentModeEnabled = backend['agentModeEnabled'] != false;"));
     ok('X137 the gate shows the maintenance view instead of the portal',
       gate137.includes('entry.maintenance') && gate137.includes('_buildMaintenance'));
@@ -18368,6 +18369,57 @@ async function main() {
       bridge140.includes('genStats: currentGenStats(),'));
     ok('X140 dbService.failTask is the counted failure transition',
       read140('engine/db.js').includes('usageStats.recordGenFailure(dbService)'));
+  }
+
+  // X141. PUBLIC v1.0.17 — MAINTENANCE WATCH + SERVER KEY RE-CHECK +
+  // REPORT SESSION REVIVAL + LOGO-INTRO SPLASH. The maintenance
+  // screen used to freeze on the first answer (the Dart gate polled
+  // only until entry loaded); the entry key used to be judged only
+  // against this machine's local record; the users-doc half of a
+  // report used to die with the engine run that signed in; and the
+  // approved logo film used to live only on the website. Pins are
+  // source-shape + the server validate action's contract.
+  {
+    const fs141 = require('fs');
+    const path141 = require('path');
+    const read141 = (rel) => fs141.readFileSync(path141.join(__dirname, '..', rel), 'utf8');
+    const bridge141 = read141('engine_bridge.js');
+    const provider141 = read141('lib/providers/entry_provider.dart');
+    const gate141 = read141('lib/widgets/entry_gate.dart');
+    const auth141 = read141('engine/authClient.js');
+    ok('X141 the entry provider re-checks while maintenance shows',
+      provider141.includes('Timer? _maintWatch;') &&
+      provider141.includes('void _startMaintWatch()') &&
+      provider141.includes('Duration(seconds: 15)') &&
+      provider141.includes('_startMaintWatch();') &&
+      provider141.includes('_maintWatch?.cancel();'));
+    ok('X141 the bridge re-checks the stored key with the server at entry',
+      bridge141.includes('async function serverKeyBlock(credential, fingerprint)') &&
+      bridge141.includes('authClient.validateKey(verdict.kid, fingerprint)') &&
+      bridge141.includes("res.state === 'bound-elsewhere'") &&
+      bridge141.includes('decision.reason = block.reason;'));
+    ok('X141 only a bound-elsewhere verdict blocks — silence never locks out',
+      bridge141.includes("return { reason: 'key-bound-elsewhere' };") &&
+      auth141.includes("action: 'validate'") &&
+      auth141.includes("state: 'bound-elsewhere'") &&
+      auth141.includes("state: 'unknown-key'"));
+    ok('X141 the gate explains a server-blocked key in plain words',
+      provider141.includes('This key is in use on another computer.') &&
+      provider141.includes('_serverBlockNotice'));
+    ok('X141 activation stores the account refresh token with the credential',
+      bridge141.includes('accountRefreshToken: activatingAccount.refreshToken') &&
+      bridge141.includes('refreshToken: pendingAccountSession.refreshToken'));
+    ok('X141 reports revive a report-only session from the stored token',
+      bridge141.includes('async function reviveReportSession(credential)') &&
+      bridge141.includes('reviveReportSession(credential)') &&
+      bridge141.includes('authClient.refreshSession(token)') &&
+      !bridge141.includes('pendingAccountSession = revivedReportSession'));
+    ok('X141 the logo intro ships as an asset and plays on the splash',
+      read141('pubspec.yaml').includes('assets/logo_intro.mp4') &&
+      fs141.existsSync(path141.join(__dirname, '..', 'assets', 'logo_intro.mp4')) &&
+      gate141.includes("Media('asset:///assets/logo_intro.mp4')") &&
+      gate141.includes("'Click to skip'") &&
+      gate141.includes('final introPending = !_introDone && !_introFailed;'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

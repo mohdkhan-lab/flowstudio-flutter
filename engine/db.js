@@ -8,6 +8,10 @@ const { tileFingerprint } = require('./tileIdentity');
 // v2.48.78 (Item B): queue-build dedupe — ek batch
 // me (tag + text) ek jaise entries ek hi task.
 const { dedupeBatchEntries } = require('./queueDedupe');
+// PUBLIC v1.0.16: the generation-outcome counters
+// (engine/usageStats) — failTask below records each terminal
+// failure there, once per task.
+const usageStats = require('./usageStats');
 
 /**
  * FlowStudio Lite — SQLite (sql.js) storage.
@@ -844,6 +848,21 @@ const dbService = {
   },
 
   failTask(taskId, errorReason) {
+    // PUBLIC v1.0.16: count the terminal failure for the usage
+    // report (usageStats genFailed) EXACTLY ONCE per generation:
+    // only the transition INTO 'failed' from a non-terminal
+    // state counts. A repeat failTask on an already-failed row
+    // (verdict races, cleanup passes) and a failTask landing on
+    // an already-completed row count nothing; a row that was
+    // failed, genuinely re-queued (back to pending/running) and
+    // fails again counts its second terminal failure, because
+    // its status left 'failed' in between. Best-effort: the
+    // stats write can never break the failure write itself.
+    let priorStatus = null;
+    try {
+      const prior = queryOne('SELECT status FROM queue_tasks WHERE id = ?', [taskId]);
+      priorStatus = prior ? prior.status : null;
+    } catch (e) {}
     run(`
       UPDATE queue_tasks
       SET status = 'failed',
@@ -852,6 +871,9 @@ const dbService = {
           completed_at = CURRENT_TIMESTAMP
       WHERE id = ?
     `, [errorReason || 'Unknown error', taskId]);
+    if (priorStatus !== null && priorStatus !== 'failed' && priorStatus !== 'completed') {
+      try { usageStats.recordGenFailure(dbService); } catch (e) {}
+    }
   },
 
   cancelRunningTasks(batchId) {

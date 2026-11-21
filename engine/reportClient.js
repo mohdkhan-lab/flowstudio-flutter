@@ -25,6 +25,19 @@
 //     credits summary (accountsCount always; creditsTotal +
 //     creditsKnownAccounts only when a balance is known) — see
 //     summarizeAccountCredits below.
+//     v1.0.16: the same write also carries the generation stats
+//     (genSuccess / genFailed / creditsUsed — the durable
+//     counters engine/usageStats keeps), whenever the caller
+//     hands them over; a null genStats (the stats store could
+//     not be read truthfully) OMITS the trio rather than
+//     sending wrong zeros. The users-doc half of a key report
+//     runs on EVERY report whose caller identifies the account
+//     (args.accountSession) — its write carries ONLY the
+//     rules-whitelisted fields (videosMade / lastSeenAt /
+//     appVersion), and its failure never sinks the license
+//     write: the activations write lands first and stands on
+//     its own; the combined verdict follows the v1.0.13
+//     pending-retry discipline (see reportForCredential).
 //
 //     v1.0.13 ROOT CAUSE (field + live repro, 2026-11-20): the
 //     pre-1.0.13 code decided firstSeenAt with a GET first — but
@@ -221,6 +234,26 @@ async function reportLicenseUsage(args, opts) {  const config = resolveConfig(op
       fields.creditsKnownAccounts = summary.creditsKnownAccounts;
     }
   }
+  // v1.0.16: the generation stats ride this same write —
+  // activations carries no field whitelist in the rules, so
+  // the fields are safe here (and, like the credits summary,
+  // they NEVER ride the account report: its whitelist would
+  // sink that whole update). The caller hands over the durable
+  // counters read by usageStats.getGenStats; null (the store
+  // could not be read truthfully) omits the trio entirely —
+  // truthful zeros from a device that never generated DO ride.
+  // All-or-nothing: a partially-valid trio is omitted whole.
+  const genStats = args && args.genStats;
+  if (genStats && typeof genStats === 'object') {
+    const gs = Number(genStats.genSuccess);
+    const gf = Number(genStats.genFailed);
+    const gu = Number(genStats.creditsUsed);
+    if (Number.isFinite(gs) && Number.isFinite(gf) && Number.isFinite(gu)) {
+      fields.genSuccess = Math.max(0, Math.floor(gs));
+      fields.genFailed = Math.max(0, Math.floor(gf));
+      fields.creditsUsed = Math.max(0, Math.floor(gu));
+    }
+  }
   // Brand-new activation: the create-only write carries
   // firstSeenAt as well. 409 ALREADY_EXISTS is the doc-is-there
   // answer, not an error.
@@ -269,7 +302,8 @@ async function reportForCredential(args, opts) {
       fingerprint: args.fingerprint,
       appVersion: args.appVersion,
       videosMade: args.videosMade,
-      accounts: args.accounts
+      accounts: args.accounts,
+      genStats: args.genStats
     }, opts);
     const acct = args && args.accountSession;
     if (acct && typeof acct.uid === 'string' && acct.uid &&

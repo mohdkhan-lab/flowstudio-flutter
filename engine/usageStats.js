@@ -13,6 +13,26 @@
  * The store interface is injected ({ getSetting, setSetting }) so the
  * counting rules are unit-testable in plain Node; production passes
  * dbService.
+ *
+ * PUBLIC v1.0.16: the blob also carries the all-time GENERATION
+ * outcome counters the panel report needs — genSuccess (saved
+ * completions, fed by the same recordSaved() calls as `total`),
+ * genFailed (terminal failures, fed by recordGenFailure() from
+ * dbService.failTask's once-only state transition) and
+ * creditsUsed (the cumulative sum of the per-video credit costs
+ * recordSaved() is handed — the run's own getRequiredCredits
+ * figure, never an estimate invented at report time). Unlike the
+ * per-day maps these three are NEVER pruned. Migration for blobs
+ * written before v1.0.16 (which lack the fields): genSuccess
+ * starts from `total` (recordSaved always fed both from the same
+ * event), creditsUsed starts from the sum of the surviving
+ * creditsDays (a floor — pruned days are gone), genFailed starts
+ * at 0 (failures were never recorded before). getGenStats() is
+ * the report's reader: it returns null when the stored blob
+ * cannot be read truthfully (unparseable / not an object / the
+ * store throws), so the report OMITS the fields instead of
+ * sending wrong zeros; a device with no blob at all truthfully
+ * reports zeros.
  */
 
 const SETTING_KEY = 'usage_stats_v1';
@@ -25,14 +45,34 @@ function dayKey(d = new Date()) {
   return `${y}-${m}-${day}`;
 }
 
+// PUBLIC v1.0.16: the generation-outcome fields of a parsed
+// blob, with the pre-v1.0.16 migration defaults (see the header
+// note). A stored finite number always wins; anything else
+// falls back.
+function genFieldsFrom(parsed, total, creditsDays) {
+  const pick = (v, fallback) =>
+    (typeof v === 'number' && Number.isFinite(v) && v >= 0) ? v : fallback;
+  let daysSum = 0;
+  if (creditsDays && typeof creditsDays === 'object') {
+    for (const v of Object.values(creditsDays)) daysSum += Number(v) || 0;
+  }
+  return {
+    genSuccess: pick(parsed.genSuccess, Number(total) || 0),
+    genFailed: pick(parsed.genFailed, 0),
+    creditsUsed: pick(parsed.creditsUsed, daysSum)
+  };
+}
+
 function loadStats(store) {
   try {
     const raw = store.getSetting(SETTING_KEY, null);
-    if (!raw) return { total: 0, days: {}, creditsDays: {} };
+    if (!raw) return { total: 0, days: {}, creditsDays: {}, genSuccess: 0, genFailed: 0, creditsUsed: 0 };
     const parsed = JSON.parse(raw);
-    if (!parsed || typeof parsed !== 'object') return { total: 0, days: {}, creditsDays: {} };
+    if (!parsed || typeof parsed !== 'object') return { total: 0, days: {}, creditsDays: {}, genSuccess: 0, genFailed: 0, creditsUsed: 0 };
+    const total = Number(parsed.total) || 0;
+    const creditsDays = (parsed.creditsDays && typeof parsed.creditsDays === 'object') ? parsed.creditsDays : {};
     return {
-      total: Number(parsed.total) || 0,
+      total,
       days: (parsed.days && typeof parsed.days === 'object') ? parsed.days : {},
       // v2.30.0 fix: creditsDays MUST round-trip through loadStats.
       // Before, loadStats returned only { total, days } — so
@@ -40,10 +80,14 @@ function loadStats(store) {
       // "TODAY'S SPEND (CREDITS)" showed 0 forever, and every
       // recordSaved() rewrote the map from an empty base, wiping
       // earlier days' spend.
-      creditsDays: (parsed.creditsDays && typeof parsed.creditsDays === 'object') ? parsed.creditsDays : {}
+      creditsDays,
+      // v1.0.16: the generation-outcome counters round-trip too
+      // (same lesson as creditsDays above — a field loadStats
+      // drops is a field every write silently resets).
+      ...genFieldsFrom(parsed, total, creditsDays)
     };
   } catch (e) {
-    return { total: 0, days: {}, creditsDays: {} };
+    return { total: 0, days: {}, creditsDays: {}, genSuccess: 0, genFailed: 0, creditsUsed: 0 };
   }
 }
 
@@ -65,6 +109,10 @@ function recordSaved(store, creditsSpent) {
   const stats = loadStats(store);
   const today = dayKey();
   stats.total += 1;
+  // v1.0.16: a saved completion IS a successful generation —
+  // the same once-per-completion event feeds genSuccess, so it
+  // can never drift from the saved-videos total.
+  stats.genSuccess = (Number(stats.genSuccess) || 0) + 1;
   stats.days[today] = (Number(stats.days[today]) || 0) + 1;
   stats.days = pruneDays(stats.days);
   // v2.29.0: REAL credits spent per day — the Activity panel's
@@ -78,9 +126,56 @@ function recordSaved(store, creditsSpent) {
     }
     stats.creditsDays[today] = (Number(stats.creditsDays[today]) || 0) + spent;
     stats.creditsDays = pruneDays(stats.creditsDays);
+    // v1.0.16: the all-time spent total rides the same figure —
+    // never pruned, unlike the per-day map.
+    stats.creditsUsed = (Number(stats.creditsUsed) || 0) + spent;
   }
   store.setSetting(SETTING_KEY, JSON.stringify(stats));
   return stats;
+}
+
+// PUBLIC v1.0.16: one terminal generation failure. Called by
+// dbService.failTask ONLY on the state transition into 'failed'
+// (the once-only guard lives there — this function counts every
+// call it receives). Same fail-soft contract as recordSaved.
+function recordGenFailure(store) {
+  if (!store || typeof store.getSetting !== 'function' || typeof store.setSetting !== 'function') {
+    return null;
+  }
+  const stats = loadStats(store);
+  stats.genFailed = (Number(stats.genFailed) || 0) + 1;
+  store.setSetting(SETTING_KEY, JSON.stringify(stats));
+  return stats;
+}
+
+// PUBLIC v1.0.16: the report's read of the generation counters.
+// Returns { genSuccess, genFailed, creditsUsed }, or null when
+// the stored blob cannot be read truthfully (the store throws,
+// or a blob exists but is unparseable / not an object) — the
+// caller then OMITS the fields from the report rather than
+// sending wrong zeros (the v1.0.15 credits convention). No blob
+// at all is a fresh device: truthful zeros.
+function getGenStats(store) {
+  if (!store || typeof store.getSetting !== 'function') return null;
+  let raw;
+  try {
+    raw = store.getSetting(SETTING_KEY, null);
+  } catch (e) {
+    return null;
+  }
+  if (raw === null || raw === undefined || raw === '') {
+    return { genSuccess: 0, genFailed: 0, creditsUsed: 0 };
+  }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch (e) {
+    return null;
+  }
+  if (!parsed || typeof parsed !== 'object') return null;
+  const total = Number(parsed.total) || 0;
+  const creditsDays = (parsed.creditsDays && typeof parsed.creditsDays === 'object') ? parsed.creditsDays : {};
+  return genFieldsFrom(parsed, total, creditsDays);
 }
 
 function getStats(store) {
@@ -101,4 +196,4 @@ function getStats(store) {
   };
 }
 
-module.exports = { recordSaved, getStats, dayKey, SETTING_KEY };
+module.exports = { recordSaved, recordGenFailure, getStats, getGenStats, dayKey, SETTING_KEY };

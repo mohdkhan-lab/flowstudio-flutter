@@ -16157,9 +16157,9 @@ async function main() {
     // --- public identity: name, version, ports, storage ---
     ok('X124 installer name is FlowStudio (no Lite)', installerSrc124.includes('#define MyAppName "FlowStudio"') && !installerSrc124.includes('FlowStudio Lite'));
     ok('X124 installer output is FlowStudio_Setup', installerSrc124.includes('OutputBaseFilename=FlowStudio_Setup'));
-    ok('X124 pubspec version is 1.0.15+16 (public line)', read124('pubspec.yaml').includes('version: 1.0.15+16'));
-    eq('X124 package.json version is 1.0.15', JSON.parse(read124('package.json')).version, '1.0.15');
-    ok('X124 the bridge reports version 1.0.15 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.15';") && bridgeSrc124.includes('const PORT = 48290;'));
+    ok('X124 pubspec version is 1.0.16+17 (public line)', read124('pubspec.yaml').includes('version: 1.0.16+17'));
+    eq('X124 package.json version is 1.0.16', JSON.parse(read124('package.json')).version, '1.0.16');
+    ok('X124 the bridge reports version 1.0.16 on its own port', bridgeSrc124.includes("const APP_VERSION = '1.0.16';") && bridgeSrc124.includes('const PORT = 48290;'));
     ok('X124 the public data folder and DB are its own', bridgeSrc124.includes("path.join(process.env.APPDATA, 'flowstudio')") && read124('engine/db.js').includes("'flow_studio.db'") && !read124('engine/db.js').includes('flow_studio_lite.db'));
     ok('X124 updates come only from the backend release list', bridgeSrc124.includes('documents/releases') && bridgeSrc124.includes("'FlowStudio_Setup.exe'"));
     const mainDart124 = read124('lib/main.dart');
@@ -16167,7 +16167,7 @@ async function main() {
     ok('X124 the gate screen shows the activation notice verbatim', read124('lib/widgets/entry_gate.dart').includes('Internet is required to activate your license key.'));
     const settingsView124 = read124('lib/widgets/settings_view.dart');
     ok('X124 Settings has the license removal, and no Lite name', settingsView124.includes('Remove license key from this app') && !settingsView124.includes('FlowStudio Lite'));
-    ok('X124 the top strip carries v1.0.15 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.15'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
+    ok('X124 the top strip carries v1.0.16 and the entry status', read124('lib/widgets/top_strip.dart').includes("label: 'v1.0.16'") && read124('lib/widgets/top_strip.dart').includes('statusText'));
     ok('X124 the Dart bridge uses the public port', read124('lib/services/automation_bridge.dart').includes('static const int port = 48290;'));
   }
 
@@ -16612,10 +16612,10 @@ async function main() {
       chipSection127.includes('FittedBox') && chipSection127.includes('BoxFit.scaleDown') &&
       chipSection127.includes('softWrap: false') && chipSection127.includes('maxLines: 1') &&
       chipSection127.includes('height: 36'));
-    ok('X127 the remaining version sites carry 1.0.15',
-      read127('installer.iss').includes('#define MyAppVersion "1.0.15"') &&
-      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.15'") &&
-      bridgeDart127.includes("static const String appVersion = '1.0.15';"));
+    ok('X127 the remaining version sites carry 1.0.16',
+      read127('installer.iss').includes('#define MyAppVersion "1.0.16"') &&
+      read127('lib/models/app_settings.dart').includes("currentVersion = 'v1.0.16'") &&
+      bridgeDart127.includes("static const String appVersion = '1.0.16';"));
     ok('X127 reporting hooks ride entry + generation in the bridge',
       bridgeJs127.includes('reportForCredential') && bridgeJs127.includes('reportStatsSoon();') &&
       bridgeJs127.includes('reportActivationSoon(key, activatingAccount)') && bridgeJs127.includes('setPendingAccountSession'));
@@ -16682,8 +16682,8 @@ async function main() {
     ok('X128 the splash is dark with a stage-filled progress bar (v1.0.6 Midnight Gold; v1.0.8: custom gold bar)',
       gateDart128.includes('0xFF0B0B10') && gateDart128.includes('widthFactor: progress') &&
       gateDart128.includes('entry.engineStage / 3'));
-    ok('X128 the splash ends at Workspace ready! and carries v1.0.15',
-      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.15'"));
+    ok('X128 the splash ends at Workspace ready! and carries v1.0.16',
+      gateDart128.includes('Workspace ready!') && gateDart128.includes("'v1.0.16'"));
 
     // --- the sign-in page's own home (planned domain, one-line swap) ---
     eq('X128 the sign-in page lives on its own entry domain', cfg128.authPageUrl,
@@ -18066,6 +18066,308 @@ async function main() {
     ok('X139 reporting never triggers a credit check (no fetch/refresh on the report path)',
       !read139('engine/reportClient.js').includes('fetchRealCredits') &&
       !read139('engine/reportClient.js').includes('refreshAllAccountCredits'));
+  }
+
+  // =====================================================================
+  // X140. PUBLIC v1.0.16 — REPORTING EXPANSION.
+  // (1) USER-RECORD REFRESH: the users/{uid} doc only ever moved
+  // when a report carried a live account session, and in the
+  // field it stayed frozen at its signup values — the bridge's
+  // pending session token could be long expired by report time,
+  // so the account half failed on a dead token on every trigger.
+  // The bridge now refreshes an expired pending session BEFORE
+  // sending (the update check's pattern), so every report that
+  // can identify the account also patches the user doc — with
+  // ONLY the rules-whitelisted fields (videosMade / lastSeenAt /
+  // appVersion) — and a failed users patch never sinks the
+  // activations write (it lands first and stands; the combined
+  // verdict keeps the v1.0.13 pending-retry discipline, X137).
+  // (2) GENERATION STATS: the activations write also carries
+  // genSuccess / genFailed / creditsUsed — durable all-time
+  // counters in the usage-stats blob. Success + credits ride
+  // the SAME once-per-completion recordSaved event as the
+  // saved-videos total (the credits figure is the run's own
+  // getRequiredCredits cost, handed to recordSaved by the
+  // pool); failures are counted by dbService.failTask ONLY on
+  // the state transition into 'failed', so no verdict race or
+  // cleanup pass can double-count. When the stats store cannot
+  // be read truthfully the trio is OMITTED (never wrong zeros);
+  // truthful zeros ride.
+  // =====================================================================
+  {
+    const fs140 = require('fs');
+    const path140 = require('path');
+    const read140 = (rel) => fs140.readFileSync(path140.join(__dirname, '..', rel), 'utf8');
+    const report140 = require('../engine/reportClient');
+    const usage140 = require('../engine/usageStats');
+    const bridge140 = read140('engine_bridge.js');
+    const reportSrc140 = read140('engine/reportClient.js');
+
+    // --- (a) the durable counters over an injected store ---
+    const makeStore140 = (seed) => {
+      const map = new Map(Object.entries(seed || {}));
+      return {
+        map,
+        getSetting: (k, d) => (map.has(k) ? map.get(k) : d),
+        setSetting: (k, v) => { map.set(k, String(v)); }
+      };
+    };
+    const store140 = makeStore140();
+    eq('X140 a fresh device reports truthful zeros',
+      JSON.stringify(usage140.getGenStats(store140)),
+      JSON.stringify({ genSuccess: 0, genFailed: 0, creditsUsed: 0 }));
+    usage140.recordSaved(store140, 7);
+    usage140.recordSaved(store140, 20);
+    usage140.recordSaved(store140); // a recovery save: a success, no new spend
+    usage140.recordGenFailure(store140);
+    eq('X140 the counters increment once per terminal event',
+      JSON.stringify(usage140.getGenStats(store140)),
+      JSON.stringify({ genSuccess: 3, genFailed: 1, creditsUsed: 27 }));
+    // Simulated restart: a fresh facade over the persisted blob.
+    const store140b = makeStore140(Object.fromEntries(store140.map));
+    eq('X140 the counters persist across a restart (same blob, fresh read)',
+      JSON.stringify(usage140.getGenStats(store140b)),
+      JSON.stringify({ genSuccess: 3, genFailed: 1, creditsUsed: 27 }));
+    eq('X140 genSuccess and the saved-videos total move together',
+      usage140.getStats(store140b).total, 3);
+    // Migration from a pre-v1.0.16 blob (no gen fields stored).
+    const legacy140 = makeStore140({ usage_stats_v1: JSON.stringify({
+      total: 5, days: {}, creditsDays: { '2026-11-19': 12, '2026-11-20': 8 } }) });
+    eq('X140 a pre-v1.0.16 blob migrates: success = total, used = surviving days sum, failed = 0',
+      JSON.stringify(usage140.getGenStats(legacy140)),
+      JSON.stringify({ genSuccess: 5, genFailed: 0, creditsUsed: 20 }));
+    usage140.recordSaved(legacy140, 10);
+    eq('X140 after migration the counters keep counting from the migrated base',
+      JSON.stringify(usage140.getGenStats(legacy140)),
+      JSON.stringify({ genSuccess: 6, genFailed: 0, creditsUsed: 30 }));
+    // Unreadable store -> null (omit the trio, never wrong zeros).
+    eq('X140 a corrupt blob reads as null',
+      usage140.getGenStats(makeStore140({ usage_stats_v1: '{not json' })), null);
+    eq('X140 a non-object blob reads as null',
+      usage140.getGenStats(makeStore140({ usage_stats_v1: '42' })), null);
+    eq('X140 a throwing store reads as null',
+      usage140.getGenStats({ getSetting: () => { throw new Error('db gone'); }, setSetting: () => {} }), null);
+    eq('X140 recordGenFailure on a bad store is a no-op, not a throw',
+      usage140.recordGenFailure(null), null);
+
+    // --- (a2) dbService.failTask counts a terminal failure
+    // exactly once — real DB round-trip in a child process on a
+    // throwaway data dir (the X57 pattern), incl. a genuine
+    // process restart over the same data dir ---
+    {
+      const { execFileSync } = require('child_process');
+      const os140 = require('os');
+      const tmpDir140 = fs140.mkdtempSync(path140.join(os140.tmpdir(), 'fs-x140-db-'));
+      const dbPath140 = JSON.stringify(path140.join(__dirname, '..', 'engine', 'db.js'));
+      const usagePath140 = JSON.stringify(path140.join(__dirname, '..', 'engine', 'usageStats.js'));
+      const script140 = `(async () => {
+        const { dbService } = require(${dbPath140});
+        const usage = require(${usagePath140});
+        await dbService.ensureInit();
+        const rows = dbService.createBatchTasks('b-x140', ['p one', 'p two', 'p three'], {});
+        const [t1, t2, t3] = rows.map(r => r.id);
+        dbService.failTask(t1, 'boom');
+        dbService.failTask(t1, 'boom again');
+        dbService.completeTask(t2, { fileName: 'two.mp4' });
+        dbService.failTask(t2, 'too late');
+        dbService.failTask(t3, 'policy violation');
+        usage.recordSaved(dbService, 15);
+        const mid = usage.getGenStats(dbService);
+        dbService.persistNow();
+        console.log(JSON.stringify(mid));
+      })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+      const script140b = `(async () => {
+        const { dbService } = require(${dbPath140});
+        const usage = require(${usagePath140});
+        await dbService.ensureInit();
+        console.log(JSON.stringify(usage.getGenStats(dbService)));
+      })().catch(e => { console.error(e && e.stack || e); process.exit(1); });`;
+      let rt140 = null;
+      let rt140b = null;
+      try {
+        const out = execFileSync(process.execPath, ['-e', script140],
+          { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir140 }, encoding: 'utf8' });
+        rt140 = JSON.parse(out.trim().split('\n').filter(Boolean).pop());
+        const outB = execFileSync(process.execPath, ['-e', script140b],
+          { env: { ...process.env, FLOW_LITE_DATA_DIR: tmpDir140 }, encoding: 'utf8' });
+        rt140b = JSON.parse(outB.trim().split('\n').filter(Boolean).pop());
+      } catch (e) { rt140 = null; }
+      ok('X140 the failTask child ran', !!rt140);
+      eq('X140 failTask counts each terminal failure exactly once (a repeat call and a post-completion call count nothing)',
+        rt140 && JSON.stringify(rt140),
+        JSON.stringify({ genSuccess: 1, genFailed: 2, creditsUsed: 15 }));
+      eq('X140 the counters survive a real process restart on the same data dir',
+        rt140b && JSON.stringify(rt140b),
+        JSON.stringify({ genSuccess: 1, genFailed: 2, creditsUsed: 15 }));
+      try { fs140.rmSync(tmpDir140, { recursive: true, force: true }); } catch (e) {}
+    }
+
+    // --- (b/c/d) the report payload, against a rules-faithful
+    // fake backend (mirrors X139's) ---
+    const calls140 = [];
+    const docs140 = new Map();
+    let failUsersPatch140 = false;
+    const reset140 = () => { calls140.length = 0; docs140.clear(); failUsersPatch140 = false; report140.resetAnonymousSessionCache(); };
+    const fakeFetch140 = async (url, init) => {
+      const method = (init && init.method) || 'GET';
+      const headers = (init && init.headers) || {};
+      const body = typeof (init && init.body) === 'string' ? JSON.parse(init.body) : (init && init.body);
+      calls140.push({ url, method, headers, body });
+      const json = (status, data) => ({ status, json: async () => data });
+      if (url.includes('identitytoolkit.googleapis.com')) {
+        if (url.includes('accounts:signUp')) {
+          return json(200, { idToken: 'ID-ANON-140', refreshToken: 'RF-ANON-140', expiresIn: '3600', localId: 'uid-anon-140' });
+        }
+        return json(404, {});
+      }
+      if (url.startsWith('https://firestore.googleapis.com/v1/')) {
+        const docPath = decodeURIComponent(url.split('/documents/')[1].split('?')[0]);
+        if (method === 'GET') {
+          if (docPath.startsWith('activations/')) {
+            return json(403, { error: { code: 403, message: 'Missing or insufficient permissions.', status: 'PERMISSION_DENIED' } });
+          }
+          if (!docs140.has(docPath)) return json(404, {});
+          return json(200, { name: docPath, fields: docs140.get(docPath) });
+        }
+        if (method === 'PATCH') {
+          if (failUsersPatch140 && docPath.startsWith('users/')) {
+            return json(500, { error: { code: 500, message: 'backend exploded', status: 'INTERNAL' } });
+          }
+          if (url.includes('currentDocument.exists=false') && docs140.has(docPath)) {
+            return json(409, { error: { code: 409, message: 'Document already exists', status: 'ALREADY_EXISTS' } });
+          }
+          const merged = { ...(docs140.get(docPath) || {}), ...(body.fields || {}) };
+          docs140.set(docPath, merged);
+          return json(200, { name: docPath, fields: merged });
+        }
+        return json(405, {});
+      }
+      return json(404, {});
+    };
+    const patches140 = (frag) => calls140.filter(c => c.method === 'PATCH' && c.url.includes(frag));
+    const key140 = Buffer.from(JSON.stringify({ kid: 'K-140', plan: 'Trial', exp: '2027-01-31' })).toString('base64url') +
+      '.' + Buffer.from('sig-bytes').toString('base64url');
+    const actId140 = report140.activationIdFor(report140.keyPrefixOf(key140), 'FP-140');
+    const now140 = Date.UTC(2026, 10, 21, 6, 30, 0);
+
+    // (b) the trio rides the license write with the persisted values
+    reset140();
+    const rl140 = await report140.reportLicenseUsage(
+      { key: key140, fingerprint: 'FP-140', appVersion: '1.0.16', videosMade: 3,
+        genStats: { genSuccess: 4, genFailed: 2, creditsUsed: 55 } },
+      { fetchImpl: fakeFetch140, nowMs: now140 });
+    const create140 = patches140('/documents/activations/')[0];
+    ok('X140 the license report carries the generation stats on the create write',
+      rl140.ok === true && !!create140 &&
+      create140.body.fields.genSuccess.integerValue === '4' &&
+      create140.body.fields.genFailed.integerValue === '2' &&
+      create140.body.fields.creditsUsed.integerValue === '55' &&
+      create140.url.includes('updateMask.fieldPaths=genSuccess') &&
+      create140.url.includes('updateMask.fieldPaths=genFailed') &&
+      create140.url.includes('updateMask.fieldPaths=creditsUsed') &&
+      docs140.get(`activations/${actId140}`).genSuccess.integerValue === '4');
+
+    // (b) truthful zeros ride; a null genStats omits the trio
+    reset140();
+    const rl0_140 = await report140.reportLicenseUsage(
+      { key: key140, fingerprint: 'FP-140', appVersion: '1.0.16', videosMade: 0,
+        genStats: { genSuccess: 0, genFailed: 0, creditsUsed: 0 } },
+      { fetchImpl: fakeFetch140, nowMs: now140 });
+    const create0_140 = patches140('/documents/activations/')[0];
+    ok('X140 truthful zeros DO ride (a device that never generated)',
+      rl0_140.ok === true && !!create0_140 &&
+      create0_140.body.fields.genSuccess.integerValue === '0' &&
+      create0_140.body.fields.genFailed.integerValue === '0' &&
+      create0_140.body.fields.creditsUsed.integerValue === '0');
+    reset140();
+    const rlN_140 = await report140.reportLicenseUsage(
+      { key: key140, fingerprint: 'FP-140', appVersion: '1.0.16', videosMade: 1, genStats: null },
+      { fetchImpl: fakeFetch140, nowMs: now140 });
+    const createN_140 = patches140('/documents/activations/')[0];
+    ok('X140 an unreadable stats store (null) OMITS the trio rather than sending wrong zeros',
+      rlN_140.ok === true && !!createN_140 &&
+      !('genSuccess' in createN_140.body.fields) &&
+      !('genFailed' in createN_140.body.fields) &&
+      !('creditsUsed' in createN_140.body.fields) &&
+      !('genSuccess' in docs140.get(`activations/${actId140}`)));
+    reset140();
+    const rlB_140 = await report140.reportLicenseUsage(
+      { key: key140, fingerprint: 'FP-140', appVersion: '1.0.16', videosMade: 1 },
+      { fetchImpl: fakeFetch140, nowMs: now140 });
+    const createB_140 = patches140('/documents/activations/')[0];
+    ok('X140 a report without genStats carries none of the trio (back-compat)',
+      rlB_140.ok === true && !!createB_140 &&
+      !('genSuccess' in createB_140.body.fields) &&
+      !('creditsUsed' in createB_140.body.fields));
+
+    // (c) through reportForCredential: the users-doc patch uses
+    // ONLY the whitelisted fields; the gen trio rides the
+    // activations write and never the users write
+    reset140();
+    docs140.set('users/uid-140', { videosMade: { integerValue: '1' } });
+    const both140 = await report140.reportForCredential({
+      credential: { type: 'key', key: key140 },
+      fingerprint: 'FP-140', appVersion: '1.0.16', videosMade: 4,
+      accounts: [{ credits: 40 }],
+      genStats: { genSuccess: 4, genFailed: 1, creditsUsed: 35 },
+      accountSession: { uid: 'uid-140', idToken: 'ID-USER-140' }
+    }, { fetchImpl: fakeFetch140, nowMs: now140 });
+    const userPatch140 = patches140('/documents/users/uid-140')[0];
+    ok('X140 the users-doc patch carries ONLY the whitelisted fields',
+      both140.ok === true && !!userPatch140 &&
+      JSON.stringify(Object.keys(userPatch140.body.fields).sort()) ===
+        JSON.stringify(['appVersion', 'lastSeenAt', 'videosMade']) &&
+      userPatch140.url.includes('updateMask.fieldPaths=videosMade') &&
+      userPatch140.url.includes('updateMask.fieldPaths=lastSeenAt') &&
+      userPatch140.url.includes('updateMask.fieldPaths=appVersion') &&
+      docs140.get('users/uid-140').videosMade.integerValue === '4');
+    ok('X140 the gen trio rides the activations write and never the users write',
+      docs140.get(`activations/${actId140}`).genSuccess.integerValue === '4' &&
+      docs140.get(`activations/${actId140}`).creditsUsed.integerValue === '35' &&
+      !!userPatch140 &&
+      !('genSuccess' in userPatch140.body.fields) &&
+      !('genFailed' in userPatch140.body.fields) &&
+      !('creditsUsed' in userPatch140.body.fields));
+
+    // (d) a failed users-doc patch does not fail the activations
+    // report: the license write lands with the new totals, and a
+    // license-only report in the same backend state succeeds —
+    // the combined verdict keeps the pending-retry discipline
+    // (the debt is retried on the next trigger, X137's pattern)
+    reset140();
+    docs140.set('users/uid-140', { videosMade: { integerValue: '1' } });
+    failUsersPatch140 = true;
+    const bothFail140 = await report140.reportForCredential({
+      credential: { type: 'key', key: key140 },
+      fingerprint: 'FP-140', appVersion: '1.0.16', videosMade: 6,
+      genStats: { genSuccess: 6, genFailed: 2, creditsUsed: 50 },
+      accountSession: { uid: 'uid-140', idToken: 'ID-USER-140' }
+    }, { fetchImpl: fakeFetch140, nowMs: now140 });
+    const licOnly140 = await report140.reportLicenseUsage(
+      { key: key140, fingerprint: 'FP-140', appVersion: '1.0.16', videosMade: 6,
+        genStats: { genSuccess: 6, genFailed: 2, creditsUsed: 50 } },
+      { fetchImpl: fakeFetch140, nowMs: now140 });
+    ok('X140 a failed users-doc patch never sinks the activations report (the write lands; the license verdict stands)',
+      docs140.get(`activations/${actId140}`).videosMade.integerValue === '6' &&
+      docs140.get(`activations/${actId140}`).genSuccess.integerValue === '6' &&
+      licOnly140.ok === true &&
+      bothFail140.account.ok === false &&
+      bothFail140.ok === false);
+
+    // --- wiring pins ---
+    ok('X140 the bridge hands the durable gen counters to every report',
+      bridge140.includes('genStats: currentGenStats(),') &&
+      bridge140.includes('function currentGenStats()') &&
+      bridge140.includes("const { getStats, getGenStats } = require('./engine/usageStats');"));
+    ok('X140 the bridge refreshes an expired pending session before reporting',
+      bridge140.includes('sessionFromPending') &&
+      bridge140.includes('Date.now() >= pendingAccountSession.expiresAt'));
+    ok('X140 reporting never triggers a generation or a credit computation',
+      !reportSrc140.includes('getRequiredCredits') &&
+      !reportSrc140.includes('recordSaved') &&
+      bridge140.includes('genStats: currentGenStats(),'));
+    ok('X140 dbService.failTask is the counted failure transition',
+      read140('engine/db.js').includes('usageStats.recordGenFailure(dbService)'));
   }
 
   console.log(`\n${passed} passed, ${failed} failed, ${passed + failed} total`);

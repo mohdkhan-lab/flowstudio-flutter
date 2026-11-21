@@ -181,6 +181,20 @@ function currentAccountRecords() {
   }
 }
 
+// PUBLIC v1.0.16 — the durable generation counters the report
+// carries to the activations doc (usageStats over the same
+// dbService store as the videos total). null when the stats
+// store cannot be read truthfully — the report then omits the
+// fields rather than sending wrong zeros. Read-only: this
+// never triggers a generation or a credit check.
+function currentGenStats() {
+  try {
+    return getGenStats(dbService);
+  } catch (e) {
+    return null;
+  }
+}
+
 // PUBLIC v1.0.13 — durable reporting: a failed report is no
 // longer silently lost. The bridge records the debt in
 // report-pending.json in the app data dir; every later report
@@ -209,25 +223,57 @@ function reportEntrySoon(credentialOverride, accountSession) {
     // credential names its account AND the live pending sign-in
     // is that same account, the account update rides along too.
     let session = accountSession || null;
+    let sessionFromPending = false;
     if (!session && credential.accountUid && pendingAccountSession &&
         pendingAccountSession.uid === credential.accountUid &&
         pendingAccountSession.idToken) {
       session = { uid: pendingAccountSession.uid, idToken: pendingAccountSession.idToken };
+      sessionFromPending = true;
     }
-    const result = reportClient.reportForCredential({
-      credential,
-      fingerprint: cachedMachineFingerprint(),
-      appVersion: APP_VERSION,
-      videosMade: currentVideosMade(),
-      accounts: currentAccountRecords(),
-      accountSession: session || undefined
-    });
-    if (result && typeof result.then === 'function') {
-      result.then((verdict) => {
-        if (verdict && verdict.ok) clearReportPending();
-        else markReportPending(verdict && verdict.reason);
-      }).catch(() => markReportPending('report-error'));
+    const sendReport = (sess) => {
+      try {
+        const result = reportClient.reportForCredential({
+          credential,
+          fingerprint: cachedMachineFingerprint(),
+          appVersion: APP_VERSION,
+          videosMade: currentVideosMade(),
+          accounts: currentAccountRecords(),
+          genStats: currentGenStats(),
+          accountSession: sess || undefined
+        });
+        if (result && typeof result.then === 'function') {
+          result.then((verdict) => {
+            if (verdict && verdict.ok) clearReportPending();
+            else markReportPending(verdict && verdict.reason);
+          }).catch(() => markReportPending('report-error'));
+        }
+      } catch (e) {}
+    };
+    // PUBLIC v1.0.16: a pending session whose token has expired
+    // would make the users-doc half of EVERY report fail on a
+    // dead token until the next sign-in — the doc then only ever
+    // refreshes at sign-in itself. Refresh it first (the same
+    // pattern the update check uses), then send with the fresh
+    // token; if the refresh fails, send with the session as-is
+    // (the pre-v1.0.16 behaviour — the pending-retry discipline
+    // keeps the debt). An explicitly handed-over session (the
+    // activation report) is always fresh and never refreshed.
+    if (sessionFromPending && pendingAccountSession &&
+        pendingAccountSession.refreshToken &&
+        pendingAccountSession.expiresAt &&
+        Date.now() >= pendingAccountSession.expiresAt) {
+      refreshPendingAccountSession()
+        .then((refreshed) => {
+          if (refreshed && pendingAccountSession && pendingAccountSession.idToken) {
+            sendReport({ uid: pendingAccountSession.uid, idToken: pendingAccountSession.idToken });
+          } else {
+            sendReport(session);
+          }
+        })
+        .catch(() => sendReport(session));
+      return;
     }
+    sendReport(session);
   } catch (e) {}
 }
 
@@ -303,7 +349,7 @@ async function refreshPendingAccountSession() {
 function reportStartupSoon() {
   reportEntrySoon();
 }
-const { getStats } = require('./engine/usageStats');
+const { getStats, getGenStats } = require('./engine/usageStats');
 const { parseCookieText } = require('./engine/cookieParser');
 const crypto = require('crypto');
 
@@ -399,7 +445,7 @@ const PORT = 48290;
 // alongside pubspec.yaml / package.json / installer.iss / the Dart
 // defaults. /api/status reports it and the update check compares
 // the backend's latest release against it.
-const APP_VERSION = '1.0.15';
+const APP_VERSION = '1.0.16';
 let activeWorkerPool = null;
 // v2.48.99 (MCP AGENT-MODE SWITCH): an MCP in-app run reaches the
 // engine as TWO calls — /api/generation/start-ui here, then the
